@@ -107,6 +107,18 @@ return function(caps, host)
     for k, v in pairs(real.io) do i[k] = v end
     if not caps.os then i.popen = nil end                     -- io.popen runs programs: it belongs to `os`, not `io`
     env.io = i
+    -- dofile / loadfile exist ONLY with `io`, text mode only (binary chunks are refused everywhere: load mode 't')
+    env.loadfile = function(path, mode, e)
+      local fh, err = real.io.open(path, "rb")
+      if not fh then return nil, err end
+      local text = fh:read("a"); fh:close()
+      return real.load(text, "@" .. tostring(path), "t", e or env)       -- a chunk starting with ESC is refused by mode 't'
+    end
+    env.dofile = function(path)
+      local f, err = env.loadfile(path)
+      if not f then error(err, 2) end
+      return f()
+    end
   elseif caps.os then
     env.io = { popen = real.io.popen }                        -- `os` alone: only the program-running member of io
   end
@@ -125,9 +137,25 @@ return function(caps, host)
     end
     env.debug = d
   end
+  -- ---- require --------------------------------------------------------------------------------
+  -- Always available WITHOUT any capability, but confined: .lua modules from the script's own folder subtree only,
+  -- read-only, text-only, loaded into the same sandbox env (so the same guards and the same watchdog apply).
+  local loaded = { _G = env, string = S, table = real.table, math = real.math, utf8 = real.utf8, coroutine = env.coroutine }
+  loaded.os, loaded.io, loaded.debug = env.os, env.io, env.debug      -- only what was granted
+  local function own_folder_searcher(n)
+    if type(n) ~= "string" or not n:match("^[%a_][%w_]*[%.%w_]*$") or n:find("%.%.") or n:sub(-1) == "." then
+      return "module name '" .. tostring(n) .. "' is not allowed (own-folder modules use plain dotted names)"
+    end
+    local path = host.script_dir .. "/" .. n:gsub("%.", "/") .. ".lua"
+    local text = host.read_text(path)          -- native: refuses anything outside script_dir, non-.lua, '..', absolute paths
+    if not text then return "no module '" .. n .. "' in the script folder" end
+    local f, err = real.load(text, "@" .. path, "t", env)
+    if not f then error(err, 0) end
+    return f, path
+  end
+  local searchers = { function(n) local f = loaded[n]; return f and function() return f end or "no preload" end, own_folder_searcher }
   if caps.package or caps.native then
-    local loaded = { _G = env, string = S, table = real.table, math = real.math, utf8 = real.utf8, coroutine = env.coroutine }
-    loaded.os, loaded.io, loaded.debug = env.os, env.io, env.debug      -- only what was granted
+    -- `package` unlocks arbitrary paths and package.path changes (Lua searchers 1 and 2 with the usual semantics)
     local p = { path = "res://scripts/?.lua", loaded = loaded, preload = {}, searchers = {} }
     p.searchers[1] = function(n) local f = p.preload[n]; if f then return f end return "no field package.preload['" .. n .. "']" end
     p.searchers[2] = function(n)
@@ -141,14 +169,15 @@ return function(caps, host)
       p.searchers[3] = real.package.searchers[3]; p.searchers[4] = real.package.searchers[4]
     end
     env.package = p
-    env.require = function(n)
-      local m = loaded[n]; if m ~= nil then return m end
-      for _, s in ipairs(p.searchers) do
-        local f, extra = s(n)
-        if type(f) == "function" then local r = f(n, extra); loaded[n] = r == nil and true or r; return loaded[n] end
-      end
-      error("module '" .. n .. "' not found", 2)
+    searchers = p.searchers
+  end
+  env.require = function(n)
+    local m = loaded[n]; if m ~= nil then return m end
+    for _, s in ipairs(searchers) do
+      local f, extra = s(n)
+      if type(f) == "function" then local r = f(n, extra); loaded[n] = r == nil and true or r; return loaded[n] end
     end
+    error("module '" .. tostring(n) .. "' not found", 2)
   end
 
   -- ---- engine facade: thin Lua stubs over validated native Callables ------------------------

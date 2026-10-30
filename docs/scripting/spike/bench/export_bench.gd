@@ -1,6 +1,7 @@
 extends Node
 # Export proof: 1000 scripted bullets driven by Lua inside an exported build (web / android / desktop).
-# Logs machine-readable lines "SPIKE_RESULT ..." to stdout (browser console / logcat).
+# Logs one greppable line per phase, `SPIKE_RESULT {json}`, to stdout (browser console / logcat), then `SPIKE_DONE`.
+# Phases: C (declarative), A (per-bullet hook), B (batch), B+hook (batch with the watchdog hook armed).
 const ARENA := Rect2(-1280, -720, 2560, 1440)
 const DT := 1.0 / 60.0
 const WARM := 60
@@ -105,8 +106,15 @@ func _process(_d: float) -> void:
 		lua_ms.append((mgr.t_hooks) / 1000.0)
 	if frame >= WARM + FRAMES:
 		var name: String = phases[phase][0] + ("+hook" if phases[phase][1] else "")
-		print("SPIKE_RESULT mode=%s n=%d alive=%d hooked=%d lua_ms_med=%.3f lua_ms_p95=%.3f step_ms_med=%.3f step_ms_p95=%.3f frame_ms_med=%.2f frame_ms_p95=%.2f fps=%.1f lua_mem_kb=%d" % [
-			name, N, mgr.pool.count, mgr.pool.hooked_count, Stats.median(lua_ms), Stats.p95(lua_ms), Stats.median(step_ms), Stats.p95(step_ms),
-			Stats.median(frame_ms), Stats.p95(frame_ms), Engine.get_frames_per_second(), s.get_memory_used() / 1024])
+		var res := {
+			"mode": name, "n": N, "alive": mgr.pool.count, "hooked": mgr.pool.hooked_count,
+			"lua_ms_med": snappedf(Stats.median(lua_ms), 0.001), "lua_ms_p95": snappedf(Stats.p95(lua_ms), 0.001),
+			"step_ms_med": snappedf(Stats.median(step_ms), 0.001), "step_ms_p95": snappedf(Stats.p95(step_ms), 0.001),
+			"frame_ms_med": snappedf(Stats.median(frame_ms), 0.01), "frame_ms_p95": snappedf(Stats.p95(frame_ms), 0.01),
+			"fps": snappedf(Engine.get_frames_per_second(), 0.1), "lua_mem_kb": s.get_memory_used() / 1024,
+			"os": OS.get_name(), "arch": Engine.get_architecture_name(), "godot": Engine.get_version_info().string,
+			"lua": LuaState.get_lua_version_string(),
+		}
+		print("SPIKE_RESULT " + JSON.stringify(res))
 		if phases[phase][1]: s.main_thread.set_hook(null, 0, 0)
 		_next_phase()

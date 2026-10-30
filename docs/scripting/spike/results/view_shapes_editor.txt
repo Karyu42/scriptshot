@@ -1,0 +1,33 @@
+### view shapes: n=4000 bullets, 61 reps (median / p95 of ms per batch call; ns per bullet in brackets)
+| shape | median ms | p95 ms | ns/bullet | vs raw |
+|---|---|---|---|---|
+| R  raw interleaved  pos[2*i] | 3.778 | 4.824 | 944 | 1.00x |
+| S1 methods  v:pos(i) | 4.213 | 4.700 | 1053 | 1.12x |
+| S1h methods, hoisted  pos(v,i) | 4.242 | 5.428 | 1060 | 1.12x |
+| S2 column proxies (Lua __index)  v.px[i] | 4.496 | 6.806 | 1124 | 1.19x |
+| S2r separate packed columns, hoisted  px[i] | 3.430 | 3.682 | 858 | 0.91x |
+| S2u separate packed columns, un-hoisted  v.px[i] | 3.666 | 3.936 | 916 | 0.97x |
+| S3 Vector2 elements  v.pos[i].x | 7.487 | 12.766 | 1872 | 1.98x |
+| GDScript de-interleave 4 cols + re-interleave 2 cols (per batch) | 0.272 | 0.298 | 68 | |
+### view shapes: n=4000 bullets, 61 reps (median / p95 of ms per batch call; ns per bullet in brackets)
+| shape | median ms | p95 ms | ns/bullet | vs raw |
+|---|---|---|---|---|
+| R  raw interleaved  pos[2*i] | 3.688 | 4.151 | 922 | 1.00x |
+| S1 methods  v:pos(i) | 4.200 | 4.361 | 1050 | 1.14x |
+| S1h methods, hoisted  pos(v,i) | 4.094 | 4.301 | 1024 | 1.11x |
+| S2 column proxies (Lua __index)  v.px[i] | 4.478 | 4.700 | 1120 | 1.21x |
+| S2r separate packed columns, hoisted  px[i] | 3.572 | 3.764 | 893 | 0.97x |
+| S2u separate packed columns, un-hoisted  v.px[i] | 3.892 | 4.095 | 973 | 1.06x |
+| S3 Vector2 elements  v.pos[i].x | 7.592 | 12.523 | 1898 | 2.06x |
+| GDScript de-interleave 4 cols + re-interleave 2 cols (per batch) | 0.280 | 0.328 | 70 | |
+### view shapes: n=4000 bullets, 61 reps (median / p95 of ms per batch call; ns per bullet in brackets)
+| shape | median ms | p95 ms | ns/bullet | vs raw |
+|---|---|---|---|---|
+| R  raw interleaved  pos[2*i] | 3.662 | 4.028 | 916 | 1.00x |
+| S1 methods  v:pos(i) | 4.590 | 6.151 | 1148 | 1.25x |
+| S1h methods, hoisted  pos(v,i) | 4.227 | 5.713 | 1057 | 1.15x |
+| S2 column proxies (Lua __index)  v.px[i] | 4.372 | 4.639 | 1093 | 1.19x |
+| S2r separate packed columns, hoisted  px[i] | 3.513 | 3.682 | 878 | 0.96x |
+| S2u separate packed columns, un-hoisted  v.px[i] | 3.776 | 3.939 | 944 | 1.03x |
+| S3 Vector2 elements  v.pos[i].x | 7.637 | 11.615 | 1909 | 2.09x |
+| GDScript de-interleave 4 cols + re-interleave 2 cols (per batch) | 0.264 | 0.295 | 66 | |

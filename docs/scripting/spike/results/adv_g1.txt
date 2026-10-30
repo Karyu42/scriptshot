@@ -1,41 +1,46 @@
-ADV test=spin mode=g1 outcome=STOPPED (instruction budget) ms=188 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=pcall_swallow mode=g1 outcome=STOPPED (instruction budget) ms=117 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
+ADV test=spin mode=g1 outcome=STOPPED (instruction budget) ms=143 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=pcall_swallow mode=g1 outcome=STOPPED (instruction budget) ms=116 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
 ADV test=error_loop mode=g1 outcome=STOPPED (wall clock) ms=301 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=close_handler_spin mode=g1 outcome=STOPPED (instruction budget) ms=130 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=sethook_nil mode=g1 outcome=STOPPED (instruction budget) ms=119 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=sethook_own mode=g1 outcome=STOPPED (instruction budget) ms=125 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
+ADV test=close_handler_spin mode=g1 outcome=STOPPED (instruction budget) ms=117 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=sethook_nil mode=g1 outcome=STOPPED (instruction budget) ms=131 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=sethook_own mode=g1 outcome=STOPPED (instruction budget) ms=123 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
 ADV test=sethook_via_package_loaded mode=g1 outcome=ERROR: [string "user.lua"]:1: attempt to index a nil value (field 'debug') ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=load_bypass mode=g1 outcome=STOPPED (instruction budget) ms=128 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=coroutine_spin mode=g1 outcome=STOPPED (instruction budget) ms=116 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=coroutine_resume_loop mode=g1 outcome=STOPPED (instruction budget) ms=128 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=c_boundary_sort mode=g1 outcome=STOPPED (instruction budget) ms=122 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
-ADV test=memory_bomb_table mode=g1 outcome=STOPPED (memory cap) ms=269 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
-ADV test=gc_stop_bomb mode=g1 outcome=STOPPED (memory cap) ms=158 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
+ADV test=load_bypass mode=g1 outcome=STOPPED (instruction budget) ms=117 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=coroutine_spin mode=g1 outcome=STOPPED (instruction budget) ms=118 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=coroutine_resume_loop mode=g1 outcome=STOPPED (instruction budget) ms=114 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=c_boundary_sort mode=g1 outcome=STOPPED (instruction budget) ms=131 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
+ADV test=memory_bomb_table mode=g1 outcome=STOPPED (memory cap) ms=222 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
+ADV test=gc_stop_bomb mode=g1 outcome=STOPPED (memory cap) ms=179 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
 ADV test=string_rep_bomb mode=g1 outcome=ERROR: [string "user.lua"]:1: string.rep: result too large (sandbox limit) ms=1 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=string_rep_via_debug_upvalue mode=g1 outcome=ERROR: [string "user.lua"]:1: attempt to call a nil value (field 'getupvalue') ms=1 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=recursion_lua mode=g1 outcome=STOPPED (memory cap) ms=191 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
+ADV test=string_rep_via_debug_upvalue mode=g1 outcome=ERROR: [string "user.lua"]:1: attempt to call a nil value (field 'getupvalue') ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
+ADV test=recursion_lua mode=g1 outcome=STOPPED (memory cap) ms=156 peak_lua_mem_mb=64.0 host_ok=true heartbeat=ok
 ADV test=recursion_c_index mode=g1 outcome=ERROR: [string "user.lua"]:1: C stack overflow ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=recursion_pcall mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=pattern_bomb mode=g1 outcome=ERROR: [string "user.lua"]:1: string.match: subject too long for pattern matching (sandbox limit) ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=pattern_at_limit mode=g1 outcome=COMPLETED ms=4 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
+ADV test=pattern_at_limit mode=g1 outcome=COMPLETED ms=6 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=pattern_bomb_via_debug mode=g1 outcome=ERROR: [string "user.lua"]:1: attempt to call a nil value (field 'getupvalue') ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=memory_big_chunks mode=g1 outcome=STOPPED (memory cap) ms=282 peak_lua_mem_mb=83.2 host_ok=true heartbeat=ok
+ADV test=memory_big_chunks mode=g1 outcome=STOPPED (memory cap) ms=274 peak_lua_mem_mb=83.2 host_ok=true heartbeat=ok
 ADV test=gc_finalizer_spin mode=g1 outcome=ERROR: [string "user.lua"]:1: __gc finalizers are not available in scripts ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=gc_finalizer_via_debug mode=g1 outcome=ERROR: [string "user.lua"]:1: __gc finalizers are not available in scripts ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=xpcall_handler_spin mode=g1 outcome=STOPPED (instruction budget) ms=119 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
+ADV test=xpcall_handler_spin mode=g1 outcome=STOPPED (instruction budget) ms=109 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
 ADV test=xpcall_handler_error_loop mode=g1 outcome=STOPPED (wall clock) ms=301 peak_lua_mem_mb=0.3 host_ok=true heartbeat=ok
 ADV test=load_binary_chunk mode=g1 outcome=ERROR: [string "user.lua"]:1: attempt to call a nil value (field 'dump') ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=dump_loadfile_dofile_absent mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=debug_upvalue_tamper mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["nil nil nil false", "false attempt to call a nil value"]
-ADV test=debug_getlocal_wrapper_leak mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=[""]
-ADV test=cap_matrix_none mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["nil os.time=true os.execute=nil nilnilniltrue"]
+ADV test=debug_getlocal_wrapper_leak mode=g1 outcome=COMPLETED ms=1 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=[""]
+ADV test=require_own_folder mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["42 b cached=true package=nil"]
+ADV test=require_escape mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["false,false,false,false,false,false"]
+ADV test=loadfile_text_with_io mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["dofile=7 loadfile=function"]
+ADV test=loadfile_binary_refused mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["loadfile=nil msg=attempt to load a binary chunk (mode is \'t\') | dofile ok=false | load(b)=nil attempt to load a binary chunk (mode is \'t\')"]
+ADV test=loadfile_absent_without_io mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["nil nil"]
+ADV test=cap_matrix_none mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["io=nil os.time=true os.execute=nil debug=nil package=nil require=true coroutine=true"]
 ADV test=cap_matrix_io mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["io.open=true io.popen=nil os.execute=nil"]
-ADV test=cap_matrix_os mode=g1 outcome=COMPLETED ms=1 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["os.execute=true os.getenv=true io.popen=true io.open=nil"]
+ADV test=cap_matrix_os mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["os.execute=true os.getenv=true io.popen=true io.open=nil"]
 ADV test=cap_matrix_package mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["require=true loadlib=nil searchers=2 debug_in_loaded=nil io_in_loaded=nil"]
 ADV test=cap_matrix_native mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["loadlib=true searchers=4"]
-ADV test=xpcall_boundary_handler mode=g1 outcome=STOPPED (instruction budget) ms=126 peak_lua_mem_mb=1.2 host_ok=true heartbeat=ok
+ADV test=xpcall_boundary_handler mode=g1 outcome=STOPPED (instruction budget) ms=115 peak_lua_mem_mb=1.3 host_ok=true heartbeat=ok
 ADV test=load_reader_function mode=g1 outcome=ERROR: [string "user.lua"]:1: load: only string chunks are supported ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
-ADV test=xpcall_semantics mode=g1 outcome=COMPLETED ms=1 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["false handled:boom", "3 3"]
+ADV test=xpcall_semantics mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok printed=["false handled:boom", "3 3"]
 ADV test=os_exit mode=g1 outcome=STOPPED (os.exit requested) ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=os_exit_in_coroutine mode=g1 outcome=STOPPED (os.exit requested) ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
 ADV test=facade_rawset mode=g1 outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok

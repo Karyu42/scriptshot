@@ -1,0 +1,78 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+Godot 4.7.2-stable (official) | Lua Lua 5.4 | PR #2 pool/manager copied from feat/core-scaffold
+per config: 3 x 150 frames after 40 warmup; render off, 32 hurtboxes, steady-state respawn churn (as tests/benchmark)
+
+### Tick hooks: hook-phase ms per tick (median / p95); `step` = whole BulletManager.step; copy/lua/apply = breakdown medians for option B
+| N | scripted | option | hook med | hook p95 | step med | step p95 | copy in | Lua call | apply | hooked bullets |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1000 | 100% | C declarative (no hooks) | 0.001 | 0.001 | 0.519 | 0.644 | 0.000 | 0.000 | 0.000 | 0 |
+| 1000 | 100% | A per-bullet every tick | 1.895 | 2.238 | 2.374 | 2.825 | 0.000 | 0.000 | 0.000 | 972 |
+| 1000 | 100% | A throttled 1/4 ticks | 0.907 | 1.030 | 1.378 | 1.567 | 0.000 | 0.000 | 0.000 | 994 |
+| 1000 | 100% | A throttled 1/8 ticks | 0.715 | 0.807 | 1.175 | 1.324 | 0.000 | 0.000 | 0.000 | 988 |
+| 1000 | 100% | B batch, gathered inputs | 1.518 | 2.287 | 2.011 | 3.017 | 0.334 | 1.102 | 0.078 | 972 |
+| 1000 | 100% | B batch, bulk-slice inputs | 1.127 | 1.281 | 1.589 | 1.834 | 0.012 | 1.041 | 0.070 | 979 |
+| 1000 | 10% | C declarative (no hooks) | 0.001 | 0.001 | 0.499 | 0.567 | 0.000 | 0.000 | 0.000 | 0 |
+| 1000 | 10% | A per-bullet every tick | 0.177 | 0.212 | 0.602 | 0.699 | 0.000 | 0.000 | 0.000 | 102 |
+| 1000 | 10% | A throttled 1/4 ticks | 0.088 | 0.115 | 0.535 | 0.632 | 0.000 | 0.000 | 0.000 | 100 |
+| 1000 | 10% | A throttled 1/8 ticks | 0.071 | 0.091 | 0.518 | 0.599 | 0.000 | 0.000 | 0.000 | 98 |
+| 1000 | 10% | B batch, gathered inputs | 0.153 | 0.187 | 0.606 | 0.708 | 0.033 | 0.110 | 0.008 | 102 |
+| 1000 | 10% | B batch, bulk-slice inputs | 0.122 | 0.149 | 0.575 | 0.660 | 0.004 | 0.109 | 0.008 | 98 |
+| 4000 | 100% | C declarative (no hooks) | 0.001 | 0.001 | 1.850 | 2.090 | 0.000 | 0.000 | 0.000 | 0 |
+| 4000 | 100% | A per-bullet every tick | 8.038 | 9.229 | 9.838 | 11.143 | 0.000 | 0.000 | 0.000 | 3873 |
+| 4000 | 100% | A throttled 1/4 ticks | 3.746 | 4.257 | 5.507 | 6.298 | 0.000 | 0.000 | 0.000 | 3960 |
+| 4000 | 100% | A throttled 1/8 ticks | 3.026 | 3.223 | 4.784 | 5.085 | 0.000 | 0.000 | 0.000 | 3972 |
+| 4000 | 100% | B batch, gathered inputs | 6.053 | 6.410 | 7.797 | 8.244 | 1.321 | 4.408 | 0.314 | 3873 |
+| 4000 | 100% | B batch, bulk-slice inputs | 4.751 | 5.115 | 6.531 | 7.069 | 0.034 | 4.387 | 0.305 | 3879 |
+| 4000 | 10% | C declarative (no hooks) | 0.001 | 0.001 | 1.982 | 2.115 | 0.000 | 0.000 | 0.000 | 0 |
+| 4000 | 10% | A per-bullet every tick | 0.776 | 0.843 | 2.473 | 2.661 | 0.000 | 0.000 | 0.000 | 394 |
+| 4000 | 10% | A throttled 1/4 ticks | 0.365 | 0.407 | 2.050 | 2.208 | 0.000 | 0.000 | 0.000 | 397 |
+| 4000 | 10% | A throttled 1/8 ticks | 0.294 | 0.358 | 1.982 | 2.381 | 0.000 | 0.000 | 0.000 | 398 |
+| 4000 | 10% | B batch, gathered inputs | 0.610 | 0.934 | 2.298 | 3.412 | 0.133 | 0.442 | 0.034 | 394 |
+| 4000 | 10% | B batch, bulk-slice inputs | 0.487 | 0.583 | 2.219 | 2.643 | 0.009 | 0.445 | 0.032 | 400 |
+| 10000 | 100% | C declarative (no hooks) | 0.001 | 0.002 | 4.858 | 5.157 | 0.000 | 0.000 | 0.000 | 0 |
+| 10000 | 100% | A per-bullet every tick | 19.959 | 21.217 | 24.367 | 25.993 | 0.000 | 0.000 | 0.000 | 9713 |
+| 10000 | 100% | A throttled 1/4 ticks | 9.925 | 14.785 | 14.457 | 21.167 | 0.000 | 0.000 | 0.000 | 9883 |
+| 10000 | 100% | A throttled 1/8 ticks | 7.800 | 9.317 | 12.233 | 14.392 | 0.000 | 0.000 | 0.000 | 9919 |
+| 10000 | 100% | B batch, gathered inputs | 14.933 | 16.692 | 19.208 | 21.626 | 3.200 | 10.867 | 0.770 | 9713 |
+| 10000 | 100% | B batch, bulk-slice inputs | 12.067 | 13.883 | 16.480 | 18.718 | 0.189 | 11.086 | 0.762 | 9711 |
+| 10000 | 10% | C declarative (no hooks) | 0.001 | 0.002 | 4.788 | 5.631 | 0.000 | 0.000 | 0.000 | 0 |
+| 10000 | 10% | A per-bullet every tick | 2.067 | 2.399 | 6.297 | 7.078 | 0.000 | 0.000 | 0.000 | 1000 |
+| 10000 | 10% | A throttled 1/4 ticks | 0.938 | 1.062 | 5.050 | 5.804 | 0.000 | 0.000 | 0.000 | 984 |
+| 10000 | 10% | A throttled 1/8 ticks | 0.752 | 0.826 | 4.866 | 5.120 | 0.000 | 0.000 | 0.000 | 983 |
+| 10000 | 10% | B batch, gathered inputs | 1.589 | 2.502 | 5.827 | 8.357 | 0.352 | 1.147 | 0.086 | 1000 |
+| 10000 | 10% | B batch, bulk-slice inputs | 1.256 | 1.741 | 5.514 | 8.808 | 0.016 | 1.156 | 0.077 | 979 |
+
+### Events at 200/frame (N=4000): per-bullet Lua call vs drained batch (ms per frame incl. applying the deferred spawns it produced; Lua-only in brackets for batch)
+| event | per-bullet med | per-bullet p95 | batch med | batch p95 | batch Lua-call only |
+|---|---|---|---|---|---|
+| on_spawn | 0.137 | 0.159 | 0.209 | 0.250 | 0.167 |
+| on_hit | 1.341 | 1.613 | 1.560 | 2.487 | 0.435 |
+| on_despawn | 1.574 | 2.230 | 1.611 | 2.843 | 0.454 |
+
+### Hit spam (N=4000): ms per frame for the on_hit dispatch
+| hits/frame | policy | median | p95 | Lua-call only | events dropped (total) |
+|---|---|---|---|---|---|
+| 200 | per-bullet call, unlimited | 1.532 | 1.814 | 0.000 | 0 |
+| 200 | batch, unlimited | 1.559 | 1.735 | 0.426 | 0 |
+| 200 | batch, cap 256/tick, drop rest | 1.555 | 1.959 | 0.426 | 0 |
+| 200 | batch, cap 256 + coalesce rest into 1 summary | 1.518 | 1.712 | 0.412 | 0 |
+| 1000 | per-bullet call, unlimited | 7.416 | 8.680 | 0.000 | 0 |
+| 1000 | batch, unlimited | 7.583 | 9.108 | 2.092 | 0 |
+| 1000 | batch, cap 256/tick, drop rest | 1.952 | 2.499 | 0.518 | 424080 |
+| 1000 | batch, cap 256 + coalesce rest into 1 summary | 1.929 | 2.130 | 0.489 | 0 |
+| 2000 | per-bullet call, unlimited | 14.104 | 34.710 | 0.000 | 0 |
+| 2000 | batch, unlimited | 14.066 | 16.122 | 4.028 | 0 |
+| 2000 | batch, cap 256/tick, drop rest | 2.063 | 3.532 | 0.518 | 994080 |
+| 2000 | batch, cap 256 + coalesce rest into 1 summary | 2.303 | 3.304 | 0.545 | 0 |
+| 5000 | per-bullet call, unlimited | 24.393 | 34.268 | 0.000 | 0 |
+| 5000 | batch, unlimited | 26.162 | 31.441 | 10.286 | 0 |
+| 5000 | batch, cap 256/tick, drop rest | 2.276 | 2.606 | 0.499 | 2704080 |
+| 5000 | batch, cap 256 + coalesce rest into 1 summary | 2.768 | 2.965 | 0.514 | 0 |
+
+### fire(): Lua spawning n bullets in one call (ms per fire call)
+| n bullets | GDScript baseline | Lua: ShotRequest fields + request_shot | Lua: emitter:polar(floats) | Lua: packed batch |
+|---|---|---|---|---|
+| 10 | 0.017 | 0.052 | 0.031 | 0.022 |
+| 100 | 0.163 | 0.491 | 0.318 | 0.207 |
+| 1000 | 1.573 | 5.412 | 2.855 | 1.859 |

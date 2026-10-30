@@ -1,0 +1,7 @@
+SPIKE_INFO godot=4.7.2-stable (official) os=Linux web=false threads=true mobile=false renderer= cpu=Intel(R) Xeon(R) Processor
+SPIKE_INFO lua runtime=lua version=Lua 5.4
+SPIKE_RESULT {"alive":1000,"arch":"x86_64","fps":145.0,"frame_ms_med":6.9,"frame_ms_p95":7.06,"godot":"4.7.2-stable (official)","hooked":0,"lua":"Lua 5.4","lua_mem_kb":82,"lua_ms_med":0.002,"lua_ms_p95":0.003,"mode":"C","n":1000,"os":"Linux","step_ms_med":0.665,"step_ms_p95":1.134}
+SPIKE_RESULT {"alive":999,"arch":"x86_64","fps":145.0,"frame_ms_med":6.9,"frame_ms_p95":7.03,"godot":"4.7.2-stable (official)","hooked":999,"lua":"Lua 5.4","lua_mem_kb":82,"lua_ms_med":2.204,"lua_ms_p95":3.305,"mode":"A","n":1000,"os":"Linux","step_ms_med":2.858,"step_ms_p95":4.209}
+SPIKE_RESULT {"alive":999,"arch":"x86_64","fps":145.0,"frame_ms_med":6.9,"frame_ms_p95":7.07,"godot":"4.7.2-stable (official)","hooked":999,"lua":"Lua 5.4","lua_mem_kb":304,"lua_ms_med":1.351,"lua_ms_p95":2.022,"mode":"B","n":1000,"os":"Linux","step_ms_med":1.999,"step_ms_p95":2.933}
+SPIKE_RESULT {"alive":999,"arch":"x86_64","fps":145.0,"frame_ms_med":6.9,"frame_ms_p95":7.07,"godot":"4.7.2-stable (official)","hooked":999,"lua":"Lua 5.4","lua_mem_kb":826,"lua_ms_med":1.53,"lua_ms_p95":2.387,"mode":"B+hook","n":1000,"os":"Linux","step_ms_med":2.16,"step_ms_p95":3.371}
+SPIKE_DONE

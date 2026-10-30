@@ -38,7 +38,12 @@ const TESTS := {
 	"dump_loadfile_dofile_absent": [[], "return tostring(string.dump) .. tostring(dofile) .. tostring(loadfile) .. tostring(_G.io) .. tostring(_G.os) .. tostring(_G.debug) .. tostring(_G.package) .. tostring(_G.require)"],
 	"debug_upvalue_tamper": [["debug"], "local f = os and os.exit; print(tostring(debug.getupvalue) .. ' ' .. tostring(debug.setupvalue) .. ' ' .. tostring(debug.getregistry) .. ' ' .. tostring(debug.sethook == nil)); local ok, e = pcall(debug.getupvalue, string.rep, 1); print(tostring(ok) .. ' ' .. tostring(e))"],
 	"debug_getlocal_wrapper_leak": [["debug"], "local seen = {}; local r = ('abc'):gsub('b', function() for lvl = 1, 6 do local i = 1; while true do local ok, n, v = pcall(debug.getlocal, lvl, i); if not ok or not n then break end; if type(v) == 'function' or type(v) == 'table' and n ~= 'seen' then seen[#seen + 1] = lvl .. ':' .. n .. ':' .. type(v) end; i = i + 1 end end return 'x' end); print(table.concat(seen, ','))"],
-	"cap_matrix_none": [[], "print(tostring(io) .. ' os.time=' .. tostring(os.time ~= nil) .. ' os.execute=' .. tostring(os.execute) .. ' ' .. tostring(debug) .. tostring(package) .. tostring(require) .. tostring(coroutine ~= nil))"],
+	"require_own_folder": [[], "local a = require('mod_a'); local b = require('sub.mod_b'); print(a.answer .. ' ' .. b.name .. ' cached=' .. tostring(require('mod_a') == a) .. ' package=' .. tostring(package))"],
+	"require_escape": [[], "local r = {}; for _, n in ipairs({'../project', '/etc/passwd', 'sub/mod_b', 'mod_a.lua', '..mod_a', 'nonexistent'}) do r[#r+1] = tostring((pcall(require, n))) end; print(table.concat(r, ','))"],
+	"loadfile_text_with_io": [["io"], "print('dofile=' .. tostring(dofile('/tmp/adv_text.lua')) .. ' loadfile=' .. type(loadfile('/tmp/adv_text.lua')))"],
+	"loadfile_binary_refused": [["io"], "local f, e = loadfile('/tmp/adv_bin.luac'); local ok, e2 = pcall(dofile, '/tmp/adv_bin.luac'); local l, e3 = load(string.char(27) .. 'Lua', 'x', 'b'); print('loadfile=' .. tostring(f) .. ' msg=' .. tostring(e) .. ' | dofile ok=' .. tostring(ok) .. ' | load(b)=' .. tostring(l) .. ' ' .. tostring(e3))"],
+	"loadfile_absent_without_io": [[], "print(tostring(dofile) .. ' ' .. tostring(loadfile))"],
+	"cap_matrix_none": [[], "print('io=' .. tostring(io) .. ' os.time=' .. tostring(os.time ~= nil) .. ' os.execute=' .. tostring(os.execute) .. ' debug=' .. tostring(debug) .. ' package=' .. tostring(package) .. ' require=' .. tostring(require ~= nil) .. ' coroutine=' .. tostring(coroutine ~= nil))"],
 	"cap_matrix_io": [["io"], "print('io.open=' .. tostring(io.open ~= nil) .. ' io.popen=' .. tostring(io.popen) .. ' os.execute=' .. tostring(os.execute))"],
 	"cap_matrix_os": [["os"], "print('os.execute=' .. tostring(os.execute ~= nil) .. ' os.getenv=' .. tostring(os.getenv ~= nil) .. ' io.popen=' .. tostring(io and io.popen ~= nil) .. ' io.open=' .. tostring(io and io.open))"],
 	"cap_matrix_package": [["package"], "print('require=' .. tostring(require ~= nil) .. ' loadlib=' .. tostring(package.loadlib) .. ' searchers=' .. #package.searchers .. ' debug_in_loaded=' .. tostring(package.loaded.debug) .. ' io_in_loaded=' .. tostring(package.loaded.io))"],
@@ -92,6 +97,13 @@ func reg_thread(co) -> void:
 		threads.append(co)
 		co.set_hook(Callable(self, "hook"), LuaThread.HOOK_MASK_COUNT, COUNT)
 
+func h_read_text(path = null):
+	# native: the only file access a script has without a capability. Own script folder subtree, .lua only, read-only.
+	if typeof(path) != TYPE_STRING: return null
+	var p: String = (path as String).simplify_path()
+	if not p.begins_with("res://scripts/") or ".." in p or not p.ends_with(".lua") or not FileAccess.file_exists(p): return null
+	return FileAccess.get_file_as_string(p)
+
 func h_print(a = null, b = null, c = null) -> void:
 	log_lines.append(str(a))
 func h_exit(_a = null) -> void:
@@ -114,6 +126,8 @@ func h_hp(v = null) -> void:
 	native_calls.append("set_player_hp(%s)" % str(f))
 
 func _ready() -> void:
+	var tf := FileAccess.open("/tmp/adv_text.lua", FileAccess.WRITE); tf.store_string("return 7\n"); tf.close()
+	var bf := FileAccess.open("/tmp/adv_bin.luac", FileAccess.WRITE); bf.store_buffer(PackedByteArray([0x1b, 0x4c, 0x75, 0x61, 0x54, 0x00, 0x19, 0x93, 0x0d, 0x0a, 0x1a, 0x0a])); bf.close()
 	var a := OS.get_cmdline_user_args()
 	var test: String = a[1]
 	mode = a[2] if a.size() > 2 else "g1"
@@ -137,7 +151,7 @@ func _ready() -> void:
 		for c in caps: capt.set(c, true)
 		var host: LuaTable = s.create_table()
 		host.set("print", Callable(self, "h_print")); host.set("reg_thread", Callable(self, "reg_thread")); host.set("exit", Callable(self, "h_exit"))
-		host.set("dead", Callable(self, "is_dead")); host.set("spawn", Callable(self, "h_spawn")); host.set("set_player_hp", Callable(self, "h_hp"))
+		host.set("dead", Callable(self, "is_dead")); host.set("script_dir", "res://scripts"); host.set("read_text", Callable(self, "h_read_text")); host.set("spawn", Callable(self, "h_spawn")); host.set("set_player_hp", Callable(self, "h_hp"))
 		var env = build.invoke(capt, host)
 		if env is LuaError:
 			print("ADV_ERROR sandbox build: ", env.message); get_tree().quit(1); return
