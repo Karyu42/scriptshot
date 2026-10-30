@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **draft for review, revision 5 (owner decisions of 2026-10-30 folded in, incl. combat and writable player state; QA & Build review items applied).** `main` contains only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`). Other work is open in parallel: PR [#2](https://github.com/Karyu42/scriptshot/pull/2) (branch `feat/core-scaffold`, head `2026abe`: the Godot core with `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, tests and a benchmark) and PR [#3](https://github.com/Karyu42/scriptshot/pull/3) (branch `scripting/api-draft`: `docs/scripting/api.md` v0.1 and `docs/scripting/lua-binding.md`, **docs only, no Lua code yet**). When this doc names code it means those branches and uses their real names; nothing described here is on `main`, and anything not on those branches is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4 and Q8 are resolved and absent from the open list).
+> Status: **draft for review, revision 6 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Spawning, elites and rarity tiers are specified in the companion doc [`spawning-and-rarity.md`](spawning-and-rarity.md); §6.5 summarises it. `main` contains only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`). Other work is open in parallel: PR [#2](https://github.com/Karyu42/scriptshot/pull/2) (branch `feat/core-scaffold`, head `2026abe`: the Godot core with `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, tests and a benchmark) and PR [#3](https://github.com/Karyu42/scriptshot/pull/3) (branch `scripting/api-draft`: `docs/scripting/api.md` v0.1 and `docs/scripting/lua-binding.md`, **docs only, no Lua code yet**). When this doc names code it means those branches and uses their real names; nothing described here is on `main`, and anything not on those branches is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8, Q9, Q10, Q11 and Q13 are resolved and absent from the open list).
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -21,6 +21,10 @@ Decided by the project owner, except the row marked **provisional**. Everything 
 | I-frames 2B | **0.75 s invulnerability after a hit** (the player blinks), plus a **dash that is invulnerable for 0.2 s on a 1.5 s cooldown**. | §5.4 |
 | Friendly fire 3C | **Your own bullets never hurt you.** A **reflected bullet becomes enemy-owned**, switches to the enemy colour and **can hit you**. | §5.1, §5.4 |
 | Death 4A | Respawn at origin, keep everything (same as Q4 above). | §5.4 |
+| Q9 (replaced) | **Owner direction: elite enemies and rarity tiers.** The "boss rarity target" question is replaced by **ELITE enemies** for early excitement and **rarity tiers (common / rare / legendary)** for both elites and bosses, each with distinct visuals, behaviours and rewards. Bosses stay common near the start and get rarer further out. Specified in [`spawning-and-rarity.md`](spawning-and-rarity.md); tuning questions are Q17–Q24 below. | §6.5, `spawning-and-rarity.md` |
+| Q10 | **Constrained mode shape = D (hybrid):** S3 spellbook (unlockable API) as the spine, S2 RPG stats as the tuning layer, S1 meter as the implementation mechanism. **Not in the first release.** | §11 |
+| Q11 | **Constrained mode relation = B:** **shared world generator and bestiary, separate saves and progression;** scripts can be imported across modes and are **clamped to the mode's limits** (the editor shows what was clamped). | §11, §7.1 |
+| Q13 | **Editing on touch and controller = B:** the in-game editor works on every platform, plus **PC external-editor hot reload** (watch `shots/`) in the first release. **Phone pairing (LAN/QR companion editing) comes later.** | §10 |
 | **Q16 (PROVISIONAL)** | **Option A with all three safeguards:** tagging (L2) + clean-kill reward conditions (L3) + light diegetic flavour (L1, no global Corruption) + constrained-mode competition (L4), with (1) Level I Senses and tier progression never gated on cleanliness, (2) an Echo rematch per boss, (3) Null (flag-piercing) attacks from Tier 2 plus a few flavour bosses. **Provisional (Chief of Staff, 2026-10-30), pending Karyu; Karyu can still override.** This is **not** recorded as Karyu's decision. The team is building toward A. | §12, Q16 |
 | **Player state is writable** | **Rejected: read-only player state.** Scripts **can change player state** (HP, invulnerability, position, speed, etc.) via the `player` table. Nothing in this doc treats player state as off limits. The design answer to "god mode is one line away" is §12 (tags, rewards, diegetic rules, constrained mode), not a ban. Open follow-up: **Q16**. | §3.1, §12 |
 
@@ -67,8 +71,8 @@ Fragments (see §4) unlock new *inputs and ideas* for your scripts; further from
 1. Spawn at world origin with a default script visible on-screen (`shots/default.lua`), firing a single bullet. A small **tutorial range** sits inside the 512 px safe zone (§6.1): three non-hostile targets built on `TrainingDummy` (`src/enemies/training_dummy.gd`, 40 HP, respawns), at about 300 px from the spawn.
 2. Prompt: *"Press E to edit"* (controller: a face button; touch: an edit button). Time slows to 15% and a small editor opens beside the arena (on small touch screens it opens full-screen with the arena frozen at 15% in a corner preview; see §10). The default script has two commented lines to tweak (`count`, `spread`).
 3. Edit → save → the shot changes **immediately, without leaving the world**.
-4. One of the three targets is a **shielded dummy** (a front arc that *absorbs* straight shots, like the Shieldbearer, but static and non-hostile). It is a scripted tutorial placement, **not a spawn**, so it doesn't break Tier gating: real Shieldbearers only spawn from Tier 1 (§5.2). A curved shot (`turn_rate`) gets around the shield. Once the dummies die (or after 60 s) the player leaves the safe zone; the first *real* enemies are Tier 0: Drifters and Swarmers only.
-5. A **starter boss** is always placed at `D∞` 7.5 or 8.5 chunks from the origin (§6.3). Its beacon (an edge-of-screen tick, §6.4) becomes visible when the player is within 5 chunks of it (Euclidean), i.e. after walking roughly 2.5–4 chunks (about 17–27 s of straight walking at the player's 300 px/s). It is **not** visible at spawn. The player has found their first goal without a tutorial, typically 1–2 minutes after leaving the tutorial range.
+4. One of the three targets is a **shielded dummy** (a front arc that *absorbs* straight shots, like the Shieldbearer, but static and non-hostile). It is a scripted tutorial placement, **not a spawn**, so it doesn't break Tier gating: real Shieldbearers only spawn from Tier 1 (§5.2). A curved shot (`turn_rate`) gets around the shield. Once the dummies die (or after 60 s) the player leaves the safe zone; the first *real* enemies are Tier 0: Drifters and Swarmers only, and **60–80 s after leaving the safe zone a first elite (the Herald, a Drifter with one affix) appears** (§6.5).
+5. A **starter boss** is always placed at `D∞` 8.5 or 9.5 chunks from the origin (§6.3). Its beacon (an edge-of-screen tick, §6.4) becomes visible when the player is within 5 chunks of it (Euclidean), i.e. after walking roughly 3.5–4.5 chunks (about 24–31 s of straight walking at the player's 300 px/s). It is **not** visible at spawn. The player has found their first goal without a tutorial, typically 1–2 minutes after leaving the tutorial range.
 
 ---
 
@@ -304,6 +308,8 @@ Every Sense has a **Level I** (earned on **any** boss kill) and a **Level II** (
 
 Each boss type has a *Fragment* it drops once per save; Fragment order is not enforced (open world), so power is gated by **distance/Tier** (§6), never by kill order or count. The flavour mechanics of §12.1 (Equalizer, Rift, Eater) are assigned to launch bosses by the boss designer; they are mechanics, not extra bosses.
 
+Elites and rare/legendary bosses add **extra routes to Level II** (Shards, and Level II from rare or legendary boss kills) without touching Level I or the Fragment rule; see `spawning-and-rarity.md` §7.
+
 ### Discoverability (P4)
 - **Codex pages** drop with Fragments: a 10-line annotated Lua example, never more than one screen.
 - **Hints in the world**: enemies visibly telegraph their rules (a shield arc is drawn; an armored tank has a thick outline).
@@ -348,7 +354,7 @@ Each boss type has a *Fragment* it drops once per save; Fragment order is not en
 Armor is the key anti-spam rule: it makes damage **per bullet** matter, so one cannot win by multiplying trivial bullets, yet it doesn't cap bullet count.
 
 ### 5.2 Tier scaling
-Tier `T = floor(max(|x|, |y|) / 12288)` with `x, y` in px (that is `D∞` from the origin divided by 6 chunks; square tiers, §6.1), so the guaranteed starter boss at `D∞` 7.5–8.5 chunks sits in Tier 1. Per tier: HP ×(1 + 0.35·T), enemy count per encounter ×(1 + 0.15·T), **Tier 0 spawns only Drifters and Swarmers**; new archetype pool opens at T1 (Shieldbearer, Sniper), T2 (Tank, Phaser), T3 (Mirror), and **combinations** appear from T2 (e.g., Shieldbearers escorting a Sniper).
+Tier `T = floor(max(|x|, |y|) / 16384)` with `x, y` in px (that is `D∞` from the origin divided by **8 chunks**; square tiers, §6.1), so the guaranteed starter boss at `D∞` 8.5–9.5 chunks sits in Tier 1. (Tiers were 6 chunks wide in earlier revisions; they are now as wide as a region so that region ring = tier, see `spawning-and-rarity.md` §2.) Per tier: HP ×(1 + 0.35·T), enemy count per encounter ×(1 + 0.15·T), **Tier 0 spawns only Drifters and Swarmers**; new archetype pool opens at T1 (Shieldbearer, Sniper), T2 (Tank, Phaser), T3 (Mirror), and **combinations** appear from T2 (e.g., Shieldbearers escorting a Sniper). **Elites** (a base archetype plus 1–2 affixes, in three rarities) join the mix from T0; the rules are in §6.5 and `spawning-and-rarity.md`.
 
 ### 5.3 Bosses (rules that matter for scripting)
 - **Phases (3–4)** keyed to HP thresholds; each changes the attack set and the weak point.
@@ -402,7 +408,7 @@ What the scaffold on `feat/core-scaffold` already has versus what the rules abov
 - **No landmarks other than bosses** in this version: terrain is empty ground with sparse, minimal obstacles (a few static blocks per chunk, needed for later `sense.terrain`).
 - **Coordinates, regions and distance (the definitions every rule below uses).**
   - World position is `(x, y)` in px, y down (Godot). **Chunk** `(cx, cy) = (floor(x/2048), floor(y/2048))` covers `[2048·cx, 2048·(cx+1)) × [2048·cy, 2048·(cy+1))`. In **chunk units** (px ÷ 2048) a chunk's centre is `(cx+0.5, cy+0.5)`. The world origin `(0,0)` px is the **corner** shared by chunks `(−1,−1)`, `(0,−1)`, `(−1,0)` and `(0,0)`.
-  - **Region** `(rx, ry)` = the 8×8 chunks with `cx ∈ [8·rx, 8·rx+7]` and `cy ∈ [8·ry, 8·ry+7]`. Its **origin chunk is `(8·rx, 8·ry)`** (px `(16384·rx, 16384·ry)`) and its **centre is `(8·rx+4, 8·ry+4)` in chunk units**. A chunk belongs to region `(floor(cx/8), floor(cy/8))`. The origin region `(0,0)` therefore has the world origin at its top-left corner.
+  - **Region** `(rx, ry)` = the 8×8 chunks with `cx ∈ [8·rx−4, 8·rx+3]` and `cy ∈ [8·ry−4, 8·ry+3]`. Regions are **centred on the world origin**: region `(0,0)` has the origin at its centre, and its **centre is the chunk corner `(8·rx, 8·ry)` in chunk units** (px `(16384·rx, 16384·ry)`). A chunk belongs to region `(floor((cx+4)/8), floor((cy+4)/8))`. A region's **tier is its ring** `k = max(|rx|, |ry|)` (the region centre is at `D∞` = 8k chunks), while chunk-level rules use the chunk's own tier. (Earlier revisions used corner-aligned regions; they made regions straddle tier boundaries and the world asymmetric.)
   - **Two named metrics, used consistently.** **`D∞` (Chebyshev)** = `max(|Δx|, |Δy|)` between two points in chunk units (chunk centres, or the region centre, or the origin). **All world-generation rules use `D∞`**: Tier, region ring order, the pity distance `d`, the "≥ 6 chunks apart" and "≥ 4 chunks from origin" boss rules, and the starter-boss radius. **Euclidean distance in px** is used **only** for what the player senses or physics does: beacon and hum ranges (§6.4), enemy wake-up distance (700 px), and bullet range.
 - Origin is a safe zone: radius 512 px (Euclidean), **no spawns** (regular or boss). The only things inside it are the non-hostile **tutorial targets** of §2, which are scripted placements, not spawns.
 - **Units.** The project's base viewport is **1280×720** (`project.godot`: `window/size/viewport_width=1280`, `viewport_height=720`, stretch `canvas_items`, aspect `keep`). **1 world unit = 1 px** at that base resolution, and every px value in this doc is in those units; other screens scale the whole view uniformly (letterboxed), so the visible world is always 1280×720 units. (This replaces the earlier "1080p" wording.)
@@ -410,38 +416,48 @@ What the scaffold on `feat/core-scaffold` already has versus what the rules abov
 - **Simulation window follows the camera.** The scaffold's `BulletManager.world_bounds` is a fixed `Rect2(-1312, -752, 2624, 1504)` (about 2× the viewport), and `HurtboxGrid`/`WallGrid` are built from that rectangle (`HurtboxGrid.new(world_bounds, cell_size)`, `cell_size` 64). In the open world that rectangle must **re-centre on the camera** (rebase the grids as the player crosses cell boundaries, stream walls in and out per chunk with `BulletManager.add_wall(Rect2)` / `clear_walls()`), and bullets that leave it despawn with `DespawnReason.BOUNDS`. Design consequence: a bullet's usable range is about ±1,300 px horizontally and ±750 px vertically from the camera; scripts with `life × speed` beyond that simply expire at the edge (documented in the editor).
 
 ### 6.2 Regular spawn rule
-When a chunk is first loaded, roll an **encounter budget** `B = 6 + 4·T` points. Spend points on archetypes allowed by tier: Drifter 1, Swarmer group 3, Shieldbearer 3, Sniper 3, Tank 5, Phaser 4, Mirror 4. Enemies start idle (wander) until the player is within 700 px. Cleared chunks respawn after 5 min of being out of the active ring (so the world feels alive but not farmed forever).
+When a chunk is first loaded, roll an **encounter budget** `B = 6 + 4·T` points. Spend points on archetypes allowed by tier: Drifter 1, Swarmer group 3, Shieldbearer 3, Sniper 3, Tank 5, Phaser 4, Mirror 4. The budget is split into **2 encounters per chunk in T0–T1 and 3 from T2**, and each encounter can be an **elite** (§6.5). Enemies start idle (wander) until the player is within 700 px. Cleared chunks respawn after 5 min of being out of the active ring (so the world feels alive but not farmed forever).
 
 ### 6.3 Boss spawn rule ("a boss spawns *instead*") — decided hybrid (Q3)
 
 **Goal:** bosses are rare, paced so players are never boss-starved for long, and **the same seed always gives the same boss layout** regardless of the order the player explores. All distances are `D∞` in chunk units and all regions/chunks are as defined in §6.1.
 
 - **A boss is placed on a chunk.** A boss chunk gets **no regular enemies** (the boss spawns *instead*) and is not rolled again.
-- **Starter boss (placed first).** One boss chunk is picked by `hash(seed, "starter")` among the chunks whose centre has `D∞` from the world origin of **7.5 or 8.5** (px `D∞` 15,360–17,408, i.e. **Tier 1**). It is registered as a placed boss before any region is decided and it belongs to whichever region it falls in.
+- **Starter boss (placed first).** One boss chunk is picked by `hash(seed, "starter")` among the chunks whose centre has `D∞` from the world origin of **8.5 or 9.5** (px `D∞` 17,408–19,456, i.e. **Tier 1**). It is always a *common* boss. It is registered as a placed boss before any region is decided and it belongs to whichever region it falls in.
 - **Canonical order.** Regions are decided in a fixed order that depends only on the seed: **ring `k = max(|rx|, |ry|)`** ascending from 0, and **inside a ring ascending `(ry, rx)`**. A region's decision may depend on earlier regions in this order, **never on where the player has walked**, so worlds stay reproducible. (Ring *k* has 8k regions (1 for k = 0), so evaluating up to the player's ring is cheap and cacheable.)
 - **Per-region quota with distance pity.** For region `R`, let `d` = `D∞` from `R`'s centre to the nearest boss chunk already placed (including the starter), **capped at 80**:
 
 ```
 d        = min( D∞(centre(R), nearest placed boss chunk), 80 )
-p_first  = 0.15 + 0.05 * floor(d / 10)      # pity bump: +5 % per 10 chunks without a boss nearby; range 0.15 .. 0.55
-p_second = 0.05                              # independent roll, can add a second boss
+p_first  = BASE_FIRST[T] + 0.05 * floor(d / 10)   # pity bump: +5 % per 10 chunks without a boss nearby (max +0.40)
+p_second = BASE_SECOND[T]                          # independent roll, can add a second boss
+# T = the region's tier (its ring). BASE_FIRST  = 0.30 / 0.25 / 0.18 / 0.12 / 0.08 for T0 / T1 / T2 / T3 / T4+
+#                                    BASE_SECOND = 0.08 / 0.06 / 0.04 / 0.03 / 0.02
 u1 = hash(seed, R, "boss1"),  u2 = hash(seed, R, "boss2")
 boss count = (u1 < p_first ? 1 : 0) + (u2 < p_second ? 1 : 0)
 for each boss i: pick a chunk of R by hash(seed, R, i, attempt), attempt = 0..9, accepting the first that is
              >= 6 (D∞) from every placed boss chunk and >= 4 (D∞) from the origin;
              if none of the 10 attempts is valid, that boss is skipped
 ```
-  (An earlier draft wrote `min(…, 0.80)`; with `d` capped at 80 the formula tops out at 0.55, so the cap could never trigger and was removed.)
-- **Expected density (starting values), measured by simulation.** The rule above (starter boss included, 16 rings of regions, 20 seeds) gives **0.225 bosses per region = one boss per ~285 chunks of area** (ρ ≈ 1/285 per chunk²).
+  (An earlier draft wrote `min(…, 0.80)` and then a flat base of 0.15; with `d` capped at 80 the pity part alone adds at most 0.40, so no further cap is needed. The base now depends on the tier: **bosses are more frequent near the origin and rarer further out**, decided direction of 2026-10-30; table and rationale in `spawning-and-rarity.md` §4.)
+- **Expected density (starting values), measured by simulation** (40 seeds, 34 rings; `docs/design/sim/rarity_sim.py`): area per boss **≈ 171 chunks² in T1, 326 in T2, 405 in T3, 454 in T4+** (and ≈ 301 in the small T0), so boss frequency falls outward as intended.
 - **Boss chunk persists** until the boss is killed; after that that boss never respawns in this save (the Fragment is already earned) and the chunk becomes ordinary.
 - **Boss types** are selected by tier: T0–1 boss pool A (3 bosses), T2–3 pool B (2), T4+ pool C (1), a launch target of **6 distinct handcrafted bosses**, with procedurally varied colors/parameters. Bosses are **identified by name and pool/tier, not by number** (Fragments can be gathered in any order); working titles are in §4.
 
-**Beacon cadence arithmetic (tuning value for Q9).** The beacon is the edge-of-screen tick of §6.4: visible when the boss is within **5 chunks Euclidean (10,240 px)**.
+**Beacon cadence arithmetic.** The beacon is the edge-of-screen tick of §6.4: visible when the boss is within **5 chunks Euclidean (10,240 px)**.
 1. A straight walk therefore sweeps a strip **2 × 5 = 10 chunks wide**.
-2. Area walked per boss met = 1/ρ = 285 chunks²; **chunks walked per new beacon = 285 ÷ 10 = 28.5**.
-3. Walk speed `Player.max_speed` = 300 px/s ⇒ one chunk (2,048 px) = **6.83 s** ⇒ **28.5 × 6.83 s ≈ 195 s ≈ 3.2 min per new beacon** of straight walking.
-4. Check: a simulated 300 px/s straight walk (random lines, 240 walks of 120 chunks, 6 seeds) gave **194 s per new beacon**. Fighting and wandering lengthen this. For option B of Q9 (`p_first` base 0.08, +3% per 10 chunks, `p_second` 0.02): ρ ≈ 1/506, 50.6 chunks × 6.83 s ≈ 346 s; simulated **359 s ≈ 6 min**.
-5. **Starter boss:** `D∞` ≥ 7.5 chunks from spawn, beacon visible within 5 chunks (Euclidean) ⇒ it is **never visible at spawn** and appears after walking at least about 2.5 chunks (≈ 17 s) toward it, typically 20–35 s of walking; with the tutorial range first, about 1–2 minutes after the first edit.
+2. Area walked per boss met = area per boss (chunks²); **chunks walked per new beacon = area per boss ÷ 10**.
+3. Walk speed `Player.max_speed` = 300 px/s ⇒ one chunk (2,048 px) = **6.83 s**.
+
+| Tier | Area per boss (simulated) | Chunks per new beacon | Time per new beacon, straight walk |
+|---|---|---|---|
+| T1 | 171 chunks² | 17.1 | ≈ **117 s** |
+| T2 | 326 | 32.6 | ≈ **223 s** |
+| T3 | 405 | 40.5 | ≈ **277 s** |
+| T4+ | 454 | 45.4 | ≈ **310 s (5.2 min)** |
+
+Fighting and wandering lengthen these (see the simulation in `spawning-and-rarity.md` §9: first boss sighted at a median of 52 s and a mean of 131 s straight; 73 s median wandering). The previous single-rate values (≈195 s everywhere for the old option A, ≈359 s for option B of Q9) are superseded.
+4. **Starter boss:** `D∞` ≥ 8.5 chunks from spawn, beacon visible within 5 chunks (Euclidean) ⇒ it is **never visible at spawn** and appears after walking at least about 3.5 chunks (≈ 24 s) toward it, typically 25–35 s of walking; with the tutorial range first, about 1–2 minutes after the first edit.
 
 ### 6.4 Finding bosses without markers (P3, P4)
 There is no map icon. Boss presence is **sensed**:
@@ -449,11 +465,20 @@ There is no map icon. Boss presence is **sensed**:
 - A faint, slowly rotating **edge-of-screen tick mark** in the boss's color that points toward the nearest undefeated boss within **5 chunks Euclidean** (10,240 px; the same for the starter boss, so a beacon never shows at spawn).
 - The ground grid **bends subtly** near a boss chunk (a post-process warp, ≤3 px displacement).
 
+### 6.5 Elites and rarity (summary; full spec in [`spawning-and-rarity.md`](spawning-and-rarity.md))
+Owner direction of 2026-10-30: **elite enemies** for early excitement and **rarity tiers (common / rare / legendary)** for both elites and bosses, each with distinct visuals, behaviours and rewards.
+- **Elites:** a regular archetype plus **1–2 affixes** (Bulwark, Mirrored, Phasing, Warded, Splitting, Summoner, Blinker, Null-shot). Each affix is a world rule that counters one lazy script habit and never limits what can be written (P2). Per encounter, P(elite) = 4–6 % by tier; **rare elites from T1, legendary from T2**; a time-based **Herald** guarantees the **first elite 60–80 s after leaving the safe zone** (median 64 s in simulation).
+- **Boss frequency falls with tier, boss rarity rises:** beacon cadence ≈ 117 s (T1) → 310 s (T4+) of straight walking; rare and legendary shares of bosses ≈ 14 % / 0 % in T1, 33 % / 2 % in T2, 44 % / 16 % in T3, 46 % / 22 % in T4+. A **rare** boss adds a variant twist and ×1.2 HP; a **legendary** boss adds that twist plus **Phase ★**, an extra phase with a unique mechanic (×1.3 HP), several of which counter cheat-like scripts (Null ring, Equalizer, Rift).
+- **Deterministic:** boss rarity comes from the region hash plus an **ordinal pity counter** (≥ 1 rare+ in any 6 bosses from T2, ≥ 1 legendary in any 12 from T3); elite pity is per region. Same seed, same world.
+- **Rewards:** Shards (25 = one Sense Level II token), Codex pages and cosmetic trophies; the first kill of a boss type at any rarity gives its Fragment. Rewards depend on **what was killed only**. Rare and legendary boss kills also grant Level II of that boss's Sense.
+- **Visual language:** shape first (one ring, double ring with ticks, crowned ring), outline weight (3 / 4 / 5 px), a cyan or amber accent and a short audio sting; every cue is `_draw()`-based with GL Compatibility fallbacks.
+
 ---
 
 ## 7. Sharing and community (in scope; decided Q2)
 - Shots are plain `.lua` files; a **share code** is a compressed, base64 copy of one script plus metadata (name, author, Senses required, `needs` such as `os`/`io`, platform notes). On web a share code can also be a URL.
-- **Seed sharing**: the same seed gives the same chunk and boss layout (§6.3, decided).
+- **Seed sharing**: the same seed gives the same chunk, boss and elite layout, including each boss's and elite's rarity (§6.3, §6.5; decided). The only exception is the one-off Herald elite of the first minutes, which depends on when and where the player leaves the safe zone.
+- **Across game modes** (§11, decided Q11 = B): a script can be imported from the main mode into the Constrained mode or back; the receiving mode **clamps it to its own limits**, and the editor shows exactly what was clamped. The clamp is by game mode, not by a per-script field.
 - Later (not in scope now): in-repo `community-shots/` folder via PRs.
 
 ### 7.1 Running someone else's script (imported scripts)
@@ -502,13 +527,13 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 3. Guard rails of §3.2 (time/instruction/memory budgets, error isolation) built together with the binding, not later.
 4. Drifter + Swarmer + player HP (pips, §5.4). `Player` currently emits `damaged(amount)` with no health.
 5. Chunked world, seed, regular spawns (§6.2).
-6. Armor/Shield/Mirror archetypes.
+6. Armor/Shield/Mirror archetypes, then **elites and affixes** (§6.5; per-`Hurtbox` hit responses are shared with step 6) and the rarity visual language, with the Herald after the first Drifter loop works.
 7. First boss + Fragment + `sense.*` gating + Codex.
-8. Region-quota boss spawn + beacon (§6.3–6.4).
+8. Region-quota boss spawn + beacon (§6.3–6.4), with boss rarity and pity (`spawning-and-rarity.md` §4–§6) as a data-driven table from the start.
 9. Controller- and touch-friendly editor (§10); share codes with the import warning (§7.1).
 10. Audio voices from scripts; visuals polish.
 11. Player combat spec (§5.4): pips, regen, hit i-frames, dash, ownership/reflection. Build the **`player` facade with `__newindex` write-tagging** (§12.0) from the start, even before rewards exist.
-12. **Not first release:** the limited-scripting mode (§11); step 2's binding must already allow per-mode capability sets.
+12. **Not first release:** the Constrained mode (§11, decided shape: spellbook core + RPG stats); step 2's binding must already allow per-mode capability sets.
 
 ---
 
@@ -516,7 +541,7 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 
 | Platform | Play input | Script editing | Capability notes |
 |---|---|---|---|
-| **PC** (Win/Linux/macOS) | Mouse + keyboard (WASD + mouse aim) | Full in-game editor; also **external editor hot reload** (watch `shots/`) | Full Lua, opt-in capabilities `native`/`os`/`io`/`debug`/`package` (§3.2). **10,000** live bullets (floor 5,000), 3 ms script budget (§3.3) |
+| **PC** (Win/Linux/macOS) | Mouse + keyboard (WASD + mouse aim) | Full in-game editor; also **external editor hot reload** (watch `shots/`), first release | Full Lua, opt-in capabilities `native`/`os`/`io`/`debug`/`package` (§3.2). **10,000** live bullets (floor 5,000), 3 ms script budget (§3.3) |
 | **Controller** | Left stick move, right stick aim + auto-fire past deadzone (or trigger) | Controller-friendly editor (below) | Same as PC |
 | **Web** | Mouse + keyboard (touch/controller if present) | In-game editor; clipboard paste of share codes | **No OS or real file access** (browser sandbox): `native`, `os`, `io`, `package` unavailable (`io` may be a virtual file system, Q14). Lower bullet/time budgets (below). Needs a Lua binding that exports to Web (Q14). |
 | **Mobile** (Android, iOS) | Twin virtual sticks (left move, right aim + auto-fire) | Touch editor and/or companion editing (below) | File access limited to the app sandbox, no `os.execute`. Lower budgets. |
@@ -529,7 +554,7 @@ Sequenced so that each step is playable. All of it targets **every platform in �
   - A **symbol row** above the OS keyboard (`( ) { } [ ] , . = " ' end function`), an **indent/dedent** button, bracket auto-close, large undo/redo.
   - **Snippet palette** (insert `shoot{}` skeletons, loops, `update` hook) and **tunable number sliders**: numeric literals marked `--@tune 0..1` or recognized in `shoot{}` get a slider on touch and controller. These help typing; they never replace code.
   - Pinch to resize text; landscape and portrait layouts.
-- **Companion editing.** Edit on a second device while playing: (a) **PC external-editor hot reload** (watch `shots/`), (b) **phone as editor for a PC session** or **PC browser as editor for a phone session** over LAN/QR pairing, with live reload within one frame. Starting scope: (a) in the first release; (b) as a stretch (Q13).
+- **Companion editing.** Edit on a second device while playing: (a) **PC external-editor hot reload** (watch `shots/`), (b) **phone as editor for a PC session** or **PC browser as editor for a phone session** over LAN/QR pairing, with live reload within one frame. **Decided (Q13 = B): (a) ships in the first release; (b) phone pairing comes later.**
 - **Controller-friendly editor navigation.** D-pad / stick moves a *token cursor* (jumps by word, bracket, line); face buttons insert from a radial snippet menu; shoulder buttons change the number under the cursor ±step (tunable literals); the OS/Steam-style on-screen keyboard for free text; a **"quick tune" mode** that cycles through tunable numbers without text entry at all.
 - **Web build sandbox limits.** No OS or file access, so scripts that declare `needs` such as `"os"`, `"io"`, `"package"` or `"native"` print an explanation and run with those libraries `nil`. Saves and `shots/` live in browser storage (IndexedDB) with an **Export / Import** button for `.lua` files and saves. **Starting values (not derived from the PC number; to be measured in the Q14 spike): total live-bullet cap 4,000 (2,800 player / 1,200 reserved for enemies and bosses, the same 30% rule), script time budget 2 ms.** Web builds must work without threads if the host (e.g., itch.io) can't provide cross-origin isolation.
 - **Mobile budgets.** **Starting values (separate from PC and web; to be measured): total live-bullet cap 2,500 (1,750 player / 750 reserved), script time budget 2 ms per frame**, with thermal-aware reduction; battery saver mode reduces trails and audio voices (§8).
@@ -542,7 +567,7 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 
 ## 11. Planned mode (NOT first release): Constrained Scripting mode
 
-> Working title: **Constrained mode** (name TBD). **Status: planned.** It is a *separate game mode* with its own save; the main mode (§1–§10) keeps its fully open API, with Senses unlocked by bosses. This section sketches what it could be so that the main-mode engine is designed to host it later.
+> Working title: **Constrained mode** (name TBD). **Status: planned, not in the first release. Shape decided (Q10 = D): an S3 spellbook (unlockable API) as the spine, S2 RPG stats as the tuning layer, the S1 meter as the implementation mechanism. Relation to the main mode decided (Q11 = B): shared world generator and bestiary (so elites, bosses and rarity tiers carry over), separate saves and progression, imported scripts clamped to the mode's limits.** It is a *separate game mode* with its own save; the main mode (§1–§10) keeps its fully open API, with Senses unlocked by bosses. This section sketches what it could be so that the main-mode engine is designed to host it later.
 
 **Why it exists.** The main mode honors "no restrictions" completely, which makes the *creative ceiling* high but the *progression* mostly informational. A second mode takes the opposite stance: **limited scripting power is the design**, giving players who like RPG progression a game of building power over time. Constraints here are *the point of the mode* and are chosen by the player when they pick the mode, so they do not conflict with P2 in the main mode.
 
@@ -559,7 +584,7 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 | **S2. Stat-driven RPG** | Character stats map to script limits: **Focus** = max bullets per shot, **Clock** = shots/second, **Reach** = bullet life/range, **Memory** = size of persistent `state`, **Insight** = Senses available. Points from levels, items and quests. | `Focus 6` → `shoot` ignores the 7th bullet of a call and says so. | Familiar RPG loop; easy to balance and to explain; many build choices. | Stats limit code in obvious ways; risks feeling arbitrary vs. the main mode's philosophy. |
 | **S3. Unlockable API ("spellbook")** | Start with `shoot` and `ctx.aim` only. API functions, bullet hooks and Senses are unlocked via quests, loot, or boss drops. Each function has a **cost** drawn from a resource that regenerates. | Unlock `update` hook at Lv 3; `on_die` split at Lv 8; `sense.terrain` via a quest. | Strong sense of discovery and "growing a language"; teaches programming gradually. | Heavy content/authoring cost; needs tutoring-style design for new coders. |
 
-**Recommendation: S3 as the spine with S2 stats as the tuning layer, and S1's meter as the implementation mechanism** (the budget is how costs are enforced, stats and unlocks decide the numbers). Do not build before the first release is playable (Q10, Q11).
+**Decided (Q10 = D): S3 as the spine with S2 stats as the tuning layer, and S1's meter as the implementation mechanism** (the budget is how costs are enforced, stats and unlocks decide the numbers). **Decided (Q11 = B):** the mode reuses the main mode's world generator, bestiary and rarity tables (`spawning-and-rarity.md`), keeps its **own save and progression**, and clamps imported scripts to its limits (§7). Do not build before the first release is playable.
 
 ### Likely systems (if S2/S3 are chosen)
 Levels and XP from enemies; stats and gear; quests/NPCs or a *terminal* hub (this would add non-boss points of interest, so it interacts with Q7); a separate save and leaderboards; the same minimalist look and audio (§8).
@@ -636,7 +661,7 @@ Combine **L2 tagging as the baseline**, **L3 reward-side conditions** so progres
 
 ## Biggest open design questions
 
-Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). **Q16 is open but has a provisional working decision (option A), see the log and Q16.** Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
+Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q9 (replaced by elites and rarity tiers), Q10 (D), Q11 (B), Q13 (B)** and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). **Q16 is open but has a provisional working decision (option A), see the log and Q16.** Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
 
 ### Q5. Editing while the world is hostile (and the guard-rail numbers)
 - **A. Time slows to ~15% while the editor is open** (recommended start).
@@ -656,36 +681,11 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the 
 - **B. Add POIs after the first release** (shops, ruins) that sell/teach Senses.
 - **Recommendation: A for now**, designing the Fragment/Codex systems so B can be added later without redoing progression. Note: the planned Constrained mode (§11) may want hubs or NPCs; this question must be revisited when that mode is scoped.
 
-### Q9. Boss rarity target (tuning of the decided hybrid spawn rule) **[Karyu]**
-- **A. A boss beacon about every ~3 minutes of straight walking at 300 px/s** (current starting values: `p_first` = 0.15 + 5% per 10 chunks of `d`, max 0.55, `p_second` 0.05; simulated ≈0.22 bosses per 8×8 region; arithmetic in §6.3).
-- **B. Rarer: about one per ~6 minutes of straight walking** (e.g., `p_first` = 0.08 + 3% per 10 chunks, max 0.32, `p_second` 0.02; simulated ≈0.13 per region, ≈359 s per beacon).
-- **C. Tier-dependent:** common near the origin (new players find bosses quickly), rarer further out.
-- **Recommendation: C**, starting from A near the origin (the starter boss is guaranteed either way) and trending toward B beyond Tier 3. "Rarely" in the brief points to B at the far end; the first hour should still feel eventful.
-
-### Q10. What shape is the planned Constrained mode (§11)? **[Karyu]**
-- **A. S1 Budget:** compute/bullet budget raised by level.
-- **B. S2 Stat-driven RPG:** stats cap bullets, rate, range, memory.
-- **C. S3 Unlockable API (spellbook)** with a resource cost per function.
-- **D. Hybrid (S3 spine + S2 stats, S1 meter as implementation).**
-- **Recommendation: D.** It gives the strongest "growing a language" feeling and reuses the guard-rail instrumentation. Not needed for the first release; this only affects the architecture constraints listed in §11.
-
-### Q11. How does the Constrained mode relate to the main mode?
-- **A. Fully separate:** own save, own world, own enemies; scripts are not shared between modes.
-- **B. Shared world generator and bestiary, separate save and progression;** scripts can be imported across modes, clamped by the mode's limits (with the editor showing exactly what was clamped).
-- **C. One game, one save, a "challenge ruleset" toggle per world.**
-- **Recommendation: B.** Keeps the open-source "shots are shareable" culture across both modes without mixing progression. Script `needs` metadata (§3.2, §7) tells which capabilities a script wants; the Constrained mode clamps by **game mode**, not by any per-script field.
-
 ### Q12. Script provenance: when does an edited imported script become "mine"?
 - **A. Never automatically; "Mark as mine" button with confirmation** (current text in §7.1).
 - **B. After any edit,** it's treated as own.
 - **C. Only if the diff exceeds a threshold or the player re-saves it under a new name.**
 - **Recommendation: A.** B lets malicious code survive a trivial edit while gaining OS access; C is complicated for little gain.
-
-### Q13. How do we ship a good script editor on touch and controller? **[Karyu]**
-- **A. In-game touch/controller editor only** (symbol row, snippets, tunable sliders, token cursor, §10.1).
-- **B. A + PC external editor hot reload** (watch `shots/`) as a first-release companion path.
-- **C. B + phone↔PC/browser LAN/QR pairing** for live companion editing.
-- **Recommendation: B in the first release, C later.** The in-game editor must work on every platform (P1), while the external-editor path is cheap and gives power users their real editor.
 
 ### Q14. Technical feasibility: Lua on Godot 4 for Web and mobile exports
 - **A. A Lua GDExtension (e.g., `lua-gdextension`) if it exports to Web/Android/iOS** (needs verification).
@@ -709,3 +709,54 @@ Player state is writable (decided). Options (levers L1–L4 from §12):
 - **D. Hard split (L4) only:** main mode is a pure sandbox with no tags; all fair play is constrained mode.
 - **Recommendation: A, with three corrections to the lean.** (1) **Never gate Level I Senses or tier progression on cleanliness**; gate only Level II/Seal/Codex-alternate/cosmetics, so one accidental write can't lock someone out of the core progression and "no restrictions" stays honest. (2) Add an **Echo rematch** per boss so a modified first kill can still earn the clean rewards later. (3) Make the diegetic layer **Null (flag-piercing) attacks on every boss from Tier 2 plus a few flavour bosses (Equalizer, Rift, Eater)**, and **skip a global Corruption meter** (a soft cap that conflicts with P2's spirit and is the hardest to balance). Also be upfront that **a clean tag is honor-system in an open-source client**: verified competition needs the constrained mode with replay validation (§12.5). B is too weak (god mode makes bosses and rewards pointless for anyone who tries it), C is too much rule overhead and risks feeling like a hidden ban, D throws away the sandbox's own sense of achievement.
 - **Interactions to decide with it:** regen/i-frame/dash writes are tagged (§12.6); leaderboard keys include the tag (Q15); whether `player.dash()` automation stays untagged (recommended: yes).
+
+### Q17. Is "common near the start, rarer further out" about boss frequency, rarity, or both? **[Karyu]**
+- **A. Both, as two dials (current build).** Boss *frequency* falls with tier (beacon about every 117 s of straight walking in T1 → 310 s in T4+), while the *chance of a rare or legendary variant* rises with tier (rare+legendary 14 % in T1 → 67 % in T4+).
+- **B. Frequency stays flat, only rarity changes.** Simpler to explain, but far from the start boss encounters are no rarer, and "bosses are rare" (P5) weakens.
+- **C. Frequency falls and rarity does not exist for bosses before T3.** Bosses feel rare only in the far world, and the near world has a long boss-free stretch.
+- **Recommendation: A.** It literally matches the brief ("common near the start, rarer further out") and keeps the first hour eventful. Detail in `spawning-and-rarity.md` §4.
+
+### Q18. How rare should legendary bosses and elites be? **[Karyu]**
+Simulated (straight walking from the tutorial exit): legendary boss **sighted at a median of 12.8 min, E[t] ≈ 27 min** (70 % of 30-minute walks find one); legendary elite median 12.7 min. For the slow **Wander** model (fighting and turning) E[t] is **≈ 2.4–2.9 hours** and only 16–20 % of 30-minute walks find one.
+- **A. Keep (about one per 27 min of straight far-world walking).**
+- **B. 2× rarer** (about one per ~55 min): truly mythic, many players see only a handful per save.
+- **C. 2× more common** (about one per ~13 min): friendlier to the Wander style, less special.
+- **Recommendation: A for the first playable,** then tune from play data; the odds are a data table (`spawning-and-rarity.md` §4.3, §10).
+
+### Q19. What are Shards for: Level II tokens or only cosmetics?
+- **A. Additional route to Sense Level II** (25 Shards = one token) beside the existing Level II rule, plus Level II from rare/legendary boss kills; Level I and Fragments are never for sale (current design).
+- **B. Cosmetics and Codex only,** no Level II route.
+- **C. Shards become the main route to Level II** (this only makes sense if Q16's outcome changes how Level II is earned).
+- **Recommendation: A.** It gives the elites a purpose that deepens scripts without gating the core progression. Revisit if Q16 changes the Level II rule.
+
+### Q20. Do elites respawn (farming)?
+- **A. Never** (kills persist in the save, like bosses; current design). Regular enemies respawn as before.
+- **B. Common elites respawn with their chunk (5 min out of the active ring),** rare and legendary never. Shards become farmable.
+- **C. All elites respawn after 30 min** away.
+- **Recommendation: A,** so exploring is the way to earn Shards, not looping one chunk. The cost is a save-size note: a per-chunk bitmask (≤ 3 bits per chunk with elites).
+
+### Q21. Is the Herald (guaranteed first elite) an acceptable exception to "the world is a pure function of the seed"?
+- **A. Yes, one dynamic, time-based Herald** (60–80 s after leaving the safe zone, 1,200 px ahead of the player). Median 64 s, p90 75 s.
+- **B. Seed-static only:** a fixed common elite at `D∞` 3–4 chunks in a hashed direction. Deterministic, but a player walking the other way gets no first elite for ~2–3 min.
+- **C. No guarantee** (natural median 75 s, p90 186 s).
+- **Recommendation: A.** Meeting the "first elite within ~90 s" goal matters more than purity for one event; it is saved as a single flag and does not change the layout.
+
+### Q22. Should rare and legendary bosses be sensed from farther away?
+The simulation uses the same **5-chunk beacon radius** for every rarity.
+- **A. Same radius** (current; simplest).
+- **B. Radius grows with rarity** (5 / 6 / 8 chunks), so a legendary hum and tick appear earlier and are easier to hunt; it shortens the legendary cadence by about 37 % for straight walks (strip 16 instead of 10 chunks wide) and was **not simulated**.
+- **C. Legendary gets a distinct long-range hum only** (audio, not a tick).
+- **Recommendation: A now;** if Q18 says the Wander style needs a help, B is the cheapest lever (re-run the simulation first).
+
+### Q23. Which affixes ship in the first playable?
+Eight are specified (Bulwark, Mirrored, Phasing, Warded, Splitting, Summoner, Blinker, Null-shot).
+- **A. All eight,** with the Herald limited to Splitting/Summoner.
+- **B. Five first:** Splitting, Summoner, Bulwark, Phasing, Null-shot (reuses the Shieldbearer/Phaser rules and the Null attack the bosses need anyway); Mirrored, Warded and Blinker later.
+- **C. Three:** Splitting, Summoner, Null-shot.
+- **Recommendation: B.** Each affix teaches one counter; five already cover "area", "angles", "timing" and "skipping the fight". Owner: Game Designer with the Gameplay Engineer.
+
+### Q24. Rarity cues without post-processing: approve the GL Compatibility approach?
+- **A. `_draw()` shapes, outline weights, one ADD-blend halo and `AudioStreamGenerator` stings only** (current; no Forward+/Mobile-only effect). QA must confirm the ADD-blend halo and the generator on web and Android before sign-off.
+- **B. A + a Forward+/Mobile-only bloom** on legendary cues for desktop users who have that renderer.
+- **C. Pre-rendered sprites and `.ogg` stings** (breaks "shapes only", P3).
+- **Recommendation: A.** The rarity must read in grayscale and on every platform; B can be added later without changing the rules. Owner: QA & Build for the platform check.
