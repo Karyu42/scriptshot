@@ -1,0 +1,153 @@
+[gd_scene load_steps=20 format=3]
+
+[ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
+[ext_resource type="Script" path="res://src/world/arena.gd" id="2_arena"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="3_player"]
+[ext_resource type="PackedScene" path="res://scenes/training_dummy.tscn" id="4_dummy"]
+[ext_resource type="Script" path="res://src/bullets/bullet_manager.gd" id="5_bm"]
+[ext_resource type="Script" path="res://src/bullets/stress_test.gd" id="6_stress"]
+[ext_resource type="Script" path="res://src/camera/follow_camera.gd" id="7_cam"]
+[ext_resource type="Script" path="res://src/player/aim_reticle.gd" id="8_ret"]
+
+[sub_resource type="RectangleShape2D" id="Rect_WallTop"]
+size = Vector2(2688, 64)
+
+[sub_resource type="RectangleShape2D" id="Rect_WallBottom"]
+size = Vector2(2688, 64)
+
+[sub_resource type="RectangleShape2D" id="Rect_WallLeft"]
+size = Vector2(64, 1568)
+
+[sub_resource type="RectangleShape2D" id="Rect_WallRight"]
+size = Vector2(64, 1568)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockA"]
+size = Vector2(180, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockB"]
+size = Vector2(180, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockC"]
+size = Vector2(36, 220)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockD"]
+size = Vector2(36, 220)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockE"]
+size = Vector2(240, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockF"]
+size = Vector2(160, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockG"]
+size = Vector2(160, 36)
+
+[node name="Main" type="Node2D"]
+script = ExtResource("1_main")
+
+[node name="Arena" type="Node2D" parent="."]
+script = ExtResource("2_arena")
+
+[node name="Walls" type="StaticBody2D" parent="." groups=["world_walls"]]
+collision_layer = 16
+collision_mask = 0
+
+[node name="WallTop" type="CollisionShape2D" parent="Walls"]
+position = Vector2(0, -752)
+shape = SubResource("Rect_WallTop")
+
+[node name="WallBottom" type="CollisionShape2D" parent="Walls"]
+position = Vector2(0, 752)
+shape = SubResource("Rect_WallBottom")
+
+[node name="WallLeft" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-1312, 0)
+shape = SubResource("Rect_WallLeft")
+
+[node name="WallRight" type="CollisionShape2D" parent="Walls"]
+position = Vector2(1312, 0)
+shape = SubResource("Rect_WallRight")
+
+[node name="BlockA" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-250, 80)
+shape = SubResource("Rect_BlockA")
+
+[node name="BlockB" type="CollisionShape2D" parent="Walls"]
+position = Vector2(250, 80)
+shape = SubResource("Rect_BlockB")
+
+[node name="BlockC" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-600, -20)
+shape = SubResource("Rect_BlockC")
+
+[node name="BlockD" type="CollisionShape2D" parent="Walls"]
+position = Vector2(600, -20)
+shape = SubResource("Rect_BlockD")
+
+[node name="BlockE" type="CollisionShape2D" parent="Walls"]
+position = Vector2(0, -230)
+shape = SubResource("Rect_BlockE")
+
+[node name="BlockF" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-880, 120)
+shape = SubResource("Rect_BlockF")
+
+[node name="BlockG" type="CollisionShape2D" parent="Walls"]
+position = Vector2(880, 120)
+shape = SubResource("Rect_BlockG")
+
+[node name="Dummies" type="Node2D" parent="."]
+
+[node name="Dummy1" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(-400, -200)
+
+[node name="Dummy2" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(400, -200)
+
+[node name="Dummy3" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(0, -420)
+
+[node name="Dummy4" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(-700, 250)
+
+[node name="Dummy5" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(700, 250)
+
+[node name="Dummy6" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(0, 300)
+
+[node name="Dummy7" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(-950, -450)
+
+[node name="Dummy8" parent="Dummies" instance=ExtResource("4_dummy")]
+position = Vector2(950, -450)
+
+[node name="BulletManager" type="Node2D" parent="."]
+script = ExtResource("5_bm")
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+
+[node name="StressTest" type="Node" parent="."]
+script = ExtResource("6_stress")
+
+[node name="AimReticle" type="Node2D" parent="."]
+script = ExtResource("8_ret")
+
+[node name="FollowCamera" type="Camera2D" parent="."]
+process_callback = 0
+limit_left = -1280
+limit_top = -720
+limit_right = 1280
+limit_bottom = 720
+script = ExtResource("7_cam")
+
+[node name="Hud" type="CanvasLayer" parent="."]
+
+[node name="Label" type="Label" parent="Hud"]
+offset_left = 12.0
+offset_top = 8.0
+offset_right = 700.0
+offset_bottom = 60.0
+theme_override_colors/font_color = Color(0.91, 0.91, 0.94, 0.9)
+theme_override_font_sizes/font_size = 14
+text = "Scriptshot"
