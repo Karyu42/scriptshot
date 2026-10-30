@@ -142,20 +142,29 @@ return {
 
 **Design intent.** Maximum freedom for the player's scripts, with **only** crash/hang guards as guard rails. The engine (through the `ScriptHost` facade proposed in PR #3's `docs/scripting/lua-binding.md`) runs **Lua 5.4** on every platform.
 
-**Always available, no capability needed:** base Lua (including `load`), `string`, `table`, `math`, `utf8`, `coroutine`, `os.time`, `os.clock`, and the **full game API**, including writing player state (§3.1, §12). Note: `loadstring` is Lua 5.1/LuaJIT-only and does **not** exist in 5.4; use `load`.
+**Always available, no capability needed:** base Lua with **`load` in text mode only** (mode `"t"`; **binary chunks are never loadable**, because malformed bytecode can crash the VM, so this is a crash guard, not a gameplay limit), and **without `dofile` and `loadfile`** (they read files, so they sit under `io`; PR #3's `docs/scripting/api.md` currently removes both outright, and whether they go under `io` or `package` is for the Scripting Engineer to confirm), plus `string`, `table`, `math`, `utf8`, `coroutine`, `os.time`, `os.clock`, and the **full game API**, including writing player state (§3.1, §12). Note: `loadstring` is Lua 5.1/LuaJIT-only and does **not** exist in 5.4; use `load`.
 
 **Capabilities (opt-in via `needs`).** *DRAFT, names and exact library lists to be finalised with and owned by the Scripting Engineer.* Listed in order of danger, with the player-facing label:
 
 | `needs` name | Covers | Player-facing label |
 |---|---|---|
-| `native` | `package.loadlib`, C modules | "Load native code. Can do anything to your computer." |
-| `os` | `os.execute`, `os.remove`, `os.rename`, `os.getenv`, … (`os.time` and `os.clock` stay always-on) | "Run programs and change your system." |
-| `io` | file read and write | "Read and write files." |
+| `native` | `package.loadlib`, `package.cpath` and the **C searchers** of `require` (C modules, shared libraries). **The package C searchers are only enabled with `native`.** | "Load native code. Can do anything to your computer." |
+| `os` | `os.execute`, **`io.popen`** (it runs programs, so it lives here and not under `io`), `os.remove`, `os.rename`, `os.getenv`, … (`os.time` and `os.clock` stay always-on) | "Run programs and change your system." |
+| `io` | file read and write (`io.open`, `io.read`/`io.write`, `io.lines`, …), plus `dofile` and `loadfile`; **not** `io.popen` (that is `os`) | "Read and write files." |
 | `debug` | the full `debug` library | "Inspect and change Lua internals." |
-| `package` | `require`/modules loaded from disk | "Load Lua modules from disk." |
+| `package` | `require` of **Lua** modules from disk (`package.path` and the Lua searcher only; **C searchers stay off unless `native` is also granted**) | "Load Lua modules from disk." |
 | `net` | **reserved for later**, not available | n/a |
 
-Engine rules for capabilities: **`os.exit` ends the script and never kills the game.** **The watchdog (instruction/time guard) can't be removed, replaced or bypassed by player scripts, even with `debug` granted**: crash and hang guards are **never** a capability (they are not on the list above on purpose). Design intent only; the mechanism (for example the engine re-arming its own count hook, or running the hook in a layer that Lua can't reach) is the Scripting Engineer's call. A grant never lifts a guard in the table below. (The scripting draft says `require` of the player's own script folder works by default; whether that stays always-on or moves under `package` is for the Scripting Engineer, see the unresolved list.)
+Engine rules for capabilities: **`os.exit` ends the script and never kills the game.** **The watchdog (instruction/time guard) is never a capability**: crash and hang guards are not on the list above on purpose, and a grant never lifts a guard in the table below.
+
+**How "the watchdog can't be bypassed, even with `debug`" is meant to work, and what is sourced.** What PR #3 (`scripting/api-draft`, `docs/scripting/lua-binding.md` §3) actually specifies: a **count hook** (`LUA_MASKCOUNT`, about every 1,000 instructions, never line hooks) on the running thread that **compares an instruction counter and a wall-clock timestamp** against the callback and per-frame budgets and **raises an error to abort**; every callback in `pcall`/`xpcall`; escalation to pausing the weapon on repeated aborts. The binding it recommends exposes this as `LuaThread.set_hook(hook, mask, count)` (a wrapper over `lua_sethook`). **PR #3 does not say how a script holding the `debug` library is prevented from replacing that hook** (`debug.sethook` is the same per-thread slot). So the following is **best-effort design intent, owned by the Scripting Engineer, and not yet specified or verified**:
+- the player's `debug` is a **proxy table**: `debug.sethook`/`debug.gethook` on a guarded thread either refuse or only chain a user hook *behind* the host hook (the host hook is re-armed after every callback and on every coroutine the host creates or resumes);
+- the **host also checks wall-clock time itself** from its own frame loop (outside the script's state) and abandons the script state (pause and recreate) when a callback overruns, so a hook that was somehow lost is still caught between callbacks;
+- scripts can't reach the host's `LuaState`/`LuaThread` objects (no engine objects cross the boundary, PR #3).
+
+**Limits of any hook-based watchdog (stated plainly).** The count hook **does not fire while a long C function is running** (for example `string.rep` with a huge count, a pathological `string.find`/pattern match, `table.sort` or `table.concat` on a huge table, `string.format` with huge widths). PR #3 notes this and proposes bounding the expensive `string` functions or capping input sizes. Mitigations (owned by the Scripting Engineer, values to be set in the spike): (1) the **memory cap** (64 MB; with the recommended binding it can only be enforced *between* callbacks, so a single C call can still allocate past it, and a hard cap needs the own-extension fallback, PR #3 "Option B"); (2) the host wall-clock check above (it also runs only between C calls); (3) **size limits on the dangerous C functions** (for example result size of `string.rep`/`string.format` ≤ 1 MB, pattern-matching subject ≤ 64 KB, `table.sort`/`table.concat` ≤ 100,000 elements); and (4) with `native` granted, none of these guarantees hold, which the label already says. A hang inside one C call cannot be interrupted by any hook, only prevented.
+
+(The scripting draft says `require` of the player's own script folder works by default; whether that stays always-on or moves under `package` is for the Scripting Engineer, see the unresolved list.)
 
 Platform availability: on **web** `native`, `os`, `io` and `package` are unavailable (§10); on mobile `native` is unavailable and `io`/`package` are limited to the app data folder.
 
@@ -180,6 +189,9 @@ return {
 | **Memory cap** per script (separate Lua allocator accounting) | 64 MB on PC (the scripting draft's default), lower on web/mobile | Allocation beyond the cap raises a Lua error inside the script; the script is suspended and the editor shows the usage. |
 | **Error isolation** | always on | Every callback (`on_fire`, `update`, `on_hit`, `on_die`) runs in a protected call. A Lua error never crashes the game; it prints to the editor console with file/line and disables only that callback until the next save. The previous working version can be restored with one key. |
 | **Live-bullet cap** (keeps the pool/renderer alive) | **PC: 10,000 live bullets in total**, with a **5,000 floor** (see §3.3). Web and mobile have their own starting values in §10 | New `shoot` calls beyond the player's share are dropped and the editor shows "bullet cap reached". This is a performance ceiling, not a design limit. |
+| **Cap auto-lowering** | PC: from 10,000 down to the 5,000 floor, never below | If the frame budget (16.6 ms) can't be held at the current cap on this device (p95 over budget for 2 s), the cap steps down (10,000 → 7,500 → 5,000); below 5,000 a "hardware below minimum" notice is shown. The editor displays the current cap. |
+| **Bullet speed clamp** | **1,200 px/s** until swept collision is on `main` (§3.3) | `shoot{speed}` and speeds set from hooks are clamped; the editor says so ("speed clamped to 1200 px/s"). Prevents tunnelling through hurtboxes and walls. |
+| **Bullet speed ceiling** | **4,000 px/s** once swept collision is on `main` (the clamp above lifts) | A crash guard for absurd values (`1e9`, `NaN`, `inf` are rejected or clamped); not a design limit. |
 
 Everything else is *not* restricted: loops, recursion, coroutines, global state, bullet counts below the cap, `debug`/`os`/`io`/`package`/`native` (with opt-in), and writing player state. If a guard is hit, the player is told exactly which one and why (P2 stays honest).
 
@@ -189,16 +201,22 @@ Everything else is *not* restricted: loops, recursion, coroutines, global state,
 
 ### 3.3 Bullet budget, speed clamp, and what happens when budgets run out
 
-**Bullet cap (B1).** The **PC cap is one number: 10,000 live bullets in total** (the target of the scaffold's benchmark, `tests/benchmark/bullet_benchmark.gd`; `BulletManager.capacity` defaults to 16384, so the logical cap sits below the pool size). **5,000 is the floor**: on hardware where the 10k benchmark can't hold the frame budget (16.6 ms; the scaffold's PR reports 10k as borderline with p95 14.1 ms on a loaded 8-core box) the cap auto-lowers, but never below 5,000, and below 5,000 the game shows a "hardware below minimum" notice. Web and mobile caps are **separate starting values** (§10), not claims about the PC number.
+**Bullet cap (B1).** The **PC cap is one number: 10,000 live bullets in total** (the target of the scaffold's benchmark, `tests/benchmark/bullet_benchmark.gd`; `BulletManager.capacity` defaults to 16384, so the logical cap sits below the pool size). **5,000 is the floor**: on hardware where the 10k benchmark can't hold the frame budget (16.6 ms). For context, the author's comment on PR #2 reports a **headless** run of `./tools/run_benchmark.sh` (28 walls, 32 hurtboxes, 10% fast bullets; median of 3 runs on a shared 8-core box under load) with **work p50 12.4 ms and p95 14.1 ms at 10,000 bullets** (13.4 / 14.1 / 18.7 ms across the three runs) and 6.9 / 9.0 ms at 5,000, and calls 10k "borderline on slower hardware". That figure is **not independently re-measured here, excludes real rendering (headless), and is only an indication, not a guarantee** for any target device the cap auto-lowers, but never below 5,000, and below 5,000 the game shows a "hardware below minimum" notice. Web and mobile caps are **separate starting values** (§10), not claims about the PC number.
 
 **Reserved capacity for enemies and bosses (B2).** Player scripts can't starve the world's bullets:
 
 | | Total cap | Reserved for enemy + boss bullets | Player scripts may use at most |
 |---|---|---|---|
-| PC (10k) | 10,000 | **3,000 (30%)** | **7,000** |
-| PC floor (5k) | 5,000 | **1,500 (30%)** | **3,500** |
+| Platform | Total cap | Reserved for enemy + boss bullets (30%) | Player scripts may use at most | Boss design budget (live bullets) | All regular enemies together |
+|---|---|---|---|---|---|
+| **PC** | 10,000 | **3,000** | **7,000** | **≤ 2,500** | **≤ 500** |
+| **PC floor** | 5,000 | **1,500** | **3,500** | **≤ 1,250** | **≤ 250** |
+| **Web** (starting values, §10) | 4,000 | **1,200** | **2,800** | **≤ 1,000** | **≤ 200** |
+| **Mobile** (starting values, §10) | 2,500 | **750** | **1,750** | **≤ 625** | **≤ 125** |
 
-This reserve is a pool-protection rule in the same family as the cap (it keeps the world's bullets alive), not a gameplay limit on what scripts do. Rules: (1) player-owned bullets are hard-capped at the "at most" column; (2) enemy and boss bullets may use **the whole pool**, including unused player share (so a huge boss pattern is never cut by a player, and the player's own share shrinks instead if the pool fills); (3) the boss design budget is **≤ 2,500 live boss bullets** at once and **≤ 500** for all regular enemies together, which fits the reserve; (4) engine work: per-owner live counters in `BulletPool` (see §5.5).
+The design budgets are the PC split (2,500 boss + 500 regular = 3,000 reserve) scaled proportionally to each platform's reserve (5/6 boss, 1/6 regular). Boss authors must be able to meet their patterns within the **smallest** boss budget (mobile, 625) by thinning density, not by changing the pattern's shape.
+
+This reserve is a pool-protection rule in the same family as the cap (it keeps the world's bullets alive), not a gameplay limit on what scripts do. Rules: (1) player-owned bullets are hard-capped at the "at most" column; (2) enemy and boss bullets may use **the whole pool**, including unused player share (so a huge boss pattern is never cut by a player, and the player's own share shrinks instead if the pool fills); (3) the boss and regular-enemy design budgets in the table fit inside each platform's reserve; (4) engine work: per-owner live counters in `BulletPool` (see §5.5).
 
 **Speed clamp (B3).** Until **swept collision** is on `main`, bullet speed is **clamped to 1,200 px/s** (about 20 px per 60 Hz tick, less than the 44 px diameter of a `TrainingDummy` hurtbox, so bullets can't tunnel). The clamp applies to `shoot{speed}` and to any velocity set from a hook. Swept collision is implemented on the scaffold PR #2 (`pool.prev_pos`, `HurtboxGrid.collide_bullets`, `WallGrid`; `docs/architecture.md`: "Collision is **swept**") but is **not on `main` yet**. **When PR #2 merges, the clamp lifts** (keep a sane engine ceiling, e.g. 4,000 px/s, as a crash guard) and the editor message about it is removed.
 
