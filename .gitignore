@@ -31,3 +31,9 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+/bin/
+/native/godot-cpp/bin/
+/native/godot-cpp/gen/
+.sconsign.dblite
+*.os
+*.o

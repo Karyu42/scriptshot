@@ -1,0 +1,21 @@
+#!/usr/bin/env python
+# Scriptshot native bullet core (GDExtension). See docs/native.md.
+#
+#   scons platform=linux arch=x86_64 target=template_release
+#   -> ../bin/linux/libscriptshot_native.linux.template_release.x86_64.so
+#
+# godot-cpp is a git submodule pinned to the release whose API JSON matches
+# Godot 4.7.2 (tools/check_extension_api.sh verifies that against a godot binary).
+env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
+
+env.Append(CPPPATH=["src/"])
+sources = Glob("src/*.cpp")
+
+lib_name = "scriptshot_native"
+out_dir = "#../bin/{}/".format(env["platform"])
+library = env.SharedLibrary(
+    out_dir + "{}{}{}".format(env.subst("$SHLIBPREFIX"), lib_name, env["suffix"]) + env["SHLIBSUFFIX"],
+    source=sources,
+)
+env.NoCache(library)
+Default(library)

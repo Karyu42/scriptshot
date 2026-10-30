@@ -19,7 +19,7 @@ func register_behavior(behavior: BulletBehavior) -> int:
 
 
 func get_bullet_count() -> int:
-	return _manager.pool.count
+	return _manager.alive_count()
 
 
 func get_capacity() -> int:

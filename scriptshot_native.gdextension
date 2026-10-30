@@ -1,0 +1,15 @@
+[configuration]
+
+entry_symbol = "scriptshot_native_init"
+compatibility_minimum = "4.7"
+reloadable = false
+
+; PROTOTYPE: only the Linux x86_64 *release* library is built so far, so the
+; editor and debug entries point at it too (see docs/native.md).
+; Libraries are build output: they live in bin/<platform>/ (gitignored) and are
+; produced by `scons` in native/. Without them the game uses the GDScript backend.
+[libraries]
+
+linux.editor.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
+linux.debug.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
+linux.release.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
