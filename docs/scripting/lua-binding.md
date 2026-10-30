@@ -45,7 +45,7 @@ or things that need a spike. Scriptshot's own Godot version is not decided yet (
 |---|---|---|
 | Web | **Works** | **No** (no wasm port) |
 | Raw speed | Interpreter | Much faster in hot loops (see #143), but our hot loops are native |
-| Instruction hook | `lua_sethook` count hook reliable everywhere | JIT-compiled code **ignores hooks by default**; needs a custom build with `LUAJIT_ENABLE_CHECKHOOK` (unsupported, per LuaJIT's author) or `jit.off()`. The shipped addon uses stock LuaJIT. |
+| Instruction hook | `lua_sethook` count hook reliable everywhere | JIT-compiled code **ignores hooks by default**; needs a custom build with `LUAJIT_ENABLE_CHECKHOOK` (unsupported, per LuaJIT's author) or `jit.off()`. The shipped LuaJIT addon is not documented to enable that flag *(not verified)*. |
 | Language | `<close>`, integers, goto | 5.1 + 5.2 extras; the addon bundles recent LuaJIT with some 3.0 syntax extensions (`+=`, `??`), not portable Lua |
 | Behaviour parity across platforms | Identical on all targets including Web | Web differs from desktop |
 
