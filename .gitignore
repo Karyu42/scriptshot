@@ -31,3 +31,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.swp
+
+# Android phone test build: lua-gdextension is fetched, never committed
+/addons/lua-gdextension/
