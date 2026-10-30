@@ -11,6 +11,11 @@ extends Node2D
 @onready var _hud: Label = $Hud/Label
 @onready var _turrets: Node = $Turrets
 
+## Seconds between dying and respawning, and where. The respawn keeps everything
+## (enemies, bullets, weapon) and only resets the player's hp to max.
+@export var respawn_delay := 1.5
+@export var respawn_position := Vector2.ZERO
+
 var _respawn_timer := 0.0
 
 
@@ -22,7 +27,7 @@ func _ready() -> void:
 	for turret: Turret in _turrets.get_children():
 		turret.emitter = _bullets.emitter
 		turret.target = _player
-	_player.died.connect(func() -> void: _respawn_timer = 1.5)
+	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
 
 
@@ -30,14 +35,14 @@ func _process(delta: float) -> void:
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
-			_player.respawn(Vector2.ZERO)
+			_player.respawn(respawn_position)
 	_update_hud()
 
 
 func _update_hud() -> void:
 	var device := "gamepad" if InputDevice.is_gamepad() else "mouse + keyboard"
 	var stress := "ON" if _stress.enabled else "off"
-	_hud.text = "%d fps   bullets %d / %d (dropped %d)   sim %.2f ms   hp %.0f / %.0f\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]" % [
+	_hud.text = "%d fps   bullets %d / %d (dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]" % [
 		Engine.get_frames_per_second(),
 		_bullets.pool.count,
 		_bullets.pool.capacity,
@@ -45,6 +50,7 @@ func _update_hud() -> void:
 		_bullets.last_step_usec / 1000.0,
 		_player.health.hp,
 		_player.health.max_hp,
+		"ready" if _player.state.can_dash() else "%.1fs" % _player.get_dash_cooldown_left(),
 		device,
 		stress,
 		_stress.get_target_count(),

@@ -4,7 +4,7 @@ extends CharacterBody2D
 ## right stick / mouse aims, fire input drives a ShotPattern through a
 ## ShotEmitter. The player knows nothing about how bullets are simulated.
 
-## Forwarded from the placeholder Health component.
+## Forwarded from the Health component.
 signal damaged(amount: float)
 signal died
 
@@ -17,12 +17,33 @@ signal died
 ## Extra acceleration multiplier when pushing against the current velocity.
 @export var reverse_boost := 1.6
 
+@export_group("Dash")
+## Distance covered by one dash, in pixels (must be at least max_speed *
+## dash_duration, see DashMath).
+@export var dash_distance := 170.0
+## Burst length in seconds.
+@export var dash_duration := 0.18
+## Speed curve: 0 = constant speed, 1 = linear ramp down, 2 = hard launch with a
+## long tail (default), higher = sharper launch. See DashMath.
+@export var dash_curve_power := 2.0
+## Seconds of invulnerability from the start of a dash.
+@export var dash_invulnerability := 0.2
+## Seconds from the start of a dash until the next one may start.
+@export var dash_cooldown := 1.5
+
 @export_group("Aiming")
 @export var muzzle_offset := 20.0
 
 ## Injected by the scene (Main): where shots go, and what to fire.
 var emitter: ShotEmitter
 var weapon: ShotPattern = BasicShot.new()
+
+## Validated read/write access for scripts (hp, invulnerability, position,
+## velocity, dash state). See PlayerState.
+var state := PlayerState.new(self)
+
+## Emitted when a dash starts, with its unit direction.
+signal dashed(direction: Vector2)
 
 ## Unit vector the player is aiming along, and the world point being aimed at.
 var aim_direction := Vector2.RIGHT
@@ -31,6 +52,7 @@ var aim_point := Vector2.ZERO
 var _prev_position := Vector2.ZERO
 var _trigger := TriggerState.new()
 var _dead := false
+var _dash := DashState.new()
 var _cooldown := FireCooldown.new()
 var _time := 0.0
 var _shot_index := 0
@@ -38,7 +60,7 @@ var _flash := 0.0
 var _context := ShotContext.new()
 
 @onready var _hurtbox: Hurtbox = $Hurtbox
-## PLACEHOLDER hit points, see Health.
+## Hit points, i-frames and regeneration (Health).
 @onready var health: Health = $Health
 
 
@@ -57,10 +79,19 @@ func _physics_process(delta: float) -> void:
 	_time += delta
 	_prev_position = global_position
 	var move_input := Input.get_vector("move_left", "move_right", "move_up", "move_down")
-	velocity = MovementMath.step_velocity(
-		velocity, move_input, max_speed, acceleration, friction, reverse_boost, delta
-	)
+	if Input.is_action_just_pressed("dash"):
+		try_dash(move_input)
+	if _dash.active:
+		velocity = _dash.step(delta)
+	else:
+		_dash.step(delta)
+		velocity = MovementMath.step_velocity(
+			velocity, move_input, max_speed, acceleration, friction, reverse_boost, delta
+		)
 	move_and_slide()
+	if _dash.just_finished:
+		# Hand over to normal movement at running speed, not at the burst's speed.
+		velocity = velocity.limit_length(max_speed)
 
 	_update_aim()
 	_trigger.update(Input.is_action_pressed("fire"), delta)
@@ -105,13 +136,59 @@ func _fire() -> void:
 	weapon.fire(_context, emitter)
 
 
-## Back in the fight at `at` with full health (placeholder respawn).
+## Starts a dash along `direction` (need not be normalised); a zero direction
+## falls back to the aim direction, so standing still dashes toward where you
+## aim. Returns false while dead, dashing or on cooldown. The dash makes the
+## player invulnerable for `dash_invulnerability` seconds.
+func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
+	if _dead:
+		return false
+	var dir := direction if direction.is_finite() and direction.length_squared() > 0.0001 else aim_direction
+	_dash.duration = maxf(dash_duration, 0.01)
+	_dash.distance = maxf(dash_distance, 0.0)
+	_dash.curve_power = maxf(dash_curve_power, 0.0)
+	_dash.exit_speed = max_speed
+	_dash.invulnerable_time = maxf(dash_invulnerability, 0.0)
+	_dash.cooldown = maxf(dash_cooldown, 0.0)
+	if not _dash.start(dir):
+		return false
+	health.set_invulnerable(_dash.invulnerable_time)
+	dashed.emit(_dash.direction)
+	return true
+
+
+func is_dashing() -> bool:
+	return _dash.active
+
+
+func is_dead() -> bool:
+	return _dead
+
+
+## Seconds until the next dash may start (0 = ready).
+func get_dash_cooldown_left() -> float:
+	return _dash.cooldown_left
+
+
+func get_dash_direction() -> Vector2:
+	return _dash.direction
+
+
+## Moves the player to `at` instantly: no interpolated smear between the old and
+## new place, and the camera sees the jump as a cut of the render position.
+func teleport(at: Vector2) -> void:
+	global_position = at
+	_prev_position = at
+	reset_physics_interpolation()
+
+
+## Back in the fight at `at` with everything kept (bullets, enemies, weapon) but
+## hp reset to max_hp, dash ready, no i-frames.
 func respawn(at: Vector2) -> void:
 	_dead = false
-	global_position = at
-	reset_physics_interpolation()
-	_prev_position = at
+	teleport(at)
 	velocity = Vector2.ZERO
+	_dash.reset()
 	health.reset()
 	_hurtbox.active = true
 	show()
@@ -170,6 +247,10 @@ func _draw() -> void:
 	var body := Color("e8e8f0").lerp(Color.WHITE, _flash)
 	if health != null and health.is_invulnerable() and int(_time * 20.0) % 2 == 0:
 		body.a = 0.45
+	if _dash.active:
+		# Fading echoes behind the burst.
+		for k in range(1, 4):
+			draw_circle(-_dash.direction * (k * 15.0), 14.0 - k * 2.0, Color(0.3, 0.79, 0.94, 0.4 - k * 0.1))
 	draw_circle(Vector2.ZERO, 14.0, body)
 	draw_circle(Vector2.ZERO, 7.0, Color("4cc9f0"))
 	# Barrel pointing along the aim direction (the node itself never rotates).
