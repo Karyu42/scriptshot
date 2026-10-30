@@ -38,12 +38,14 @@ var max_instances := 0
 ## How many times the MultiMesh was reallocated (for tests / diagnostics).
 var reallocations := 0
 
-# Two current-state buffers used alternately, because the RenderingServer keeps
-# a reference to the buffer it was last given: writing into the other one never
-# copies. The previous-tick buffer is derived from the current one every tick.
+# Two buffer pairs used alternately (current + previous tick). The RenderingServer
+# keeps a reference to the buffers it was last given, so writing into the pair it
+# does not hold never triggers a copy-on-write; both pairs are allocated once (in
+# _allocate) and nothing is allocated per tick.
 var _cur_a := PackedFloat32Array()
 var _cur_b := PackedFloat32Array()
-var _prev := PackedFloat32Array()
+var _prev_a := PackedFloat32Array()
+var _prev_b := PackedFloat32Array()
 var _use_b := false
 
 
@@ -76,16 +78,20 @@ func update_from(pool: BulletPool) -> void:
 	_fit_allocation(n)
 	var interpolate := is_physics_interpolated_and_enabled()
 
-	# Take the target buffer out of its member so this function holds the only
+	# Take the target buffers out of their members so this function holds the only
 	# reference; otherwise the first write would copy the whole array.
 	var cur: PackedFloat32Array
 	var prev: PackedFloat32Array
 	if _use_b:
 		cur = _cur_b
+		prev = _prev_b
 		_cur_b = PackedFloat32Array()
+		_prev_b = PackedFloat32Array()
 	else:
 		cur = _cur_a
+		prev = _prev_a
 		_cur_a = PackedFloat32Array()
+		_prev_a = PackedFloat32Array()
 
 	var bpos := pool.pos
 	var bold := pool.prev_pos
@@ -93,38 +99,61 @@ func update_from(pool: BulletPool) -> void:
 	var brad := pool.radius
 	var bcol := pool.color
 	var length_scale := 2.0 * stretch
-	for i in n:
-		var o := i * FLOATS_PER_INSTANCE
-		var r := brad[i]
-		var d := brot[i]
-		var p := bpos[i]
-		var c := bcol[i]
-		var sx := r * length_scale
-		var sy := r * 2.0
-		var m00 := d.x * sx
-		var m01 := -d.y * sy
-		var m10 := d.y * sx
-		var m11 := d.x * sy
-		cur[o] = m00
-		cur[o + 1] = m01
-		cur[o + 3] = p.x
-		cur[o + 4] = m10
-		cur[o + 5] = m11
-		cur[o + 7] = p.y
-		cur[o + 8] = c.r
-		cur[o + 9] = c.g
-		cur[o + 10] = c.b
-		cur[o + 11] = c.a
-
 	if interpolate:
-		# The previous-tick buffer is the current one with the two translation
-		# columns replaced: one memcpy, then 2 stores per bullet instead of 10.
-		prev = cur.duplicate()
+		# Both buffers are filled in one pass: the previous-tick instance is the
+		# current one with its translation replaced by the tick-start position.
 		for i in n:
-			var q := bold[i]
 			var o := i * FLOATS_PER_INSTANCE
+			var r := brad[i]
+			var d := brot[i]
+			var p := bpos[i]
+			var q := bold[i]
+			var c := bcol[i]
+			var sx := r * length_scale
+			var sy := r * 2.0
+			var m00 := d.x * sx
+			var m01 := -d.y * sy
+			var m10 := d.y * sx
+			var m11 := d.x * sy
+			cur[o] = m00
+			cur[o + 1] = m01
+			cur[o + 3] = p.x
+			cur[o + 4] = m10
+			cur[o + 5] = m11
+			cur[o + 7] = p.y
+			cur[o + 8] = c.r
+			cur[o + 9] = c.g
+			cur[o + 10] = c.b
+			cur[o + 11] = c.a
+			prev[o] = m00
+			prev[o + 1] = m01
 			prev[o + 3] = q.x
+			prev[o + 4] = m10
+			prev[o + 5] = m11
 			prev[o + 7] = q.y
+			prev[o + 8] = c.r
+			prev[o + 9] = c.g
+			prev[o + 10] = c.b
+			prev[o + 11] = c.a
+	else:
+		for i in n:
+			var o := i * FLOATS_PER_INSTANCE
+			var r := brad[i]
+			var d := brot[i]
+			var p := bpos[i]
+			var c := bcol[i]
+			var sx := r * length_scale
+			var sy := r * 2.0
+			cur[o] = d.x * sx
+			cur[o + 1] = -d.y * sy
+			cur[o + 3] = p.x
+			cur[o + 4] = d.y * sx
+			cur[o + 5] = d.x * sy
+			cur[o + 7] = p.y
+			cur[o + 8] = c.r
+			cur[o + 9] = c.g
+			cur[o + 10] = c.b
+			cur[o + 11] = c.a
 
 	var rid := multimesh.get_rid()
 	if interpolate:
@@ -133,11 +162,12 @@ func update_from(pool: BulletPool) -> void:
 		RenderingServer.multimesh_set_buffer(rid, cur)
 	multimesh.visible_instance_count = n
 
-	_prev = prev
 	if _use_b:
 		_cur_b = cur
+		_prev_b = prev
 	else:
 		_cur_a = cur
+		_prev_a = prev
 	_use_b = not _use_b
 
 
@@ -146,9 +176,10 @@ func get_current_buffer() -> PackedFloat32Array:
 	return _cur_a if _use_b else _cur_b
 
 
-## Previous-tick instance buffer for tests.
+## Previous-tick instance buffer (positions at the start of the last tick) for
+## tests. Only filled while physics interpolation is on.
 func get_previous_buffer() -> PackedFloat32Array:
-	return _prev
+	return _prev_a if _use_b else _prev_b
 
 
 ## Bucket size for `live` bullets.
@@ -171,6 +202,9 @@ func _allocate(instances: int) -> void:
 	var floats := instances * FLOATS_PER_INSTANCE
 	_cur_a.resize(floats)
 	_cur_b.resize(floats)
-	_prev.resize(floats)
+	_prev_a.resize(floats)
+	_prev_b.resize(floats)
 	_cur_a.fill(0.0)
 	_cur_b.fill(0.0)
+	_prev_a.fill(0.0)
+	_prev_b.fill(0.0)

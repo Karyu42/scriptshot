@@ -143,3 +143,50 @@ func test_cleared_pool_hides_everything() -> void:
 	pool.clear()
 	renderer.update_from(pool)
 	assert_eq(renderer.multimesh.visible_instance_count, 0)
+
+
+# --- no per-tick allocation (double-buffered current + previous) ---------------
+
+func test_renderer_source_never_duplicates_buffers() -> void:
+	var source := (load("res://src/bullets/bullet_renderer.gd") as GDScript).source_code
+	assert_false(source.contains(".duplicate("), "update_from() must write into preallocated buffers (no per-tick copy)")
+
+
+func test_previous_buffer_stays_correct_across_many_alternating_ticks() -> void:
+	pool.spawn(ShotRequest.polar(Vector2(0, 0), 0.0, 600.0))
+	pool.spawn(ShotRequest.polar(Vector2(0, 100), 0.0, 300.0))
+	for tick in 9:
+		pool.advance(1.0 / 60.0, Rect2(-1000, -1000, 2000, 2000))
+		renderer.update_from(pool)
+		var cur := renderer.get_current_buffer()
+		var prev := renderer.get_previous_buffer()
+		assert_almost_eq(cur[3], 10.0 * float(tick + 1), 0.001, "tick %d end" % tick)
+		assert_almost_eq(prev[3], 10.0 * float(tick), 0.001, "tick %d start" % tick)
+		assert_almost_eq(cur[STRIDE + 3], 5.0 * float(tick + 1), 0.001)
+		assert_almost_eq(prev[STRIDE + 3], 5.0 * float(tick), 0.001)
+		assert_almost_eq(prev[STRIDE + 7], 100.0, 0.001)
+		for k: int in [0, 1, 4, 5, 8, 9, 10, 11]:
+			assert_eq(prev[k], cur[k], "tick %d float %d" % [tick, k])
+
+
+func test_buffers_handed_to_the_engine_are_not_rewritten_next_tick() -> void:
+	_spawn(5)
+	renderer.update_from(pool)
+	var prev_a := renderer.get_previous_buffer()
+	var held_x := prev_a[3]
+	pool.advance(0.5, Rect2(-1000, -1000, 2000, 2000))
+	renderer.update_from(pool)
+	assert_eq(prev_a[3], held_x, "the previous-tick buffer given to the engine last tick is left alone")
+
+
+func test_update_from_with_a_steady_pool_is_allocation_stable() -> void:
+	_spawn(1500)
+	renderer.update_from(pool)
+	var reallocations := renderer.reallocations
+	var size_before := renderer.get_current_buffer().size()
+	for tick in 20:
+		pool.advance(1.0 / 60.0, Rect2(-1000, -1000, 2000, 2000))
+		renderer.update_from(pool)
+	assert_eq(renderer.reallocations, reallocations)
+	assert_eq(renderer.get_current_buffer().size(), size_before)
+	assert_eq(renderer.get_previous_buffer().size(), size_before)
