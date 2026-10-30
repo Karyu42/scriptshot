@@ -3,10 +3,16 @@
 Status: **draft for review**. Nothing here is implemented yet. Points that depend on the
 bullet system being built by the Gameplay Engineer are marked **[OI-n]** (open interface
 question) and collected at the end. v0.2 aligns the draft with the design pillars (PR #1),
-the core scaffold (PR #2, head 2026abe), the gameplay defaults and `PlayerState` (PR #4), the
-measured spike results ([spike-results.md](spike-results.md)) and Karyu's sandbox decisions.
-Engine names are quoted verbatim (`ShotContext.muzzle_position`, `BulletPool.DespawnReason`, ...)
-so each Lua concept can be traced to code.
+the core scaffold (PR #2, now on `main`, checked against `main` 39ff259), the gameplay defaults and `PlayerState`
+(PR #4, checked against head **1d2fe2c**), the measured spike results ([spike-results.md](spike-results.md)) and
+Karyu's sandbox decisions. Engine names are quoted verbatim (`ShotContext.muzzle_position`,
+`BulletPool.DespawnReason`, ...) so each Lua concept can be traced to code.
+
+**Engine status markers.** **[main]** = exists on `main` today. **[PR #4]** = exists only on the open PR #4
+(1d2fe2c), not merged: stable ids, `request_shot_id`, `ShotPattern.update`/`auto_fire`/`reset`, `trigger_*` context
+fields, `owner_layer` handling, `reflect_bullet`, `PlayerState`, `Health.try_damage`, `pierces_script_invuln`.
+**[planned]** = agreed but not written (batch API, wall normal, `can_hit`, per-owner counters). Unmarked engine
+names are on `main`. `BulletPool.teleport` is **[main]** (`bullet_pool.gd`, via PR #2).
 
 Players write shots in Lua. A script is a single `.lua` file that returns a *weapon*
 table. The engine calls into it when you fire and on shot events. Everything else
@@ -22,12 +28,12 @@ bullets on screen and only pay for Lua when you actually say something interesti
    and is metered. Prefer timers and events.
 3. **Shots can make shots.** Any shot may spawn children, which inherit owner/team and
    can have their own callbacks. This is the core of splitting, chaining and spawners.
-4. **Full freedom for your own scripts, a warning for other people's.** A script you wrote
-   gets full Lua; anything that touches your computer (files, programs, native code) is an
-   explicit per-script opt-in, never on by default. Imported or shared scripts get a
-   warning and every dangerous capability starts off (see *Capabilities and importing*).
-   There is no whitelist of what a shot may *do* in the game world. Limits are on
-   resources (instructions, memory, bullets), not on creativity.
+4. **Full freedom for your scripts, a consent prompt for the dangerous parts.** Every script gets full
+   Lua, with no whitelist of what a shot may *do* in the game world; limits are on resources
+   (instructions, memory, bullets), not on creativity. Anything that touches your computer (files,
+   programs, native code, Lua internals) is a **capability the script must request in `needs` and you
+   must grant**, whatever the script's origin (typed, pasted, or from a file): see *Capabilities*.
+   In-game sharing/import is **deferred** (see *Deferred: in-game sharing/import*).
 5. **Mistakes are survivable.** A bug in your script never crashes the game or freezes it.
    You get a readable error with file and line.
 
@@ -47,9 +53,11 @@ Fixed by the bullet system (PR #2 / #4), repeated here so scripts and engine agr
 - **Slots are not handles.** Despawning swap-removes: the last bullet moves into the freed slot, so a
   pool *index* is only valid inside one hook call (`BulletBehavior`: "only valid for the duration of the
   call"). Anything that outlives the call (timers, `b` handles stored in `state`, coroutines) uses the
-  **stable id**: `id = (generation << 32) | handle`, always `> 0`, `-1` = none (`pool.id_of(index)`,
-  `pool.slot_of(id)` -> slot or `-1`, `pool.is_alive(id)`, `ShotEmitter.request_shot_id()`,
-  `ShotEmitter.is_bullet_alive(id)`). A Lua `b` wraps the id and resolves it to a slot on each access.
+  **stable id** **[PR #4]**: `id = (generation << 32) | handle`, always `> 0`, `-1` = none. `handle` indexes an
+  **indirection table** (`handle -> current slot`); `generation` is bumped when a handle is released, so a stale id is
+  detected even after its handle was reused (`pool.id_of(index)`, `pool.slot_of(id)` -> slot or `-1`, `pool.is_alive(id)`,
+  `ShotEmitter.request_shot_id()`, `ShotEmitter.is_bullet_alive(id)`). A Lua `b` wraps the id and resolves it to a slot on
+  each access. On `main` today only slots exist; the Lua binding depends on PR #4 for ids.
 - **Spawning is synchronous from weapon code and queued from bullet callbacks.** `spawn{}` inside
   `on_fire` / `update` calls `ShotEmitter.request_shot_id()`: the bullet exists on return and `spawn`
   returns its handle (or `nil` if the pool or the player's share is full). Inside bullet callbacks
@@ -59,7 +67,7 @@ Fixed by the bullet system (PR #2 / #4), repeated here so scripts and engine agr
 - **Position writes are teleports.** Writing a shot's position is a discontinuous move; the engine
   collides swept segments (`prev_pos` -> `pos`), so a raw write would sweep a phantom hit across the
   jump. `b.pos = v`, `b.x`, `b.y` and the batch `TELEPORT` command therefore map to
-  **`BulletPool.teleport(index, position)`** (coming in PR #2), never to `pool.pos[i] = ...`. Continuous
+  **`BulletPool.teleport(index, position)`** **[main]**, never to `pool.pos[i] = ...`. Continuous
   motion is velocity / `accel` / `spin`. For the player, `player.pos = v` is `PlayerState.set_position`
   (teleport, resets interpolation).
 
@@ -79,7 +87,7 @@ return {
 
 `ctx` is a read-only **snapshot** of `ShotContext` taken when the callback starts (it does not change
 while a coroutine is parked in `wait()`; read `player` or call `ctx:refresh()` for live values). Fields
-match the engine one to one:
+match the engine one to one (the seven base names, `muzzle_position` ... `shot_index`, are on `main`; the `trigger_*` fields are **[PR #4]**):
 
 | Lua | `ShotContext` field | Notes |
 |---|---|---|
@@ -90,9 +98,9 @@ match the engine one to one:
 | `ctx.target_mask` | `target_mask` | layers the shot may hit (`Layers`); default for `hit_mask` |
 | `ctx.time` | `time` | seconds since the shooter was created |
 | `ctx.n` (`ctx.shot_count`) | `shot_index` | number of `fire()` calls so far |
-| `ctx.pressed` | `trigger_pressed` | fire button down this tick |
-| `ctx.just_pressed`, `ctx.just_released` | `trigger_just_pressed`, `trigger_just_released` | edge flags, one tick |
-| `ctx.held_time` | `trigger_held_time` | seconds held continuously; **on the release tick it still holds the length of the hold that just ended** (charge weapons read it there) |
+| `ctx.pressed` | `trigger_pressed` **[PR #4]** | fire button down this tick |
+| `ctx.just_pressed`, `ctx.just_released` | `trigger_just_pressed`, `trigger_just_released` **[PR #4]** | edge flags, one tick |
+| `ctx.held_time` | `trigger_held_time` **[PR #4]** | seconds held continuously; **on the release tick it still holds the length of the hold that just ended** (charge weapons read it there) |
 | `ctx.dt` | none (constant) | `1/60` |
 | `ctx.device` | `InputDevice` autoload (new field) | `"kbm"`, `"pad"`, `"touch"` |
 | `ctx.hp` | `PlayerState.get_hp()` (new field) | snapshot of `player.hp` |
@@ -102,10 +110,12 @@ There is **no `ctx.owner` and no `ctx.charge`** (the engine has neither): the pl
 
 ### How `on_fire` runs (coroutines vs. the synchronous `ShotPattern.fire`)
 
-The engine calls `ShotPattern.fire(context, emitter)` synchronously and expects it to return; it
-also calls `ShotPattern.update(context, emitter, delta)` **every physics tick while the pattern is
-equipped, before `fire()`** (`auto_fire = true` keeps the hold-to-fire path; `auto_fire = false`
-makes `update` the only driver). The Lua binding provides one `ShotPattern` subclass that resolves
+The engine calls `ShotPattern.fire(context, emitter)` synchronously and expects it to return (`main` has
+only `fire`). **[PR #4]** adds `ShotPattern.update(context, emitter, delta)`, called **every physics tick while the
+pattern is equipped, before `fire()`** (`auto_fire = true` keeps the hold-to-fire path; `auto_fire = false` makes
+`update` the only driver), and **`ShotPattern.reset()`**, called when the player respawns so a weapon drops state it
+carries between ticks (a charge, a burst in progress); the Lua binding maps it to the script's `on_reset` (optional)
+and cancels all parked `wait` coroutines. The Lua binding provides one `ShotPattern` subclass that resolves
 the conflict with the `wait()` coroutine model like this:
 
 1. `fire()` starts `on_fire(ctx)` inside a **host-owned coroutine** (the same mechanism as the
@@ -126,8 +136,9 @@ the conflict with the `wait()` coroutine model like this:
 **Coroutine safety (issue #240).** lua-gdextension #240 reports crashes when coroutines are freed.
 The binding keeps every `wait`-coroutine created Lua-side and owned by the host, never frees one
 from GDScript while it is suspended inside a hook, and pools them. The spike did not reproduce #240
-(200k Lua-side creates, 100k GDScript-side create/drop, 3,000 hooked coroutines freed while suspended,
-200 state recreations; memory back to baseline); the same patterns are permanent regression tests
+(about **303,000 coroutine creates**: 200,000 Lua-side, 100,000 GDScript-side create/drop and 3,000 hooked coroutines
+freed while suspended, plus 200 state re-creations; memory back to baseline; output committed as
+`spike/results/hook_editor.txt`, section d2); the same patterns are permanent regression tests
 (see [testing.md](testing.md)).
 
 Optional weapon-level fields: `name`, `cooldown`, `ammo`, `on_fire`, `on_equip`,
@@ -139,8 +150,7 @@ Use it for charge weapons, toggles and anything that reads the trigger state. `o
 is called when the engine decides a shot is due (cooldown elapsed and trigger down, or
 auto-fire). Charge weapon: `update = function(ctx) if ctx.just_released then spawn{ damage = ctx.held_time * 4, angle = ctx.aim, pos = ctx.pos } end end`.
 
-`needs = { "os", "io" }` declares the capabilities the script wants (see *Capabilities and
-importing*). `format = 1` is the script-API version. **Unknown top-level keys in the weapon
+`needs = { "os", "io" }` declares the capabilities the script wants (see *Capabilities*). `format = 1` is the script-API version. **Unknown top-level keys in the weapon
 table are ignored** (forward compatibility), and there is no profile/tier field.
 
 Saturation feedback: `ctx.dropped` (`ShotEmitter.get_dropped_count()`, cumulative) and
@@ -236,7 +246,7 @@ All optional. Unspecified fields take engine defaults.
 
 #### Spawn fields -> engine mapping
 
-Where each field lands in `ShotRequest` (PR #2 head 2026abe). **Fields marked "none yet" have no engine
+Where each field lands in `ShotRequest` (`main` 39ff259; `pierces_script_invuln` and the other PR #4 additions are marked). **Fields marked "none yet" have no engine
 equivalent**: until the engine grows them the ScriptHost accepts the field, logs a one-time console
 note and ignores it (never an error), or emulates it where a built-in behaviour is cheap (see
 [spike-results.md](spike-results.md), interface diff).
@@ -251,19 +261,24 @@ note and ignores it (never an error), or emulates it where a built-in behaviour 
 | `lifetime` / `life` | `lifetime` | exists |
 | `damage`, `radius`, `color` | `damage`, `radius`, `color` | exists |
 | `pierce` | `pierce` (extra targets before despawn) | exists |
+| `null_pierce` | **`pierces_script_invuln`** (`ShotRequest` field and per-bullet pool flag, handed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; the native migration keeps the same bit) | **[PR #4]** |
 | `team` / `hit_mask` | `owner_layer` and `hit_mask` (owner layer stripped) | exists |
 | `collide_world` (default `true`) | `collide_world`; a wall hit despawns with reason `WALL` | exists |
 | `state` | `user` (`pool.user[i]`, moves with swap-remove, reset on despawn) | exists |
 | `on_*` callbacks | `behavior_id` from `register_behavior()`, one per distinct callback set | exists |
 | scratch numbers for batch/tick code | `param_a`, `param_b` | exists |
-| `bounce` | none yet (`WallGrid` only despawns, reason `WALL`); needs a wall normal | **none yet** |
+| `bounce` | none yet (`WallGrid` only despawns, reason `WALL`); needs the wall normal, which is coming with the `WallGrid` hit | **none yet** |
 | `drag`, `gravity`, `max_speed`, `min_speed`, `spin_accel` | none yet | **none yet** |
 | `homing` | none yet (needs a spatial query over `HurtboxGrid`) | **none yet** |
 | `knockback` | none yet (owner-side, with `receive_hit`) | **none yet** |
 | `scale`, `sprite`, `trail`, `near_radius`/`on_near`, `tags` | none yet (renderer / query work) | **none yet** |
 
-Speed is clamped to 1,200 px/s until swept collision is on `main` (PR #1 B3); PR #2 implements swept
-collision and the clamp lifts when it merges.
+**`null_pierce`** is the designer's Lua-facing name for `pierces_script_invuln`: the bullet **ignores script invulnerability**
+(`player.invulnerable`, the separate source-tagged layer without a cap) but **still respects the engine's post-hit and dash
+i-frames**. It is not a new engine ask.
+
+Speed was clamped to 1,200 px/s until swept collision existed (PR #1 B3); PR #2 (on `main`) implements swept
+collision, so the clamp is expected to be lifted: confirm the final limit with the Gameplay Engineer.
 
 Spawning from inside another shot: `b:spawn{...}` is the same as `spawn{...}` but with
 `pos`, `angle`, `team`, `owner`, `damage` and `parent` defaulted from `b` and
@@ -291,8 +306,8 @@ Methods:
 |---|---|---|
 | `b:alive()` | is it still in play | `is_alive(id)` |
 | `b:kill()` | remove it now; `on_death` runs with `why == "manual"` | `BulletPool.mark_dead(slot, MANUAL)`; `on_death` is the `on_despawn` hook |
-| `b:teleport(pos)` | discontinuous move (same as `b.pos = pos`) | `BulletPool.teleport(slot, pos)` (PR #2, coming) |
-| `b:reflect(team, reverse)` | hand the shot to the other faction (parry / deflect); `reverse = true` flips velocity and heading | `ShotEmitter.reflect_bullet(id, owner_layer, reverse)` |
+| `b:teleport(pos)` | discontinuous move (same as `b.pos = pos`) | `BulletPool.teleport(slot, pos)` **[main]** |
+| `b:reflect(team, reverse, new_damage, keep_script)` | hand the shot to the other faction (parry / deflect); `reverse = true` flips velocity and heading | `ShotEmitter.reflect_bullet(id, new_owner_layer, reverse := false, new_damage := 1.0, keep_script := false)` **[PR #4]** |
 | `b:spawn{...}` | spawn a child (see above) | `request_shot_id` (queued from callbacks) |
 | `b:split(n, opts)` | spawn `n` children fanned out; see *Splitting* | |
 | `b:every(dt, fn)` | call `fn(b)` every `dt` seconds; stops if the shot dies | native timer heap |
@@ -302,13 +317,17 @@ Methods:
 | `b:has_tag(tag)` | (tags: none yet) | |
 | `b:steer_toward(pos_or_entity, rate)` | one-off turn of heading toward a target, `rate` rad/s | writes velocity |
 
-`b:reflect(team, reverse)` / global `reflect(b, team, reverse)` returns `false`, changing nothing, for
-a dead or already-marked-dead shot or a team other than `"player"`/`"enemy"`. On success the shot's
-`owner_layer` becomes the new team, `hit_mask` becomes `Layers.hostile_to(new_owner)` (it can never hit
-its new owner), the colour becomes the faction colour (`Layers.bullet_color`), and a piercing
-bullet's last-hit memory is cleared. **Velocity is otherwise untouched**; set `b.vel`/`b.angle` in the
-same callback to aim a parried shot. Reflect is output-side and always available; getting a handle to
-an *enemy* bullet needs `sense.enemy_bullets` (see *Reading game state*).
+`b:reflect(team, reverse, new_damage, keep_script)` / global `reflect(b, team, ...)` maps to
+`ShotEmitter.reflect_bullet` **[PR #4]** and returns `false`, changing nothing, for a dead shot, a team other than
+`"player"`/`"enemy"`, or a shot that has **used up its reflections**: `BulletPool.max_reflections` defaults to **1**
+(no ping-pong; `0` means unlimited) and counts every owner change, by a reflector zone or by a script. On success the
+shot's `owner_layer` becomes the new team, `hit_mask` becomes `Layers.hostile_to(new_owner)` (it can never hit its new
+owner), the colour becomes the faction colour (`Layers.bullet_color`), a piercing bullet's last-hit memory is cleared,
+and **`damage` becomes `new_damage` (default 1, `REFLECTED_DAMAGE`; `BulletPool.KEEP_DAMAGE` keeps the bullet's own)**.
+**The shot's behaviour, `user` data and params are cleared** unless `keep_script = true`: after a plain `b:reflect(...)`
+its Lua callbacks (`on_hit`, `every` timers) stop, and its `b.state` is gone. Velocity is otherwise untouched; set
+`b.vel`/`b.angle` in the same callback to aim a parried shot. Reflect is output-side and always available; getting a
+handle to an *enemy* bullet needs `sense.enemy_bullets` (see *Reading game state*).
 
 Timers run on *game time*: they pause with the game and are stable across frame rate.
 
@@ -386,7 +405,7 @@ How to get "pass through / ignore this target / only some targets" instead:
 |---|---|---|
 | pass through N targets | `pierce = N` (native, with anti-rehit memory) | exists |
 | never hit some layers | `hit_mask` | exists |
-| decide per target, before damage | `can_hit = function(b, target) return ... end` | **OI-18a**: optional `BulletBehavior.can_hit(pool, index, hurtbox) -> bool` called before `receive_hit`; synchronous, hit-rate only, counted against the script budget |
+| decide per target, before damage | `can_hit = function(b, target) return ... end` | **OI-18a**: an **opt-in per-bullet flag** (set when the script defines `can_hit`; bullets without it never pay for the call) that runs **before damage and before the pierce count**; synchronous, hit-rate only, counted against the script budget |
 | refund a pierce after the fact | `b.pierce = b.pierce + 1` inside `on_hit` | **OI-18b**: re-read `pierce` after the hook instead of caching `piercing` |
 
 `on_hit(b, hit)` receives a read-only table:
@@ -404,12 +423,11 @@ synchronous hook cannot know. A `killed` signal may come with the enemy health w
 
 ### Walls (`on_wall`)
 
-`WallGrid` reports only the **time of impact `t`** along the swept path, not a surface normal, and
-today a wall hit just despawns the bullet with `DespawnReason.WALL` after clipping it to the impact
+`WallGrid` reports only the **time of impact `t`** along the swept path today; **the wall normal is coming, returned with
+the `WallGrid` hit** (Gameplay Engineer). Until then a wall hit just despawns the bullet with `DespawnReason.WALL` after clipping it to the impact
 point. So: `on_wall(b, wall)` is delivered as `on_death(b, "wall")`; `wall.pos` is the clipped position and
-**`wall.normal` is `nil`** until the engine exposes it. **OI-17:** ask the Gameplay Engineer for a
-`hit_normal` array next to `hit_t` (axis-aligned rectangles make this a face lookup) and a per-bullet
-bounce count; `bounce` stays "none yet" until then.
+**`wall.normal` is `nil`** until that lands and is then the unit normal of the face that was hit. **OI-17** tracks it (plus a
+per-bullet bounce count); `bounce` stays "none yet" until then.
 
 ### Splitting
 
@@ -431,21 +449,38 @@ either absolute numbers or multipliers of the parent's current value, written ex
 Any other `spawn` field (including callbacks) is accepted and forwarded. Children inherit
 `team`, `owner`, `color`, `tags`; they do **not** inherit callbacks unless `inherit = true`.
 
+**Return value and the cap.** `b:split(n, opts)` returns **the number of children accepted** (an integer, `0 .. n`), in
+weapon code and in bullet callbacks alike (it never returns handles). Children are submitted in fan order, from one end of
+the fan to the other, and `spawn` refuses once the player's bullet share or the per-tick spawn cap is reached (the
+refusal is counted, `ctx.dropped`): a split at the cap therefore **accepts the first `k` of `n` children and drops the
+rest, giving a truncated, not a thinned-out, fan**. It never raises an error and does not undo the accepted children;
+a script that needs all-or-nothing checks `count_shots()` against the cap before splitting.
+
 ### Chaining
 
 Chaining is the same tools composed: pick a new target, steer or respawn.
 
 ```lua
-on_hit = function(b, hit)
+local function chain(b, hit)
   b.state.seen[hit.target] = true
   local nxt = sense.nearest_enemy(hit.pos, 250, { exclude = b.state.seen })
   if nxt and b.state.jumps > 0 then
     b.state.jumps = b.state.jumps - 1
-    b:spawn { pos = hit.pos, angle = (nxt.pos - hit.pos):angle(),
-             state = b.state, on_hit = b.on_hit_fn }  -- or define the callback as a local function and reuse it
+    local away = hit.normal                                    -- out of the target, like split_on_hit.lua
+    b:spawn { pos = hit.pos + away * (b.radius + 4),           -- start OUTSIDE the hurtbox it just hit
+              angle = (nxt.pos - hit.pos):angle(),
+              state = b.state,
+              on_hit = chain,                                  -- the callback is a local function, reused by name
+              can_hit = function(c, target) return not c.state.seen[target] end }   -- never re-hit a seen target (OI-18a)
   end
 end
+spawn { state = { seen = {}, jumps = 3 }, on_hit = chain }
 ```
+
+The child is born outside the target (the pool only remembers the last target for *piercing* bullets, so a child born
+at `hit.pos` would be hit again on its first swept test), and `can_hit` keeps it from re-hitting a target it has
+already chained through once `can_hit` exists **[planned]**; until then give the chain `pierce`-free paths that do not
+cross a seen target, or accept the double hit.
 
 `sense.*` queries are fast spatial queries (over `HurtboxGrid`), not full scans, and exist only once the matching Fragment is earned (see below).
 
@@ -481,8 +516,8 @@ Reads see the state at the start of the tick (before this tick's player writes a
 
 - `print(...)` / `log(...)` → the in-game console, tagged with the file and line
 - `assert`, `error`, `pcall`, `xpcall` behave normally (a watchdog stop is not catchable)
-- `require("name")` (capability `package`) loads another script from the player's script
-  folder (no outside paths). Modules are cached per script load.
+- `require("name")` loads another module from the script's **own folder subtree** (read-only, text-only, same sandbox and
+  guards, no capability needed); arbitrary paths and `package.path` need `package`. Modules are cached per script load.
 - `sound(name, opts?)`, `shake(amount)`, `flash(color)` cosmetic effects **[OI-5]**
 
 ## Per-frame logic: tick vs batch
@@ -502,47 +537,92 @@ of the bullets per tick) cuts cost linearly (B slice 1/4 at 10000 bullets: 2.5 m
 
 ```lua
 spawn { speed = 200, bucket = "wave",
-        on_batch = function(bs, dt)            -- bs = struct-of-arrays view, 0-based
-          for i = 0, bs.n - 1 do
-            local a = bs.age[i] * 6
-            bs.vx[i] = bs.vx[i] + math.cos(a) * 40 * dt     -- direct packed writes (~66 ns)
+        on_batch = function(v, dt)                 -- v = the batch view (below); 0-based
+          local age, vx = v.age, v.vx              -- hoist the column objects once per call
+          for i = 0, v.n - 1 do
+            vx[i] = vx[i] + math.cos(age[i] * 6) * 40 * dt
           end
         end }
 ```
 
-`bs` fields (all packed arrays, 0-based): `id`, `x`, `y`, `vx`, `vy`, `age`, `a`, `b`
-(the `param_a/param_b` columns), plus `n`. Writing `vx/vy` takes effect when the callback
-returns. Structural effects go through `bs:spawn{...}`, `bs:kill(i)`, `bs:set_param(i, ...)`,
-which append to a **command buffer** (stride-6 records) applied natively after the call.
-The final layout is **[OI-15]** (see spike-results.md, *Interface diff*).
+### The batch view `v` (Lua-facing contract, backend-agnostic)
 
-Event callbacks (`on_hit`, `on_wall`, `on_death`) are delivered through a capped queue:
-default **256 events per behavior per tick**; overflow is *coalesced* into one summary
-(`count`, summed `damage`, centroid) or dropped, with a drop counter in the script panel.
-Events are not faster batched (measured), the cap exists for determinism and to survive
-~2000 hits per frame (cap: 0.9 ms vs 5.1 ms uncapped at 2000 hits).
+`v` is **an object, not raw arrays**, so that its backing can change without any change to scripts. Today the backing
+is **packed copies** made by the GDScript pool; the C++ bullet pool (approved by Karyu for *plain* bullets, see
+spike-results.md section 8.3) will back the same object with **zero-copy userdata over native pool memory**. Hooked and
+scripted bullets stay on the GDScript pool and keep the packed-copy backing. A script that follows the rules below cannot tell which backing it got.
+
+| Member | Meaning |
+|---|---|
+| `v.n` | number of bullets in this call (the slice), integer. Valid indices are `0 .. v.n - 1` |
+| `v.id[i]` | stable bullet id (integer, `(generation << 32) \| handle`), read-only |
+| `v.px[i]`, `v.py[i]` | position, read-only (a jump is a teleport: use `v:teleport`, never a write) |
+| `v.vx[i]`, `v.vy[i]` | velocity, **read/write** |
+| `v.age[i]` | seconds since spawn, read-only |
+| `v.pa[i]`, `v.pb[i]` | the per-bullet scratch numbers `param_a` / `param_b`, **read/write** |
+| `v:teleport(i, x, y)`, `v:kill(i)`, `v:reflect(i, layer, reverse)` | structural commands for the bullet at index `i` |
+| `v:spawn_polar(x, y, angle, speed, life)`, `v:spawn{...}` | spawn children (deferred; subject to the spawn caps, `nil`/counted when over) |
+
+Rules for both backings (rules 3 and 4 differ in how a violation is reported, as stated; a script that follows them behaves the same on both):
+
+1. **Columns are indexable objects**, `col[i]` with a 0-based integer `i`; `v.px` and friends are fetched once per call and
+   can be kept in locals (the un-hoisted `v.px[i]` form works and costs about 5% more, measured). Do not rely on `#col`,
+   `pairs` or `ipairs` on a column; use `v.n`.
+2. **Reads and writes are plain numbers.** Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
+   are applied when the callback returns; a callback that errors or is stopped by the watchdog applies nothing (as for
+   `player` writes). The host sanitizes written velocities (NaN ignored, clamped to the engine's speed limit).
+3. **Do not write a read-only column** (`px`, `py`, `age`, `id`). The native backing raises "column 'px' is read-only". The packed
+   backing cannot (columns are bare packed arrays, measured): the write changes only the throw-away copy the pool made for this call
+   and never reaches the engine. Use `v:teleport` to move a bullet.
+4. **Keep indices inside `0 .. v.n - 1`; negative indices are out of range.** The native backing raises a Lua error on any
+   out-of-range index (read or write) and never touches memory outside the view. The packed backing is memory-safe but not
+   uniform (measured on 4.7.2): an out-of-range **read returns `nil`**, a **negative index reads from the end** (`px[-1]` is the last
+   element), and an out-of-range **write raises** ("Could not set value for key"). The host sizes every column to exactly `v.n`, so
+   none of this can reach the engine; scripts must not depend on any of it.
+5. **`v` and its columns are valid only during the hook call.** Do not store them in `state` or upvalues. (The native backing
+   raises "view expired" if you do; the packed backing cannot detect it and would hand you stale copies. Do not depend on
+   either.)
+6. **Structural commands are queued** in a command buffer and applied after the callback returns, in call order; indices
+   refer to the bullets of *this* call, and a bullet killed earlier in the same call ignores later commands.
+7. `v:spawn{...}` takes the same fields as the global `spawn` (mapping table above); it does not return an id.
+
+Cost of the object in the current (packed-copy) backing, measured against raw packed arrays: **0.97-1.06x** (separate packed
+columns, hoisted or not), versus 1.12-1.25x for accessor methods (`v:pos(i)`), 1.19x for Lua-proxy columns and 2.0x for
+`Vector2` elements (spike-results.md section 8.2). The copy into separate columns costs about 0.07 us per bullet.
+
+Event callbacks (`on_hit`, `on_wall`, `on_death`) are delivered through a capped queue: default **256 events
+per behavior per tick**; the rest is **deferred to the next tick, never dropped**, and only above the hard queue bound
+(16,384 records) is the surplus **coalesced** into one counted summary (`count`, summed `damage`, centroid); see
+*One rule for events*. Events are not faster batched (measured); the cap exists for determinism and to survive ~2000 hits
+per frame (dispatch 0.7 ms vs 4.4 ms uncapped at 2000 hits).
 
 ## Writing player state
 
 Shot scripts may change the player, not only read it (PR #1: `player` is live, readable **and**
 writable). The Lua `player` table is a thin proxy over the engine's validated script surface,
-**`PlayerState`** (`player.state` in PR #4: "the single, validated surface a script (and the future Lua
+**`PlayerState`** **[PR #4, 1d2fe2c; not on `main` yet]** (`player.state`: "the single, validated surface a script (and the future Lua
 binding) uses to read and change the player"):
 
 ```lua
 player.hp = player.hp + 1        -- PlayerState.set_hp (0 kills)
-player.invulnerable = 0.5        -- set_invulnerable(0.5): seconds, or true/false
+player.invulnerable = 0.5        -- set_invulnerable(0.5): seconds, or true/false (script invulnerability layer)
 player.pos = vec2(0, 0)          -- set_position: a teleport that resets interpolation
 player.vel = player.vel * 2      -- set_velocity (speed clamped to 5000 px/s)
 player.max_hp = 8                -- set_max_hp ([1, 1000]); raising does not heal
+player.speed = 260               -- set_speed ([0, 5000] px/s, top running speed)
+player:dash(angle)               -- dash(angle): the dash button's action and rules; returns whether it started
 ```
 
 | Lua | `PlayerState` | Notes |
 |---|---|---|
 | `player.hp` r/w | `get_hp()` / `set_hp(v)` | clamped to `[0, max_hp]`; `0` kills (normal death and respawn); no i-frames, does not restart regeneration |
 | `player.max_hp` r/w | `get_max_hp()` / `set_max_hp(v)` | clamped `[1, 1000]`; hp pulled down if needed |
-| `player.invulnerable` r/w | `is_invulnerable()` / `set_invulnerable(seconds\|bool)` | seconds extend only (`0`/negative clears); `true` until cleared |
-| `player.iframes` r | `get_invulnerable_time()` | any source (hit, dash, script) shares one timer |
+| `player.invulnerable` r/w | `set_invulnerable(seconds\|true\|false)` writes the **script invulnerability layer**; read returns `is_script_invulnerable()` | **seconds replace the previous script value**, `0` or negative or `false` clears, `true` holds until cleared (**no cap**). It is **its own layer**, separate from the engine's i-frames: `false` clears only what scripts set and **never cancels engine i-frames**; attacks with `pierces_script_invuln` (Lua `null_pierce`) ignore this layer |
+| `player.script_invulnerable` r, `player.engine_invulnerable` r | `is_script_invulnerable()`, `is_engine_invulnerable()` | engine = hit i-frames (0.75 s) and the dash (0.2 s), which scripts cannot write or cancel; `PlayerState.is_invulnerable()` is either layer |
+| `player.iframes` r | `get_invulnerable_time()` (and `get_script_invulnerable_time()`, `get_engine_invulnerable_time()`) | longest remaining time over both layers; `INF` while the script flag is `true` |
+| `player.speed` r/w | `get_speed()` / `set_speed(v)` | clamped `[0, 5000]` px/s |
+| `player.regen_delay`, `player.regen_interval`, `player.regen_amount` r/w | `get_regen_delay()` / `set_regen_delay(s)` etc. | delay `[0, 3600]` s, interval `[0.05, 3600]` s, amount `[0, max_hp]` per step (`0` turns regeneration off) |
+| `player:dash(angle)` | `dash(angle)` | starts a dash and returns `true`, or `false` while dashing, on cooldown or dead; not buffered; **not** a state write; NaN angle: `false` |
 | `player.pos` r/w | `get_position()` / `set_position(v)` | teleport; clamped to +-100000 |
 | `player.vel` r/w | `get_velocity()` / `set_velocity(v)` | speed clamped to 5000 px/s |
 | `player.dashing`, `player.can_dash` r | `is_dashing()`, `can_dash()` | |
@@ -552,9 +632,11 @@ player.max_hp = 8                -- set_max_hp ([1, 1000]); raising does not hea
 | `player.since_damage` r | `get_time_since_damage()` | seconds |
 
 - **Validation lives in the engine.** `PlayerState` ignores NaN (with a warning), clamps infinities and
-  out-of-range values, and is a no-op on a freed player. The Lua layer adds **no gameplay restriction**;
+  out-of-range values, and is a no-op on a freed player. **The engine applies every `PlayerState` setter immediately.** The Lua layer adds **no gameplay restriction**;
   it only rejects wrong *types* (a Lua error). `player.hp = 1e300` is clamped to `max_hp`, not refused.
-- **When writes apply.** Assignments inside a callback are recorded in a write set (a later read in the same
+- **When writes apply. This is a rule of the Lua binding, not of the engine:** `PlayerState` has no transaction or commit
+  step, so the *end-of-callback commit* (and "an aborted callback commits nothing") is implemented by the `ScriptHost` `player`
+  proxy itself. Assignments inside a callback are recorded in a write set (a later read in the same
   callback sees the new value) and **committed when the callback returns** (PR #1: "writes apply at the end
   of the current callback"); a callback that errors or is aborted by the watchdog commits **nothing**.
   - From `on_fire` / `update` (they run in weapon code, before the bullet step) the commit calls
@@ -567,20 +649,36 @@ player.max_hp = 8                -- set_max_hp ([1, 1000]); raising does not hea
   `hurtbox.receive_hit(damage, pos, vel)` and **`Health` applies it** (5 max hp, 0.75 s i-frames, regeneration
   after 5 s). `set_hp` does *not* go through `Health.damage`: no i-frames, no `damaged` signal, regen timer
   untouched, and a heal in the same tick as a hit lands after it (apply point). Scripts never call
-  `receive_hit` on the player.
+  `receive_hit` on the player. **[PR #4]** `Health.try_damage(amount, source_flags)` reports why a hit did or did not land:
+  `APPLIED`, `BLOCKED_ENGINE` (hit i-frames or a dash: nothing pierces these), `BLOCKED_SCRIPT` (script invulnerability; the same
+  attack with `pierces_script_invuln` would have landed) or `IGNORED` (not a positive number, or already dead); the
+  `damage_blocked` signal carries it. The Lua side may read it in `on_hurt`-style hooks; it does not change engine behaviour.
 - **Scaling incoming damage:** `on_hurt = function(ctx, dmg, src) return dmg end` (weapon-level, PR #1 3.1) is
   called by `Health` before damage is applied; the return value replaces the damage (`0` = ignore). It is
   synchronous and hit-rate only, so it runs under the same budget as other callbacks. **Engine ask OI-16.**
-- **Provenance for the "modified" tag (PR #1 section 12):** the facade records which writes came from
-  scripts. `PlayerState` has a single shared invulnerability timer today, so the source (script vs hit vs
-  dash) is not distinguishable; **OI-16** asks for a source flag.
-- **Interface still needed from the Gameplay Engineer (OI-16):** `Health` hook for `on_hurt`
-  (e.g. a `damage_modifier: Callable`), `PlayerState` accessors for `max_speed` (`player.speed`) and
-  `regen_delay` / `regen_interval` / `regen_amount`, a dash trigger `try_dash(angle)` on the facade
-  (`player.dash(angle)`: same action as the button, returns `false` on cooldown, **not** a state write),
-  a source flag on invulnerability, and a `player_changed` signal for the UI.
+- **Write detection, not provenance.** The `player` proxy keeps a `__newindex` **only to detect writes** and emit events that
+  boss counters can read (the Rift teleport counter, the Equalizer, the Eater's Hunger meter). **Nothing is tagged
+  and nothing is stored**: no record of which script or weapon wrote, no "modified" flag. `PlayerState` in PR #4 has no
+  such signals and applies writes immediately, so **the events are emitted by the Lua binding's `player` proxy**
+  (`ScriptHost`) when a write is committed (see *When writes apply*), and only if the committed value differs from the
+  old one. Event names (**proposed**; the Gameplay Engineer and the Game Designer confirm them, and may prefer to host
+  the signals on `PlayerState`):
 
-## Capabilities and importing
+  | Signal | Arguments | Emitted for |
+  |---|---|---|
+  | `script_wrote` | `field: StringName` (`hp`, `max_hp`, `invulnerable`, `pos`, `vel`, `speed`, `regen_*`), `old: Variant`, `new: Variant` (after clamping) | every committed write |
+  | `script_teleported` | `from: Vector2`, `to: Vector2` | `pos` writes (the Rift/Equalizer counters listen here) |
+
+  For invulnerability the engine already has **`Health.script_invulnerability_changed(active)`** **[PR #4]** (an on/off edge, no
+  source, also fired when the layer expires), and `Player.teleported(position)` **[PR #4]** fires for every discontinuous move
+  *including respawn*, so it cannot serve as write detection; `script_teleported` is the script-only counterpart.
+  NaN/rejected writes emit nothing. The events carry no source, so the same event is emitted whether the write came from
+  a weapon script, a pasted script or a future mod.
+- **Interface still needed from the Gameplay Engineer (OI-16):** a `Health` hook for `on_hurt`
+  (e.g. a `damage_modifier: Callable`) and a `player_changed` signal for the UI. Everything else this section uses
+  (`set_speed`, the regen setters, `dash(angle)`, the script/engine invulnerability layers) **exists in PR #4**.
+
+## Capabilities
 
 Scripts run in a per-script environment built from a **capability set**. The weapon table
 declares what it wants:
@@ -593,14 +691,23 @@ Capabilities, **most dangerous first**, with the exact labels the game shows:
 
 | Capability | Label | What it gives |
 |---|---|---|
-| `native` | **Load native code. Can do anything to your computer.** | `package.loadlib`, C searchers, `package.cpath` |
+| `native` | **Load native code. Can do anything to your computer.** | `package.loadlib`, `package.cpath`, the C searchers 3 and 4 of `require` |
 | `os` | **Run programs and change your system.** | `os.*` including `os.getenv`, `os.execute`, `os.remove`, `os.rename`, **`io.popen`** (the only `io` member `os` brings); `os.exit` is replaced (below). `os.time` and `os.clock` are always available |
-| `io` | **Read and write files.** | `io.*` **without `io.popen`** (running programs belongs to `os`). With both `io` and `os`, `io.popen` is present |
-| `debug` | **Inspect and change Lua internals.** | `debug.*` minus the watchdog hook (below) |
-| `package` | **Load Lua modules from disk.** | `require`, `package.path`, `package.loaded` |
+| `io` | **Read and write files.** | `io.*` **without `io.popen`** (running programs belongs to `os`), plus **`dofile` and `loadfile`** (text mode only, below). With both `io` and `os`, `io.popen` is present |
+| `debug` | **Inspect and change Lua internals.** | `debug.*` minus the watchdog hook and the guard-reaching functions (below) |
+| `package` | **Load Lua modules from disk.** | `require` from **arbitrary paths**, `package.path` changes, `package.loaded`, `package.searchers` (Lua searchers 1 and 2) |
 | `net` | *reserved* | not implemented; unknown capabilities are ignored with a warning |
 
-Base Lua (`string`, `table`, `math`, `utf8`, `coroutine`, `pcall`, `load`, `os.time`, `os.clock`, ...)
+**`require` without any capability:** it exists in every script and loads `.lua` modules from **the script's own folder
+subtree**: read-only, text-only, plain dotted names (`require("lib.helpers")` -> `<script folder>/lib/helpers.lua`; no absolute
+paths, no `..`), loaded into the **same sandbox environment** and under the same watchdog and guards as the script itself.
+`package` is what unlocks other paths and `package.path`; `native` is what adds the C searchers 3 and 4.
+
+**`dofile` / `loadfile`:** available **only with `io`**, **text mode only**. Binary chunks are refused everywhere
+(`load` and `loadfile` use mode `'t'`; `string.dump` does not exist); a file that starts with the binary signature
+fails with "attempt to load a binary chunk (mode is 't')".
+
+Base Lua (`string`, `table`, `math`, `utf8`, `coroutine`, `pcall`, `load`, `os.time`, `os.clock`, the confined `require`, ...)
 is always available. **Platform availability (PR #1 section 10):** on web `native`, `os`, `io` and `package` are
 unavailable (the switches show disabled with the reason; the libraries are `nil`); on mobile `native` is
 unavailable and `io`/`package` are limited to the app data folder. Engine rules that hold **regardless of what is granted**:
@@ -611,30 +718,55 @@ unavailable and `io`/`package` are limited to the app data folder. Engine rules 
 - **With `debug` granted a script still cannot remove or replace the watchdog hook.**
   `debug.sethook` / `gethook` become no-ops, `debug.getregistry` is removed, and the real
   watchdog lives in a host callback outside Lua.
-- **`load` is text only** (and uses the script's environment unless given one). Lua 5.4 has
+- **`load` is text only** (mode `'t'`, and uses the script's environment unless given one). Lua 5.4 has
   only `load` for compiling strings.
 - Native code (`native`) is the only capability that can escape the guard rails; it has the
   strongest warning for that reason.
+- **Debug-proofing is the G1 design** (host-owned coroutine + yielding count hook + trimmed library copies, see *Sandbox*).
+  It is the documented answer to "what stops a script from defeating the limits"; the source-built binding only moves the
+  string/allocator limits into C.
 
-**Your own scripts:** a simple opt-in list (a switch per requested capability, no scary
-warning), remembered per script.
+### The capability prompt
 
-**Imported or shared scripts (clipboard, workshop, file drop):** the game opens an *import
-warning* first ("Scripts from other people can do anything their permissions allow. Only
-enable what you understand.") with:
+**Applies to any script that requests `os`, `io`, `debug`, `package` or `native`, whatever its origin** (typed in the
+in-game editor, saved from an external editor, pasted from somewhere else). There is no provenance flag and no
+`shots/imported/` folder; a script is not treated differently because of where it came from.
 
-- one **switch per requested capability**, in the order above (most dangerous first),
-  **all off by default**, each with its label;
+When such a script is loaded (first time, or when the grant no longer applies), the game shows a prompt with:
+
+- one **switch per requested capability**, ordered **most dangerous first** (`native`, `os`, `io`, `debug`, `package`),
+  **all off by default**, each with its label from the table;
 - a **View source** button;
-- **no "allow all"** on first run;
-- the grant is **remembered per script content hash**, so any edit (or an updated copy of an
-  imported script) asks again.
+- the script still loads if you leave everything off; calls into a capability it was not granted fail with a clear error
+  ("`io` not granted"). Scripts that request none of the above, and `require` of own-folder modules, never prompt.
 
-A script that needs a capability it was not granted still loads; the calls fail with a clear
-error ("`io` not granted").
+### Grants
+
+- **Keyed by content hash.** A grant is stored against the hash of the script's content.
+- **Edits in the in-game editor carry the existing grant forward** (the editor knows it is the same script being edited).
+- **External-editor saves do not re-prompt on every save.** A save from outside changes the hash, so the prompt appears once
+  and offers **"Trust this file while I edit it"**: a **per-session trust for that file path**, cleared on restart. While
+  it is active, saves of that path reload without prompting.
+- **In every case, an edit that ADDS a capability to `needs` prompts again, for just the new capability** (existing grants
+  stay as they are).
+- **Hot reload re-checks grants before swapping in the new code** (see *Hot reload*): the new version is built into a
+  fresh environment from the grants that apply to it, and if the prompt is required the old version keeps running until
+  you answer.
 
 A more limited mode (reduced API, no engine-object access, determinism) is **planned later**
 and not specified here. Determinism and seeding are **still open** (OI-2).
+
+### Deferred: in-game sharing/import
+
+**Not part of the current scope (Karyu).** The game has no workshop, no import flow and no trust model *between players*
+yet. Players may paste scripts from elsewhere; those are simply scripts, and the capability prompt above applies to
+them like to any other. When in-game sharing is picked up, these are the pieces still to design:
+
+- the import flow itself (clipboard / file drop / workshop) and where imported files live (the provenance flag and the
+  `shots/imported/` folder were considered and **dropped**);
+- the stronger malicious-code warning text shown before importing someone else's script (the prompt's switches, View source
+  and per-hash grants already exist and will be reused);
+- a more limited mode for shared scripts (reduced API, determinism).
 
 ### Library opening
 
@@ -661,7 +793,7 @@ can see how close you are. Values are starting values, aligned with PR #1 sectio
 | Consecutive timeouts | 3 | **the script is suspended until it is saved again** (PR #1; replaces the draft's "3 aborts in one second") |
 | Wall clock per callback | 50 ms hard abort (spike: 300 ms) | callback aborted, same handling as a timeout |
 | Lua time per frame (all callbacks) | 3 ms PC, 2 ms web/mobile | see *When the budget runs out* |
-| Script memory | **64 MB (adopted)**, lower on web/mobile | see *Memory cap* below |
+| Script memory | **64 MB (adopted), soft on stock** (hard only on a source build with P1-P3), lower on web/mobile | see *Memory cap* below |
 | Events per behavior per tick | 256 dispatched | remainder is **deferred**, never dropped (see *One rule for events*) |
 | Deferred-spawn buffer per tick | 8192 | surplus returns `false`, counted |
 | Pattern-matching subject length | 1,024 chars (stock binding) | `string.find/match/gmatch/gsub` raise an error above it; native pattern code cannot be interrupted (1,024 chars worst case = ~4 ms) |
@@ -734,18 +866,20 @@ past the cap, which the stock lua-gdextension 0.8.2 binary does not expose. Plan
 ### Sandbox
 
 Everything here is the default for a script **without** extra capabilities. See
-*Capabilities and importing* for what a grant changes.
+*Capabilities* for what a grant changes.
 
 Available: `base` (`assert`, `error`, `ipairs`, `next`, `pairs`, `select`, `tonumber`, `tostring`, `type`,
 `raw*`, `setmetatable`, `getmetatable`, `pcall`, `xpcall`, `load`, `collectgarbage` with only
 `collect/count/step`), `string` (bounded `rep` and pattern functions), `table`, `math`, `coroutine`
 (wrapped so child coroutines carry the watchdog), `utf8`, `os.time`, `os.clock`, plus the APIs above.
-Not available by default: `io`, `os` (beyond `time`/`clock`), `package`/`require`, `debug`, FFI,
+`require` is available but confined to the script's own folder subtree (see *Capabilities*).
+Not available by default: `io`, `os` (beyond `time`/`clock`), `package`, `debug`, `dofile`/`loadfile` (those two need `io`), FFI,
 raw Godot objects.
 
-**Removed in every mode, with or without capabilities:** binary chunks (`load` is text-only and takes
-strings only, no reader functions; `string.dump` does not exist), `dofile`, `loadfile` and the
-Lua 5.1 string compiler (Lua 5.4 has only `load`), and `__gc` finalizers (see below).
+**Removed in every mode, with or without capabilities:** binary chunks (`load` is text-only, mode `'t'`, and takes
+strings only, no reader functions; `string.dump` does not exist; `loadfile`/`dofile` refuse a binary signature too), the
+Lua 5.1 string compiler (Lua 5.4 has only `load`), and `__gc` finalizers (see below). `dofile` and `loadfile` exist
+**only with `io`** and only in text mode.
 
 **Hardening rules (spike-verified on Godot 4.7.2, lua-gdextension 0.8.2; details in spike-results.md, B4):**
 
@@ -773,8 +907,10 @@ Lua 5.1 string compiler (Lua 5.4 has only `load`), and `__gc` finalizers (see be
    offered whole. Honest limit: `debug` still means "inspect and change Lua internals"; it cannot lift a guard.
 5. **`os.exit` never kills the game.** With `os` granted it is replaced: it flags the script and spins until
    the host hook ends it (also when called from a child coroutine).
-6. **`io.popen` needs `os`; package C searchers 3 and 4 and `package.loadlib` need `native`**; `package.path`
-   is limited to the script folder (`res://scripts/?.lua`).
+6. **`io.popen` needs `os`; package C searchers 3 and 4 and `package.loadlib` need `native`; `dofile`/`loadfile` need `io`.**
+   Without `package`, `require` is confined to the script's own folder subtree and `package` does not exist; the native
+   `read_text` behind it refuses absolute paths, `..`, anything not ending in `.lua` and anything outside the folder
+   (measured, B4: `../project`, `/etc/passwd`, `sub/mod`, `mod.lua` and `..mod` all fail).
 7. **The engine facade is native.** `spawn`, `player.*`, `reflect` call validated native callables; script
    tampering (`rawset(_G, "spawn", nil)`, replacing `player`) only breaks the script's own environment, the
    next callback starts from a freshly built environment.
@@ -797,19 +933,37 @@ Save the file and the game reloads it, no restart needed.
 - Timers and coroutines of old shots finish with the old code.
 - Weapon-level `state` is preserved if the new table declares the same keys.
 - Reload errors never discard the working version (see above).
+- **Grants are re-checked before the swap.** The new code is loaded into a fresh environment built from the grants that
+  apply to its content hash and `needs`; an edit that adds a capability prompts for just that capability, and until the
+  prompt is answered the old version keeps running (external-editor saves follow the per-session
+  "Trust this file while I edit it" rule, see *Grants*).
 
 ## Open interface questions
 
-Refreshed against PR #1, #2 (2026abe) and #4. **Answered** items are kept so the numbers stay stable.
+Refreshed against PR #1 (f0fe292), `main` (39ff259, includes PR #2) and PR #4 (1d2fe2c). **Answered** items are kept so the numbers stay stable.
 
 **Answered**
 
 - **[OI-1]** Coordinates: y down, radians, 0 = +x, clockwise, `NAN` angle faces velocity, 60 Hz.
 - **[OI-7]** Persistence: `state` is persistent, always available, survives respawn, saved (PR #1).
-- **[OI-11]** Sandbox policy: full Lua for own scripts, opt-in capabilities, import warning, limited mode later (PR #1 Q2).
+- **[OI-11]** Sandbox policy (PR #1 f0fe292): full Lua for every script, capabilities via `needs` behind a **capability prompt for any script that requests `os`/`io`/`debug`/`package`/`native`, with per-content-hash grants** (see *The capability prompt*, *Grants*); only the in-game **import flow and its stronger warning are deferred** (sharing is out of scope for now); limited mode later (PR #1 Q2).
 - **[OI-12]** Fixed 60 Hz; the native motion subset is `acceleration`, `turn_rate`, `pierce`, `collide_world`, `param_a/b`
   (see the mapping table for what is missing).
-- **[OI-13]** Pool layout and handles: dense SoA, swap-remove, stable ids `(generation<<32)|handle`, `pool.user`.
+- **[OI-13]** Pool layout and handles: dense SoA, swap-remove, **[PR #4]** stable ids `(generation<<32)|handle` through a handle->slot indirection table, `pool.user`.
+
+**Engine-ask status (Gameplay Engineer, latest)**
+
+| Ask | Status |
+|---|---|
+| `BulletPool.teleport(i, p)` (OI-19) | **done**: on `main` via PR #2 |
+| Wall normal (OI-17) | **coming**: returned with the `WallGrid` hit; `wall.normal` and `bounce` follow it |
+| `can_hit` (OI-18a) | **agreed shape**: an opt-in per-bullet flag, runs before damage and before pierce |
+| `pierces_script_invuln` (Lua `null_pierce`) | **exists in PR #4 (1d2fe2c)**: `ShotRequest` field and pool flag, passed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; **not a new engine ask**; the native pool keeps the bit |
+| Per-owner live counters (OI-18c) | **planned**: in the saturation PR (10k logical cap plus an enemy reserve), after PR #4 |
+| `PlayerState` script/engine invulnerability queries (OI-16) | **exist in PR #4**: `is_script_invulnerable()`, `is_engine_invulnerable()` and the time getters; `set_invulnerable` writes the script layer only |
+| Player write-detection events (OI-16) | **proposed here**, emitted by the Lua binding (`script_wrote`, `script_teleported`); PR #4's `PlayerState` has no such signals and applies writes immediately |
+| Batch API, `request_batch`, `request_polar`, stable id column, bucketing (OI-15) | **planned**: the Gameplay Engineer's pool refactor, after the saturation PR, built against spike-results.md section 8 |
+| Native zero-copy batch view (OI-20) | **approved for plain bullets** (Karyu, relayed); needs the C++ contract of spike-results.md section 8.3 and the lua-gdextension P4 patch |
 
 **For the Gameplay Engineer**
 
@@ -821,15 +975,18 @@ Refreshed against PR #1, #2 (2026abe) and #4. **Answered** items are kept so the
   the bullet system, and how does a script learn the response (`hit.response`)? Also parry: PR #4 notes the
   `reflect_bullet` mechanism exists but no trigger decides which bullets get reflected.
 - **[OI-14]** `pool.user` / `ShotRequest.user`: ref-counted copy, reset on despawn (answered); event records must hold the reference.
-- **[OI-15]** Hook interface: `update_mode` (NONE/PER_BULLET/BATCH), `update_interval`, `event_mask`, `event_cap`,
-  `on_update_batch`, `on_events`, command buffer, `ShotEmitter.request_polar` / `request_batch` (spike-results.md).
-- **[OI-16]** Player: `Health` hook for `on_hurt`, `PlayerState` accessors for `max_speed` and regen parameters,
-  `try_dash(angle)`, invulnerability source flag, `player_changed` signal.
-- **[OI-17]** `WallGrid`: a `hit_normal` array next to `hit_t`; bounce count; `on_wall` event.
-- **[OI-18]** (a) `BulletBehavior.can_hit(pool, index, hurtbox) -> bool` before `receive_hit`; (b) re-read `pierce`
-  after `on_hit`; (c) per-owner live counters in `BulletPool` for the 70/30 player/enemy split.
-- **[OI-19]** `BulletPool.teleport(index, position)` (coming in PR #2) and `reflect` exposure confirmed (PR #4); batch
-  position writes use a `TELEPORT` command.
+- **[OI-15]** Hook interface (**planned, pool refactor**): `update_mode` (NONE/PER_BULLET/BATCH), `update_interval`, `update_slice`,
+  `event_mask`, `event_cap`, `on_update_batch(UpdateBatch)`, `on_events`, command buffer, stable id column, bucketing by behavior,
+  `ShotEmitter.request_polar` / `request_batch` (spike-results.md section 8; the Lua-facing shape is the batch view `v`).
+- **[OI-16]** Player: still open are a `Health` hook for `on_hurt` and a `player_changed` signal. PR #4 already provides `set_speed`,
+  the regen setters, `dash(angle)` and the invulnerability layers; the write-detection events are emitted by the Lua binding (see *The player*).
+- **[OI-17]** `WallGrid`: **normal returned with the hit (coming)**; bounce count; `on_wall` event.
+- **[OI-18]** (a) `can_hit`: **opt-in per-bullet flag, before damage and pierce (agreed shape)**; (b) re-read `pierce`
+  after `on_hit`; (c) per-owner live counters in `BulletPool` for the player/enemy split (**saturation PR, after #4**).
+- **[OI-19]** `BulletPool.teleport(index, position)` (**done, PR #2, on main**) and `reflect` exposure confirmed (PR #4); batch
+  position writes use a `TELEPORT` command (`v:teleport`).
+- **[OI-20]** Native batch view (C++ pool, plain bullets only): implement the descriptor contract of spike-results.md
+  section 8.3 (column descriptors, bounds, validity window, command buffer); lua-gdextension needs the P4 patch to bind it.
 
 **For Karyu** (still open)
 
@@ -837,4 +994,4 @@ Refreshed against PR #1, #2 (2026abe) and #4. **Answered** items are kept so the
 - **[OI-9]** Run information (waves, score) and upgrades scripts may see; `run.*` is dropped until defined.
 - **[OI-10]** Is cross-platform exact behaviour (instruction counts, web vs desktop) required?
 - Shape of the planned limited/Constrained mode (PR #1 Q10/Q11): reduced API, no engine access?
-- Do capability labels and the import warning need localisation or a different tone?
+- Do capability labels need localisation or a different tone? (The stronger import warning is deferred with the import flow.)
