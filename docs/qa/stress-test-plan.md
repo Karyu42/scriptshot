@@ -1,9 +1,18 @@
 # Bullet stress test plan
 
 Goal: prove Scriptshot holds a **16.6 ms (60 FPS) p95 frame time** at the target bullet count, and catch regressions in CI.
-Status: plan only. Needs the bullet system and a Lua shot runner to exist (Gameplay Engineer's foundation PR).
+Status: the headless part exists in the core scaffold (PR #2): `tests/benchmark/bullet_benchmark.tscn`, run via
+`./tools/run_benchmark.sh --json=PATH`. CI runs it as the `perf` job and `tools/ci/check_perf.py` gates on its JSON
+(`results[].work_p50_ms / work_p95_ms / work_p99_ms`). Still missing: the windowed run, dense-collision mode,
+and the Lua variants below (blocked on the Lua binding decision).
 
-## 1. Scenario: `test/perf/stress_runner.tscn`
+Gaps in the current benchmark (planned follow-ups):
+- Only the 5k and 10k steps run by default, and bullets are scattered randomly, so there are few hits and no clustered collisions.
+- No bullets with behaviour hooks (`behavior_id != 0`), which is the path Lua will use.
+- The `RenderingServer` is the dummy one, so the MultiMesh upload cost is not measured.
+- A target count that is not benchmarked passes silently (`n/a`, exit 0). CI passes `--target-bullets` and `check_perf.py` fails if it is missing.
+
+## 1. Scenario (`tests/benchmark/bullet_benchmark.tscn`; target design below)
 - A scene with a player, a fixed RNG seed, no input and no random spawns, so runs are comparable.
 - A spawner ramps the **live bullet count** through steps: **1k -> 2k -> 5k -> 10k**.
   Each step runs 10 s, and the first 2 s are warm-up and not measured.
@@ -11,7 +20,7 @@ Status: plan only. Needs the bullet system and a Lua shot runner to exist (Gamep
   - **Moving**: bullets fly and despawn at screen edge, so the count is held steady by re-spawning.
   - **Dense field**: bullets overlap enemies and walls, so this is the collision worst case.
 - CLI args after `--`: `--ramp=1000,2000,5000,10000 --seconds=10 --out=reports/perf.json --mode=gdscript|lua`.
-- Output `perf.json`: `{"godot":"4.7.2","mode":"..","steps":[{"bullets":N,"frames":F,"p50_ms":..,"p95_ms":..,"p99_ms":..,"max_ms":..}]}`.
+- Output JSON today: `{"godot":..,"target":..,"results":[{"bullets":N,"frames":F,"work_p50_ms":..,"work_p95_ms":..,"work_p99_ms":..,"work_max_ms":..,"wall_*":..,"alive_at_end":..}]}`. Add a `mode` field when the Lua variants land.
 
 ## 2. What is measured
 - Per-frame time from `Performance.get_monitor(Performance.TIME_PROCESS)` + `TIME_PHYSICS_PROCESS`
@@ -43,10 +52,10 @@ spend at most **~50% of the frame budget (8 ms)** at the target count. If it is 
 (one Lua call per volley) or a native pattern library, not a lower bullet count.
 
 ## 5. CI integration
-- `perf` job in `.github/workflows/ci.yml`. It is `workflow_dispatch`-only for now (`run_perf: true`).
-  Once the scene exists, switch it to run on PRs touching `scripts/`, `scenes/` or the Lua addon, plus a nightly schedule.
+- `perf` job in `.github/workflows/ci.yml` runs on every PR and push to main (about 15 s). It gates on p95 <= 16.6 ms at 5000 bullets.
+  Measured headroom is about 3x (p95 ~5 ms), so shared-runner noise should not flake it. Add a nightly schedule when the Lua modes exist.
 - `tools/ci/check_perf.py` enforces `--p95-ms 16.6 --target-bullets N` and the optional `--baseline` regression check.
-  Its exit code fails the job, and `perf.json` is uploaded as an artifact.
+  Its exit code fails the job, and `bench.json` is uploaded as an artifact.
 
 ## 6. Deliverables and order
 1. Spawner and stats collector (GDScript), `perf.json` writer, `check_perf.py` (done).
