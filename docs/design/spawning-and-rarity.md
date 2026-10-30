@@ -98,7 +98,7 @@ Every affix punishes **one habit** and rewards **one idea**. None blocks an API,
 | **Splitting** | Spawn | T0 | On death splits into **2 halves** (40 % HP each, ×1.3 speed, no further splits) | 3 halves at 30 % HP | One huge single hit (overkill is wasted) | Sustained or area damage, follow-up |
 | **Summoner** | Spawn | T0 | Every 6 s summons **2 Swarmers** (max 6 alive, they drop nothing) | every 4 s, max 8 | Tunnel vision on the elite itself | Area coverage, `sense.enemies_in` |
 | **Blinker** | Offensive/Utility | T2 | After taking **≥ 15 damage within 1 s** it teleports 400 px (0.5 s telegraph ring at the target, once per 4 s) | threshold 10, 300 px, cooldown 3 s | Burst dumps of damage in one second | Sustained, tracking damage |
-| **Null-shot** | Offensive/Utility | T2 | Every 5 s fires one telegraphed **Null bullet** (≥ 0.8 s warning, white-violet). It ignores the script flag `player.invulnerable` and overheal, **but respects engine i-frames** (pillars §12.1/§12.2). 1 damage | every 4 s, two bullets | Scripts that try to skip the fight (god mode, auto-heal) | Dash and movement; engine i-frames |
+| **Null-shot** | Offensive/Utility | T2 | Every 5 s fires one telegraphed **Null bullet** (≥ 0.8 s warning, white-violet). It ignores the script flag `player.invulnerable` and overheal, **but respects engine i-frames** (pillars §12.2/§12.3). 1 damage | every 4 s, two bullets | Scripts that try to skip the fight (god mode, auto-heal) | Dash and movement; engine i-frames |
 
 **First playable (decided Q23):** only **Splitting, Summoner, Bulwark, Phasing and Null-shot** ship first; **Mirrored, Warded and Blinker** stay specified here and ship later. Until then, rare elites pick their two affixes from the five that exist (different groups), and of the legendary signatures only **Hydra** is fully available (Prism Knight, Nullwalker and Phase Choir need Mirrored, Blinker or Warded).
 
@@ -216,11 +216,11 @@ Each Phase ★ is entered at **15 % HP** (it comes *after* the normal last phase
 | **Warden** | **Writ**: every 6 s a **Null ring** (white-violet, 1 s telegraph, one gap) | Ignores the `player.invulnerable` flag and overheal; engine i-frames and the dash still work |
 | **Sower** | **Overgrowth**: seed fields **flip bullet ownership**: a player bullet touching a field becomes enemy-owned (once, same rule as a reflection) | Scripts that pour bullets through the field; fewer, better-aimed bullets |
 | **Prism** | **Refraction**: a hit on a body face spawns **3 enemy bullets** from the hit point at ±20° | Weak-point precision instead of body spam |
-| **Lattice** | **Equalizer** (pillars §12.1): reads `player.hp / max_hp` and **scales its attacks to it**: overheal becomes boss damage (+1 boss tier per 2 overheal pips) | Fighting at normal HP, or at a lower one |
-| **Mantle** | **Rift** (pillars §12.1): any `pos` write or position jump over 600 px opens a Rift at origin and destination that emits a telegraphed 1-damage ring and gives the boss a charge | Moving by walking and dashing |
-| **Archivist** | **Echo**: for 10 s it **replays your last 8 s of bullet signatures** as enemy bullets aimed at you (enemy-owned, 1 damage) | Changing your pattern mid-fight, which is exactly what the Habituation rule already pushes you to do |
+| **Lattice** | **Equalizer** (pillars §12.2): reads `player.hp / max_hp` and **scales its attacks to it**: overheal becomes boss damage (+1 boss tier per 2 overheal pips) | Fighting at normal HP, or at a lower one |
+| **Mantle** | **Rift** (pillars §12.2): any `pos` write or position jump over 600 px opens a Rift at origin and destination that emits a telegraphed 1-damage ring and gives the boss a charge | Moving by walking and dashing |
+| **Archivist** | **Replay**: for 10 s it **replays your last 8 s of bullet signatures** as enemy bullets aimed at you (enemy-owned, 1 damage) | Changing your pattern mid-fight, which is exactly what the Habituation rule already pushes you to do |
 
-The **Eater** (pillars §12.1) stays a flavour mechanic only for the boss that carries it and is not used here (it needs a Corruption meter).
+The **Eater** (pillars §12.2) stays a flavour mechanic only for the boss that carries it and is not used here (it has its own in-boss Hunger meter; there is no global Corruption). Phase ★ is that boss's **counter phase** (pillars §12.4): it **is beaten** when it ends without the player taking damage from its Null/counter attacks, which earns the boss's Seal and an alternate-solution Codex entry. That is a dodging check on the fight itself and never looks at the player's script or state.
 
 ## 6. Deterministic generation
 
@@ -281,7 +281,7 @@ for region R in canonical order:
 Rewards depend **only on what was killed and its rarity**. Nothing here is conditional on how the player's script behaved.
 
 ### 7.1 Currencies and sinks
-- **Shards** (dropped as small white motes that fly to the player; one number in the editor footer): an additional source of **Sense Level II**. **25 Shards = one Level II token**, spendable on any Sense whose Level I the player holds. Level I Senses, tier access and Fragments are **never** for sale.
+- **Shards** (dropped as small white motes that fly to the player; one number in the editor footer): a route to **Sense Level II** (with the Level II from rare and legendary boss kills below, the **only** routes; Level II depends on no mark, tag or performance condition). **25 Shards = one Level II token**, spendable on any Sense whose Level I the player holds. Level I Senses, tier access and Fragments are **never** for sale.
 - **Codex pages:** each affix gets a one-screen Codex page ("what this does, how people beat it") the first time it is killed (P4: learn by finding). Rare and legendary variants add a **variant page** per boss type.
 - **Trophies:** cosmetic bullet trails and the player's ring accent (no stats).
 
@@ -293,10 +293,10 @@ Rewards depend **only on what was killed and its rarity**. Nothing here is condi
 | Rare elite | 3 | Affix pages (first time as rare: "rare intensity" note) | none |
 | Legendary elite | 10 | Signature page (first kill of each) | A **trophy** cosmetic per signature |
 | **Common boss** | 5 | Boss page | **Fragment**: Level I of its Sense (first kill of this type, any rarity) |
-| **Rare boss** | 10 | Boss page + variant page | Fragment if not yet owned **and Level II of that boss's Sense** (without spending Shards) |
-| **Legendary boss** | 25 (= one token) | Boss page + variant page + Phase ★ page | Fragment if not owned, Level II of its Sense, and a **legend trophy** (cosmetic trail + a name line in the Codex) |
+| **Rare boss** | 10 | Boss page + variant page + an alternate-solution entry for the variant twist | Fragment if not yet owned, **Level II of that boss's Sense** (without spending Shards; Mantle, which has no Sense, gives one token) and the boss's **Seal** |
+| **Legendary boss** | 25 (= one token) | Boss page + variant page + Phase ★ page | Fragment if not owned, Level II of its Sense (Mantle: a token), the boss's **Seal**, and a **legend trophy** (cosmetic trail + a name line in the Codex). Beating Phase ★ also gives its alternate-solution entry |
 
-Fit with `pillars.md` §4: Fragments, Level I and Codex are untouched. A boss of a type already killed (a second legendary Warden, say) gives Shards, the variant page and trophy only. **Gating:** the first kill of a boss type at *any* rarity gives the Fragment, so a player who never meets a rare or legendary boss still gets every Level I Sense; no rarity gates tier progression. Level II also stays available through the rule already in `pillars.md` §12.4; the Shard and rare/legendary paths in this doc **add** routes, they do not replace it.
+Fit with `pillars.md` §4: Fragments, Level I and Codex are untouched. A boss of a type already killed (a second legendary Warden, say) gives Shards, the variant page and trophy only. **Gating:** the first kill of a boss type at *any* rarity gives the Fragment, so a player who never meets a rare or legendary boss still gets every Level I Sense; no rarity gates tier progression. **Level II comes only from the Shard route and from rare/legendary boss kills** (pillars §12.4). Seals and alternate-solution Codex entries come from beating a boss's counter phase (from Tier 2, including a common boss) or from a rare variant; none of these depends on how the player's script behaved.
 
 ### 7.3 Pacing check (from the simulation, T4+)
 With 0.18 elites per chunk (54 % common, 42 % rare, 4 % legendary) the average elite is worth ≈ 0.54·1 + 0.42·3 + 0.04·10 ≈ **2.2 Shards**, so one Level II token costs about **11 elite kills**, i.e. around 10–15 minutes of mixed exploring and fighting in the far world. Six Senses at Level II is therefore an hours-long goal, which matches the meta loop of pillars §2.
@@ -322,7 +322,7 @@ Rule: **shape and outline carry the rarity** (readable in grayscale and for colo
 | **Legendary** | **Crown of ticks**, amber accent, slow pulse of the outline width (3 → 5 px) | Tick with an **amber pulse** (1.5 s) | Hum plus a fifth above, slowly swelling |
 
 ### 8.3 Clarity rules
-- A rarity cue never overlaps the boss weak point or a telegraph; telegraph colours keep priority (enemy bullets stay warm `#FF5A4D`, Null attacks stay white-violet, pillars §12.1).
+- A rarity cue never overlaps the boss weak point or a telegraph; telegraph colours keep priority (enemy bullets stay warm `#FF5A4D`, Null attacks stay white-violet, pillars §12.2).
 - Max **12 elites with cues** drawn on screen; beyond that, cues fade to the outline only (cost cap).
 - Every audio cue has a visual equivalent: a 0.3 s brightening of the ring (accessibility).
 
@@ -369,7 +369,7 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 1. **Pure function first.** `WorldGen.region_summary(seed, rx, ry, state)` (no node, no scene) returns bosses (chunk, type, rarity) and elite specs per chunk; the canonical-order driver holds `state`. Everything else (spawning nodes, beacons) reads it.
 2. **Golden tests (CI):** for 3 fixed seeds, the summary of rings 0–6 hashes to a recorded value; plus *order-independence*: generating region rings in canonical order vs. requesting a far region first (which must walk the canonical order up to it) yields the same list.
 3. **Data-driven:** `AffixDef` and `RarityDef` resources (fields per §3.4 and §3.3) so balancing is a data change; `rarity_table.tres` mirrors the tables in §2–§4 and is read by the simulation harness (a Python script that parses the `.tres` could keep doc and code in sync; optional).
-4. **Engine items** (extends pillars §5.5): per-`Hurtbox` `ABSORB/REFLECT` arcs (shared with Shieldbearer/Mirror/Phaser); a `null_pierce` bit on `ShotRequest`/`BulletPool`; a bullet **owner flip** (Sower Overgrowth, Mirrored: same code path as reflection); a `signature` recorder (Archivist Echo reuses the Habituation signature buckets of pillars §5.3).
+4. **Engine items** (extends pillars §5.5): per-`Hurtbox` `ABSORB/REFLECT` arcs (shared with Shieldbearer/Mirror/Phaser); a `null_pierce` bit on `ShotRequest`/`BulletPool`; a bullet **owner flip** (Sower Overgrowth, Mirrored: same code path as reflection); a `signature` recorder (Archivist Replay reuses the Habituation signature buckets of pillars §5.3).
 5. **Budgets:** elites and escorts count against the per-platform enemy-bullet reserve (pillars §3.3). Summoner caps (6/8 alive) and Splitting halves must respect it; Null rings are ≤ 24 bullets.
 6. **Cue cost cap:** ≤ 12 cue-drawing elites on screen (§8.3); `draw_arc` segment count 32.
 7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD halo and the shimmer sting from `AudioStreamGenerator` on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4.
