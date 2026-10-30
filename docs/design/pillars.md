@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **draft for review, revision 2 (owner decisions of 2026-10-30 folded in).** Written when the repo contained only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`; no issues or PRs). Nothing below describes existing code. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4 and Q8 are resolved and absent from the open list).
+> Status: **draft for review, revision 3 (owner decisions of 2026-10-30 folded in, incl. combat and writable player state).** Written when the repo contained only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`; no issues or PRs). Nothing below describes existing code. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4 and Q8 are resolved and absent from the open list).
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -17,6 +17,11 @@ Decided by the project owner. Everything else in this doc stays a proposal.
 | Q3 | **Boss spawn: hybrid** of deterministic region quotas plus a distance-based pity bump (former option C). Same seed = same bosses. | §6.3 |
 | Q4 | **Death: respawn at origin, keep everything** (former option A). | §5.4 |
 | Q8 | **All platforms: PC mouse + keyboard, controller, web and mobile.** | §10 (and design implications in §3.2, §8, §9) |
+| Health 1A | **5 HP shown as pips.** Most hits deal 1, boss attacks deal 1–2. HP regenerates 1 per 3 s after 5 s without damage. | §5.4 |
+| I-frames 2B | **0.75 s invulnerability after a hit** (the player blinks), plus a **dash that is invulnerable for 0.2 s on a 1.5 s cooldown**. | §5.4 |
+| Friendly fire 3C | **Your own bullets never hurt you.** A **reflected bullet becomes enemy-owned**, switches to the enemy colour and **can hit you**. | §5.1, §5.4 |
+| Death 4A | Respawn at origin, keep everything (same as Q4 above). | §5.4 |
+| **Player state is writable** | **Rejected: read-only player state.** Scripts **can change player state** (HP, invulnerability, position, speed, etc.) via the `player` table. Nothing in this doc treats player state as off limits. The design answer to "god mode is one line away" is §12 (tags, rewards, diegetic rules, constrained mode), not a ban. Open follow-up: **Q16**. | §3.1, §12 |
 
 ---
 
@@ -34,7 +39,7 @@ Decided by the project owner. Everything else in this doc stays a proposal.
 | # | Pillar | Test: "does this feature…" |
 |---|---|---|
 | P1 | **Code is the weapon** | …make writing code more rewarding? If it replaces code with menus, cut it. |
-| P2 | **No restrictions on the player, only pushback from the world** | …add a limit on what the player can write? If yes, reject. Express it as an enemy, a rule of physics, or a cost the world imposes instead. (Sole exception: the crash/hang guards in §3.2.) |
+| P2 | **No restrictions on the player, only pushback from the world** | …add a limit on what the player can write? If yes, reject. Express it as an enemy, a rule of physics, or a cost the world imposes instead. (Sole exception: the crash/hang guards in §3.2.) This includes your own player state: scripts may write HP, invulnerability, position and speed (§3.1); the world answers with tags, reward conditions and diegetic rules (§12), never a ban. |
 | P3 | **Legible minimalism** | …add visual/audio noise that hides the player's bullets? Cut or simplify. |
 | P4 | **Discovery over tutorials** | …teach by showing and letting the player find it? No wall-of-text tutorials. |
 | P5 | **Bosses are events** | …make a boss rarer, bigger, more memorable? Regular enemies exist to make the boss feel special and to give you something to test scripts on. |
@@ -121,8 +126,12 @@ return {
 |---|---|
 | Full Lua language and standard library (own scripts; `os`/`io` opt-in, see §3.2) | No design limits on loops, recursion, or state. Only the crash/hang guards of §3.2. |
 | `shoot{angle, speed, damage, life, radius, color?, update?, on_hit?, on_die?}` | `on_die` may call `shoot` → bullets spawning bullets. |
-| `ctx`: `aim`, `pos`, `vel`, `hp`, `time`, `dt`, `shot_count`, `device` (`"kbm"`, `"pad"`, `"touch"`) | Player's own state; `device` lets a script adapt (e.g., wider autoaim cone on touch) without the engine granting any input-based advantage. |
-| Persistent per-script `state` table | Survives respawn; saved in the save file. |
+| `ctx`: `aim`, `time`, `dt`, `shot_count`, `device` (`"kbm"`, `"pad"`, `"touch"`), plus per-call snapshots `pos`, `vel`, `hp` | `device` lets a script adapt (e.g., wider autoaim cone on touch) without the engine granting any input-based advantage. `ctx.pos/vel/hp` are convenience snapshots of `player` (below). |
+| **`player` (live, readable AND writable; decided, see §12)**: `player.hp` (0..`max_hp`, default 5), `player.max_hp`, `player.invulnerable` (bool script flag), `player.iframes` (seconds of engine i-frames left), `player.pos`, `player.vel`, `player.speed` (default 220 px/s), `player.dash_cd` (seconds left), `player.regen_delay`/`player.regen_rate` (defaults 5 s / 1 per 3 s) | Writes apply at the end of the current callback. `player.hp = 0` kills the player (respawn rules, §5.4). |
+| `player.dash(angle)` | The same action as the dash button (0.2 s i-frames, 1.5 s cooldown, §5.4); returns `false` while on cooldown. A script dashing is **not** a state write: it obeys the same rules as the button. |
+| `on_hurt = function(ctx, dmg, src) return dmg end` (optional script callback) | Called before damage is applied; the return value replaces the damage (`0` = ignore). Returning less than `dmg` is a tagged write (§12.1). |
+| `b.owner` on bullets (`"player"` / `"enemy"`) | Read-only; changes only through reflection (§5.1). |
+| Persistent per-script `state` table | Survives respawn; saved in the save file. (Not the same as `player` state.) |
 
 | Granted by Fragments (§4) | Examples |
 |---|---|
@@ -186,6 +195,8 @@ The language and the shot API are **never** locked. What grows over time is *wha
 | 2 | `sense.boss` (phase, weak point, telegraphs) | Boss #4 | Precision boss-killing scripts |
 | 3 | `sense.world` / persistent `state` across deaths | Boss #6+ | Long-term learning scripts, "memory" |
 
+Every Sense has a **Level I** (earned on **any** boss kill) and a **Level II** (extended data, earned with a *clean kill*, §12.4). Example: `sense.enemies_in(r)` Level I returns positions within 600 px; Level II returns positions, velocities and HP within any radius.
+
 Bosses are **not** a fixed list; each boss type has a *Fragment* it drops once per save; Fragment order is not enforced (open world), so each tier is gated by distance (§6) rather than count.
 
 ### Discoverability (P4)
@@ -198,13 +209,13 @@ Bosses are **not** a fixed list; each boss type has a *Fragment* it drops once p
 1. Bosses are the only POIs, and each carries a unique Fragment: *no boss, no new Sense*.
 2. Further from origin = tougher tiers = need for better scripts = need for new Senses.
 3. Boss encounters are **puzzles with several solutions**; solving one in a way you didn't expect is its own reward (Codex "alternate solution" entries record notable ones).
-4. Shot sharing (§7) and a per-boss "best time + script hash" board give mastery goals.
+4. Shot sharing (§7) and a per-boss "best time + script hash" board give mastery goals. Boards are split by the **modified/clean tag** (§12.3) and by platform class (Q15).
 
 ---
 
 ## 5. Challenge with unrestricted scripting
 
-**Principle:** if a player can write a script that trivializes content, that is acceptable *only after* they discovered the idea, and the world should always have a next layer that makes them rethink. Challenge comes from enemy behavior and world physics; **never** from banning APIs.
+**Principle:** if a player can write a script that trivializes content, that is acceptable *only after* they discovered the idea, and the world should always have a next layer that makes them rethink. Challenge comes from enemy behavior and world physics; **never** from banning APIs. **One deliberate exception to "discovered the idea":** god mode (`player.invulnerable = true`) is one line away from minute one, by decision. We neither hide nor ban it; §12 explains why the game stays meaningful anyway.
 
 ### 5.1 Regular enemy archetypes (starting values; HP is at Tier 0)
 
@@ -216,7 +227,7 @@ Bosses are **not** a fixed list; each boss type has a *Fragment* it drops once p
 | **Tank** | 400 | 50 px/s | **Armor 5**: each hit's damage is reduced by 5 (min 0) | Bullet damage per hit. 3-damage spam does **0**; big/slow bullets win |
 | **Sniper** | 20 | stationary, 600 px range | Draws a 0.8 s telegraph line, then one hit for 25 | Movement, bullet range |
 | **Phaser** | 80 | 100 px/s | Invulnerable except a 0.4 s pulse every 2.0 s | Timing, `sense.enemies_in`, burst scripts |
-| **Mirror** | 50 | 80 px/s | Reflects bullets that strike its front head-on | Indirect shots, bullets that hit from the side |
+| **Mirror** | 50 | 80 px/s | Reflects bullets that strike its front head-on. A reflected bullet **becomes enemy-owned** (see §5.4, friendly-fire rule) | Indirect shots, bullets that hit from the side |
 
 Armor is the key anti-spam rule: it makes damage **per bullet** matter, so one cannot win by multiplying trivial bullets, yet it doesn't cap bullet count.
 
@@ -230,8 +241,24 @@ Tier `T = floor(distance_from_origin / 12288 px)` (6 chunks per tier; this is a 
 - **Hazards authored as bullets** so the player's own sensing scripts (`sense.enemy_bullets`) can read and counter them.
 - **Telegraphs**: every dangerous attack shows a ≥0.5 s warning in the boss's color (P3).
 
-### 5.4 Player vulnerability
-Player HP **100**, no regen except 1 pickup type dropped by regular enemies (+10, 8% drop). Contact = 15, bullet = 10, Sniper = 25. No i-frames beyond 0.4 s after a hit. **Death (decided, Q4):** on death the player respawns at the world origin and **keeps everything** (Fragments, Codex, scripts, `state`, the world). The cost of dying is time (the walk back) and the boss fight in progress: a living boss resets to full HP and its chunk reloads. No XP loss, no drop. Stakes come from difficulty, not from loss.
+### 5.4 Player combat spec (decided 2026-10-30: Health 1A, I-frames 2B, Friendly fire 3C, Death 4A)
+
+**Health (1A).**
+- **5 HP, drawn as 5 pips** in a small ring orbiting the player at 20 px radius (no HUD bar, P3). Full pip = white filled circle, empty = hollow outline. HP above max (script-written *overheal*, §12) is drawn as extra pips in the Corruption/accent colour.
+- **Damage:** contact with a regular enemy = **1**; regular enemy bullet = **1**; Sniper shot = **1** (telegraphed, long range); **boss attacks = 1–2** (2 only for attacks with a ≥0.8 s telegraph and a distinct big visual, mostly in boss phases 3–4). Nothing regular deals more than 1, so 5 hits is a stable "lifebar".
+- **Regeneration:** **+1 HP every 3 s after 5 s without taking damage.** Taking damage resets the 5 s timer. From 1 HP to full that is 5 s + 12 s = 17 s of safety. Boss fights are mostly decided *without* regen, so it works as between-encounter recovery.
+
+**I-frames (2B).**
+- **Hit i-frames:** **0.75 s** of invulnerability after any hit. The player **blinks** (sprite alpha alternates 100% / 30% every 62 ms). Bullets pass through; contact damage is suppressed.
+- **Dash:** one button (kbm: Space; pad: a face button/right shoulder; touch: a dash button + double-tap-to-dash on the move stick). Moves **160 px in 0.2 s** (800 px/s) in the move direction (or aim direction if idle) and is **invulnerable for the full 0.2 s**; **cooldown 1.5 s**, shown as a small arc around the player that fills. The dash can pass through bullets and enemies but not terrain. Firing during a dash is allowed.
+- Hit i-frames and dash i-frames **don't stack**; the longer one applies. They are *engine i-frames* (distinct from the script flag `player.invulnerable`, §12.2).
+
+**Friendly fire (3C).**
+- **Your own bullets never hurt you**, including after bouncing off terrain, in all cases (no self-damage on any platform or mode).
+- A bullet **reflected** by a Mirror, a boss reflect phase, or any "reflect" rule **changes owner** `player → enemy`: it **switches to the enemy bullet colour (`#FF5A4D`)**, keeps its position/speed (angle reversed or as the reflecting rule says) and **can hit the player for 1 damage** (its script `damage` value is ignored when hitting you). It can no longer hurt enemies, no longer calls the script's `update`/`on_hit`/`on_die` (the script no longer owns it), and **can't be reflected again** (max one reflection per bullet, which prevents ping-pong).
+- Reflection is therefore a *world rule that punishes dense straight scripts*, not a restriction on writing them.
+
+**Death (4A, same as Q4).** On death (HP 0, including `player.hp = 0`) the player respawns at the world origin and **keeps everything** (Fragments, Codex, scripts, `state`, the world). The cost of dying is time (the walk back) and the boss fight in progress: a living boss resets to full HP and its chunk reloads. No XP loss, no drop. Stakes come from difficulty, not from loss.
 
 ---
 
@@ -326,7 +353,8 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 8. Region-quota boss spawn + beacon (§6.3–6.4).
 9. Controller- and touch-friendly editor (§10); share codes with the import warning (§7.1).
 10. Audio voices from scripts; visuals polish.
-11. **Not first release:** the limited-scripting mode (§11); step 2's binding must already allow per-mode capability sets.
+11. Player combat spec (§5.4): pips, regen, hit i-frames, dash, ownership/reflection. Build the **`player` facade with `__newindex` write-tagging** (§12.0) from the start, even before rewards exist.
+12. **Not first release:** the limited-scripting mode (§11); step 2's binding must already allow per-mode capability sets.
 
 ---
 
@@ -367,7 +395,7 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 **Shared foundations (must be true in the first release so this mode is cheap later):**
 - The script environment is built from a **capability set** per mode (`env` table that the engine fills), so a mode can expose fewer functions or wrap them.
 - The §3.2 *instruction counter* is also usable as a **meter** (cost-per-callback) for budgets.
-- `shoot`, Senses and `ctx` pass through an **API facade** that a mode can intercept (clamp counts, charge costs).
+- `shoot`, Senses, `ctx` and **`player` writes** pass through an **API facade** that a mode can intercept (clamp counts, charge costs, or make `player` read-only). In the Constrained mode `player` writes are absent or costed by design, which is what makes it the home of fair competition (§12.5).
 
 ### Three possible shapes
 
@@ -384,9 +412,77 @@ Levels and XP from enemies; stats and gear; quests/NPCs or a *terminal* hub (thi
 
 ---
 
+## 12. Challenge and progression when god mode is one line away
+
+**Context (decided):** player state is **writable** by scripts. `player.invulnerable = true`, `player.hp = 1e9`, `player.pos = boss.pos`, `player.speed = 5000` are all valid Lua in the main mode, from minute one. We do not ban them (P1, P2). The question is how the game stays meaningful. Evaluation below uses four levers, then a recommendation (open question **Q16**).
+
+### 12.0 What counts as a "state write" (shared definition)
+A **tagged write** is a write to `player.*` (or a returned `on_hurt` value) that gives the player an *advantage over what the engine would have produced*:
+- `hp` set above the engine's value, `max_hp` raised, `regen_*` improved, `iframes`/`dash_cd` improved;
+- `invulnerable = true` (tagged for each second it is active);
+- `pos` changed by more than the physical move budget (> 1.5 × `speed` × `dt` + dash distance in one frame), i.e. a teleport;
+- `speed` raised above its base value, `vel` forced above base speed;
+- `on_hurt` returning less than `dmg`.
+
+**Untagged:** reads; `player.dash()` (same rules as the button); automation such as auto-dodge or auto-aim (it is the game: code is the weapon); and **self-imposed handicaps**: setting `max_hp` lower, `speed` lower, `regen` off, `player.hp` lower. Handicaps count as *challenge modifiers* (§12.4), not as modifications.
+
+Engine implementation: `player` is a facade table with `__newindex`; the engine already routes all writes there (§3.1), so tagging is exact for anything done through the API. It cannot prove honesty for a user who edits the game binary or save file (the project is open source), see §12.6.
+
+### 12.1 Lever (a): diegetic counters (bosses punish or exploit state changes)
+
+| Idea | How it works | Verdict |
+|---|---|---|
+| **HP-reading boss** ("the Equalizer") | Reads `player.hp / max_hp` each frame and **scales to it**: overheal beyond max converts into boss damage/HP (+1 boss tier per 2 overheal pips), so setting `hp = 1e9` produces an unwinnable boss rather than god mode. | Great flavour, **one or two bosses only**. Easy to implement; trivially bypassed by `invulnerable` unless combined with piercing attacks. |
+| **Piercing / "Null" attacks** | A marked attack class (distinct white-violet colour, ≥0.8 s telegraph) **ignores the `player.invulnerable` script flag and overheal**, but still respects *engine i-frames* (dash/hit i-frames). 1 damage each. | **Best single mechanic.** Diegetic, readable, turns god mode into "you still need to dodge the pierce attacks". Needs 1–2 Null attacks in every boss from Tier 2 on, otherwise god mode trivializes later tiers. |
+| **Rift rule** (position deltas) | The engine measures `|Δpos|` per frame against the physical move budget. A teleport > 600 px (or any `pos` write inside a boss arena) spawns a **Rift** at the origin and destination: after 0.6 s each Rift emits a 1-damage ring (telegraphed) and gives the boss a charge. | Good flavour; **select bosses** (e.g., a boss that "hunts" the destination). Don't apply to open-world travel (fast travel via script is fine). |
+| **Corruption** (global resource) | Every tagged write fills a visible **Corruption** meter (0–100, drains 1/s, shown as a faint violet ring). High Corruption makes bosses stronger/heal ("feed") and at 100 an **Eater** hunts you. | **Not recommended as a global system.** It's a soft cap that quietly punishes any use (conflicts with P2's spirit), is hard to define fairly ("what is a write?"), and is the highest tuning risk. Use it only **inside one boss** (the Eater) where its rules are explicit. |
+
+Strength: a world that pushes back is on-brand (pillar 2). Weakness: every counter is a new rule to learn, and clever scripts can usually dodge the specific counter (e.g., the Equalizer never sees `invulnerable`). Counters can't be the whole answer, so they are flavour.
+
+### 12.2 Engine i-frames vs script flags
+Two separate layers exist on purpose: **engine i-frames** (0.75 s after a hit, 0.2 s during a dash; always respected by every attack, including Null attacks) and the **script flag** `player.invulnerable` (ignored by Null attacks and any "bypass" rule). Bosses that bypass flags still need the player to dodge, and a fair player is never punished by the bypass layer.
+
+### 12.3 Lever (b): modified tagging (baseline)
+- Each **boss fight** (from the moment the boss engages until it dies, or the player dies and the fight resets) has a **`modified` flag**, set the first time a tagged write (§12.0) occurs. It sticks for that fight. It resets on death.
+- **Live indicator:** a small, calm violet `MOD` mark under the player when the flag is set (never a pop-up), so nobody forfeits a clean kill by accident. Scripts can read `fight.modified` to see it.
+- **Codex marks:** each boss entry shows `●` clean, `◐` modified, `○` not killed. An entry is upgraded to `●` by a later clean kill (§12.4).
+- **Leaderboards (Q15):** boards are keyed by `(boss, mode, platform class, tag)`. The **modified board is a legitimate sandbox board** ("any%"): the game doesn't hide it. The **clean board** is honor-system only in the main mode (§12.6).
+- **Share metadata:** a script's share code carries a runtime-derived badge **"modifies player state"** (set when a tagged write is observed during play-testing or by author's declaration), shown in the §7.1 warning. It never blocks the script.
+- **Honest and non-punitive:** tags describe, they don't take things away.
+
+### 12.4 Lever (d): reward-side design
+Writing state is always allowed; it just doesn't earn some rewards.
+
+| Reward | Needs | Notes |
+|---|---|---|
+| Kill credit, Codex page, **Sense Level I** (decided Q1: bosses unlock Senses) | **Any kill** (clean or modified) | Never gated by tags, so no one is locked out of the core progression by one accidental write. |
+| **Sense Level II** (extended data: velocity, HP, larger range), **Seal** (per-boss mark), **alternate-solution Codex entries** | **Clean kill** (no tagged write during the fight) | The "mastery" layer. Needs no god mode, so players who care get real utility. |
+| **Challenge modifiers** (optional on a rematch, see below) and their cosmetic or Codex rewards | A kill with the modifier active; self-imposed handicaps (§12.0) count | Gives clean players *another* ladder, and modified players a way to "re-earn" clean rewards later. |
+
+- **Rematch:** after a boss is killed, its chunk leaves an **Echo** (a faint beacon) that can be re-fought at will. Echo fights can't be farmed for Level I rewards, only for Level II/Seal/modifier rewards. This means a modified first kill **never permanently forfeits** the clean rewards (the "never bricked" rule).
+- **Starting modifier set:** *Frail* (max HP 3), *No regen*, *No dash*, *Overclock* (boss ×1.25 speed), *Bare* (no Senses active). Each adds 1 modifier point; 3 points give a cosmetic bullet trail/voice reward.
+- **Clean kill rule:** zero tagged writes from boss engage to boss death; handicaps and `player.dash()` do not count.
+- **Honest limit:** rewards that matter little to god-mode players (it's their sandbox) are fine. We deliberately avoid gating the **Level I Senses** or tier progression on cleanliness, which would turn "no restrictions" into "restrictions with a penalty".
+
+### 12.5 Lever (c): fair competition lives in the Constrained mode
+The main mode is a **sandbox**: tags and clean rewards are *self-directed*, and competition there is soft. **Real competition** belongs to the Constrained mode (§11): its API facade makes `player` read-only (or costed), its caps are server-known, and its runs can be validated (deterministic replays of seed + inputs + script hash). That makes verified leaderboards feasible there without touching the main mode's freedom. This is a plan, not first-release work.
+
+### 12.6 Interactions and caveats
+- **Health regen and i-frames:** `regen_*`, `iframes`, `dash_cd` are all writable, so they're tagged when improved. Because engine i-frames (hit + dash) are the *real* defence, a clean player's defence is dodge timing, and Null attacks (§12.1) respect them. Regen at 1 per 3 s after 5 s is tuned so scripts that merely *wait safely* don't trivialize fights; any script-assisted heal is tagged.
+- **Dash automation:** an auto-dodge script obeys the same cooldown and is **not** tagged. If playtests show it trivializes bosses, the answer is boss design (telegraph lengths, Null attacks), not a ban.
+- **Leaderboards (Q15):** tags add a dimension; per-platform boards stay as Q15 decides. With a small number of boards, "clean" and "modified" must always be visible on the entry.
+- **Open source = client trust.** Anyone can patch a local build or save, so **a clean tag proves nothing in the main mode**. The design treats it as honor-system, self-imposed, and says so in the UI.
+- **Imported scripts** may write state: the §7.1 warning already tells players; the runtime badge in §12.3 lets them see it before play.
+- **Difficulty tuning:** boss HP and damage are balanced for a *clean* player (5 HP, i-frames, dash). Modified play is its own balance zone; we don't tune against it.
+
+### 12.7 Recommendation (summary; see Q16)
+Combine **(b) tagging as the baseline**, **(d) reward-side conditions** so progression stays meaningful, **(a) in a light touch** (Null/piercing attacks on every boss from Tier 2, plus Equalizer, Rift and Eater as flavour bosses, **no global Corruption**), and **(c) for verified competition**. An honest evaluation of that lean is in Q16 below: it is the right shape, with three corrections (Level I Senses are never gated, an Echo rematch means a modified first kill never bricks rewards, and `player.dash()`/auto-dodge stay untagged).
+
+---
+
 ## Biggest open design questions
 
-Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 (see the Decisions log at the top). Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
+Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
 
 ### Q5. Editing while the world is hostile (and the guard-rail numbers)
 - **A. Time slows to ~15% while the editor is open** (recommended start).
@@ -447,4 +543,13 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 (see the
 - **A. Same rules everywhere; no aim assist; local saves; leaderboards per platform class** (PC/web vs. mobile because of the lower budgets).
 - **B. Optional aim assist on touch/controller (off by default, clearly labeled), single global leaderboard flagged by device.**
 - **C. B + cloud saves/cross-device sync.**
-- **Recommendation: B for aim assist only if playtests show touch is unplayable without it; cloud sync is a later option.** Leaderboard handling must be decided before the per-boss boards in §4 are built. **[Karyu]** if you want one global leaderboard or per-platform ones.
+- **Recommendation: B for aim assist only if playtests show touch is unplayable without it; cloud sync is a later option.** Leaderboard handling must be decided before the per-boss boards in §4 are built; boards are also split by the clean/modified tag (Q16, §12.3). **[Karyu]** if you want one global leaderboard or per-platform ones.
+
+### Q16. How do challenge and progression survive when god mode is one line of code away? **[Karyu]**
+Player state is writable (decided). Options (levers from §12):
+- **A. Tag + reward conditions + light diegetic flavour + constrained-mode competition** (your lean: (b) baseline tagging, (d) clean-kill reward conditions, (a) only on select bosses, (c) for verified competition).
+- **B. Tag only (b):** a pure sandbox; no reward differences, tags and boards are cosmetic.
+- **C. Diegetic-heavy (a):** global Corruption economy and boss counters everywhere, plus tagging. The world "fights back" against state writes.
+- **D. Hard split (c) only:** main mode is a pure sandbox with no tags; all fair play is constrained mode.
+- **Recommendation: A, with three corrections to the lean.** (1) **Never gate Level I Senses or tier progression on cleanliness**; gate only Level II/Seal/Codex-alternate/cosmetics, so one accidental write can't lock someone out of the core progression and "no restrictions" stays honest. (2) Add an **Echo rematch** per boss so a modified first kill can still earn the clean rewards later. (3) Make the diegetic layer **Null (flag-piercing) attacks on every boss from Tier 2 plus a few flavour bosses (Equalizer, Rift, Eater)**, and **skip a global Corruption meter** (a soft cap that conflicts with P2's spirit and is the hardest to balance). Also be upfront that **a clean tag is honor-system in an open-source client**: verified competition needs the constrained mode with replay validation (§12.5). B is too weak (god mode makes bosses and rewards pointless for anyone who tries it), C is too much rule overhead and risks feeling like a hidden ban, D throws away the sandbox's own sense of achievement.
+- **Interactions to decide with it:** regen/i-frame/dash writes are tagged (§12.6); leaderboard keys include the tag (Q15); whether `player.dash()` automation stays untagged (recommended: yes).
