@@ -17,7 +17,12 @@ func before_each() -> void:
 	player = main.get_node("Player")
 	bullets = main.get_node("BulletManager")
 	main.respawn_delay = 0.2
+	RespawnPoints.reset()
 	await wait_physics_frames(2)
+
+
+func after_each() -> void:
+	RespawnPoints.reset()
 
 
 func _enemy_bullet(at: Vector2, dmg: float = 1.0) -> int:
@@ -103,14 +108,31 @@ func test_death_then_respawn_keeps_everything_and_resets_hp() -> void:
 	assert_true(bullets.emitter.is_bullet_alive(survivor), "bullets keep flying")
 	assert_eq(player.weapon, weapon, "weapon kept")
 	assert_eq(player.weapon.fire_interval, 0.25)
-	assert_eq(player.global_position, main.respawn_position)
+	assert_eq(player.global_position, Vector2.ZERO, "no arena cleared: the origin")
 
 
-func test_respawn_position_is_configurable() -> void:
-	main.respawn_position = Vector2(120, -80)
+func test_death_respawns_at_the_last_cleared_arena() -> void:
+	RespawnPoints.register_arena_cleared(Vector2(-400, 250))
+	RespawnPoints.register_arena_cleared(Vector2(120, -80))
 	player.state.set_hp(0.0)
+	await wait_physics_frames(5)
+	assert_true(player.state.is_dead(), "still dead before the 1.5 s are up")
 	await wait_physics_frames(20)
 	assert_eq(player.global_position, Vector2(120, -80))
+	assert_false(player.state.is_dead())
+
+
+func test_death_without_a_cleared_arena_respawns_at_the_origin() -> void:
+	player.global_position = Vector2(300, 300)
+	player.state.set_hp(0.0)
+	await wait_physics_frames(20)
+	assert_eq(player.global_position, Vector2.ZERO)
+
+
+func test_default_respawn_delay_is_one_and_a_half_seconds() -> void:
+	var fresh: Main = (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	autofree(fresh)
+	assert_eq(fresh.respawn_delay, 1.5)
 
 
 func test_dashing_through_a_bullet_takes_no_damage() -> void:

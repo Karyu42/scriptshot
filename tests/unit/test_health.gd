@@ -134,23 +134,36 @@ func test_no_regen_before_the_delay_has_passed() -> void:
 	assert_false(r.is_regenerating())
 
 
-func test_regen_starts_after_five_seconds_then_one_hp_every_three() -> void:
+func test_first_hp_comes_five_seconds_after_the_hit_then_one_every_three() -> void:
 	var r := _fresh_decided()
 	r.damage(3.0)
-	r.tick(5.0)
-	assert_true(r.is_regenerating())
-	assert_eq(r.hp, 2.0, "the delay itself heals nothing")
-	r.tick(2.9)
-	assert_eq(r.hp, 2.0)
+	r.tick(4.9)
+	assert_eq(r.hp, 2.0, "nothing before 5 s")
 	r.tick(0.2)
-	assert_eq(r.hp, 3.0, "first hp at 5 s + 3 s")
+	assert_true(r.is_regenerating())
+	assert_eq(r.hp, 3.0, "first hp at 5 s")
+	r.tick(2.8)
+	assert_eq(r.hp, 3.0, "7.9 s: next one is due at 8 s")
+	r.tick(0.2)
+	assert_eq(r.hp, 4.0, "second hp at 8 s")
 	r.tick(3.0)
-	assert_eq(r.hp, 4.0)
-	r.tick(3.0)
-	assert_eq(r.hp, 5.0)
+	assert_eq(r.hp, 5.0, "third at 11 s")
 	r.tick(30.0)
 	assert_eq(r.hp, 5.0, "never above max")
 	assert_false(r.is_regenerating())
+
+
+func test_regen_timeline_at_60hz() -> void:
+	var r := _fresh_decided()
+	r.damage(3.0)
+	var gained_at: Array[float] = []
+	var last := r.hp
+	for i in 60 * 12:
+		r.tick(DT)
+		if r.hp > last:
+			gained_at.append(snappedf(r.time_since_damage, 0.05))
+			last = r.hp
+	assert_eq(gained_at, [5.0, 8.0, 11.0] as Array[float])
 
 
 func test_regen_is_independent_of_tick_size() -> void:
@@ -168,15 +181,17 @@ func test_regen_is_independent_of_tick_size() -> void:
 func test_taking_damage_restarts_the_regen_delay() -> void:
 	var r := _fresh_decided()
 	r.damage(2.0)
-	r.tick(7.0)
-	r.tick(0.9)
-	assert_eq(r.hp, 3.0)
+	r.tick(5.5)
+	assert_eq(r.hp, 4.0, "regenerating")
+	r.tick(0.75)
 	r.damage(1.0)
-	assert_eq(r.hp, 2.0)
-	r.tick(4.9)
-	assert_eq(r.hp, 2.0, "delay restarted by the hit")
-	r.tick(0.2 + 3.0)
 	assert_eq(r.hp, 3.0)
+	r.tick(4.9)
+	assert_eq(r.hp, 3.0, "delay restarted by the hit")
+	r.tick(0.2)
+	assert_eq(r.hp, 4.0, "first hp 5 s after the new hit")
+	r.tick(3.0)
+	assert_eq(r.hp, 5.0)
 
 
 func test_blocked_damage_does_not_restart_regen() -> void:
@@ -198,19 +213,17 @@ func test_regen_can_be_disabled_and_tuned() -> void:
 	r.regen_delay = 1.0
 	r.regen_interval = 0.5
 	r.regen_amount = 2.0
-	r.tick(0.0)
 	r.tick(1.0)
-	r.tick(0.5)
-	assert_eq(r.hp, 5.0, "+2 clamped to max")
+	assert_eq(r.hp, 5.0, "+2 at 1 s (60 s of disabled time already counted), clamped to max")
 
 
 func test_dead_does_not_regenerate_and_healed_signal_reports_the_gain() -> void:
 	var r := _fresh_decided()
 	watch_signals(r)
 	r.damage(2.0)
-	r.tick(8.0)
+	r.tick(5.5)
 	assert_signal_emitted_with_parameters(r, "healed", [1.0, 4.0])
-	r.tick(0.75)
+	r.tick(0.01)
 	r.damage(100.0)
 	r.tick(100.0)
 	assert_eq(r.hp, 0.0)
@@ -219,8 +232,8 @@ func test_dead_does_not_regenerate_and_healed_signal_reports_the_gain() -> void:
 func test_regen_gives_back_the_hp_after_a_death_free_fight() -> void:
 	var r := _fresh_decided()
 	r.damage(4.0)
-	r.tick(5.0 + 3.0 * 4.0)
-	assert_eq(r.hp, 5.0)
+	r.tick(5.0 + 3.0 * 3.0 + 0.01)
+	assert_eq(r.hp, 5.0, "1 + 4 steps: at 5, 8, 11 and 14 s")
 
 
 # --- script setters ----------------------------------------------------------------

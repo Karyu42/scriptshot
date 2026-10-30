@@ -7,8 +7,8 @@ extends Node
 ##   - max_hp = 5.
 ##   - Taking damage starts `invulnerability_time` (0.75 s) of i-frames; bullets
 ##     pass through an invulnerable player. A lethal hit kills instead.
-##   - Regeneration starts after `regen_delay` (5 s) without taking damage, then
-##     restores `regen_amount` (1 hp) every `regen_interval` (3 s) until full.
+##   - Regeneration: the first `regen_amount` (1 hp) arrives `regen_delay` (5 s)
+##     after the last hit, then another every `regen_interval` (3 s) until full.
 ##   - Dying is handled by the owner (the player respawns with everything kept
 ##     and hp back at max_hp, see Player.respawn()).
 ##
@@ -33,10 +33,10 @@ const MAX_HP_LIMIT := 1000.0
 ## Seconds of invulnerability after a hit that does not kill.
 @export var invulnerability_time := 0.75
 @export_group("Regeneration")
-## Seconds without taking damage before regeneration starts.
+## Seconds after the last hit at which the first hp comes back.
 @export var regen_delay := 5.0
-## Seconds per regeneration step once it has started. The first step lands one
-## interval after the delay (5 s + 3 s = 8 s after the last hit, then every 3 s).
+## Seconds between regeneration steps after the first (5 s, 8 s, 11 s, ... after
+## the last hit with the defaults).
 @export var regen_interval := 3.0
 ## Hit points restored per step.
 @export var regen_amount := 1.0
@@ -49,7 +49,10 @@ var invulnerable_left := 0.0
 ## Seconds since damage was last applied (or since the start / respawn).
 var time_since_damage := 0.0
 
+## Seconds since the last regeneration step; only meaningful while _regen_active.
 var _regen_clock := 0.0
+## True once the first step of the current regeneration has been paid.
+var _regen_active := false
 
 
 func _ready() -> void:
@@ -73,13 +76,19 @@ func tick(delta: float) -> void:
 		return
 	time_since_damage += delta
 	if not regen_enabled or hp >= max_hp or regen_interval <= 0.0 or regen_amount <= 0.0:
-		_regen_clock = 0.0
+		_regen_active = false
 		return
 	if time_since_damage < regen_delay:
-		_regen_clock = 0.0
+		_regen_active = false
 		return
-	# Time spent past the delay, so one big delta can still pay out several steps.
-	_regen_clock += minf(delta, time_since_damage - regen_delay)
+	if not _regen_active:
+		# The delay has just passed: the first hp comes now, and the time already
+		# spent past the delay (a big delta) counts toward the next steps.
+		_regen_active = true
+		_regen_clock = time_since_damage - regen_delay
+		_gain(regen_amount)
+	else:
+		_regen_clock += delta
 	while _regen_clock >= regen_interval and hp < max_hp:
 		_regen_clock -= regen_interval
 		_gain(regen_amount)
@@ -112,6 +121,7 @@ func damage(amount: float) -> bool:
 	hp = maxf(hp - amount, 0.0)
 	time_since_damage = 0.0
 	_regen_clock = 0.0
+	_regen_active = false
 	damaged.emit(amount, hp)
 	if hp <= 0.0:
 		died.emit()
@@ -197,6 +207,7 @@ func reset() -> void:
 	hp = max_hp
 	time_since_damage = 0.0
 	_regen_clock = 0.0
+	_regen_active = false
 	_clear_invulnerable()
 
 

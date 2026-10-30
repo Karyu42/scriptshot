@@ -11,10 +11,10 @@ extends Node2D
 @onready var _hud: Label = $Hud/Label
 @onready var _turrets: Node = $Turrets
 
-## Seconds between dying and respawning, and where. The respawn keeps everything
-## (enemies, bullets, weapon) and only resets the player's hp to max.
+## Seconds between dying and respawning. The respawn keeps everything (enemies,
+## bullets, weapon) and only resets the player's hp to max. It happens at
+## RespawnPoints.get_respawn_position(): the last cleared boss arena, else the origin.
 @export var respawn_delay := 1.5
-@export var respawn_position := Vector2.ZERO
 
 var _respawn_timer := 0.0
 
@@ -35,7 +35,7 @@ func _process(delta: float) -> void:
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
-			_player.respawn(respawn_position)
+			_player.respawn(RespawnPoints.get_respawn_position())
 	_update_hud()
 
 

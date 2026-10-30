@@ -19,6 +19,7 @@ config/icon="res://icon.svg"
 [autoload]
 
 InputDevice="*res://src/core/input_device.gd"
+RespawnPoints="*res://src/core/respawn_points.gd"
 
 [debug]
 
