@@ -20,6 +20,18 @@ config/icon="res://icon.svg"
 
 InputDevice="*res://src/core/input_device.gd"
 
+[debug]
+
+gdscript/warnings/directory_rules={
+"res://addons": 0
+}
+gdscript/warnings/untyped_declaration=2
+gdscript/warnings/inferred_declaration=0
+gdscript/warnings/unsafe_property_access=2
+gdscript/warnings/unsafe_method_access=2
+gdscript/warnings/unsafe_cast=2
+gdscript/warnings/unsafe_call_argument=2
+
 [display]
 
 window/size/viewport_width=1280
@@ -110,6 +122,7 @@ cycle_stress={
 common/physics_ticks_per_second=60
 common/max_physics_steps_per_frame=4
 common/physics_interpolation=true
+common/physics_jitter_fix=0.0
 
 [rendering]
 

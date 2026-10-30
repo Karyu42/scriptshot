@@ -3,7 +3,7 @@ extends GutTest
 
 const InputDeviceScript := preload("res://src/core/input_device.gd")
 
-var device: Node
+var device: InputDeviceScript
 
 
 func before_each() -> void:
@@ -99,7 +99,7 @@ func test_same_device_does_not_reemit() -> void:
 
 
 func test_input_map_has_all_actions_for_both_devices() -> void:
-	var expect := {
+	var expect: Dictionary[StringName, Array] = {
 		"move_left": [InputEventKey, InputEventJoypadMotion],
 		"move_right": [InputEventKey, InputEventJoypadMotion],
 		"move_up": [InputEventKey, InputEventJoypadMotion],
@@ -110,12 +110,12 @@ func test_input_map_has_all_actions_for_both_devices() -> void:
 		"aim_down": [InputEventJoypadMotion],
 		"fire": [InputEventMouseButton, InputEventJoypadMotion],
 	}
-	for action in expect:
+	for action: StringName in expect:
 		assert_true(InputMap.has_action(action), action)
 		var events := InputMap.action_get_events(action)
-		for kind in expect[action]:
+		for kind: Variant in expect[action]:
 			var found := false
-			for e in events:
+			for e: InputEvent in events:
 				if is_instance_of(e, kind):
 					found = true
 			assert_true(found, "%s has a %s binding" % [action, "required event kind"])
@@ -124,10 +124,12 @@ func test_input_map_has_all_actions_for_both_devices() -> void:
 func test_fire_is_bound_to_right_trigger_and_left_mouse() -> void:
 	var trigger := false
 	var lmb := false
-	for e in InputMap.action_get_events("fire"):
-		if e is InputEventJoypadMotion and e.axis == JOY_AXIS_TRIGGER_RIGHT:
+	for e: InputEvent in InputMap.action_get_events("fire"):
+		var motion := e as InputEventJoypadMotion
+		if motion != null and motion.axis == JOY_AXIS_TRIGGER_RIGHT:
 			trigger = true
-		if e is InputEventMouseButton and e.button_index == MOUSE_BUTTON_LEFT:
+		var button := e as InputEventMouseButton
+		if button != null and button.button_index == MOUSE_BUTTON_LEFT:
 			lmb = true
 	assert_true(trigger, "RT")
 	assert_true(lmb, "LMB")
