@@ -30,6 +30,9 @@ signal died
 @export var dash_invulnerability := 0.2
 ## Seconds from the start of a dash until the next one may start.
 @export var dash_cooldown := 1.5
+## Input buffer: a dash pressed while dashing or on cooldown is remembered for this
+## many seconds and fires the moment it becomes available. 0 = no buffering.
+@export var dash_buffer_time := 0.1
 
 @export_group("Aiming")
 @export var muzzle_offset := 20.0
@@ -53,6 +56,9 @@ var _prev_position := Vector2.ZERO
 var _trigger := TriggerState.new()
 var _dead := false
 var _dash := DashState.new()
+## A dash press waiting for the dash to become available, and how long it keeps.
+var _dash_wanted := false
+var _dash_buffer_left := 0.0
 var _cooldown := FireCooldown.new()
 var _time := 0.0
 var _shot_index := 0
@@ -79,12 +85,16 @@ func _physics_process(delta: float) -> void:
 	_time += delta
 	_prev_position = global_position
 	var move_input := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	# Cooldown first, so a dash that becomes available this tick can start now.
+	_dash.tick_cooldown(delta)
 	if Input.is_action_just_pressed("dash"):
-		try_dash(move_input)
+		request_dash()
+	if _dash_wanted:
+		_update_dash_buffer(move_input, delta)
 	if _dash.active:
-		velocity = _dash.step(delta)
+		velocity = _dash.advance(delta)
 	else:
-		_dash.step(delta)
+		_dash.advance(delta)
 		velocity = MovementMath.step_velocity(
 			velocity, move_input, max_speed, acceleration, friction, reverse_boost, delta
 		)
@@ -157,6 +167,30 @@ func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 	return true
 
 
+## A dash press: tried this tick, and if the dash is not available (cooling down
+## or mid-dash) remembered for `dash_buffer_time` seconds so it fires the moment
+## it becomes available. The input handler calls this on every `dash` press.
+func request_dash() -> void:
+	_dash_wanted = true
+	_dash_buffer_left = maxf(dash_buffer_time, 0.0)
+
+
+## Fires a pending dash press as soon as the dash is available, using the move
+## direction of that moment; forgets it once the buffer window has passed.
+func _update_dash_buffer(move_input: Vector2, delta: float) -> void:
+	if try_dash(move_input):
+		_dash_wanted = false
+		return
+	_dash_buffer_left -= delta
+	if _dash_buffer_left < 0.0:
+		_dash_wanted = false
+
+
+## True while a dash press is waiting in the input buffer.
+func has_buffered_dash() -> bool:
+	return _dash_wanted
+
+
 func is_dashing() -> bool:
 	return _dash.active
 
@@ -189,6 +223,7 @@ func respawn(at: Vector2) -> void:
 	teleport(at)
 	velocity = Vector2.ZERO
 	_dash.reset()
+	_dash_wanted = false
 	health.reset()
 	_hurtbox.active = true
 	show()

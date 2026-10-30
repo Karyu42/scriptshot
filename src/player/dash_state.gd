@@ -46,15 +46,19 @@ func start(dir: Vector2) -> bool:
 	return true
 
 
-## Advances by `delta` and returns the velocity to move with this tick: the
-## exact average velocity over the tick, so the displacement matches the curve
-## whatever the tick length. Returns Vector2.ZERO when no dash is active.
-func step(delta: float) -> Vector2:
+## Counts the cooldown down by `delta`.
+func tick_cooldown(delta: float) -> void:
+	if is_finite(delta) and delta > 0.0:
+		cooldown_left = maxf(cooldown_left - delta, 0.0)
+
+
+## Advances the burst by `delta` and returns the velocity to move with this tick:
+## the exact average velocity over the tick, so the displacement matches the
+## curve whatever the tick length. Returns Vector2.ZERO when no dash is active.
+## Does not touch the cooldown (see tick_cooldown()).
+func advance(delta: float) -> Vector2:
 	just_finished = false
-	if not is_finite(delta) or delta <= 0.0:
-		return Vector2.ZERO
-	cooldown_left = maxf(cooldown_left - delta, 0.0)
-	if not active:
+	if not active or not is_finite(delta) or delta <= 0.0:
 		return Vector2.ZERO
 	var t0 := elapsed
 	elapsed += delta
@@ -66,6 +70,13 @@ func step(delta: float) -> Vector2:
 		active = false
 		just_finished = true
 	return direction * (moved / delta)
+
+
+## tick_cooldown() + advance(): one call per physics tick when nothing needs to
+## happen in between.
+func step(delta: float) -> Vector2:
+	tick_cooldown(delta)
+	return advance(delta)
 
 
 ## 0..1 progress of the burst, 1 when not dashing.
