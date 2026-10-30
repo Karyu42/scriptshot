@@ -338,6 +338,85 @@ func test_the_bullet_is_placed_at_the_zone_edge_not_inside_it() -> void:
 	assert_lt(m.pool.pos[s].x, 200.0 - 40.0 + 1.0, "never inside the zone after reflecting")
 
 
+# --- consistency with the multi-hit sweep and teleport() ---------------------------
+
+func test_a_reflected_bullet_is_teleported_to_the_edge_without_a_phantom_sweep() -> void:
+	var r := _reflector(Vector2(200, 0), 40.0)
+	r.mode = Reflector.Mode.REVERSE
+	var id := _bullet(Vector2(100, 0), Vector2(600, 0))
+	var reflected := false
+	for t in 20:
+		m.step(DT)
+		if m.last_reflect_count > 0:
+			reflected = true
+			break
+	assert_true(reflected)
+	var s := _slot(id)
+	assert_eq(m.pool.prev_pos[s], m.pool.pos[s], "pos and prev_pos agree: not swept, not interpolated across")
+	assert_lt(m.pool.pos[s].x, 200.0 - 40.0 + 1.0)
+
+
+func test_a_reflected_bullet_does_not_sweep_into_a_hurtbox_past_the_impact() -> void:
+	# A player-side hurtbox lies on the old path *past* the reflection point; the
+	# reflected (enemy-owned) bullet must not be swept through it.
+	var past := _counter(Vector2(236, 0), Layers.PLAYER, 3.0)
+	var r := _reflector(Vector2(250, 0), 40.0)
+	r.mode = Reflector.Mode.REVERSE
+	_bullet(Vector2(150, 0), Vector2(900, 0))
+	_run(3)
+	assert_eq(past.hits, 0, "the part of the old path past the impact is not swept")
+
+
+func test_a_zone_that_declines_a_bullet_does_not_hide_the_zone_behind_it() -> void:
+	# The nearer zone's arc faces away, so it declines; the farther one is a full circle.
+	var near_zone := _reflector(Vector2(150, 0), 30.0)
+	near_zone.arc_degrees = 40.0
+	near_zone.global_rotation = 0.0 # facing away from the shooter
+	var far_zone := _reflector(Vector2(300, 0), 30.0)
+	var id := _bullet(Vector2(0, 0), Vector2(600, 0))
+	_run(40)
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY, "reflected by the second zone")
+	assert_eq(near_zone.reflected_total, 0)
+	assert_eq(far_zone.reflected_total, 1)
+
+
+func test_overlapping_zones_reflect_a_bullet_once_per_tick_even_when_unlimited() -> void:
+	var a := _reflector(Vector2(200, 0), 40.0)
+	var b := _reflector(Vector2(200, 0), 40.0)
+	a.max_reflections = 0
+	b.max_reflections = 0
+	var id := _bullet(Vector2(100, 0), Vector2(600, 0))
+	for t in 20:
+		m.step(DT)
+		if m.last_reflect_count > 0:
+			break
+	assert_eq(m.pool.reflect_count[_slot(id)], 1, "the second zone's hit was stale after the first reflected it")
+	assert_eq(a.reflected_total + b.reflected_total, 1)
+
+
+func test_a_piercing_bullet_is_reflected_and_keeps_its_remaining_pierce() -> void:
+	_reflector(Vector2(200, 0), 40.0)
+	var r := ShotRequest.new()
+	r.position = Vector2(100, 0)
+	r.velocity = Vector2(600, 0)
+	r.pierce = 3
+	r.lifetime = 10.0
+	r.collide_world = false
+	var id := m.emitter.request_shot_id(r)
+	_run(20)
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+	assert_eq(m.pool.pierce[_slot(id)], 3)
+
+
+func test_a_bullet_that_left_the_world_bounds_is_not_reflected() -> void:
+	var edge := m.world_bounds.end.x
+	_reflector(Vector2(edge + 25.0, 0.0), 40.0)
+	var id := _bullet(Vector2(edge - 12.0, 0), Vector2(1200, 0))
+	m.step(DT)
+	assert_false(m.emitter.is_bullet_alive(id), "despawned at the bounds, dead bullets are not reflected")
+	assert_eq(m.last_reflect_count, 0)
+
+
 # --- activation ---------------------------------------------------------------------------
 
 func test_a_disabled_or_hidden_reflector_does_nothing() -> void:

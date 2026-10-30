@@ -105,7 +105,9 @@ func clear_walls() -> void:
 
 ## (Re)reads walls from `walls_group`: every CollisionObject2D on the `world`
 ## layer contributes its RectangleShape2D children, as their world-space bounding
-## box. Returns the number of walls added. Existing walls are kept.
+## box (other shapes are ignored, rotated rectangles are approximated; both
+## push a warning, see WallGrid.shape_issue). Returns the number of walls added.
+## Existing walls are kept.
 func collect_walls() -> int:
 	var added := 0
 	if not is_inside_tree():
@@ -118,6 +120,9 @@ func collect_walls() -> int:
 			var shape_node := child as CollisionShape2D
 			if shape_node == null or shape_node.disabled:
 				continue
+			var issue := WallGrid.shape_issue(shape_node.shape, shape_node.global_transform)
+			if issue != "":
+				push_warning("BulletManager: wall shape %s %s" % [shape_node.get_path(), issue])
 			var rect_shape := shape_node.shape as RectangleShape2D
 			if rect_shape == null:
 				continue
@@ -164,6 +169,11 @@ func step(delta: float) -> void:
 		if pool.dead_reason[i] == 0:
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 
+	# A hook may have spawned a bullet bigger than any the targets were bucketed
+	# for; re-bucket with the new margin so it does not miss targets by a hair.
+	if pool.max_radius > grid.get_margin():
+		_collect_targets()
+
 	# Walls first: a bullet that hits one is clipped to the impact point, so the
 	# hurtbox test below only sees the part of its path before the wall.
 	last_wall_hit_count = walls.sweep_bullets(pool)
@@ -183,7 +193,9 @@ func step(delta: float) -> void:
 	# A bullet that reached a wall despawns there (unless a hurtbox already
 	# claimed it earlier on its path: first reason wins).
 	for k in last_wall_hit_count:
-		pool.mark_dead(walls.hit_bullets[k], BulletPool.DespawnReason.WALL)
+		var wall_bullet := walls.hit_bullets[k]
+		pool.mark_dead(wall_bullet, BulletPool.DespawnReason.WALL)
+		pool.claim_from_bounds(wall_bullet, BulletPool.DespawnReason.WALL)
 
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -250,13 +262,21 @@ func _reflect_bullets() -> void:
 		if zone.is_active():
 			reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
 	var hits := reflector_grid.collide_bullets(pool, true)
+	# Hits come grouped per bullet, in path order (like the pierce sweep). Once a
+	# zone reflected a bullet, the rest of that bullet's list was computed for the
+	# old path, so it is dropped; a zone that declined it (arc, guard, wrong way)
+	# simply lets the next zone on the path have a go.
+	var reflected_bullet := -1
 	for k in hits:
 		var bullet := reflector_grid.hit_bullets[k]
+		if bullet == reflected_bullet:
+			continue
 		var zone := reflector_grid.target_ref[reflector_grid.hit_targets[k]] as Reflector
 		if zone == null or not is_instance_valid(zone):
 			continue
 		var impact := pool.prev_pos[bullet].lerp(pool.pos[bullet], reflector_grid.hit_t[k])
 		if zone.reflect_bullet(pool, bullet, impact):
+			reflected_bullet = bullet
 			last_reflect_count += 1
 
 
@@ -270,8 +290,10 @@ func _collect_targets() -> void:
 
 
 func _apply_hit(bullet: int, target: int, t: float) -> void:
-	# An earlier hit's hook may have killed this bullet in the meantime.
-	if pool.dead_reason[bullet] != 0:
+	# An earlier hit's hook may have killed this bullet in the meantime. (A bullet
+	# that only left the world bounds this tick still counts its last segment.)
+	var dead := pool.dead_reason[bullet]
+	if dead != 0 and dead != BulletPool.DespawnReason.BOUNDS + 1:
 		return
 	var hurtbox := grid.target_ref[target] as Hurtbox
 	if hurtbox == null or not is_instance_valid(hurtbox):
@@ -290,6 +312,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		pool.last_hit[bullet] = hurtbox.get_instance_id()
 	else:
 		pool.mark_dead(bullet, BulletPool.DespawnReason.HIT)
+		pool.claim_from_bounds(bullet, BulletPool.DespawnReason.HIT)
 
 
 func _get_behavior(id: int) -> BulletBehavior:

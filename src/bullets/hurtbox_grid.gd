@@ -13,8 +13,17 @@ extends RefCounted
 ## that moved less than the smallest possible tunnelling distance take a cheaper
 ## point test at their end position.
 ##
+## A bullet can hit several targets in one tick: a piercing bullet (pierce = n)
+## is re-swept from each impact point for the rest of its path, skipping the
+## targets it already hit, up to n + 1 hits per tick. Bullets that were
+## flagged as leaving the world bounds this tick (BulletPool.DespawnReason.BOUNDS)
+## still test their final segment, clipped to the grid.
+##
 ## Everything is stored in preallocated arrays that only ever grow (by doubling),
 ## so a steady-state tick allocates nothing.
+
+## Most zones listed per bullet when collide_bullets() matches on owner.
+const MAX_ZONE_HITS := 4
 
 var bounds := Rect2()
 var cell_size := 64.0
@@ -52,6 +61,12 @@ var hit_count := 0
 var hit_bullets := PackedInt32Array()
 var hit_targets := PackedInt32Array()
 var hit_t := PackedFloat32Array()
+
+# Targets the bullet being swept has already hit this tick (ids, in hit order).
+var _excl := PackedInt32Array([0, 0, 0, 0, 0, 0, 0, 0])
+var _excl_count := 0
+# Out-parameter of _sweep_once(): hit fraction of the target it returned.
+var _sweep_t := 0.0
 
 
 func _init(p_bounds: Rect2 = Rect2(-2048, -2048, 4096, 4096), p_cell_size: float = 64.0) -> void:
@@ -93,6 +108,11 @@ func begin(margin: float = 0.0) -> void:
 ## Alias of begin() kept for callers that clear the grid explicitly.
 func clear() -> void:
 	begin(_margin)
+
+
+## The bullet-radius margin the current tick's targets were bucketed with.
+func get_margin() -> float:
+	return _margin
 
 
 ## Adds a circular target. `layer` is one Layers constant. `ref` is returned in
@@ -155,9 +175,12 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 
 
 ## Tests every alive bullet in `pool` against the targets. Fills hit_bullets /
-## hit_targets / hit_t (at most one hit per bullet per call) and returns the hit
-## count. Bullets that are already marked dead, have hit_mask 0, or are piercing
-## through the target they hit last are skipped.
+## hit_targets / hit_t and returns the hit count. A bullet has at most one hit
+## per call, except a piercing bullet (pierce = n), which can have up to n + 1,
+## listed in the order along its path (increasing hit_t, each target once).
+## Bullets that are already marked dead (other than for leaving the world bounds,
+## which still test their last segment), have hit_mask 0, or are piercing through
+## the target they hit last are skipped.
 ##
 ## With `match_owner` the target layer is matched against each bullet's
 ## `owner_layer` instead of its `hit_mask`: the same swept test answers "which
@@ -167,9 +190,7 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	if target_count == 0:
 		return 0
 	if hit_bullets.size() < pool.capacity:
-		hit_bullets.resize(pool.capacity)
-		hit_targets.resize(pool.capacity)
-		hit_t.resize(pool.capacity)
+		_resize_hits(pool.capacity)
 	var n := pool.count
 	var bpos := pool.pos
 	var bprev := pool.prev_pos
@@ -177,6 +198,8 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	var bmask := pool.owner_layer if match_owner else pool.hit_mask
 	var bdead := pool.dead_reason
 	var blast := pool.last_hit
+	var bpierce := pool.pierce
+	var bounds_dead := BulletPool.DespawnReason.BOUNDS + 1
 	var ox := _origin.x
 	var oy := _origin.y
 	var inv := _inv_cell
@@ -187,15 +210,24 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	var min_reach := _min_target_radius
 	for i in n:
 		var mask := bmask[i]
-		if mask == 0 or bdead[i] != 0:
+		var dead := bdead[i]
+		if mask == 0 or (dead != 0 and dead != bounds_dead):
 			continue
 		var p := bpos[i]
 		var br := brad[i]
 		var d := p - bprev[i]
 		var reach := min_reach + br
-		if d.length_squared() > reach * reach:
-			if _sweep_bullet(i, bprev[i], d, br, mask, blast[i]):
-				continue
+		var pierce := bpierce[i]
+		if match_owner:
+			# Reflector zones: always sweep, and list every zone on the path (up to
+			# MAX_ZONE_HITS), so a zone that declines the bullet (arc, guard) does
+			# not hide the next one behind it.
+			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], mini(target_count, MAX_ZONE_HITS))
+			continue
+		if pierce > 0 or d.length_squared() > reach * reach:
+			# Piercing bullets always sweep: only the sweep can list several hits.
+			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], pierce + 1)
+			continue
 		var fx := (p.x - ox) * inv
 		var fy := (p.y - oy) * inv
 		if fx < 0.0 or fy < 0.0:
@@ -224,36 +256,84 @@ func get_target_instance_id(target: int) -> int:
 
 
 ## Swept test of one bullet's path (start + d * t, t in [0, 1]) against the
-## targets in every cell the path crosses (grid traversal). Records the earliest
-## hit and returns true if there was one. Returns false for a miss, and also when
-## an endpoint is outside the grid (the caller then falls back to the point test).
-func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, last_target: int) -> bool:
+## targets in every cell the path crosses. Records up to `max_hits` hits in path
+## order: after each one the bullet is swept again from the impact point for the
+## remaining path, ignoring targets it already hit (this is what lets a piercing
+## bullet hit several targets in one tick). The path is clipped to the grid, so
+## a bullet that starts or ends outside it still tests the part inside.
+func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, last_target: int, max_hits: int) -> void:
 	var fx0 := (start.x - _origin.x) * _inv_cell
 	var fy0 := (start.y - _origin.y) * _inv_cell
-	var fx1 := fx0 + d.x * _inv_cell
-	var fy1 := fy0 + d.y * _inv_cell
-	if fx0 < 0.0 or fy0 < 0.0 or fx1 < 0.0 or fy1 < 0.0:
-		return false
-	var cx := int(fx0)
-	var cy := int(fy0)
-	var ex := int(fx1)
-	var ey := int(fy1)
-	if cx >= cols or cy >= rows or ex >= cols or ey >= rows:
-		return false
+	var dfx := d.x * _inv_cell
+	var dfy := d.y * _inv_cell
+	# Liang-Barsky clip of the path to the grid rectangle [0, cols] x [0, rows].
+	var tc0 := 0.0
+	var tc1 := 1.0
+	if dfx == 0.0:
+		if fx0 < 0.0 or fx0 >= cols:
+			return
+	else:
+		var ta := -fx0 / dfx
+		var tb := (float(cols) - fx0) / dfx
+		tc0 = maxf(tc0, minf(ta, tb))
+		tc1 = minf(tc1, maxf(ta, tb))
+	if dfy == 0.0:
+		if fy0 < 0.0 or fy0 >= rows:
+			return
+	else:
+		var tya := -fy0 / dfy
+		var tyb := (float(rows) - fy0) / dfy
+		tc0 = maxf(tc0, minf(tya, tyb))
+		tc1 = minf(tc1, maxf(tya, tyb))
+	if tc0 > tc1:
+		return
+	_excl_count = 0
+	var t_min := 0.0
+	for _hit in max_hits:
+		var target := _sweep_once(start, d, br, mask, last_target, t_min, tc0, tc1, fx0, fy0, dfx, dfy)
+		if target == -1:
+			return
+		_record_hit(i, target, _sweep_t)
+		if _excl_count >= _excl.size():
+			_excl.resize(_excl.size() * 2)
+		_excl[_excl_count] = target
+		_excl_count += 1
+		t_min = _sweep_t
+		if t_min >= 1.0:
+			return
+
+
+## One grid traversal for _sweep_bullet(): the earliest target (not in _excl,
+## not `last_target`) that the bullet touches at some t >= t_min, or -1. Its hit
+## fraction is left in _sweep_t. [tc0, tc1] is the part of the path inside the
+## grid; (fx0, fy0, dfx, dfy) is the path in cell units.
+func _sweep_once(
+	start: Vector2, d: Vector2, br: float, mask: int, last_target: int, t_min: float,
+	tc0: float, tc1: float, fx0: float, fy0: float, dfx: float, dfy: float
+) -> int:
+	var t_begin := maxf(tc0, t_min)
+	if t_begin > tc1:
+		return -1
+	var px := fx0 + dfx * t_begin
+	var py := fy0 + dfy * t_begin
+	var cx := clampi(int(px), 0, cols - 1)
+	var cy := clampi(int(py), 0, rows - 1)
+	var ex := clampi(int(fx0 + dfx * tc1), 0, cols - 1)
+	var ey := clampi(int(fy0 + dfy * tc1), 0, rows - 1)
 	var step_x := 1 if d.x > 0.0 else -1
 	var step_y := 1 if d.y > 0.0 else -1
-	var dfx := fx1 - fx0
-	var dfy := fy1 - fy0
+	# t_max_*: path fraction at which the traversal leaves the current cell along
+	# that axis; t_delta_*: path fraction per whole cell.
 	var t_max_x := INF
 	var t_max_y := INF
 	var t_delta_x := INF
 	var t_delta_y := INF
 	if dfx != 0.0:
 		t_delta_x = absf(1.0 / dfx)
-		t_max_x = (float(cx + (1 if step_x > 0 else 0)) - fx0) / dfx
+		t_max_x = t_begin + (float(cx + (1 if step_x > 0 else 0)) - px) / dfx
 	if dfy != 0.0:
 		t_delta_y = absf(1.0 / dfy)
-		t_max_y = (float(cy + (1 if step_y > 0 else 0)) - fy0) / dfy
+		t_max_y = t_begin + (float(cy + (1 if step_y > 0 else 0)) - py) / dfy
 	var steps := absi(ex - cx) + absi(ey - cy) + 1
 	var a := d.length_squared()
 	var best_t := 2.0
@@ -264,24 +344,32 @@ func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, las
 			var e := _heads[cell]
 			while e != -1:
 				var t := _entry_target[e]
-				if (target_layer[t] & mask) != 0 and _target_id[t] != last_target:
+				if (target_layer[t] & mask) != 0 and _target_id[t] != last_target and not _is_excluded(t):
 					var rr := target_radius[t] + br
 					var f := start - target_pos[t]
 					var c := f.length_squared() - rr * rr
 					var hit := -1.0
-					if c <= 0.0:
-						hit = 0.0
-					elif a > 0.0:
+					if a > 0.0:
 						var b := f.dot(d)
 						var disc := b * b - a * c
-						if disc >= 0.0 and b < 0.0:
-							hit = (-b - sqrt(disc)) / a
+						if disc >= 0.0:
+							var root := sqrt(disc)
+							# Contact interval [(-b - root) / a, (-b + root) / a]; the
+							# bullet touches the target at the first t >= t_min inside it.
+							if (-b + root) / a >= t_min:
+								hit = maxf((-b - root) / a, t_min)
+					elif c <= 0.0:
+						hit = 0.0
 					if hit >= 0.0 and hit <= 1.0 and hit < best_t:
 						best_t = hit
 						best_target = t
 				e = _entry_next[e]
-			if best_target != -1:
-				break
+		# The next cell starts when this one is left. If that is not before the
+		# best hit so far, nothing further along can be nearer: stop. (Stopping at
+		# the first cell that has any candidate would miss a nearer target that
+		# is only registered in a later cell.)
+		if best_target != -1 and minf(t_max_x, t_max_y) >= best_t:
+			break
 		# Advance along the axis whose next cell border comes first, never past
 		# the end cell (guards against float drift on near-diagonal paths).
 		if cx == ex or (cy != ey and t_max_y < t_max_x):
@@ -290,19 +378,30 @@ func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, las
 		else:
 			cx += step_x
 			t_max_x += t_delta_x
-	if best_target == -1:
-		# Missed along the whole path. Only the swept result counts: the point
-		# test at the end position can never hit when the sweep did not.
-		return true
-	_record_hit(i, best_target, best_t)
-	return true
+	_sweep_t = best_t
+	return best_target
+
+
+func _is_excluded(target: int) -> bool:
+	for k in _excl_count:
+		if _excl[k] == target:
+			return true
+	return false
 
 
 func _record_hit(bullet: int, target: int, t: float) -> void:
+	if hit_count >= hit_bullets.size():
+		_resize_hits(maxi(hit_bullets.size() * 2, 64))
 	hit_bullets[hit_count] = bullet
 	hit_targets[hit_count] = target
 	hit_t[hit_count] = t
 	hit_count += 1
+
+
+func _resize_hits(new_size: int) -> void:
+	hit_bullets.resize(new_size)
+	hit_targets.resize(new_size)
+	hit_t.resize(new_size)
 
 
 func _grow_targets() -> void:

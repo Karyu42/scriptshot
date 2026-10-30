@@ -269,3 +269,170 @@ func test_grid_buffers_are_reused_between_ticks() -> void:
 		grid.collide_bullets(pool)
 		assert_eq(grid.hit_bullets.size(), hit_size, "hit list is a fixed scratch buffer")
 		assert_eq(grid.target_pos.size(), targets_size, "target storage is not rebuilt per tick")
+
+
+# --- nearest hit across cells (QA B1) -----------------------------------------
+
+func test_nearer_target_registered_only_in_a_later_cell_wins() -> void:
+	# QA's repro. Along y = 32 the bullet (r 4) enters A (centre (100, 0), r 40)
+	# at x ~ 69.8, but B (centre (75, 32), r 4) at x = 67, which is nearer. A is
+	# registered in the cell column the path enters first (x 56..64 -> col 8), B
+	# only in the next one (col 9): a traversal that stops at the first cell with
+	# any candidate would report A.
+	grid.begin(4.0)
+	var a := grid.add_circle(Vector2(100, 0), 40.0, Layers.ENEMY)
+	var b := grid.add_circle(Vector2(75, 32), 4.0, Layers.ENEMY)
+	_moving_bullet(Vector2(-200, 32), Vector2(300, 32))
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], b, "B (entry x = 67) is nearer than A (entry x = 69.8)")
+	assert_ne(grid.hit_targets[0], a)
+	assert_almost_eq(grid.hit_t[0], (67.0 + 200.0) / 500.0, 0.001)
+
+
+func test_nearest_target_wins_whatever_order_targets_were_added_in() -> void:
+	grid.begin(4.0)
+	var b := grid.add_circle(Vector2(75, 32), 4.0, Layers.ENEMY)
+	grid.add_circle(Vector2(100, 0), 40.0, Layers.ENEMY)
+	_moving_bullet(Vector2(-200, 32), Vector2(300, 32))
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], b)
+
+
+func test_nearest_target_is_found_on_a_diagonal_path() -> void:
+	grid.begin(4.0)
+	var near := grid.add_circle(Vector2(130, 130), 6.0, Layers.ENEMY)
+	grid.add_circle(Vector2(200, 200), 40.0, Layers.ENEMY)
+	_moving_bullet(Vector2(-300, -300), Vector2(400, 400))
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], near)
+
+
+# --- piercing: several hits per tick (QA B2) ----------------------------------
+
+func _pierce_bullet(from: Vector2, to: Vector2, pierce: int, r: float = 4.0) -> int:
+	var req := ShotRequest.with_velocity(from, Vector2.ZERO)
+	req.radius = r
+	req.hit_mask = Layers.ENEMY
+	req.pierce = pierce
+	var i := pool.spawn(req)
+	pool.pos[i] = to
+	return i
+
+
+func test_pierce_three_hits_three_targets_in_one_tick_in_path_order() -> void:
+	grid.begin(4.0)
+	# Added out of path order on purpose.
+	var t2 := grid.add_circle(Vector2(100, 0), 10.0, Layers.ENEMY)
+	var t0 := grid.add_circle(Vector2(-100, 0), 10.0, Layers.ENEMY)
+	var t1 := grid.add_circle(Vector2(0, 0), 10.0, Layers.ENEMY)
+	var b := _pierce_bullet(Vector2(-300, 0), Vector2(300, 0), 3)
+	assert_eq(grid.collide_bullets(pool), 3)
+	assert_eq(Array(grid.hit_bullets.slice(0, 3)), [b, b, b])
+	assert_eq(Array(grid.hit_targets.slice(0, 3)), [t0, t1, t2])
+	assert_lt(grid.hit_t[0], grid.hit_t[1])
+	assert_lt(grid.hit_t[1], grid.hit_t[2])
+	assert_almost_eq(grid.hit_t[0], (300.0 - 100.0 - 14.0) / 600.0, 0.001)
+
+
+func test_hits_per_tick_are_capped_at_pierce_plus_one() -> void:
+	grid.begin(4.0)
+	for k in 5:
+		grid.add_circle(Vector2(-200.0 + 100.0 * float(k), 0), 10.0, Layers.ENEMY)
+	_pierce_bullet(Vector2(-300, 0), Vector2(300, 0), 1)
+	assert_eq(grid.collide_bullets(pool), 2, "pierce 1: pass one target, stop at the second")
+	pool.clear()
+	_pierce_bullet(Vector2(-300, 0), Vector2(300, 0), 0)
+	assert_eq(grid.collide_bullets(pool), 1, "no pierce: one hit")
+
+
+func test_overlapping_targets_are_each_hit_once_by_a_piercing_bullet() -> void:
+	grid.begin(4.0)
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY)
+	grid.add_circle(Vector2(5, 0), 20.0, Layers.ENEMY)
+	_pierce_bullet(Vector2(-100, 0), Vector2(100, 0), 3)
+	assert_eq(grid.collide_bullets(pool), 2, "both targets, neither twice")
+	assert_ne(grid.hit_targets[0], grid.hit_targets[1])
+
+
+func test_piercing_bullet_that_starts_inside_two_targets_hits_both_at_zero() -> void:
+	grid.begin(4.0)
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY)
+	grid.add_circle(Vector2(3, 0), 20.0, Layers.ENEMY)
+	_pierce_bullet(Vector2(0, 0), Vector2(30, 0), 1)
+	assert_eq(grid.collide_bullets(pool), 2)
+	assert_eq(grid.hit_t[0], 0.0)
+	assert_eq(grid.hit_t[1], 0.0)
+
+
+func test_slow_piercing_bullet_still_hits_overlapping_targets_in_one_tick() -> void:
+	grid.begin(4.0)
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY)
+	grid.add_circle(Vector2(5, 0), 20.0, Layers.ENEMY)
+	var b := _pierce_bullet(Vector2(2, 0), Vector2(2, 0), 2)
+	assert_eq(grid.collide_bullets(pool), 2)
+	assert_eq(grid.hit_bullets[0], b)
+
+
+func test_piercing_sweep_skips_the_target_it_last_hit() -> void:
+	var node := Node2D.new()
+	autofree(node)
+	grid.begin(4.0)
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY, node)
+	var t1 := grid.add_circle(Vector2(100, 0), 10.0, Layers.ENEMY)
+	var b := _pierce_bullet(Vector2(-10, 0), Vector2(200, 0), 2)
+	pool.last_hit[b] = node.get_instance_id()
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], t1)
+
+
+func test_hit_buffers_grow_when_piercing_bullets_exceed_the_pool_size() -> void:
+	pool = BulletPool.new(4)
+	grid.begin(4.0)
+	for k in 6:
+		grid.add_circle(Vector2(-250.0 + 100.0 * float(k), 0), 10.0, Layers.ENEMY)
+	for k in 4:
+		_pierce_bullet(Vector2(-300, float(k) * 2.0), Vector2(300, float(k) * 2.0), 6)
+	assert_eq(grid.collide_bullets(pool), 24, "4 bullets x 6 targets, more hits than pool slots")
+	assert_gte(grid.hit_bullets.size(), 24)
+
+
+# --- bullets that left the world bounds still test their last segment ---------
+
+func test_bullet_marked_for_leaving_the_bounds_tests_the_part_inside() -> void:
+	# Grid covers -512..512. Target at 480; the bullet flew 450 -> 560 (outside).
+	grid.begin(4.0)
+	var t := grid.add_circle(Vector2(480, 0), 10.0, Layers.ENEMY)
+	var b := _moving_bullet(Vector2(450, 0), Vector2(560, 0))
+	pool.mark_dead(b, BulletPool.DespawnReason.BOUNDS)
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], t)
+	assert_almost_eq(grid.hit_t[0], (480.0 - 14.0 - 450.0) / 110.0, 0.001)
+
+
+func test_bullet_marked_dead_for_another_reason_is_still_skipped() -> void:
+	grid.begin(4.0)
+	grid.add_circle(Vector2(480, 0), 10.0, Layers.ENEMY)
+	var b := _moving_bullet(Vector2(450, 0), Vector2(500, 0))
+	pool.mark_dead(b, BulletPool.DespawnReason.LIFETIME)
+	assert_eq(grid.collide_bullets(pool), 0)
+
+
+func test_bullet_entirely_outside_the_grid_hits_nothing() -> void:
+	grid.begin(4.0)
+	grid.add_circle(Vector2(500, 0), 10.0, Layers.ENEMY)
+	var b := _moving_bullet(Vector2(600, 0), Vector2(800, 0))
+	pool.mark_dead(b, BulletPool.DespawnReason.BOUNDS)
+	assert_eq(grid.collide_bullets(pool), 0)
+
+
+func test_bullet_entering_the_grid_from_outside_tests_the_part_inside() -> void:
+	grid.begin(4.0)
+	var t := grid.add_circle(Vector2(-480, 0), 10.0, Layers.ENEMY)
+	_moving_bullet(Vector2(-700, 0), Vector2(-400, 0))
+	assert_eq(grid.collide_bullets(pool), 1)
+	assert_eq(grid.hit_targets[0], t)
+
+
+func test_margin_getter_reports_the_bucketing_margin() -> void:
+	grid.begin(12.5)
+	assert_eq(grid.get_margin(), 12.5)

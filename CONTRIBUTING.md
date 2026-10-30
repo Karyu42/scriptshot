@@ -21,7 +21,7 @@
 * Run `./tools/run_tests.sh` before pushing; it must pass. Add tests for new
   logic, especially anything in the bullet system or movement math.
 * If you touch the bullet loop, run `./tools/run_benchmark.sh` and include the
-  p50/p95 numbers in the PR. Target: 10,000 bullets at p95 <= 16.6 ms (5000 is the minimum), with walls present.
+  p50/p95 numbers in the PR. Floor (hard gate): 5,000 bullets at p95 <= 16.6 ms; target (warning only): 10,000 bullets, with walls present.
 * Commit the `.uid` files Godot generates next to scripts and `.import` files
   next to assets; do not commit `.godot/`.
 * GDScript style: static typing everywhere. `untyped_declaration` and the

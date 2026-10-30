@@ -110,7 +110,9 @@ func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 	pool.vel[slot] = heading * speed
 	if speed > 0.0:
 		pool.rot[slot] = heading
-	pool.pos[slot] = impact
+	# A discontinuous move: pos and prev_pos both at the impact, so the bullet is
+	# not swept from its old position (no phantom hits) nor interpolated across.
+	pool.teleport(slot, impact)
 	reflected_total += 1
 	bullet_reflected.emit(pool.id_of(slot), new_owner)
 	return true

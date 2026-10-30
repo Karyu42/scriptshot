@@ -59,6 +59,18 @@ func _init(p_bounds: Rect2 = Rect2(-2048, -2048, 4096, 4096), p_cell_size: float
 	_heads.fill(-1)
 
 
+## Why a collision shape cannot be used exactly as a bullet wall, or "" if it
+## can. Walls are axis-aligned rectangles: other shapes are ignored, and a
+## rotated (or skewed) rectangle is approximated by its axis-aligned bounding
+## box. BulletManager.collect_walls() warns with this text.
+static func shape_issue(shape: Shape2D, xform: Transform2D) -> String:
+	if not shape is RectangleShape2D:
+		return "is a %s; only RectangleShape2D walls are supported, so it is ignored by bullets" % shape.get_class() if shape != null else "has no shape"
+	if absf(xform.x.y) > 1e-4 or absf(xform.y.x) > 1e-4:
+		return "is a rotated rectangle; bullets use its axis-aligned bounding box instead"
+	return ""
+
+
 ## Adds a wall. Call rebuild() (BulletManager does it) before the next sweep.
 func add_wall(rect: Rect2) -> void:
 	var r := rect.abs()
@@ -142,14 +154,17 @@ func sweep_bullets(pool: BulletPool) -> int:
 	var ncols := cols
 	var nrows := rows
 	var short_sq := SHORT_PATH * SHORT_PATH
+	var bounds_dead := BulletPool.DespawnReason.BOUNDS + 1
 	for i in n:
-		if bflag[i] == 0 or bdead[i] != 0:
+		# A bullet flagged for leaving the world bounds this tick still tests the
+		# part of its path inside them.
+		if bflag[i] == 0 or (bdead[i] != 0 and bdead[i] != bounds_dead):
 			continue
 		var p := bpos[i]
 		var q := bprev[i]
 		var d := p - q
 		var best := 2.0
-		if d.length_squared() <= short_sq:
+		if bdead[i] == 0 and d.length_squared() <= short_sq:
 			# Fast path: the walls near the end position are all in its cell.
 			var fx := (p.x - ox) * inv
 			var fy := (p.y - oy) * inv
