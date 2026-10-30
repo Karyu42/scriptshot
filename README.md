@@ -82,10 +82,10 @@ To include a real renderer run it windowed:
 ## Exports
 
 `export_presets.cfg` is committed (it holds no credentials; `export_credentials.cfg`
-stays ignored) with the presets `Windows Desktop`, `macOS`, `Linux` and `Web`, all
+stays ignored) with the presets `Windows Desktop`, `macOS`, `Linux`, `Web` and `Android`, all
 exporting into the git-ignored `build/` directory, e.g.
 `godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64`.
-macOS is unsigned and not notarized; the Web preset uses the no-threads template.
+macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses the no-threads template; Android is arm64 only and CI builds a debug-signed APK. See `docs/qa/release-builds.md`.
 
 ## Project layout
 
