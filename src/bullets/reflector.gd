@@ -114,9 +114,10 @@ func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 	var new_owner := Layers.hostile_to(old_owner)
 	if new_owner == 0 or not pool.reflect(slot, new_owner, false, reflected_damage, keep_script, max_reflections):
 		return false
-	var speed := velocity.length() * _safe_multiplier()
+	# speed_multiplier can be up to 20x: the speed ceiling applies to the result.
+	var speed := minf(velocity.length() * _safe_multiplier(), BulletLimits.MAX_SPEED)
 	var heading := _new_heading(velocity, from_center, impact)
-	pool.vel[slot] = heading * speed
+	pool.set_velocity(slot, heading * speed)
 	if speed > 0.0:
 		pool.rot[slot] = heading
 	# A discontinuous move: pos and prev_pos both at the impact, so the bullet is

@@ -15,6 +15,11 @@ func request_shot_id(request: ShotRequest) -> int:
 	return _manager.pool.id_of(slot) if slot >= 0 else -1
 
 
+func request_child_shot_id(parent_id: int, request: ShotRequest) -> int:
+	var slot := _manager.spawn_child(parent_id, request)
+	return _manager.pool.id_of(slot) if slot >= 0 else -1
+
+
 func is_bullet_alive(id: int) -> bool:
 	return _manager.pool.is_alive(id)
 

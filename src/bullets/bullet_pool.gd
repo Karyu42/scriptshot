@@ -77,6 +77,9 @@ var max_radius := 0.0
 ## Lifetime statistics.
 var spawned_total := 0
 var dropped_total := 0
+## Shots rejected at spawn plus bullets killed (INVALID) because a script wrote a
+## NaN or inf. Not part of `dropped_total` (that one is about capacity).
+var invalid_total := 0
 ## Bullets occupying a slot per owner (OWNER_NONE / OWNER_PLAYER / OWNER_ENEMY),
 ## including ones marked dead but not yet flushed (they still hold their slot).
 ## Kept in step by spawn, despawn, swap-remove, reflect() (an owner change moves
@@ -201,6 +204,9 @@ func _init(p_capacity: int = 16384) -> void:
 ## Spawns a bullet from a ShotRequest. Returns its slot, or -1 if the pool is
 ## full. The slot is only stable until the next despawn.
 func spawn(request: ShotRequest) -> int:
+	if not (request.velocity.is_finite() and request.position.is_finite()):
+		_reject_invalid("BulletPool.spawn", "a shot with a non-finite position or velocity")
+		return -1
 	var owner_slot_i := OWNER_NONE
 	if (request.owner_layer & Layers.PLAYER) != 0:
 		owner_slot_i = OWNER_PLAYER
@@ -217,10 +223,11 @@ func spawn(request: ShotRequest) -> int:
 	user[i] = request.user
 	pos[i] = request.position
 	prev_pos[i] = request.position
-	vel[i] = request.velocity
+	var velocity := BulletLimits.clamp_velocity(request.velocity)
+	vel[i] = velocity
 	if is_nan(request.angle):
-		var speed := request.velocity.length()
-		rot[i] = request.velocity / speed if speed > 0.0 else Vector2.RIGHT
+		var speed := velocity.length()
+		rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
 	else:
 		rot[i] = Vector2.from_angle(request.angle)
 	radius[i] = request.radius
@@ -260,6 +267,10 @@ func spawn_simple(
 	bullet_color: Color = Color(1.0, 0.82, 0.4),
 	mask: int = 0
 ) -> int:
+	if not (velocity.is_finite() and position.is_finite()):
+		_reject_invalid("BulletPool.spawn_simple", "a shot with a non-finite position or velocity")
+		return -1
+	velocity = BulletLimits.clamp_velocity(velocity)
 	if count >= _other_limit:
 		_record_drop(OWNER_NONE)
 		return -1
@@ -328,7 +339,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 			if acc != 0.0:
 				var speed := v.length()
 				if speed > 0.0:
-					v *= maxf(speed + acc * delta, 0.0) / speed
+					v *= clampf(speed + acc * delta, 0.0, BulletLimits.MAX_SPEED) / speed
 			vel[i] = v
 		var p := pos[i] + v * delta
 		pos[i] = p
@@ -338,6 +349,49 @@ func advance(delta: float, bounds: Rect2) -> void:
 		if behavior[i] != 0:
 			hooked[hooked_count] = i
 			hooked_count += 1
+
+
+## The one way to write a bullet's velocity from outside the pool (hooks, the
+## batch/Lua commit): a velocity above BulletLimits.MAX_SPEED keeps its direction
+## and is cut to the ceiling. A NaN or inf kills the bullet with
+## DespawnReason.INVALID (counted in `invalid_total`, reported through
+## ScriptWarnings), leaves the old velocity in place and returns false.
+func set_velocity(i: int, v: Vector2) -> bool:
+	if i < 0 or i >= count or dead_reason[i] != 0:
+		return false
+	if not v.is_finite():
+		_kill_invalid(i, "BulletPool.set_velocity", "a non-finite velocity")
+		return false
+	vel[i] = BulletLimits.clamp_velocity(v)
+	return true
+
+
+## Re-checks the velocity of slot `i` after a hook may have written `vel[i]`
+## directly (the arrays are public): over the ceiling is clamped, NaN/inf kills
+## the bullet as INVALID. Returns false if it was killed. Does nothing for a
+## dead slot.
+func sanitize_velocity(i: int) -> bool:
+	if dead_reason[i] != 0:
+		return false
+	var v := vel[i]
+	if not v.is_finite():
+		_kill_invalid(i, "BulletPool.velocity", "a non-finite velocity")
+		return false
+	if BulletLimits.exceeds(v):
+		vel[i] = BulletLimits.clamp_velocity(v)
+	return true
+
+
+func _kill_invalid(i: int, key: String, what: String) -> void:
+	invalid_total += 1
+	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+	vel[i] = Vector2.ZERO
+	mark_dead(i, DespawnReason.INVALID)
+
+
+func _reject_invalid(key: String, what: String) -> void:
+	invalid_total += 1
+	ScriptWarnings.warn(key, "%s: rejected %s" % [key, what])
 
 
 ## Moves bullet `i` to `p` discontinuously, e.g. a teleport or a script that

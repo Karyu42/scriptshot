@@ -24,7 +24,8 @@ const PHYSICS_PRIORITY := 100
 @export var logical_cap := 10000
 ## Slots of `logical_cap` that only enemy and boss bullets (owner_layer with
 ## Layers.ENEMY) may take, so player scripts can never starve enemy attacks.
-## -1 (default) = 20% of the cap (2,000 with the default cap). Player and
+## -1 (default) = 30% of the cap (3,000 with the default cap, so the player's share is at
+## most 7,000, the pillars doc's B2 split). Player and
 ## unowned bullets can fill at most `logical_cap - enemy_reserve` slots in total.
 @export var enemy_reserve := -1
 ## Bullets are despawned when they leave this rectangle (world space).
@@ -80,6 +81,10 @@ var _last_warning_time := -INF
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
 
+# owner_layer of the bullet whose hook is running, -1 outside any hook. A spawn made
+# while it is set is a child spawn and inherits it (see spawn()).
+var _hook_owner := -1
+
 
 func _init() -> void:
 	process_physics_priority = PHYSICS_PRIORITY
@@ -108,14 +113,14 @@ func _physics_process(delta: float) -> void:
 
 
 ## Sets the saturation limits at runtime (see `logical_cap` / `enemy_reserve`;
-## reserve -1 = 20% of the cap). The cap is clamped to the physical capacity and
+## reserve -1 = 30% of the cap). The cap is clamped to the physical capacity and
 ## the reserve to the cap. Bullets already alive are never removed by this.
 func set_bullet_limits(cap: int, reserve: int = -1) -> void:
 	var effective_cap := clampi(cap, 0, pool.capacity)
 	logical_cap = cap
 	enemy_reserve = reserve
 	@warning_ignore("integer_division")
-	var auto_reserve := effective_cap / 5
+	var auto_reserve := effective_cap * 3 / 10
 	pool.set_limits(effective_cap, auto_reserve if reserve < 0 else reserve)
 
 
@@ -165,8 +170,67 @@ func collect_walls() -> int:
 
 
 ## Spawns a bullet from a request and runs its on_spawn hook. Returns the slot
-## or -1 when the pool is full.
+## or -1 when the pool is full (or the request is invalid, see BulletPool.spawn).
+##
+## Called from inside a bullet hook (on_spawn / on_update / on_hit / on_despawn
+## of a BulletBehavior), the new bullet is a child of the bullet whose hook runs
+## and takes that bullet's `owner_layer`, whatever the request says: see
+## spawn_child().
 func spawn(request: ShotRequest) -> int:
+	if _hook_owner >= 0:
+		return _spawn_inheriting(_hook_owner, request)
+	return _spawn_checked(request)
+
+
+## Spawns a child of the live bullet with stable id `parent_id`, for spawn paths
+## that run after the parent's hook returned (the batch/Lua commit resolves its
+## `row` to the parent's id and calls this). The child inherits `owner_layer`
+## from the parent; it never comes from the request, the behavior record or a
+## script-passed field. If the request names another owner or team it is ignored
+## and one capped warning is raised through ScriptWarnings. Returns the slot, or
+## -1 if the parent is gone (a child without a parent has no owner to inherit,
+## so it is refused) or the pool refused it.
+func spawn_child(parent_id: int, request: ShotRequest) -> int:
+	var parent := pool.slot_of(parent_id)
+	if parent < 0:
+		ScriptWarnings.warn(
+			"BulletManager.spawn_child.parent", "BulletManager.spawn_child: the parent bullet is gone, child not spawned"
+		)
+		return -1
+	return _spawn_inheriting(pool.owner_layer[parent], request)
+
+
+## Spawn with `owner` forced onto the request. The ShotRequest is the caller's
+## object and is handed back exactly as it was passed in.
+##
+## A request that still carries the default owner (Layers.PLAYER) cannot be told
+## apart from "owner not set", so a mismatch there is corrected without a
+## warning; any other differing owner is an explicit attempt and is warned.
+func _spawn_inheriting(owner: int, request: ShotRequest) -> int:
+	var asked := request.owner_layer
+	if asked == owner:
+		return _spawn_checked(request)
+	if asked != Layers.PLAYER:
+		ScriptWarnings.warn(
+			"BulletManager.spawn.owner",
+			(
+				"BulletManager: a hook asked for owner_layer %d but bullets spawned from a hook inherit their"
+				+ " parent's owner (%d); the request was ignored. Only reflect() changes an owner."
+			) % [asked, owner]
+		)
+	var asked_mask := request.hit_mask
+	request.owner_layer = owner
+	# The default mask belongs to the requested team: use the standard "hostile to
+	# the owner" mask of the inherited one (an unowned parent keeps the request's).
+	if owner != 0:
+		request.hit_mask = Layers.hostile_to(owner)
+	var slot := _spawn_checked(request)
+	request.owner_layer = asked
+	request.hit_mask = asked_mask
+	return slot
+
+
+func _spawn_checked(request: ShotRequest) -> int:
 	var i := pool.spawn(request)
 	if i >= 0 and request.behavior_id != 0:
 		var b := _get_behavior(request.behavior_id)
@@ -174,7 +238,11 @@ func spawn(request: ShotRequest) -> int:
 			push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % request.behavior_id)
 			pool.behavior[i] = 0
 		else:
+			var outer := _hook_owner
+			_hook_owner = pool.owner_layer[i]
 			b.on_spawn(pool, i)
+			_hook_owner = outer
+			pool.sanitize_velocity(i)
 	return i
 
 
@@ -209,7 +277,12 @@ func step(delta: float) -> void:
 		var i := pool.hooked[k]
 		# A hook may have reflected (and so un-scripted) a later bullet in the list.
 		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
+			var outer := _hook_owner
+			_hook_owner = pool.owner_layer[i]
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
+			_hook_owner = outer
+			# Hooks write `vel` directly: hold the speed ceiling / reject NaN, inf.
+			pool.sanitize_velocity(i)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -254,7 +327,10 @@ func step(delta: float) -> void:
 			continue
 		var id := pool.behavior[slot]
 		if id != 0:
+			var outer := _hook_owner
+			_hook_owner = pool.owner_layer[slot]
 			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
+			_hook_owner = outer
 	for k in last_wall_hit_count:
 		_wall_hit_index[walls.hit_bullets[k]] = 0
 	pool.flush_dead()
@@ -385,7 +461,11 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
 	if id != 0:
+		var outer := _hook_owner
+		_hook_owner = pool.owner_layer[bullet]
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)
+		_hook_owner = outer
+		pool.sanitize_velocity(bullet)
 	if piercing:
 		pool.pierce[bullet] -= 1
 		pool.last_hit[bullet] = hurtbox.get_instance_id()

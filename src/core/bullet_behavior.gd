@@ -9,7 +9,12 @@ extends RefCounted
 ## the call (slots are reused when other bullets despawn). Read and write the
 ## pool's arrays directly, e.g. pool.vel[index] = ..., pool.param_a[index].
 
-## Set by the emitter on registration; use it to spawn child bullets.
+## Set by the emitter on registration; use it to spawn child bullets. A child
+## spawned from inside a hook takes the `owner_layer` of the bullet whose hook
+## spawned it, whatever its ShotRequest says (a differing owner is ignored with a
+## capped warning); only reflect() changes an owner. Velocities written to
+## pool.vel[index] in a hook are held to BulletLimits.MAX_SPEED (4,000 px/s), a
+## NaN or inf kills the bullet as DespawnReason.INVALID.
 var emitter: ShotEmitter
 
 

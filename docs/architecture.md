@@ -67,7 +67,7 @@ retained, so one instance can be mutated and re-submitted any number of times.
 | Field | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `position` | `Vector2` | `(0,0)` | World-space spawn position, pixels |
-| `velocity` | `Vector2` | `(0,0)` | Initial velocity, px/s |
+| `velocity` | `Vector2` | `(0,0)` | Initial velocity, px/s. Held to `BulletLimits.MAX_SPEED` (4,000 px/s), direction kept; NaN/inf rejects the shot |
 | `angle` | `float` | `NAN` | Visual orientation, radians. `NAN` = face along `velocity` |
 | `lifetime` | `float` | `2.0` | Seconds until the bullet despawns by itself |
 | `radius` | `float` | `4.0` | Collision and draw radius, px |
@@ -99,6 +99,7 @@ Abstract base (`src/core/shot_emitter.gd`); the game provides
 
 ```gdscript
 func request_shot_id(request: ShotRequest) -> int     # stable bullet id (> 0), or -1 if pool full
+func request_child_shot_id(parent_id, request) -> int  # spawn a child of a live bullet: owner comes from the parent, see "Speed ceiling and owner inheritance"
 func request_shot(request: ShotRequest) -> bool       # same, bool: false = pool full, shot dropped
 func request_shots(requests: Array) -> int            # returns number accepted
 func is_bullet_alive(id: int) -> bool                 # false for stale / invalid ids
@@ -114,7 +115,7 @@ func get_bullet_count() -> int                        # all live bullets
 func get_owner_count(owner_layer) -> int              # live bullets of PLAYER / ENEMY (incl. bosses) / 0 = unowned
 func get_capacity() -> int                            # physical pool size (memory)
 func get_logical_cap() -> int                         # max live bullets allowed (default 10,000)
-func get_enemy_reserve() -> int                       # slots only enemies / bosses may use (default 2,000)
+func get_enemy_reserve() -> int                       # slots only enemies / bosses may use (default 3,000)
 func get_wall_normal(id: int) -> Vector2              # normal of the wall this bullet hit this tick, else ZERO
 ```
 
@@ -214,7 +215,11 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
 | `on_despawn(pool, index, reason)` | Just before removal, exactly once per bullet (also for bullets another hook marked dead; not for ones already removed). `reason` is a `BulletPool.DespawnReason`: `LIFETIME`, `BOUNDS`, `HIT`, `MANUAL`, `CLEARED`, `WALL`, `INVALID` (values are append-only; `INVALID` = killed for a non-finite NaN/inf write by the batch API) |
 
 `behavior.emitter` is set at registration so hooks can spawn child bullets
-(splitting, trails). To remove a bullet from a hook call `pool.mark_dead(index)`.
+(splitting, trails). A child spawned from a hook **inherits the owner of the
+bullet whose hook spawned it**, whatever `ShotRequest.owner_layer` says. A
+velocity written to `pool.vel[index]` is held to the speed ceiling (NaN / inf kills
+the bullet as `INVALID`). Both are described in "Speed ceiling and owner
+inheritance". To remove a bullet from a hook call `pool.mark_dead(index)`.
 
 ### Guarantees and limits
 
@@ -307,7 +312,7 @@ Karyu**.
 | --- | --- | --- |
 | Physical pool (memory) | 16,384 | `BulletManager.capacity` (unchanged) |
 | Logical cap: most live bullets, whoever owns them | **10,000** (clamped to `capacity`) | `BulletManager.logical_cap`, `set_bullet_limits()` |
-| Enemy reserve: slots only enemy/boss bullets may take | **2,000** (`-1` = 20% of the cap) | `BulletManager.enemy_reserve`, `set_bullet_limits()` |
+| Enemy reserve: slots only enemy/boss bullets may take | **3,000** (`-1` = 30% of the cap; the player's share is at most 7,000, the pillars doc's B2 split) | `BulletManager.enemy_reserve`, `set_bullet_limits()` |
 
 Rules (`BulletPool.spawn` / `spawn_simple`, O(1), no allocation):
 
@@ -386,6 +391,64 @@ their path and list up to `BulletPool.VETO_MAX_HITS` (4) hits, so a vetoed
 target does not hide the next one behind it; a fifth consecutive veto would.
 Reflection clears the flag together with the rest of the script state
 (`keep_script` keeps it).
+
+## Speed ceiling and owner inheritance
+
+Two guards on everything scripts can write. Neither is a design limit.
+
+### Bullet speed ceiling: 4,000 px/s
+
+`main` did **not** enforce a ceiling before this change (swept collision removed
+the old need for one, nothing replaced it). The value lives in one place,
+`BulletLimits.MAX_SPEED` (`src/core/bullet_limits.gd`); the native backend mirrors
+that constant instead of defining its own. A velocity above it keeps its
+direction and is cut to the ceiling at every write the engine can see:
+
+| Write path | What happens |
+| --- | --- |
+| `BulletPool.spawn` / `spawn_simple` (so `ShotRequest.velocity`, `polar`, `with_velocity`) | clamped; `rot` follows the clamped direction |
+| `BulletPool.set_velocity(slot, v)` (the one call for batch/Lua commits and hooks) | clamped; returns false for a dead slot |
+| `Reflector` (`speed_multiplier` up to 20x) | the new speed is capped, direction is the mirror's |
+| `BulletPool.reflect(..., reverse)` | only flips the sign, speed unchanged |
+| `acceleration` | speed stops growing at the ceiling |
+| a hook writing `pool.vel[index]` in `on_spawn` / `on_update` / `on_hit` | the manager re-checks that bullet right after the hook returns (hooked bullets only, so plain bullets pay nothing): clamped before the bullet moves |
+
+A non-finite value is not clamped, it is **invalid**: a shot with a NaN/inf
+position or velocity is rejected at spawn (returns -1, counted in
+`BulletPool.invalid_total`, not in the capacity drop counters); a live bullet
+whose velocity became NaN/inf is killed with `DespawnReason.INVALID`
+(its `on_despawn` runs, no damage) and counted too. Both raise a capped warning
+(`ScriptWarnings`). Direct writes to `pool.vel[]` of a bullet *without* a hook
+cannot be seen; scripts must use `set_velocity` (the batch API does). Swept
+collision means a bullet at the ceiling (66.7 px per tick) cannot tunnel.
+
+### Owner inheritance for hook-spawned bullets
+
+A bullet spawned from a hook (`on_spawn`, `on_update`, `on_hit`, `on_despawn` of a
+`BulletBehavior`, through `emitter.request_shot_id()`) takes `owner_layer` from the
+**bullet whose hook spawned it**. It never comes from the behavior record or from
+a field the script passes: the only way to change an owner is `reflect`, which is
+guarded by `max_reflections`; if a script could choose the owner of what it
+spawns it could mint enemy-owned bullets around that guard.
+
+* The child's `hit_mask` is the standard "hostile to the owner" mask when the
+  owner was replaced; when the request already names the parent's owner its own
+  mask is honoured (the pool strips the owner's layer, as always).
+* If the request names another owner, it is ignored and one warning per key is
+  raised through `ScriptWarnings` (printed at most `ScriptWarnings.LIMIT` times).
+  A request that still carries the default owner (`Layers.PLAYER`) cannot be told
+  from "not set", so for an enemy parent it is corrected silently.
+* Children of children follow the same rule; children count against the
+  *parent's* faction limits (see "Saturation model"), so a player bullet cannot
+  spawn into the enemy reserve.
+* Spawns outside any hook (a turret, a boss emitter, the player's weapon) are
+  unchanged: the request's owner is used.
+* `ShotEmitter.request_child_shot_id(parent_id, request)` /
+  `BulletManager.spawn_child()` is the path for spawns that run **after** the hook
+  returned (the batch/Lua commit resolves its `row` to the parent's stable id and
+  calls it). A parent that is marked dead but not yet removed still works; a gone
+  parent (stale id) refuses the spawn and warns, because there is no owner to
+  inherit.
 
 ## Bullet system design
 
@@ -477,7 +540,7 @@ remain exports so they can be tuned.)
 | --- | --- | --- |
 | Pool capacity | 16384 bullets | `BulletManager.capacity` |
 | Logical bullet cap | **10,000** live bullets (provisional) | `BulletManager.logical_cap` |
-| Enemy reserve | **2,000** of the cap, enemy/boss shots only (provisional) | `BulletManager.enemy_reserve` |
+| Enemy reserve | **3,000** of the cap, enemy/boss shots only (provisional) | `BulletManager.enemy_reserve` |
 | Pool-full behaviour | drop the new shot, observable (see above) | `BulletPool.spawn`, `BulletManager._report_saturation()` |
 | Saturation warning rate limit | one per 2 simulated seconds | `BulletManager.saturation_warning_interval` (0 = every saturated tick) |
 | Weapon cooldown | `ShotPattern.fire_interval`, 0.11 s for `BasicShot` | `ShotPattern` / `BasicShot` |

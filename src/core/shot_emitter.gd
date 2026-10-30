@@ -21,6 +21,17 @@ func request_shot_id(_request: ShotRequest) -> int:
 	return -1
 
 
+## Spawns a child of the live bullet `parent_id` and returns its stable id, or -1
+## (parent gone, pool full, invalid request). The child's `owner_layer` is the
+## parent's, never the request's: a differing owner in the request is ignored
+## with a capped warning. This is the spawn path for code that runs after the
+## parent's hook returned (batch/Lua commit). Spawns made from inside a hook
+## through request_shot_id() inherit the same way. Only reflect changes owners.
+func request_child_shot_id(_parent_id: int, _request: ShotRequest) -> int:
+	push_error("ShotEmitter.request_child_shot_id() is abstract")
+	return -1
+
+
 ## Same as request_shot_id() for callers that only care whether the shot was
 ## accepted.
 func request_shot(request: ShotRequest) -> bool:

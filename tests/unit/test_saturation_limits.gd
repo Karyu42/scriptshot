@@ -43,7 +43,7 @@ func test_manager_defaults_are_10k_cap_and_20_percent_reserve() -> void:
 	add_child_autofree(m)
 	assert_eq(m.pool.capacity, 16384)
 	assert_eq(m.emitter.get_logical_cap(), 10000)
-	assert_eq(m.emitter.get_enemy_reserve(), 2000)
+	assert_eq(m.emitter.get_enemy_reserve(), 3000, "30% of 10,000 (pillars B2: player share 7,000)")
 
 
 func test_logical_cap_is_clamped_to_the_physical_capacity() -> void:
@@ -53,7 +53,7 @@ func test_logical_cap_is_clamped_to_the_physical_capacity() -> void:
 	m.auto_step = false
 	add_child_autofree(m)
 	assert_eq(m.emitter.get_logical_cap(), 100, "default 10000 cannot exceed the 100 slots of memory")
-	assert_eq(m.emitter.get_enemy_reserve(), 20)
+	assert_eq(m.emitter.get_enemy_reserve(), 30)
 	m.set_bullet_limits(500, 5)
 	assert_eq(m.emitter.get_logical_cap(), 100)
 	assert_eq(m.emitter.get_enemy_reserve(), 5)
@@ -345,10 +345,10 @@ func test_counters_through_the_manager_with_hits_lifetimes_and_bounds() -> void:
 	var m := _manager(64, 64, 0)
 	var hb := Hurtbox.new()
 	hb.radius = 20.0
-	hb.position = Vector2(100, 0)
+	hb.position = Vector2(60, 0)  # 66.7 px per tick at the speed ceiling reaches it
 	add_child_autofree(hb)
 	for k in 5:
-		var r := ShotRequest.polar(Vector2.ZERO, 0.0, 6000.0)
+		var r := ShotRequest.polar(Vector2.ZERO, 0.0, BulletLimits.MAX_SPEED)
 		r.hit_mask = Layers.ENEMY
 		m.emitter.request_shot(r)  # hits the target
 	for k in 4:
@@ -357,7 +357,7 @@ func test_counters_through_the_manager_with_hits_lifetimes_and_bounds() -> void:
 		r.lifetime = 0.05
 		m.emitter.request_shot(r)  # lifetime
 	for k in 3:
-		var r := ShotRequest.polar(Vector2(0, -100), PI, 60000.0)
+		var r := ShotRequest.polar(Vector2(-480, -100), PI, BulletLimits.MAX_SPEED)
 		r.owner_layer = Layers.ENEMY
 		m.emitter.request_shot(r)  # leaves the world bounds
 	assert_eq(m.emitter.get_owner_count(Layers.PLAYER), 5)

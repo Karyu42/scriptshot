@@ -566,12 +566,13 @@ func test_a_reflected_piercing_bullet_does_not_hit_the_target_it_pierced_again()
 func test_zones_act_before_hurtboxes_within_one_tick() -> void:
 	# Pinned behaviour: a bullet fast enough to cross a target and the mirror in one
 	# tick is reflected first; the hit the bullet would have had earlier on that
-	# same path is not delivered. (Bullets this fast are 200 px per 1/60 s tick.)
+	# same path is not delivered. (A 200 px step: 4,000 px/s, the speed ceiling, over
+	# a 3/60 s lag tick.)
 	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
 	var zone := _reflector(Vector2(150, 0), 30.0)
 	zone.mode = Reflector.Mode.REVERSE
-	var id := _piercing_player_bullet(Vector2(0, 0), 12000.0, 2)
-	_run(1)
+	var id := _piercing_player_bullet(Vector2(0, 0), BulletLimits.MAX_SPEED, 2)
+	m.step(DT * 3.0)
 	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
 	assert_eq(before.hits, 0)
 	assert_eq(m.pool.pos[_slot(id)], m.pool.prev_pos[_slot(id)], "placed at the impact point, not swept")
