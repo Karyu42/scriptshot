@@ -1,0 +1,18 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://src/enemies/mirror.gd" id="1_mirror"]
+[ext_resource type="Script" path="res://src/bullets/hurtbox.gd" id="2_hurtbox"]
+[ext_resource type="Script" path="res://src/bullets/reflector.gd" id="3_reflector"]
+
+[node name="Mirror" type="Node2D"]
+script = ExtResource("1_mirror")
+
+[node name="Hurtbox" type="Node2D" parent="."]
+script = ExtResource("2_hurtbox")
+radius = 22.0
+layer = 2
+
+[node name="Reflector" type="Node2D" parent="."]
+script = ExtResource("3_reflector")
+radius = 40.0
+arc_degrees = 150.0

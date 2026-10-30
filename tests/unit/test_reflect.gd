@@ -116,6 +116,31 @@ func test_owner_follows_the_bullet_through_swap_remove() -> void:
 	assert_eq(b, 1)
 
 
+func test_reflect_count_tracks_owner_changes_and_resets_per_bullet() -> void:
+	var a := _enemy_bullet()
+	assert_eq(pool.reflect_count[a], 0)
+	pool.reflect(a, Layers.PLAYER)
+	pool.reflect(a, Layers.ENEMY)
+	assert_eq(pool.reflect_count[a], 2)
+	assert_false(pool.reflect(a, 0))
+	assert_eq(pool.reflect_count[a], 2, "a refused reflect does not count")
+	var b := _enemy_bullet()
+	assert_eq(pool.reflect_count[b], 0, "new bullets start at zero")
+
+
+func test_reflect_count_saturates_and_follows_swap_remove() -> void:
+	var a := _enemy_bullet()
+	var b := _enemy_bullet()
+	for k in 300:
+		pool.reflect(b, Layers.PLAYER if k % 2 == 0 else Layers.ENEMY)
+	assert_eq(pool.reflect_count[b], 255)
+	pool.mark_dead(a, BulletPool.DespawnReason.LIFETIME)
+	pool.flush_dead()
+	assert_eq(pool.reflect_count[0], 255, "moved into slot 0 with its bullet")
+	var c := _enemy_bullet()
+	assert_eq(pool.reflect_count[c], 0, "a recycled slot is clean")
+
+
 func test_faction_colours_are_distinct() -> void:
 	assert_ne(Layers.bullet_color(Layers.PLAYER), Layers.bullet_color(Layers.ENEMY))
 	assert_eq(Layers.bullet_color(Layers.PLAYER), Color("ffd166"))

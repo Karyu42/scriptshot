@@ -23,14 +23,14 @@ itself lives in `scripting/` and is not part of the core.
 
 | Path | Contents |
 | --- | --- |
-| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), `Health`, `InputDevice` autoload, `Main` sandbox scene script |
+| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), `Health`, `InputDevice` and `RespawnPoints` autoloads, `Main` sandbox scene script |
 | `src/player/` | `Player`, `MovementMath`, `AimMath`, `FireCooldown`, `TriggerState`, `AimReticle`, `BasicShot` (default weapon), `DashMath` / `DashState` (dash), `PlayerState` (script-facing facade) |
-| `src/bullets/` | `BulletPool`, `BulletManager`, `BulletRenderer`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `BulletShotEmitter`, `BulletStressTest` |
-| `src/enemies/` | Enemies: `TrainingDummy`, `Turret` (aims at and shoots the player) |
+| `src/bullets/` | `BulletPool`, `BulletManager`, `BulletRenderer`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Reflector`, `BulletShotEmitter`, `BulletStressTest` |
+| `src/enemies/` | Enemies: `TrainingDummy`, `Turret` (aims at and shoots the player), `Mirror` (reflects the player's bullets) |
 | `src/world/` | Arena drawing / world pieces |
 | `src/camera/` | `FollowCamera`, `CameraMath` |
 | `src/fx/` | Reserved for effects (hit flashes, particles, shake sources) |
-| `scenes/` | `main.tscn` (playable sandbox), `player.tscn`, `training_dummy.tscn`, `turret.tscn` |
+| `scenes/` | `main.tscn` (playable sandbox), `player.tscn`, `training_dummy.tscn`, `turret.tscn`, `mirror.tscn` |
 | `tests/unit/` | GUT unit and smoke tests |
 | `tests/benchmark/` | Headless bullet benchmark |
 | `scripting/` | Reserved for the Lua side. The core never depends on it |
@@ -343,28 +343,52 @@ in the editor or from a script without code changes.
 | --- | --- | --- |
 | Max hp | 5 | `Health.max_hp` |
 | i-frames after a (non-lethal) hit | 0.75 s | `Health.invulnerability_time` |
-| Regeneration delay (no damage taken) | 5 s | `Health.regen_delay` |
-| Regeneration rate | 1 hp every 3 s, up to max | `Health.regen_amount`, `Health.regen_interval` |
+| Regeneration | first hp 5 s after the last hit, then 1 hp every 3 s, up to max | `Health.regen_delay`, `regen_interval`, `regen_amount` |
 | Dash input | action `dash`: Space or Shift; gamepad B or right bumper | `project.godot` input map |
 | Dash direction | move direction, or the aim direction when not moving | `Player.try_dash()` |
 | Dash distance / burst length | 170 px in 0.18 s | `Player.dash_distance`, `dash_duration` |
 | Dash speed curve | hard launch decaying into running speed (`dash_curve_power` 2) | `DashMath` |
 | Dash invulnerability | 0.2 s from the start of the dash | `Player.dash_invulnerability` |
 | Dash cooldown | 1.5 s, measured from the start of the dash | `Player.dash_cooldown` |
+| Dash input buffer | 0.1 s: a press while dashing / cooling down fires as soon as the dash is available. The dash never touches the weapon | `Player.dash_buffer_time`, `Player.request_dash()` |
 | Own bullets | never hurt the player (nor enemies their own side) | `ShotRequest.owner_layer` |
-| Reflected bullets | become enemy-owned (or player-owned), see below | `BulletPool.reflect`, `ShotEmitter.reflect_bullet` |
-| Death | respawn keeping everything; hp resets to max | `Player.respawn()`, `Main` |
+| Reflecting | player side: scripts only (`reflect_bullet`). Enemy / boss side: `Reflector` zones, e.g. mirrors reflect PLAYER bullets, which become enemy-owned | `ShotEmitter.reflect_bullet`, `Reflector` |
+| Death | respawn after 1.5 s at the last cleared boss arena, else the origin; keeps everything; hp resets to max | `RespawnPoints`, `Player.respawn()`, `Main` |
 
-Interpretations of the rules (open to correction):
+Clarifications (all confirmed by Karyu on 2026-10-30):
 
-* **Regeneration timing.** "Starts after 5 s without damage, 1 hp per 3 s": the
-  first hp arrives one interval *after* the delay, i.e. 8 s after the last hit,
-  then every 3 s (11 s, 14 s, ...). Taking damage restarts the delay. Healing
-  does not.
+* **Regeneration timing.** The first hp comes 5 s after the last hit, then 1 hp
+  every 3 s (5 s, 8 s, 11 s, ...). Taking damage restarts the 5 s; healing and
+  script writes to hp do not.
 * **Dash cooldown** counts from the dash start, so 1.5 s between dash *starts*.
-* **Respawn** puts the player at `Main.respawn_position` (origin) after
-  `Main.respawn_delay` (1.5 s). Enemies, bullets, weapon and max hp are kept; hp
-  goes to `max_hp`, i-frames and the dash cooldown are cleared.
+* **Dash buffering.** A press that cannot dash yet (mid-burst or cooling down) is
+  remembered for `dash_buffer_time` (0.1 s; 0 turns it off) and the dash starts
+  on the first tick it is available, along the move direction of that moment
+  (aim direction if standing still). Pressing several times still buffers one
+  dash. The dash never cancels a charging weapon: the trigger state and the
+  weapon's `update()` calls carry on unchanged, so a charge held through a dash
+  releases with its full hold time.
+* **Respawn** happens `Main.respawn_delay` (1.5 s) after death at
+  `RespawnPoints.get_respawn_position()`: the last cleared boss arena, or the
+  origin if none has been cleared. Enemies, bullets, weapon and max hp are kept;
+  hp goes to `max_hp`, i-frames, the dash cooldown and any buffered dash are
+  cleared.
+
+### Respawn points (`RespawnPoints` autoload)
+
+`src/core/respawn_points.gd`, registered as the `RespawnPoints` autoload. Bosses
+don't exist yet; boss code will call `register_arena_cleared()` when its arena is
+won, and `Main` reads `get_respawn_position()` when the player dies.
+
+| Function | Notes |
+| --- | --- |
+| `register_arena_cleared(position) -> bool` | the cleared arena becomes the respawn point (the last one wins) and is counted. Non-finite positions are ignored |
+| `set_checkpoint(position) -> bool` | same, without counting an arena (future checkpoint pickups) |
+| `get_respawn_position() -> Vector2` | last arena / checkpoint, else `Vector2.ZERO` |
+| `has_checkpoint()`, `get_arenas_cleared()` | reads |
+| `reset()` | forget everything (new run; tests, since the autoload is shared) |
+
+Signal: `respawn_position_changed(position)`.
 
 ### Health
 
@@ -404,11 +428,47 @@ bullets are harmless whatever a script asks for. Player shots are
 (`BulletManager.reflect`, `BulletPool.reflect(slot, ...)`) hands a live bullet to
 the other faction: `owner_layer` becomes `new_owner_layer`, `hit_mask` becomes
 `Layers.hostile_to(new_owner_layer)`, the colour becomes that faction's
-(`Layers.bullet_color`), the piercing `last_hit` memory is cleared, and with
-`reverse` the velocity and heading flip. It returns `false` (changing nothing)
-for a stale id, a bullet already marked dead, or an owner that is not `PLAYER` /
-`ENEMY`. Velocity is otherwise untouched; set `pool.vel` from a hook to aim a
-reflected bullet.
+(`Layers.bullet_color`), the piercing `last_hit` memory is cleared, the bullet's
+`reflect_count` goes up, and with `reverse` the velocity and heading flip. It
+returns `false` (changing nothing) for a stale id, a bullet already marked dead,
+or an owner that is not `PLAYER` / `ENEMY`. Velocity is otherwise untouched.
+**The player side is scripts-only**: there is no built-in parry input.
+
+### Reflector -- mirrors and shields for enemies and bosses
+
+`Reflector` (`src/bullets/reflector.gd`) is the enemy-side path: a `Node2D` zone
+you attach to any enemy or boss. Bullets of `reflects_owners` (default: PLAYER)
+that cross the zone while moving toward it change sides: they become owned by the
+other faction, take its colour, and can hurt the player but never the reflector's
+owner (an ENEMY-owned bullet has `hit_mask = PLAYER`). Other owners pass through.
+
+| Export | Default | Meaning |
+| --- | --- | --- |
+| `radius` | 40 | zone radius; put it a little outside the body's hurtbox |
+| `arc_degrees` | 360 | arc centred on `facing()` (the node's global rotation); 360 = full circle. Bullets crossing the circle outside the arc pass |
+| `reflects_owners` | `Layers.PLAYER` | owner layers reflected (flags) |
+| `mode` | `MIRROR` | `REVERSE` straight back; `MIRROR` reflect across the surface normal at the impact; `AIM_AT_TARGET` send it at `target` (falls back to reverse) |
+| `speed_multiplier` | 1 | reflected speed / incoming speed, clamped to [0, 20], NaN = 1 |
+| `max_reflections` | 1 | reflect-once guard: a bullet that has changed owner this many times (by any reflector *or* a script) is not reflected again; 0 = unlimited |
+| `enabled` | true | also inactive while hidden |
+
+Plus `target: Node2D` (set by whoever wires the scene), the `bullet_reflected(bullet_id, new_owner)` signal and `reflected_total`.
+
+How it runs: inside `BulletManager.step()`, between the wall sweep and the
+hurtbox pass. Active reflectors are bucketed into a second `HurtboxGrid`
+(`BulletManager.reflector_grid`) whose `collide_bullets(pool, true)` matches the
+zone's layer against each bullet's `owner_layer` (instead of `hit_mask`), using
+the same swept, grid-walking test, so fast bullets cannot tunnel through a zone.
+That is one pass over the bullets however many reflectors exist, nothing when
+there are none, and no per-bullet nodes. Rules applied to each candidate hit:
+guard, "must be moving toward the centre", arc test at the impact point. A
+reflected bullet is moved to the zone edge, so it never ends a tick inside the
+zone, and acts before hurtboxes, so it never reaches the reflector's body that
+tick. `BulletManager.last_reflect_count` reports reflections in the last step.
+
+`Mirror` (`src/enemies/mirror.gd`, `scenes/mirror.tscn`, one in the main scene) is
+the test enemy: a dummy whose 150 degree arc turns toward the player at 2.5 rad/s.
+Shots from the front come back at the player; shots from behind damage the body.
 
 ### Script-facing player state (`PlayerState`)
 
@@ -431,7 +491,7 @@ every call on a freed player is a harmless no-op.
 | `is_dead()`, `is_regenerating()`, `get_time_since_damage()` | read-only |
 
 Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything in
-"The shot interface" above.
+"The shot interface" above. Also for scripts: `player.request_dash()` (a buffered dash press) and `player.has_buffered_dash()`; the respawn service is the `RespawnPoints` autoload.
 
 ## Open design questions
 
@@ -453,12 +513,12 @@ Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything i
    run charge / channel / burst weapons. Open: should cooldown ownership move
    entirely into scripts (drop `fire_interval`), and should `update()` also be
    called while the player is dead or the weapon is holstered?
-6. **Combat beyond the decided rules.** Hp, i-frames, regeneration, dash and
-   respawn are decided (see "Combat rules"). Still open: shields, enemy health
-   model, damage types, whether the respawn should happen at the death point or
-   a checkpoint instead of the origin, whether the dash may be buffered or
-   cancel a weapon, and how a "parry" input should decide which bullets get
-   reflected (the `reflect_bullet` mechanism exists, the trigger does not).
+6. **Combat beyond the decided rules.** Hp, i-frames, regeneration, dash
+   (incl. buffering), respawn and enemy-side reflection are decided (see "Combat
+   rules"). Still open: shields, enemy health model, damage types, whether the
+   dash may cancel a weapon (today it never does), whether reflected bullets
+   should refresh their lifetime, and the player-side parry (scripts-only for
+   now: no input is bound to `reflect_bullet`).
 7. **Renderer and scaling.** The project uses GL Compatibility (widest
    hardware, web-exportable, headless friendly; no 2D MSAA) with
    `canvas_items` stretch, aspect `keep`. Forward+/Mobile and integer

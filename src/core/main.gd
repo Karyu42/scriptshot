@@ -10,6 +10,7 @@ extends Node2D
 @onready var _reticle: AimReticle = $AimReticle
 @onready var _hud: Label = $Hud/Label
 @onready var _turrets: Node = $Turrets
+@onready var _mirrors: Node = $Mirrors
 
 ## Seconds between dying and respawning. The respawn keeps everything (enemies,
 ## bullets, weapon) and only resets the player's hp to max. It happens at
@@ -27,6 +28,8 @@ func _ready() -> void:
 	for turret: Turret in _turrets.get_children():
 		turret.emitter = _bullets.emitter
 		turret.target = _player
+	for mirror: Mirror in _mirrors.get_children():
+		mirror.target = _player
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
 

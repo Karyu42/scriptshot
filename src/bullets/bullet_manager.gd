@@ -36,6 +36,8 @@ const PHYSICS_PRIORITY := 100
 
 var pool: BulletPool
 var grid: HurtboxGrid
+## Reflector zones, bucketed like hurtboxes but matched on bullet owner.
+var reflector_grid: HurtboxGrid
 var walls: WallGrid
 var emitter: ShotEmitter
 
@@ -43,6 +45,8 @@ var emitter: ShotEmitter
 var last_step_usec := 0
 ## Bullet-vs-hurtbox and bullet-vs-wall hits found by the last step().
 var last_hit_count := 0
+## Bullets reflected by Reflector zones in the last step.
+var last_reflect_count := 0
 var last_wall_hit_count := 0
 ## Microseconds spent in each phase of the last step(), indexed by Phase.
 var last_phase_usec := PackedInt32Array([0, 0, 0, 0, 0])
@@ -65,6 +69,7 @@ func _init() -> void:
 func _ready() -> void:
 	pool = BulletPool.new(capacity)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
+	reflector_grid = HurtboxGrid.new(world_bounds, cell_size)
 	walls = WallGrid.new(world_bounds, cell_size)
 	emitter = BulletShotEmitter.new(self)
 	collect_walls()
@@ -167,6 +172,10 @@ func step(delta: float) -> void:
 		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
 
 	var t2 := Time.get_ticks_usec()
+	# Reflector zones act before hurtboxes, so a bullet turned around at a mirror's
+	# edge never reaches the mirror's body this tick (and, now enemy-owned, could
+	# not hit it anyway).
+	_reflect_bullets()
 	last_hit_count = grid.collide_bullets(pool)
 	for k in last_hit_count:
 		_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
@@ -227,6 +236,28 @@ func _report_saturation() -> void:
 		saturation_warnings_emitted += 1
 		push_warning("BulletManager: bullet pool saturated (capacity %d); dropped %d shot(s) this tick, %d in total. Raise BulletManager.capacity or fire fewer bullets."
 			% [pool.capacity, dropped_now, pool.dropped_total])
+
+
+## One swept pass over the bullets against every active Reflector zone.
+func _reflect_bullets() -> void:
+	last_reflect_count = 0
+	var zones := Reflector.registry
+	if zones.is_empty():
+		return
+	reflector_grid.begin(pool.max_radius)
+	for k in zones.size():
+		var zone := zones[k]
+		if zone.is_active():
+			reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
+	var hits := reflector_grid.collide_bullets(pool, true)
+	for k in hits:
+		var bullet := reflector_grid.hit_bullets[k]
+		var zone := reflector_grid.target_ref[reflector_grid.hit_targets[k]] as Reflector
+		if zone == null or not is_instance_valid(zone):
+			continue
+		var impact := pool.prev_pos[bullet].lerp(pool.pos[bullet], reflector_grid.hit_t[k])
+		if zone.reflect_bullet(pool, bullet, impact):
+			last_reflect_count += 1
 
 
 func _collect_targets() -> void:

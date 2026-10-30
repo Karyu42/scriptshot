@@ -59,6 +59,9 @@ var hit_mask := PackedInt32Array()
 ## owner's layer from hit_mask, and reflect() re-derives hit_mask for the new
 ## owner. See ShotRequest.owner_layer.
 var owner_layer := PackedInt32Array()
+## How many times the bullet has changed owner through reflect() (saturates at
+## 255). Reflectors use it as their reflect-once guard against ping-pong.
+var reflect_count := PackedByteArray()
 var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
 ## 1 = collides with the `world` layer (walls), 0 = flies through walls.
@@ -113,6 +116,7 @@ func _init(p_capacity: int = 16384) -> void:
 	color.resize(capacity)
 	hit_mask.resize(capacity)
 	owner_layer.resize(capacity)
+	reflect_count.resize(capacity)
 	behavior.resize(capacity)
 	pierce.resize(capacity)
 	collide_world.resize(capacity)
@@ -157,6 +161,7 @@ func spawn(request: ShotRequest) -> int:
 	param_b[i] = request.param_b
 	color[i] = request.color
 	owner_layer[i] = request.owner_layer
+	reflect_count[i] = 0
 	hit_mask[i] = request.hit_mask & ~request.owner_layer
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
@@ -200,6 +205,7 @@ func spawn_simple(
 	param_b[i] = 0.0
 	color[i] = bullet_color
 	owner_layer[i] = 0
+	reflect_count[i] = 0
 	hit_mask[i] = mask
 	behavior[i] = 0
 	pierce[i] = 0
@@ -377,6 +383,8 @@ func reflect(slot: int, new_owner_layer: int, reverse: bool = false) -> bool:
 	if new_owner_layer != Layers.PLAYER and new_owner_layer != Layers.ENEMY:
 		return false
 	owner_layer[slot] = new_owner_layer
+	if reflect_count[slot] < 255:
+		reflect_count[slot] += 1
 	hit_mask[slot] = Layers.hostile_to(new_owner_layer)
 	color[slot] = Layers.bullet_color(new_owner_layer)
 	last_hit[slot] = 0
@@ -409,6 +417,7 @@ func _remove_at(i: int) -> void:
 		color[i] = color[last]
 		hit_mask[i] = hit_mask[last]
 		owner_layer[i] = owner_layer[last]
+		reflect_count[i] = reflect_count[last]
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]

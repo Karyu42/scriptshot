@@ -158,7 +158,11 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 ## hit_targets / hit_t (at most one hit per bullet per call) and returns the hit
 ## count. Bullets that are already marked dead, have hit_mask 0, or are piercing
 ## through the target they hit last are skipped.
-func collide_bullets(pool: BulletPool) -> int:
+##
+## With `match_owner` the target layer is matched against each bullet's
+## `owner_layer` instead of its `hit_mask`: the same swept test answers "which
+## bullets of faction X touch this zone", which is how Reflectors find bullets.
+func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	hit_count = 0
 	if target_count == 0:
 		return 0
@@ -170,7 +174,7 @@ func collide_bullets(pool: BulletPool) -> int:
 	var bpos := pool.pos
 	var bprev := pool.prev_pos
 	var brad := pool.radius
-	var bmask := pool.hit_mask
+	var bmask := pool.owner_layer if match_owner else pool.hit_mask
 	var bdead := pool.dead_reason
 	var blast := pool.last_hit
 	var ox := _origin.x
