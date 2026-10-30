@@ -12,3 +12,13 @@ const WORLD := 1 << 4
 
 ## Everything that can be damaged by bullets.
 const DAMAGEABLE := PLAYER | ENEMY
+
+
+## The hurtbox layers a shooter on `shooter_layer` is allowed to damage: the
+## other side only, so there is no friendly fire (PLAYER <-> ENEMY).
+static func hostile_to(shooter_layer: int) -> int:
+	if shooter_layer & PLAYER:
+		return ENEMY
+	if shooter_layer & ENEMY:
+		return PLAYER
+	return 0

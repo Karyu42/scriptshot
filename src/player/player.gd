@@ -4,7 +4,9 @@ extends CharacterBody2D
 ## right stick / mouse aims, fire input drives a ShotPattern through a
 ## ShotEmitter. The player knows nothing about how bullets are simulated.
 
+## Forwarded from the placeholder Health component.
 signal damaged(amount: float)
+signal died
 
 @export_group("Movement")
 @export var max_speed := 300.0
@@ -27,6 +29,8 @@ var aim_direction := Vector2.RIGHT
 var aim_point := Vector2.ZERO
 
 var _prev_position := Vector2.ZERO
+var _trigger := TriggerState.new()
+var _dead := false
 var _cooldown := FireCooldown.new()
 var _time := 0.0
 var _shot_index := 0
@@ -34,15 +38,22 @@ var _flash := 0.0
 var _context := ShotContext.new()
 
 @onready var _hurtbox: Hurtbox = $Hurtbox
+## PLACEHOLDER hit points, see Health.
+@onready var health: Health = $Health
 
 
 func _ready() -> void:
 	_hurtbox.hit.connect(_on_hit)
+	health.damaged.connect(_on_health_damaged)
+	health.died.connect(_on_died)
+	health.invulnerability_changed.connect(_on_invulnerability_changed)
 	aim_point = global_position + aim_direction * 100.0
 	_prev_position = global_position
 
 
 func _physics_process(delta: float) -> void:
+	if _dead:
+		return
 	_time += delta
 	_prev_position = global_position
 	var move_input := Input.get_vector("move_left", "move_right", "move_up", "move_down")
@@ -52,7 +63,10 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_update_aim()
-	if _cooldown.update(delta, Input.is_action_pressed("fire"), weapon.fire_interval if weapon != null else 0.0):
+	_trigger.update(Input.is_action_pressed("fire"), delta)
+	_update_weapon(delta)
+	var autofire := _trigger.pressed and weapon != null and weapon.auto_fire
+	if _cooldown.update(delta, autofire, weapon.fire_interval if weapon != null else 0.0):
 		_fire()
 
 	_flash = maxf(_flash - delta * 6.0, 0.0)
@@ -67,20 +81,40 @@ func get_render_position() -> Vector2:
 	return _prev_position.lerp(global_position, Engine.get_physics_interpolation_fraction())
 
 
-## Spawn position, aim and context for a shot are computed here, then handed to
-## the weapon; the weapon decides what bullets that means.
-func _fire() -> void:
+## Refreshes the ShotContext (muzzle, aim, trigger state) and gives the weapon its
+## per-tick update(). Runs every physics tick, before any fire().
+func _update_weapon(delta: float) -> void:
 	if emitter == null or weapon == null:
 		return
 	_context.muzzle_position = AimMath.muzzle(global_position, aim_direction, muzzle_offset)
 	_context.aim_direction = aim_direction
 	_context.aim_angle = aim_direction.angle()
 	_context.shooter_velocity = velocity
-	_context.target_mask = Layers.ENEMY
+	_context.target_mask = Layers.hostile_to(Layers.PLAYER)
 	_context.time = _time
+	_trigger.apply_to(_context)
+	weapon.update(_context, emitter, delta)
+
+
+## Asks the weapon for a shot using the context from _update_weapon().
+func _fire() -> void:
+	if emitter == null or weapon == null:
+		return
 	_context.shot_index = _shot_index
 	_shot_index += 1
 	weapon.fire(_context, emitter)
+
+
+## Back in the fight at `at` with full health (placeholder respawn).
+func respawn(at: Vector2) -> void:
+	_dead = false
+	global_position = at
+	reset_physics_interpolation()
+	_prev_position = at
+	velocity = Vector2.ZERO
+	health.reset()
+	_hurtbox.active = true
+	show()
 
 
 func _update_aim() -> void:
@@ -111,12 +145,31 @@ func update_mouse_aim(mouse_screen: Vector2, body_screen: Vector2) -> void:
 
 
 func _on_hit(damage: float, _hit_position: Vector2, _bullet_velocity: Vector2) -> void:
+	health.damage(damage)
+
+
+func _on_health_damaged(amount: float, _hp: float) -> void:
 	_flash = 1.0
-	damaged.emit(damage)
+	damaged.emit(amount)
+
+
+## Bullets pass through the player while it is invulnerable instead of being
+## wasted on it.
+func _on_invulnerability_changed(active: bool) -> void:
+	_hurtbox.active = not active and not _dead
+
+
+func _on_died() -> void:
+	_dead = true
+	_hurtbox.active = false
+	hide()
+	died.emit()
 
 
 func _draw() -> void:
 	var body := Color("e8e8f0").lerp(Color.WHITE, _flash)
+	if health != null and health.is_invulnerable() and int(_time * 20.0) % 2 == 0:
+		body.a = 0.45
 	draw_circle(Vector2.ZERO, 14.0, body)
 	draw_circle(Vector2.ZERO, 7.0, Color("4cc9f0"))
 	# Barrel pointing along the aim direction (the node itself never rotates).
