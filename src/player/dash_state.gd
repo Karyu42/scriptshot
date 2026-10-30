@@ -5,12 +5,15 @@ extends RefCounted
 ## a dash, so changing an export at runtime takes effect on the next dash.
 ##
 ## Timing is in physics-tick seconds. The cooldown is measured from the moment
-## the dash *starts* (1.5 s total, so with the 0.18 s burst there is 1.32 s of
+## the dash *starts* (1.5 s total, so with the 0.2 s burst there is 1.3 s of
 ## running between dashes).
 
 ## Burst length in seconds and distance covered in pixels.
-var duration := 0.18
-var distance := 170.0
+## Timers within this many seconds of expiring count as expired (float residue).
+const EPSILON := 0.000001
+
+var duration := 0.2
+var distance := 160.0
 ## Curve shape (see DashMath) and the speed the burst blends back into.
 var curve_power := 2.0
 var exit_speed := 300.0
@@ -50,6 +53,8 @@ func start(dir: Vector2) -> bool:
 func tick_cooldown(delta: float) -> void:
 	if is_finite(delta) and delta > 0.0:
 		cooldown_left = maxf(cooldown_left - delta, 0.0)
+		if cooldown_left < EPSILON:
+			cooldown_left = 0.0
 
 
 ## Advances the burst by `delta` and returns the velocity to move with this tick:
@@ -66,7 +71,7 @@ func advance(delta: float) -> Vector2:
 		DashMath.distance_at(elapsed, distance, duration, exit_speed, curve_power)
 		- DashMath.distance_at(t0, distance, duration, exit_speed, curve_power)
 	)
-	if elapsed >= duration:
+	if elapsed >= duration - EPSILON:
 		active = false
 		just_finished = true
 	return direction * (moved / delta)

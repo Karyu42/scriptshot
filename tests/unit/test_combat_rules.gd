@@ -46,7 +46,7 @@ func test_a_hit_gives_three_quarters_of_a_second_of_iframes() -> void:
 	_enemy_bullet(player.global_position)
 	await wait_physics_frames(2)
 	assert_eq(player.health.hp, 4.0)
-	assert_almost_eq(player.health.invulnerable_left, 0.75, 0.05)
+	assert_almost_eq(player.health.engine_invulnerable_left, 0.75, 0.05)
 
 
 func test_regeneration_ticks_on_the_live_player() -> void:

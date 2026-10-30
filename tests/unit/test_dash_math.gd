@@ -1,8 +1,8 @@
 extends GutTest
 ## DashMath: the closed-form speed curve of the dash.
 
-const DIST := 170.0
-const DUR := 0.18
+const DIST := 160.0
+const DUR := 0.2
 const EXIT := 300.0
 
 
@@ -52,7 +52,7 @@ func test_speed_matches_numeric_derivative_of_distance() -> void:
 
 func test_power_zero_is_constant_speed() -> void:
 	assert_almost_eq(_v(0.0, 0.0), DIST / DUR, 0.001)
-	assert_almost_eq(_v(0.09, 0.0), DIST / DUR, 0.001)
+	assert_almost_eq(_v(DUR / 2.0, 0.0), DIST / DUR, 0.001)
 
 
 func test_higher_power_launches_harder_for_the_same_distance() -> void:
@@ -62,4 +62,9 @@ func test_higher_power_launches_harder_for_the_same_distance() -> void:
 
 
 func test_peak_never_negative() -> void:
-	assert_gte(DashMath.peak_speed(0.0, 0.18, 300.0, 2.0), 0.0)
+	assert_gte(DashMath.peak_speed(0.0, 0.2, 300.0, 2.0), 0.0)
+
+
+func test_default_dash_peaks_at_1800_px_per_second() -> void:
+	# pillars 5.4 dash (160 px over 0.2 s), 300 px/s running speed, power 2.
+	assert_almost_eq(DashMath.peak_speed(160.0, 0.2, 300.0, 2.0), 1800.0, 0.01)

@@ -25,5 +25,12 @@ func update(_context: ShotContext, _emitter: ShotEmitter, _delta: float) -> void
 	pass
 
 
+## Drops any state the weapon carries between ticks (a charge, a burst in
+## progress, a channel): called when the player respawns, so nothing stale fires
+## afterwards. Override it in weapons that keep such state.
+func reset() -> void:
+	pass
+
+
 func fire(_context: ShotContext, _emitter: ShotEmitter) -> void:
 	push_error("ShotPattern.fire() is abstract")

@@ -79,7 +79,7 @@ func test_burst_ends_after_its_duration_and_flags_the_finishing_step() -> void:
 		if d.active:
 			active_steps += 1
 	assert_eq(finished_steps, 1)
-	assert_between(active_steps, 9, 11, "0.18 s = about 10 ticks of 1/60")
+	assert_eq(active_steps, 11, "0.2 s = 12 ticks of 1/60")
 
 
 func test_cooldown_is_measured_from_the_start_of_the_dash() -> void:
@@ -110,7 +110,7 @@ func test_bad_deltas_are_ignored() -> void:
 func test_progress_and_reset() -> void:
 	assert_eq(d.progress(), 1.0)
 	d.start(Vector2.RIGHT)
-	d.step(0.09)
+	d.step(0.1)
 	assert_almost_eq(d.progress(), 0.5, 0.001)
 	d.reset()
 	assert_true(d.is_ready())

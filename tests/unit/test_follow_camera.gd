@@ -71,3 +71,41 @@ func test_main_scene_camera_starts_on_the_player() -> void:
 	var player := main.get_node("Player") as Player
 	assert_eq(cam.global_position, player.global_position + player.aim_direction * cam.look_ahead,
 		"on the very first frame, before any physics tick")
+
+
+func _player_at(pos: Vector2) -> Player:
+	var player := (load("res://scenes/player.tscn") as PackedScene).instantiate() as Player
+	player.position = pos
+	add_child_autofree(player)
+	player.aim_direction = Vector2.RIGHT
+	return player
+
+
+func test_the_camera_cuts_to_the_player_on_teleport_and_respawn() -> void:
+	var player := _player_at(Vector2(100, 100))
+	camera.target = player
+	player.teleport(Vector2(3000, -2000))
+	assert_eq(
+		camera.global_position,
+		Vector2(3000, -2000) + Vector2.RIGHT * camera.look_ahead,
+		"snapped on the same frame, no glide across the arena"
+	)
+	player.state.set_hp(0.0)
+	player.respawn(Vector2(-800, 400))
+	assert_eq(camera.global_position, Vector2(-800, 400) + Vector2.RIGHT * camera.look_ahead)
+
+
+func test_the_script_set_position_also_cuts_the_camera() -> void:
+	var player := _player_at(Vector2(0, 0))
+	camera.target = player
+	player.state.set_position(Vector2(1200, 700))
+	assert_eq(camera.global_position, Vector2(1200, 700) + Vector2.RIGHT * camera.look_ahead)
+
+
+func test_a_replaced_target_no_longer_moves_the_camera() -> void:
+	var first := _player_at(Vector2(0, 0))
+	camera.target = first
+	var second := _player_at(Vector2(50, 50))
+	camera.target = second
+	first.teleport(Vector2(9000, 9000))
+	assert_lt(camera.global_position.x, 1000.0, "the old target's teleports are ignored")

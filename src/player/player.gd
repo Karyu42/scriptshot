@@ -4,6 +4,9 @@ extends CharacterBody2D
 ## right stick / mouse aims, fire input drives a ShotPattern through a
 ## ShotEmitter. The player knows nothing about how bullets are simulated.
 
+## Length of one blink step during i-frames (pillars 5.4: 62 ms).
+const BLINK_STEP := 0.062
+
 ## Forwarded from the Health component.
 signal damaged(amount: float)
 signal died
@@ -20,9 +23,9 @@ signal died
 @export_group("Dash")
 ## Distance covered by one dash, in pixels (must be at least max_speed *
 ## dash_duration, see DashMath).
-@export var dash_distance := 170.0
+@export var dash_distance := 160.0
 ## Burst length in seconds.
-@export var dash_duration := 0.18
+@export var dash_duration := 0.2
 ## Speed curve: 0 = constant speed, 1 = linear ramp down, 2 = hard launch with a
 ## long tail (default), higher = sharper launch. See DashMath.
 @export var dash_curve_power := 2.0
@@ -47,6 +50,11 @@ var state := PlayerState.new(self)
 
 ## Emitted when a dash starts, with its unit direction.
 signal dashed(direction: Vector2)
+## Emitted on the physics tick the dash burst ends, after that tick's movement.
+signal dash_finished
+## Emitted when the player is moved discontinuously (teleport, respawn): the
+## camera snaps to it instead of gliding.
+signal teleported(position: Vector2)
 
 ## Unit vector the player is aiming along, and the world point being aimed at.
 var aim_direction := Vector2.RIGHT
@@ -74,7 +82,7 @@ func _ready() -> void:
 	_hurtbox.hit.connect(_on_hit)
 	health.damaged.connect(_on_health_damaged)
 	health.died.connect(_on_died)
-	health.invulnerability_changed.connect(_on_invulnerability_changed)
+	health.engine_invulnerability_changed.connect(_on_engine_invulnerability_changed)
 	aim_point = global_position + aim_direction * 100.0
 	_prev_position = global_position
 
@@ -102,6 +110,7 @@ func _physics_process(delta: float) -> void:
 	if _dash.just_finished:
 		# Hand over to normal movement at running speed, not at the burst's speed.
 		velocity = velocity.limit_length(max_speed)
+		dash_finished.emit()
 
 	_update_aim()
 	_trigger.update(Input.is_action_pressed("fire"), delta)
@@ -163,7 +172,7 @@ func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 	_dash.cooldown = maxf(dash_cooldown, 0.0)
 	if not _dash.start(dir):
 		return false
-	health.set_invulnerable(_dash.invulnerable_time)
+	health.add_engine_invulnerability(_dash.invulnerable_time)
 	dashed.emit(_dash.direction)
 	return true
 
@@ -215,16 +224,24 @@ func teleport(at: Vector2) -> void:
 	global_position = at
 	_prev_position = at
 	reset_physics_interpolation()
+	teleported.emit(at)
 
 
 ## Back in the fight at `at` with everything kept (bullets, enemies, weapon) but
-## hp reset to max_hp, dash ready, no i-frames.
+## hp reset to max_hp, dash ready, no engine i-frames. The fire button state, the
+## fire cooldown and any weapon charge are reset, so a button released while dead
+## cannot fire a stale (charged) shot. Script invulnerability persists (scripts own
+## it).
 func respawn(at: Vector2) -> void:
 	_dead = false
 	teleport(at)
 	velocity = Vector2.ZERO
 	_dash.reset()
 	_dash_wanted = false
+	_trigger.reset()
+	_cooldown.reset()
+	if weapon != null:
+		weapon.reset()
 	health.reset()
 	_hurtbox.active = true
 	show()
@@ -263,7 +280,8 @@ func update_mouse_aim(mouse_screen: Vector2, body_screen: Vector2) -> void:
 
 
 func _on_hit(damage: float, _hit_position: Vector2, _bullet_velocity: Vector2) -> void:
-	health.damage(damage)
+	# last_hit_flags says whether this bullet pierces the script invulnerability layer.
+	health.damage(damage, _hurtbox.last_hit_flags)
 
 
 func _on_health_damaged(amount: float, _hp: float) -> void:
@@ -271,9 +289,11 @@ func _on_health_damaged(amount: float, _hp: float) -> void:
 	damaged.emit(amount)
 
 
-## Bullets pass through the player while it is invulnerable instead of being
-## wasted on it.
-func _on_invulnerability_changed(active: bool) -> void:
+## Bullets pass through the player during engine i-frames (hit, dash) instead of
+## being wasted on it. Script invulnerability does not switch the hurtbox off:
+## bullets that reach it are consumed and blocked there, which is what lets
+## piercing attacks hit through that layer.
+func _on_engine_invulnerability_changed(active: bool) -> void:
 	_hurtbox.active = not active and not _dead
 
 
@@ -286,8 +306,9 @@ func _on_died() -> void:
 
 func _draw() -> void:
 	var body := Color("e8e8f0").lerp(Color.WHITE, _flash)
-	if health != null and health.is_invulnerable() and int(_time * 20.0) % 2 == 0:
-		body.a = 0.45
+	# Blink during engine i-frames: 62 ms steps between full and 30% alpha.
+	if health != null and health.is_engine_invulnerable() and int(_time / BLINK_STEP) % 2 == 0:
+		body.a = 0.3
 	if _dash.active:
 		# Fading echoes behind the burst.
 		for k in range(1, 4):

@@ -281,14 +281,18 @@ func test_set_max_hp_clamps_and_pulls_hp_down() -> void:
 	assert_eq(h.set_max_hp(INF), Health.MAX_HP_LIMIT)
 
 
-func test_set_invulnerable_seconds_extends_but_never_shortens() -> void:
+func test_set_invulnerable_seconds_sets_the_script_layer() -> void:
 	h.set_invulnerable(1.0)
 	assert_true(h.is_invulnerable())
+	assert_true(h.is_script_invulnerable())
+	assert_false(h.is_engine_invulnerable())
 	assert_signal_emit_count(h, "invulnerability_changed", 1)
+	assert_signal_emit_count(h, "script_invulnerability_changed", 1)
+	assert_signal_not_emitted(h, "engine_invulnerability_changed")
 	h.set_invulnerable(0.2)
-	assert_eq(h.invulnerable_left, 1.0, "a shorter effect can't cut a longer one")
+	assert_eq(h.script_invulnerable_left, 0.2, "the script's latest value replaces its earlier one")
 	h.set_invulnerable(2)
-	assert_eq(h.invulnerable_left, 2.0, "ints are seconds too")
+	assert_eq(h.script_invulnerable_left, 2.0, "ints are seconds too")
 	assert_signal_emit_count(h, "invulnerability_changed", 1, "still one start edge")
 	_tick(2.1)
 	assert_false(h.is_invulnerable())
@@ -337,3 +341,145 @@ func test_reset_clears_regen_timers_and_keeps_max_hp() -> void:
 	h.reset()
 	assert_eq(h.hp, 8.0)
 	assert_eq(h.time_since_damage, 0.0)
+
+
+# --- the two invulnerability layers (QA B4) ---------------------------------
+
+func test_script_false_does_not_clear_hit_iframes() -> void:
+	h.damage(1.0)
+	assert_true(h.is_engine_invulnerable())
+	h.set_invulnerable(false)
+	assert_true(h.is_engine_invulnerable(), "hit i-frames survive a script clear")
+	assert_true(h.is_invulnerable())
+	assert_false(h.damage(1.0))
+	assert_eq(h.hp, 4.0)
+
+
+func test_script_false_does_not_clear_dash_iframes() -> void:
+	h.add_engine_invulnerability(0.2)
+	h.set_invulnerable(true)
+	h.set_invulnerable(false)
+	h.set_invulnerable(0.0)
+	assert_true(h.is_engine_invulnerable())
+	assert_eq(h.engine_invulnerable_left, 0.2)
+	assert_eq(h.try_damage(1.0), Health.DamageResult.BLOCKED_ENGINE)
+
+
+func test_script_invulnerability_does_not_change_engine_iframes() -> void:
+	h.add_engine_invulnerability(0.3)
+	h.set_invulnerable(10.0)
+	assert_eq(h.engine_invulnerable_left, 0.3, "script layer never extends the engine one")
+	_tick(0.4)
+	assert_false(h.is_engine_invulnerable())
+	assert_true(h.is_script_invulnerable())
+
+
+func test_permanent_script_invulnerability_holds_over_a_long_time() -> void:
+	h.set_invulnerable(true)
+	_tick(600.0)
+	assert_true(h.is_script_invulnerable(), "no cap: ten minutes later it still holds")
+	assert_eq(h.script_invulnerable_left, INF)
+	assert_false(h.damage(5.0))
+	assert_eq(h.hp, 5.0)
+
+
+func test_blocked_results_tell_the_layers_apart() -> void:
+	h.set_invulnerable(true)
+	assert_eq(h.try_damage(1.0), Health.DamageResult.BLOCKED_SCRIPT)
+	assert_signal_emitted_with_parameters(h, "damage_blocked", [1.0, Health.DamageResult.BLOCKED_SCRIPT])
+	h.add_engine_invulnerability(0.5)
+	assert_eq(h.try_damage(1.0), Health.DamageResult.BLOCKED_ENGINE, "engine wins when both are on")
+	assert_eq(h.try_damage(0.0), Health.DamageResult.IGNORED)
+	assert_eq(h.hp, 5.0)
+
+
+func test_a_piercing_attack_hits_through_the_script_layer_only() -> void:
+	h.set_invulnerable(true)
+	assert_true(h.damage(1.0, Health.SOURCE_PIERCES_SCRIPT_INVULN), "pierces the script layer")
+	assert_eq(h.hp, 4.0)
+	assert_true(h.is_engine_invulnerable(), "the hit gave normal i-frames")
+	assert_eq(
+		h.try_damage(1.0, Health.SOURCE_PIERCES_SCRIPT_INVULN),
+		Health.DamageResult.BLOCKED_ENGINE,
+		"engine i-frames still block a piercing attack"
+	)
+	assert_eq(h.hp, 4.0)
+	assert_true(h.is_script_invulnerable(), "the script layer is untouched by a hit")
+
+
+func test_a_piercing_attack_cannot_hit_during_a_dash() -> void:
+	h.add_engine_invulnerability(0.2)
+	assert_false(h.damage(1.0, Health.SOURCE_PIERCES_SCRIPT_INVULN))
+	_tick(0.25)
+	assert_true(h.damage(1.0, Health.SOURCE_PIERCES_SCRIPT_INVULN))
+
+
+func test_a_normal_attack_is_blocked_by_the_script_layer() -> void:
+	h.set_invulnerable(1.0)
+	assert_false(h.damage(1.0, 0))
+	assert_false(h.damage(1.0, 2), "unknown flag bits don't pierce")
+
+
+func test_reset_clears_engine_layer_but_script_layer_persists() -> void:
+	h.damage(1.0)
+	h.set_invulnerable(true)
+	h.reset()
+	assert_false(h.is_engine_invulnerable())
+	assert_true(h.is_script_invulnerable(), "script invulnerability persists across respawn")
+	assert_eq(h.hp, 5.0)
+
+
+func test_layer_signals_fire_per_layer_and_for_any() -> void:
+	h.set_invulnerable(true)
+	assert_signal_emit_count(h, "script_invulnerability_changed", 1)
+	assert_signal_emit_count(h, "invulnerability_changed", 1)
+	h.add_engine_invulnerability(0.2)
+	assert_signal_emit_count(h, "engine_invulnerability_changed", 1)
+	assert_signal_emit_count(h, "invulnerability_changed", 1, "any-layer edge: already on")
+	h.set_invulnerable(false)
+	assert_signal_emit_count(h, "invulnerability_changed", 1, "engine still on")
+	_tick(0.3)
+	assert_signal_emit_count(h, "invulnerability_changed", 2)
+	assert_signal_emitted_with_parameters(h, "engine_invulnerability_changed", [false])
+
+
+# --- nits -------------------------------------------------------------------
+
+func test_set_hp_clamps_to_zero_and_max_not_beyond() -> void:
+	assert_eq(h.set_hp(99.0), 5.0, "above max clamps to max_hp, no overheal")
+	assert_eq(h.hp, 5.0)
+	assert_eq(h.set_hp(-3.0), 0.0, "below zero clamps to 0 (and kills)")
+	assert_true(h.is_dead())
+	assert_signal_emit_count(h, "died", 1)
+
+
+func test_set_hp_clamp_is_enforced_for_infinities() -> void:
+	assert_eq(h.set_hp(INF), 5.0)
+	assert_eq(h.set_hp(-INF), 0.0)
+	assert_true(h.is_dead())
+
+
+func test_float_residue_does_not_cost_an_extra_tick() -> void:
+	h.invulnerability_time = 0.75
+	h.damage(1.0)
+	for i in 45:
+		h.tick(1.0 / 60.0)
+	assert_false(h.is_invulnerable(), "0.75 s = exactly 45 ticks of 1/60")
+	h.add_engine_invulnerability(0.2)
+	for i in 12:
+		h.tick(1.0 / 60.0)
+	assert_false(h.is_engine_invulnerable(), "0.2 s = exactly 12 ticks")
+
+
+func test_max_hp_is_a_whole_number() -> void:
+	assert_eq(h.set_max_hp(3.4), 3.0)
+	assert_eq(h.set_max_hp(3.6), 4.0)
+	assert_eq(h.set_max_hp(0.2), 1.0)
+
+
+func test_nan_warnings_are_rate_limited() -> void:
+	ScriptWarnings.reset()
+	for i in 20:
+		h.set_hp(NAN)
+	assert_eq(ScriptWarnings.count("Health.set_hp"), 20, "all counted")
+	assert_eq(ScriptWarnings.printed_count("Health.set_hp"), ScriptWarnings.LIMIT, "but only LIMIT are printed")

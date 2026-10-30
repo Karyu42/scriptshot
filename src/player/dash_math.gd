@@ -14,7 +14,7 @@ extends RefCounted
 ##   peak = exit_speed + (distance - exit_speed * duration) * (power + 1) / duration
 ##
 ## which needs distance >= exit_speed * duration to launch above running speed
-## (the defaults do: 170 px vs 54 px). Because the distance is known in closed
+## (the defaults do: 160 px vs 60 px). Because the distance is known in closed
 ## form (distance_at), per-tick displacement is exact for any tick length.
 
 

@@ -25,6 +25,15 @@ func update(is_down: bool, delta: float) -> void:
 	pressed = is_down
 
 
+## Forgets everything: button up, no edges, no hold time. (Respawn: a button
+## released while dead must not show up as a release edge afterwards.)
+func reset() -> void:
+	pressed = false
+	just_pressed = false
+	just_released = false
+	held_time = 0.0
+
+
 ## Copies the state into a ShotContext.
 func apply_to(context: ShotContext) -> void:
 	context.trigger_pressed = pressed

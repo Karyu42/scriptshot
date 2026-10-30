@@ -13,6 +13,7 @@ func before_each() -> void:
 	add_child_autofree(player)
 	player.global_position = Vector2(500, 500)
 	player.aim_direction = Vector2.RIGHT
+	player.dash_finished.connect(_record_dash_end)
 
 
 func after_each() -> void:
@@ -33,6 +34,16 @@ func _finish_dash() -> void:
 		if not player.is_dashing():
 			return
 		await wait_physics_frames(1)
+
+
+## Position of the player on the physics tick its dash ended (a rendered frame can
+## contain several physics ticks, so reading the position after a frame may include
+## a tick of running on top of the burst).
+var _end_position := Vector2.ZERO
+
+
+func _record_dash_end() -> void:
+	_end_position = player.global_position
 
 
 func test_dash_action_is_bound_to_keyboard_and_gamepad() -> void:
@@ -58,16 +69,20 @@ func test_dash_action_is_bound_to_keyboard_and_gamepad() -> void:
 	assert_true(bumper, "gamepad right bumper")
 
 
-func test_default_tuning_is_the_decided_one() -> void:
+func test_default_tuning() -> void:
+	# 1.5 s cooldown and 0.2 s invulnerability were decided by Karyu; 160 px over
+	# 0.2 s is the design pillars' (5.4) figure.
 	assert_eq(player.dash_cooldown, 1.5)
 	assert_eq(player.dash_invulnerability, 0.2)
+	assert_eq(player.dash_distance, 160.0)
+	assert_eq(player.dash_duration, 0.2)
 
 
 func test_dash_moves_the_tuned_distance_along_the_given_direction() -> void:
 	var start := player.global_position
 	assert_true(player.try_dash(Vector2(0, -2)))
 	await _finish_dash()
-	var moved := player.global_position - start
+	var moved := _end_position - start
 	assert_almost_eq(moved.y, -player.dash_distance, 0.5)
 	assert_almost_eq(moved.x, 0.0, 0.001)
 	assert_false(player.is_dashing())
@@ -78,7 +93,7 @@ func test_standing_still_dashes_toward_the_aim_direction() -> void:
 	var start := player.global_position
 	assert_true(player.try_dash())
 	await _finish_dash()
-	assert_almost_eq((player.global_position - start).x, -player.dash_distance, 0.5)
+	assert_almost_eq((_end_position - start).x, -player.dash_distance, 0.5)
 
 
 func test_move_input_wins_over_aim_when_the_dash_input_fires() -> void:
@@ -99,7 +114,7 @@ func test_dash_makes_the_player_invulnerable_for_exactly_the_decided_time() -> v
 	assert_true(player.health.is_invulnerable())
 	assert_false(player.health.damage(1.0), "no damage while dashing")
 	await _step(0.18)
-	assert_true(player.health.is_invulnerable(), "0.2 s outlasts the 0.18 s burst a little")
+	assert_true(player.health.is_invulnerable(), "still invulnerable 0.18 s in")
 	await _step(0.05)
 	assert_false(player.health.is_invulnerable())
 	assert_true(player.health.damage(1.0))
@@ -182,7 +197,7 @@ func test_tuning_exports_change_the_next_dash() -> void:
 	var start := player.global_position
 	player.try_dash(Vector2.RIGHT)
 	await _finish_dash()
-	assert_almost_eq((player.global_position - start).x, 300.0, 0.5)
+	assert_almost_eq((_end_position - start).x, 300.0, 0.5)
 	await _step(0.4)
 	assert_true(player.try_dash(Vector2.RIGHT), "0.5 s cooldown")
 
