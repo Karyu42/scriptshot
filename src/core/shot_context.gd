@@ -13,5 +13,13 @@ var shooter_velocity := Vector2.ZERO
 var target_mask := Layers.ENEMY
 ## Seconds since the weapon was equipped / the scene started.
 var time := 0.0
-## Counts up by one for every trigger pull handled by the pattern.
+## Counts up by one for every fire() call (not for shots made from update()).
 var shot_index := 0
+## Fire-button state, refreshed every physics tick before update() / fire().
+## `trigger_held_time` is the continuous hold duration in seconds including
+## this tick; on the release tick it still holds the length of the hold that
+## just ended (charge weapons read it there), and is 0 afterwards.
+var trigger_pressed := false
+var trigger_just_pressed := false
+var trigger_just_released := false
+var trigger_held_time := 0.0
