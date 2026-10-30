@@ -23,8 +23,8 @@ itself lives in `scripting/` and is not part of the core.
 
 | Path | Contents |
 | --- | --- |
-| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), placeholder `Health`, `InputDevice` autoload, `Main` sandbox scene script |
-| `src/player/` | `Player`, `MovementMath`, `AimMath`, `FireCooldown`, `TriggerState`, `AimReticle`, `BasicShot` (default weapon) |
+| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), `Health`, `InputDevice` autoload, `Main` sandbox scene script |
+| `src/player/` | `Player`, `MovementMath`, `AimMath`, `FireCooldown`, `TriggerState`, `AimReticle`, `BasicShot` (default weapon), `DashMath` / `DashState` (dash), `PlayerState` (script-facing facade) |
 | `src/bullets/` | `BulletPool`, `BulletManager`, `BulletRenderer`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `BulletShotEmitter`, `BulletStressTest` |
 | `src/enemies/` | Enemies: `TrainingDummy`, `Turret` (aims at and shoots the player) |
 | `src/world/` | Arena drawing / world pieces |
@@ -72,6 +72,7 @@ retained, so one instance can be mutated and re-submitted any number of times.
 | `lifetime` | `float` | `2.0` | Seconds until the bullet despawns by itself |
 | `radius` | `float` | `4.0` | Collision and draw radius, px |
 | `damage` | `float` | `1.0` | Passed to `Hurtbox.hit` on impact |
+| `owner_layer` | `int` | `Layers.PLAYER` | Faction that fires the bullet (`PLAYER` or `ENEMY`). Its own layer is always removed from `hit_mask` on spawn, so **a bullet can never hurt whoever fired it**. `0` = unowned, nothing stripped |
 | `hit_mask` | `int` | `Layers.ENEMY` | Layers it can hit; `0` = decorative, hits nothing |
 | `color` | `Color` | warm yellow | Flat draw colour |
 | `behavior_id` | `int` | `0` | Id from `register_behavior()`; `0` = plain bullet (fast path, no hooks) |
@@ -308,7 +309,7 @@ No node, physics body or `Object` exists per bullet.
   button press, mouse movement > 3 px, key press). Stick drift and mouse jitter
   are ignored. The OS cursor is hidden; `AimReticle` draws the crosshair.
 * **Input map**: `move_*` (WASD / left stick), `aim_*` (right stick), `fire`
-  (LMB / right trigger), `toggle_stress` (F1 / Back), `cycle_stress` (F2 / Y).
+  (LMB / right trigger), `dash` (Space or Shift / gamepad B or right bumper), `toggle_stress` (F1 / Back), `cycle_stress` (F2 / Y).
 * **Camera**: `FollowCamera` follows with frame-rate independent exponential
   smoothing, leans toward the aim direction, and has trauma-based shake
   (`add_trauma(0..1)`) ready for hit/explosion effects. Project-wide physics
@@ -318,7 +319,9 @@ No node, physics body or `Object` exists per bullet.
 ## Provisional defaults
 
 These are placeholders chosen to make the sandbox playable. Each is a single
-variable or export, listed here so they are easy to find and change:
+variable or export, listed here so they are easy to find and change. (The combat
+numbers are no longer provisional: they are the decided rules below, and only
+remain exports so they can be tuned.)
 
 | Default | Value | Where |
 | --- | --- | --- |
@@ -327,29 +330,108 @@ variable or export, listed here so they are easy to find and change:
 | Saturation warning rate limit | one per 2 simulated seconds | `BulletManager.saturation_warning_interval` (0 = every saturated tick) |
 | Weapon cooldown | `ShotPattern.fire_interval`, 0.11 s for `BasicShot` | `ShotPattern` / `BasicShot` |
 | Autofire | on (`ShotPattern.auto_fire = true`) | `ShotPattern.auto_fire` |
-| Player max hp | 5 | `Health.max_hp` (set in `player.tscn`) |
-| Player i-frames after a non-lethal hit | 0.6 s | `Health.invulnerability_time` |
-| Damage rule | a hit costs `ShotRequest.damage` hp (default 1) | `Health.damage()` |
-| Death | player hides, `died` is emitted, `Main` respawns it at the origin after 1.5 s | `Player._on_died`, `Main` |
-| Friendly fire | none: shooters set `hit_mask = Layers.hostile_to(own_layer)` | `Layers.hostile_to`, `ShotContext.target_mask` |
+| Max hp, i-frames, regeneration, dash, respawn | **decided** 2026-10-30, see "Combat rules" below (still exports, so tunable) | `Health`, `Player`, `Main` exports |
+| Friendly fire | none, enforced: a bullet's `owner_layer` is stripped from its `hit_mask` | `BulletPool.spawn`, `Layers.hostile_to` |
 | Turret sandbox enemy | 1.1 s interval, 260 px/s, range 700 px, 1 damage | `Turret` exports |
 
-### Player health (placeholder)
+## Combat rules (decided 2026-10-30)
 
-`Health` (`src/core/health.gd`) is a deliberately small **placeholder** pending
-the real damage / death design: `hp`, `max_hp`, `damage(amount) -> bool`, `heal()`,
-`reset()`, signals `damaged(amount, hp)`, `died`, `invulnerability_changed(active)`,
-plus short i-frames after a non-lethal hit. While invulnerable the player's
-`Hurtbox` is switched off, so bullets pass through instead of being consumed.
-`Player` forwards `damaged` and `died` and offers `respawn(at)`.
+Decided by Karyu on 2026-10-30. Every number is an `@export` so it can be tuned
+in the editor or from a script without code changes.
 
-### No friendly fire
+| Rule | Value | Where |
+| --- | --- | --- |
+| Max hp | 5 | `Health.max_hp` |
+| i-frames after a (non-lethal) hit | 0.75 s | `Health.invulnerability_time` |
+| Regeneration delay (no damage taken) | 5 s | `Health.regen_delay` |
+| Regeneration rate | 1 hp every 3 s, up to max | `Health.regen_amount`, `Health.regen_interval` |
+| Dash input | action `dash`: Space or Shift; gamepad B or right bumper | `project.godot` input map |
+| Dash direction | move direction, or the aim direction when not moving | `Player.try_dash()` |
+| Dash distance / burst length | 170 px in 0.18 s | `Player.dash_distance`, `dash_duration` |
+| Dash speed curve | hard launch decaying into running speed (`dash_curve_power` 2) | `DashMath` |
+| Dash invulnerability | 0.2 s from the start of the dash | `Player.dash_invulnerability` |
+| Dash cooldown | 1.5 s, measured from the start of the dash | `Player.dash_cooldown` |
+| Own bullets | never hurt the player (nor enemies their own side) | `ShotRequest.owner_layer` |
+| Reflected bullets | become enemy-owned (or player-owned), see below | `BulletPool.reflect`, `ShotEmitter.reflect_bullet` |
+| Death | respawn keeping everything; hp resets to max | `Player.respawn()`, `Main` |
 
-Bullets only hit hurtboxes whose layer is in their `hit_mask`. Player shots use
-`Layers.hostile_to(Layers.PLAYER)` (= `ENEMY`), enemy shots use
-`Layers.hostile_to(Layers.ENEMY)` (= `PLAYER`). The rule is a convention enforced
-by whoever builds the `ShotRequest` (the player's `ShotContext.target_mask` and
-`Turret` do); the manager itself honours whatever mask a request carries.
+Interpretations of the rules (open to correction):
+
+* **Regeneration timing.** "Starts after 5 s without damage, 1 hp per 3 s": the
+  first hp arrives one interval *after* the delay, i.e. 8 s after the last hit,
+  then every 3 s (11 s, 14 s, ...). Taking damage restarts the delay. Healing
+  does not.
+* **Dash cooldown** counts from the dash start, so 1.5 s between dash *starts*.
+* **Respawn** puts the player at `Main.respawn_position` (origin) after
+  `Main.respawn_delay` (1.5 s). Enemies, bullets, weapon and max hp are kept; hp
+  goes to `max_hp`, i-frames and the dash cooldown are cleared.
+
+### Health
+
+`Health` (`src/core/health.gd`): `hp`, `max_hp`, `damage(amount) -> bool`,
+`heal()`, `reset()`, `tick(delta)`, validated setters `set_hp()`, `set_max_hp()`,
+`set_invulnerable(seconds_or_bool)`, readers `is_dead()`, `is_invulnerable()`,
+`is_regenerating()`, `time_since_damage`, and signals `damaged(amount, hp)`,
+`healed(amount, hp)`, `died`, `invulnerability_changed(active)`. Invulnerability
+from any source (a hit, a dash, a script) shares one timer: a new source can only
+extend it. While invulnerable the player's `Hurtbox` is switched off, so bullets
+pass through instead of being consumed. `Player` forwards `damaged` and `died`
+and emits `dashed(direction)`.
+
+### The dash
+
+`DashMath` is the closed-form speed curve; `DashState` the cooldown / burst state
+machine; `Player` wires them to input and `move_and_slide()`. The curve is
+
+    speed(t) = max_speed + (peak - max_speed) * (1 - t/duration)^power
+
+so the dash launches at `peak` (about 2230 px/s with the defaults) and decays
+smoothly into running speed, with `peak` solved so the burst covers exactly
+`dash_distance`. Per-tick displacement comes from the exact integral, so the
+distance is the same at any tick rate. Dashing collides with walls like normal
+movement (it stops at them, it never tunnels). Tuning: `dash_distance` (needs
+`>= max_speed * dash_duration`), `dash_duration`, `dash_curve_power` (0 = constant
+speed, higher = sharper launch), `dash_invulnerability`, `dash_cooldown`.
+
+### No friendly fire, and reflecting bullets
+
+Bullets only hit hurtboxes whose layer is in their `hit_mask`, and the pool
+removes the bullet's `owner_layer` from that mask when it spawns, so own-faction
+bullets are harmless whatever a script asks for. Player shots are
+`owner_layer = PLAYER` (the default), enemy shots `ENEMY`.
+
+`ShotEmitter.reflect_bullet(id, new_owner_layer, reverse := false) -> bool`
+(`BulletManager.reflect`, `BulletPool.reflect(slot, ...)`) hands a live bullet to
+the other faction: `owner_layer` becomes `new_owner_layer`, `hit_mask` becomes
+`Layers.hostile_to(new_owner_layer)`, the colour becomes that faction's
+(`Layers.bullet_color`), the piercing `last_hit` memory is cleared, and with
+`reverse` the velocity and heading flip. It returns `false` (changing nothing)
+for a stale id, a bullet already marked dead, or an owner that is not `PLAYER` /
+`ENEMY`. Velocity is otherwise untouched; set `pool.vel` from a hook to aim a
+reflected bullet.
+
+### Script-facing player state (`PlayerState`)
+
+`player.state` is a `PlayerState`: the single, validated surface a script (and
+the future Lua binding) uses to read and change the player. Names are snake_case
+and use plain types. NaN is ignored (with a warning), infinities are clamped, and
+every call on a freed player is a harmless no-op.
+
+| Function | Notes |
+| --- | --- |
+| `get_hp()`, `set_hp(v)` | clamped to `[0, max_hp]`; `set_hp(0)` kills (normal death and respawn). No i-frames, does not restart regen |
+| `get_max_hp()`, `set_max_hp(v)` | clamped to `[1, 1000]`; hp is pulled down if needed, raising does not heal |
+| `set_invulnerable(x)` | seconds (extends only; `0` or negative clears), or `true` (until cleared) / `false` (clear) |
+| `is_invulnerable()`, `get_invulnerable_time()` | any source (hit, dash, script) |
+| `get_position()`, `set_position(v)` | `set_position` teleports: resets physics interpolation (no smear), clamps to +-100000 |
+| `get_velocity()`, `set_velocity(v)` | speed clamped to 5000 px/s |
+| `is_dashing()`, `can_dash()` | read-only dash state |
+| `get_dash_cooldown_left()`, `get_dash_cooldown()` | seconds left / total |
+| `get_dash_direction()`, `get_aim_direction()` | unit vectors |
+| `is_dead()`, `is_regenerating()`, `get_time_since_damage()` | read-only |
+
+Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything in
+"The shot interface" above.
 
 ## Open design questions
 
@@ -371,9 +453,12 @@ by whoever builds the `ShotRequest` (the player's `ShotContext.target_mask` and
    run charge / channel / burst weapons. Open: should cooldown ownership move
    entirely into scripts (drop `fire_interval`), and should `update()` also be
    called while the player is dead or the weapon is holstered?
-6. **Real health and death design.** `Health` is a placeholder (hp, i-frames, dies
-   at 0). Open: hp vs. hit-points-per-hit, shields, death consequences, enemy
-   health, whether i-frames should consume or pass bullets.
+6. **Combat beyond the decided rules.** Hp, i-frames, regeneration, dash and
+   respawn are decided (see "Combat rules"). Still open: shields, enemy health
+   model, damage types, whether the respawn should happen at the death point or
+   a checkpoint instead of the origin, whether the dash may be buffered or
+   cancel a weapon, and how a "parry" input should decide which bullets get
+   reflected (the `reflect_bullet` mechanism exists, the trigger does not).
 7. **Renderer and scaling.** The project uses GL Compatibility (widest
    hardware, web-exportable, headless friendly; no 2D MSAA) with
    `canvas_items` stretch, aspect `keep`. Forward+/Mobile and integer
