@@ -37,9 +37,10 @@ func test_reset_restores_defaults_for_reuse() -> void:
 	r.pierce = 1
 	r.param_a = 1.0
 	r.param_b = 1.0
+	r.user = {"a": 1}
 	r.reset()
 	var fresh := ShotRequest.new()
-	for prop: String in ["position", "velocity", "lifetime", "radius", "damage", "hit_mask", "color", "behavior_id", "acceleration", "turn_rate", "pierce", "param_a", "param_b"]:
+	for prop: String in ["position", "velocity", "lifetime", "radius", "damage", "hit_mask", "color", "behavior_id", "acceleration", "turn_rate", "pierce", "param_a", "param_b", "user"]:
 		var got: Variant = r.get(prop)
 		var want: Variant = fresh.get(prop)
 		var same: bool = got == want

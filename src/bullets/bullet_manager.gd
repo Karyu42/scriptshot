@@ -29,9 +29,15 @@ const PHYSICS_PRIORITY := 100
 ## On _ready, every CollisionObject2D in this group that is on the `world` layer
 ## contributes its (axis-aligned) RectangleShape2D shapes as bullet walls.
 @export var walls_group := &"world_walls"
+## Minimum simulated seconds between two "pool saturated" warnings in the log.
+## The pool_saturated signal itself fires on every tick that dropped shots.
+## PROVISIONAL default: 2 s.
+@export var saturation_warning_interval := 2.0
 
 var pool: BulletPool
 var grid: HurtboxGrid
+## Reflector zones, bucketed like hurtboxes but matched on bullet owner.
+var reflector_grid: HurtboxGrid
 var walls: WallGrid
 var emitter: ShotEmitter
 
@@ -39,14 +45,21 @@ var emitter: ShotEmitter
 var last_step_usec := 0
 ## Bullet-vs-hurtbox and bullet-vs-wall hits found by the last step().
 var last_hit_count := 0
+## Bullets reflected by Reflector zones in the last step.
+var last_reflect_count := 0
 var last_wall_hit_count := 0
 ## Microseconds spent in each phase of the last step(), indexed by Phase.
 var last_phase_usec := PackedInt32Array([0, 0, 0, 0, 0])
 
 enum Phase { TARGETS_AND_ADVANCE, HOOKS_AND_WALLS, HURTBOXES, DESPAWN, RENDER }
+## How many saturation warnings have been pushed (rate-limited; for tests/HUD).
+var saturation_warnings_emitted := 0
 
 var _renderer: BulletRenderer
 var _behaviors: Array[BulletBehavior] = [null]
+var _sim_time := 0.0
+var _dropped_reported := 0
+var _last_warning_time := -INF
 
 
 func _init() -> void:
@@ -56,6 +69,7 @@ func _init() -> void:
 func _ready() -> void:
 	pool = BulletPool.new(capacity)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
+	reflector_grid = HurtboxGrid.new(world_bounds, cell_size)
 	walls = WallGrid.new(world_bounds, cell_size)
 	emitter = BulletShotEmitter.new(self)
 	collect_walls()
@@ -131,6 +145,23 @@ func spawn(request: ShotRequest) -> int:
 	return i
 
 
+## Hands the live bullet with stable id `id` to `new_owner_layer` (Layers.PLAYER
+## or Layers.ENEMY): it now hits only what is hostile to the new owner, takes its
+## faction colour, deals `new_damage` and (unless `keep_script`) stops being
+## scripted. See BulletPool.reflect(). Returns false for a stale id, an invalid
+## owner, or a bullet that has used up its reflections.
+func reflect(
+	id: int,
+	new_owner_layer: int,
+	reverse: bool = false,
+	new_damage: float = BulletPool.REFLECTED_DAMAGE,
+	keep_script: bool = false
+) -> bool:
+	if not pool.is_alive(id):
+		return false
+	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse, new_damage, keep_script)
+
+
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
@@ -143,7 +174,8 @@ func step(delta: float) -> void:
 	# later bullet in the list already; dead bullets get no more updates.
 	for k in pool.hooked_count:
 		var i := pool.hooked[k]
-		if pool.dead_reason[i] == 0:
+		# A hook may have reflected (and so un-scripted) a later bullet in the list.
+		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
@@ -159,6 +191,10 @@ func step(delta: float) -> void:
 		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
 
 	var t2 := Time.get_ticks_usec()
+	# Reflector zones act before hurtboxes, so a bullet turned around at a mirror's
+	# edge never reaches the mirror's body this tick (and, now enemy-owned, could
+	# not hit it anyway).
+	_reflect_bullets()
 	last_hit_count = grid.collide_bullets(pool)
 	for k in last_hit_count:
 		_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
@@ -187,6 +223,9 @@ func step(delta: float) -> void:
 	pool.flush_dead()
 	var t4 := Time.get_ticks_usec()
 
+	_sim_time += delta
+	_report_saturation()
+
 	if _renderer != null:
 		_renderer.update_from(pool)
 	var t5 := Time.get_ticks_usec()
@@ -203,6 +242,51 @@ func clear_bullets() -> void:
 	pool.clear()
 	if _renderer != null:
 		_renderer.update_from(pool)
+
+
+## Emits ShotEmitter.pool_saturated if shots were dropped since the last tick,
+## and pushes a warning at most once per saturation_warning_interval.
+func _report_saturation() -> void:
+	var dropped_now := pool.dropped_total - _dropped_reported
+	if dropped_now <= 0:
+		return
+	_dropped_reported = pool.dropped_total
+	emitter.pool_saturated.emit(dropped_now, pool.dropped_total)
+	if _sim_time - _last_warning_time >= saturation_warning_interval:
+		_last_warning_time = _sim_time
+		saturation_warnings_emitted += 1
+		push_warning("BulletManager: bullet pool saturated (capacity %d); dropped %d shot(s) this tick, %d in total. Raise BulletManager.capacity or fire fewer bullets."
+			% [pool.capacity, dropped_now, pool.dropped_total])
+
+
+## One swept pass over the bullets against every active Reflector zone.
+func _reflect_bullets() -> void:
+	last_reflect_count = 0
+	var zones := Reflector.registry
+	if zones.is_empty():
+		return
+	reflector_grid.begin(pool.max_radius)
+	for k in zones.size():
+		var zone := zones[k]
+		if zone.is_active():
+			reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
+	var hits := reflector_grid.collide_bullets(pool, true)
+	# Hits come grouped per bullet, in path order (like the pierce sweep). Once a
+	# zone reflected a bullet, the rest of that bullet's list was computed for the
+	# old path, so it is dropped; a zone that declined it (arc, guard, wrong way)
+	# simply lets the next zone on the path have a go.
+	var reflected_bullet := -1
+	for k in hits:
+		var bullet := reflector_grid.hit_bullets[k]
+		if bullet == reflected_bullet:
+			continue
+		var zone := reflector_grid.target_ref[reflector_grid.hit_targets[k]] as Reflector
+		if zone == null or not is_instance_valid(zone):
+			continue
+		var impact := pool.prev_pos[bullet].lerp(pool.pos[bullet], reflector_grid.hit_t[k])
+		if zone.reflect_bullet(pool, bullet, impact):
+			reflected_bullet = bullet
+			last_reflect_count += 1
 
 
 func _collect_targets() -> void:
@@ -223,12 +307,18 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	var hurtbox := grid.target_ref[target] as Hurtbox
 	if hurtbox == null or not is_instance_valid(hurtbox):
 		return
+	# The grid was built before this tick's hits were delivered: an earlier hit may
+	# have switched the target off (i-frames, death). Such a bullet passes through
+	# untouched instead of being consumed by an untouchable target.
+	if not hurtbox.active:
+		return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:
 		# The bullet stops where it touched the target.
 		pool.pos[bullet] = impact
-	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet])
+	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
+	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
 	if id != 0:
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)

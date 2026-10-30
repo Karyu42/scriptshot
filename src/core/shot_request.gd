@@ -22,6 +22,15 @@ var radius := 4.0
 var damage := 1.0
 ## Layers (see Layers) the bullet can hit. 0 = hits nothing (decorative).
 var hit_mask := Layers.ENEMY
+## Faction that fires the bullet: Layers.PLAYER (default; what scripts shoot
+## for) or Layers.ENEMY. The owner's own layer is always removed from hit_mask
+## when the bullet spawns, so a bullet can never hurt whoever fired it, whatever
+## hit_mask says. 0 = unowned (no stripping).
+var owner_layer := Layers.PLAYER
+## Boss-style "piercing" attack: the bullet ignores the player's *script*
+## invulnerability (Health.SOURCE_PIERCES_SCRIPT_INVULN). Engine i-frames (a hit's
+## i-frames, the dash) still block it. Off by default.
+var pierces_script_invuln := false
 ## Flat draw colour.
 var color := Color(1.0, 0.82, 0.4)
 ## Id returned by ShotEmitter.register_behavior(); 0 = plain bullet, no hooks.
@@ -40,6 +49,11 @@ var collide_world := true
 ## Free scratch values handed to behaviour hooks (e.g. wave amplitude/phase).
 var param_a := 0.0
 var param_b := 0.0
+## Arbitrary per-bullet script state (any Variant). Stored in the pool's `user`
+## array; hooks read and write it as pool.user[index]. The reference is copied,
+## not the contents: share or duplicate mutable values yourself. Cleared to null
+## when the bullet despawns.
+var user: Variant = null
 
 
 ## Request travelling along `heading` (radians) at `speed` (px/s).
@@ -68,6 +82,8 @@ func reset() -> void:
 	radius = 4.0
 	damage = 1.0
 	hit_mask = Layers.ENEMY
+	owner_layer = Layers.PLAYER
+	pierces_script_invuln = false
 	color = Color(1.0, 0.82, 0.4)
 	behavior_id = 0
 	acceleration = 0.0
@@ -76,3 +92,4 @@ func reset() -> void:
 	collide_world = true
 	param_a = 0.0
 	param_b = 0.0
+	user = null

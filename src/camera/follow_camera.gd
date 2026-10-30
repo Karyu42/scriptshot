@@ -9,6 +9,7 @@ extends Camera2D
 ## easing in from wherever the camera happened to be, e.g. the origin).
 @export var target: Node2D:
 	set(value):
+		_watch_teleports(target, value)
 		target = value
 		if is_inside_tree():
 			snap_to_target()
@@ -32,6 +33,20 @@ func _ready() -> void:
 	process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
 	_noise.frequency = 1.0
 	_noise.seed = 1337
+	snap_to_target()
+
+
+## A Player target announces teleports and respawns; the camera cuts to it.
+func _watch_teleports(old: Node2D, new: Node2D) -> void:
+	var old_player := old as Player
+	if old_player != null and old_player.teleported.is_connected(_on_target_teleported):
+		old_player.teleported.disconnect(_on_target_teleported)
+	var new_player := new as Player
+	if new_player != null and not new_player.teleported.is_connected(_on_target_teleported):
+		new_player.teleported.connect(_on_target_teleported)
+
+
+func _on_target_teleported(_position: Vector2) -> void:
 	snap_to_target()
 
 

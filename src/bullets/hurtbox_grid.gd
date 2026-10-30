@@ -22,6 +22,9 @@ extends RefCounted
 ## Everything is stored in preallocated arrays that only ever grow (by doubling),
 ## so a steady-state tick allocates nothing.
 
+## Most zones listed per bullet when collide_bullets() matches on owner.
+const MAX_ZONE_HITS := 4
+
 var bounds := Rect2()
 var cell_size := 64.0
 var cols := 0
@@ -178,7 +181,11 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 ## Bullets that are already marked dead (other than for leaving the world bounds,
 ## which still test their last segment), have hit_mask 0, or are piercing through
 ## the target they hit last are skipped.
-func collide_bullets(pool: BulletPool) -> int:
+##
+## With `match_owner` the target layer is matched against each bullet's
+## `owner_layer` instead of its `hit_mask`: the same swept test answers "which
+## bullets of faction X touch this zone", which is how Reflectors find bullets.
+func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	hit_count = 0
 	if target_count == 0:
 		return 0
@@ -188,7 +195,7 @@ func collide_bullets(pool: BulletPool) -> int:
 	var bpos := pool.pos
 	var bprev := pool.prev_pos
 	var brad := pool.radius
-	var bmask := pool.hit_mask
+	var bmask := pool.owner_layer if match_owner else pool.hit_mask
 	var bdead := pool.dead_reason
 	var blast := pool.last_hit
 	var bpierce := pool.pierce
@@ -211,6 +218,12 @@ func collide_bullets(pool: BulletPool) -> int:
 		var d := p - bprev[i]
 		var reach := min_reach + br
 		var pierce := bpierce[i]
+		if match_owner:
+			# Reflector zones: always sweep, and list every zone on the path (up to
+			# MAX_ZONE_HITS), so a zone that declines the bullet (arc, guard) does
+			# not hide the next one behind it.
+			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], mini(target_count, MAX_ZONE_HITS))
+			continue
 		if pierce > 0 or d.length_squared() > reach * reach:
 			# Piercing bullets always sweep: only the sweep can list several hits.
 			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], pierce + 1)

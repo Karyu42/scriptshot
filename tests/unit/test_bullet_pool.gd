@@ -15,6 +15,12 @@ func _spawn_at_x(x: float, life: float = 10.0) -> int:
 	return pool.spawn_simple(Vector2(x, 0), Vector2.ZERO, life)
 
 
+## True if the user slot holds `expected`. (Variants are compared here rather
+## than passed to assert_*, which the project's unsafe-call warnings reject.)
+func _user_is(slot: int, expected: Variant) -> bool:
+	return pool.user[slot] == expected
+
+
 func _xs() -> Array:
 	var out := []
 	for i in pool.count:
@@ -42,6 +48,7 @@ func test_spawn_copies_every_request_field() -> void:
 	r.radius = 6.0
 	r.damage = 2.5
 	r.hit_mask = Layers.PLAYER
+	r.owner_layer = Layers.ENEMY
 	r.color = Color.RED
 	r.behavior_id = 7
 	r.acceleration = 12.0
@@ -59,6 +66,7 @@ func test_spawn_copies_every_request_field() -> void:
 	assert_eq(pool.radius[0], 6.0)
 	assert_eq(pool.damage[0], 2.5)
 	assert_eq(pool.hit_mask[0], Layers.PLAYER)
+	assert_eq(pool.owner_layer[0], Layers.ENEMY)
 	assert_eq(pool.color[0], Color.RED)
 	assert_eq(pool.behavior[0], 7)
 	assert_eq(pool.accel[0], 12.0)
@@ -436,6 +444,214 @@ func test_flush_dead_does_not_reallocate_its_work_list() -> void:
 	pool.mark_dead(2)
 	pool.flush_dead()
 	assert_eq(pool.pending.size(), size_before, "pending stays a fixed-size scratch array")
+
+
+# --- stable handles -------------------------------------------------------------
+
+func test_spawn_ids_are_positive_and_unique() -> void:
+	var ids := {}
+	for i in 8:
+		var slot := _spawn_at_x(float(i))
+		var id := pool.id_of(slot)
+		assert_gt(id, 0)
+		assert_false(ids.has(id), "duplicate id")
+		ids[id] = true
+		assert_eq(pool.slot_of(id), slot)
+		assert_true(pool.is_alive(id))
+
+
+func test_id_follows_bullet_when_swap_remove_moves_it() -> void:
+	var a := pool.id_of(_spawn_at_x(0.0))
+	var b := pool.id_of(_spawn_at_x(1.0))
+	var c := pool.id_of(_spawn_at_x(2.0))
+	assert_eq(pool.slot_of(c), 2)
+	pool.despawn(0)
+	assert_eq(pool.slot_of(c), 0, "c was swapped into slot 0")
+	assert_eq(pool.pos[pool.slot_of(c)].x, 2.0)
+	assert_eq(pool.slot_of(b), 1)
+	assert_eq(pool.pos[pool.slot_of(b)].x, 1.0)
+	assert_eq(pool.slot_of(a), -1)
+	assert_eq(pool.id_of(pool.slot_of(c)), c)
+
+
+func test_despawned_id_is_stale() -> void:
+	var id := pool.id_of(_spawn_at_x(0.0))
+	pool.despawn(0)
+	assert_eq(pool.slot_of(id), -1)
+	assert_false(pool.is_alive(id))
+
+
+func test_handle_is_reused_but_stale_id_stays_stale_after_recycle() -> void:
+	var old_id := pool.id_of(_spawn_at_x(0.0))
+	pool.despawn(0)
+	var new_id := pool.id_of(_spawn_at_x(5.0))
+	# The free handle is reused (same low bits) with a bumped generation.
+	assert_eq(old_id & BulletPool.HANDLE_MASK, new_id & BulletPool.HANDLE_MASK, "handle reused")
+	assert_ne(old_id, new_id)
+	assert_gt(new_id >> BulletPool.HANDLE_BITS, old_id >> BulletPool.HANDLE_BITS)
+	assert_eq(pool.slot_of(old_id), -1, "stale id must not resolve to the new bullet")
+	assert_false(pool.is_alive(old_id))
+	assert_eq(pool.slot_of(new_id), 0)
+	assert_eq(pool.pos[0].x, 5.0)
+
+
+func test_stale_ids_stay_stale_through_many_recycles() -> void:
+	var stale: Array[int] = []
+	for round_index in 50:
+		var id := pool.id_of(_spawn_at_x(float(round_index)))
+		stale.append(id)
+		pool.despawn(0)
+	var live := pool.id_of(_spawn_at_x(-1.0))
+	for id in stale:
+		assert_eq(pool.slot_of(id), -1)
+	assert_true(pool.is_alive(live))
+	assert_eq(stale.size(), 50)
+	# All 50 ids are distinct even though only one handle was ever in play.
+	var distinct := {}
+	for id in stale:
+		distinct[id] = true
+	assert_eq(distinct.size(), 50)
+
+
+func test_flush_dead_invalidates_exactly_the_removed_ids() -> void:
+	var ids: Array[int] = []
+	for i in 8:
+		ids.append(pool.id_of(_spawn_at_x(float(i))))
+	for i: int in [1, 4, 6]:
+		pool.mark_dead(i)
+	assert_false(pool.is_alive(ids[1]), "marked dead is no longer alive")
+	assert_eq(pool.slot_of(ids[1]), 1, "but it still has a slot until flushed")
+	pool.flush_dead()
+	for i in 8:
+		var removed: bool = i in [1, 4, 6]
+		assert_eq(pool.is_alive(ids[i]), not removed, "id %d" % i)
+		if not removed:
+			assert_eq(pool.pos[pool.slot_of(ids[i])].x, float(i), "id %d still points at its own bullet" % i)
+
+
+func test_clear_invalidates_all_ids_and_frees_all_handles() -> void:
+	var ids: Array[int] = []
+	for i in 8:
+		ids.append(pool.id_of(_spawn_at_x(float(i))))
+	pool.clear()
+	for id in ids:
+		assert_false(pool.is_alive(id))
+	for i in 8:
+		assert_ne(_spawn_at_x(float(i)), -1)
+	for id in ids:
+		assert_eq(pool.slot_of(id), -1, "pre-clear ids stay stale after refilling")
+
+
+func test_invalid_ids_resolve_to_no_bullet() -> void:
+	_spawn_at_x(0.0)
+	assert_eq(pool.slot_of(-1), -1)
+	assert_eq(pool.slot_of(0), -1)
+	assert_eq(pool.slot_of(123456789), -1)
+	assert_eq(pool.slot_of((1 << 32) | 9999), -1, "handle out of range")
+	assert_false(pool.is_alive(-1))
+
+
+func test_handle_table_survives_random_churn() -> void:
+	pool = BulletPool.new(64)
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 99
+	var live := {}  # id -> x it was spawned with
+	var dead: Array[int] = []
+	for step in 2000:
+		if pool.count < 64 and (pool.count == 0 or rng.randf() < 0.55):
+			var x := float(step)
+			var id := pool.id_of(_spawn_at_x(x))
+			assert_false(live.has(id))
+			live[id] = x
+		else:
+			var slot := rng.randi_range(0, pool.count - 1)
+			var id := pool.id_of(slot)
+			pool.despawn(slot)
+			live.erase(id)
+			dead.append(id)
+	assert_eq(pool.count, live.size())
+	for id: int in live:
+		assert_true(pool.is_alive(id))
+		var spawned_x: float = live[id]
+		assert_eq(pool.pos[pool.slot_of(id)].x, spawned_x)
+	for id in dead:
+		if not live.has(id):
+			assert_false(pool.is_alive(id))
+
+
+# --- user slot -------------------------------------------------------------------
+
+func test_user_defaults_to_null_and_comes_from_request() -> void:
+	pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 1.0)
+	assert_true(_user_is(0, null))
+	var r := ShotRequest.new()
+	r.user = {"phase": 2.5, "tag": "wave"}
+	pool.spawn(r)
+	assert_true(_user_is(1, {"phase": 2.5, "tag": "wave"}))
+	assert_eq(pool.user.size(), 8, "user array is parallel to the pool and never grows")
+
+
+func test_user_moves_with_its_bullet_on_swap_remove() -> void:
+	for i in 4:
+		var r := ShotRequest.new()
+		r.position = Vector2(float(i), 0)
+		r.user = "state%d" % i
+		pool.spawn(r)
+	var id3 := pool.id_of(3)
+	pool.despawn(0)
+	var slot := pool.slot_of(id3)
+	assert_eq(slot, 0)
+	assert_true(_user_is(slot, "state3"), "user value travelled with its bullet")
+	assert_true(_user_is(1, "state1"))
+	assert_true(_user_is(2, "state2"))
+
+
+func test_user_is_cleared_when_bullet_despawns() -> void:
+	var r := ShotRequest.new()
+	r.user = [1, 2, 3]
+	pool.spawn(r)
+	pool.spawn(r)
+	pool.despawn(1)
+	assert_true(_user_is(1, null), "vacated tail slot is null")
+	pool.mark_dead(0)
+	pool.flush_dead()
+	assert_true(_user_is(0, null))
+	assert_true(_user_is(1, null))
+
+
+func test_respawned_slot_does_not_inherit_old_user_value() -> void:
+	var r := ShotRequest.new()
+	r.user = "old"
+	pool.spawn(r)
+	pool.despawn(0)
+	pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 1.0)
+	assert_true(_user_is(0, null))
+
+
+func test_clear_nulls_user_values() -> void:
+	var r := ShotRequest.new()
+	r.user = "x"
+	for i in 3:
+		pool.spawn(r)
+	pool.clear()
+	for i in 8:
+		assert_true(_user_is(i, null))
+
+
+func test_user_slot_swap_remove_with_flush_of_many() -> void:
+	for i in 8:
+		var r := ShotRequest.new()
+		r.position = Vector2(float(i), 0)
+		r.user = i
+		pool.spawn(r)
+	for i: int in [0, 2, 5, 7]:
+		pool.mark_dead(i)
+	pool.flush_dead()
+	assert_eq(pool.count, 4)
+	for i in pool.count:
+		assert_true(_user_is(i, int(pool.pos[i].x)), "user value matches its bullet at slot %d" % i)
+	for i in range(pool.count, 8):
+		assert_true(_user_is(i, null))
 
 
 # --- teleport / claim_from_bounds ------------------------------------------------

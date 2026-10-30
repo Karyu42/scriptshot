@@ -34,6 +34,23 @@ func _exit_tree() -> void:
 	registry.erase(self)
 
 
+## Details of the hit being delivered, valid while the `hit` signal is emitted
+## (handlers read them; the signal itself keeps its three arguments):
+## the stable id of the bullet (ShotEmitter.is_bullet_alive() takes it) and its
+## Health.SOURCE_* flags (e.g. SOURCE_PIERCES_SCRIPT_INVULN), to hand to
+## Health.damage(amount, flags).
+var last_hit_bullet_id := 0
+var last_hit_flags := 0
+
+
 ## Called by the bullet manager.
-func receive_hit(damage: float, hit_position: Vector2, bullet_velocity: Vector2) -> void:
+func receive_hit(
+	damage: float,
+	hit_position: Vector2,
+	bullet_velocity: Vector2,
+	bullet_id: int = 0,
+	source_flags: int = 0
+) -> void:
+	last_hit_bullet_id = bullet_id
+	last_hit_flags = source_flags
 	hit.emit(damage, hit_position, bullet_velocity)

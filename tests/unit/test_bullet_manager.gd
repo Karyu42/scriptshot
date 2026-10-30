@@ -536,6 +536,63 @@ func test_hurtbox_registry_tracks_the_tree_without_group_lookups() -> void:
 	hb.free()
 
 
+# --- stable ids + user slot through the emitter -----------------------------------
+
+func test_request_shot_id_returns_stable_id_and_request_shot_stays_bool() -> void:
+	var id := manager.emitter.request_shot_id(ShotRequest.polar(Vector2.ZERO, 0.0, 10.0))
+	assert_gt(id, 0)
+	assert_true(manager.emitter.is_bullet_alive(id))
+	assert_true(manager.emitter.request_shot(ShotRequest.polar(Vector2.ZERO, 0.0, 10.0)))
+	assert_eq(manager.pool.count, 2)
+
+
+func test_request_shot_id_is_minus_one_when_full() -> void:
+	manager.pool = BulletPool.new(1)
+	assert_gt(manager.emitter.request_shot_id(ShotRequest.new()), 0)
+	assert_eq(manager.emitter.request_shot_id(ShotRequest.new()), -1)
+	assert_false(manager.emitter.request_shot(ShotRequest.new()))
+
+
+func test_id_survives_other_bullets_despawning_and_dies_with_its_bullet() -> void:
+	var short := ShotRequest.polar(Vector2.ZERO, 0.0, 0.0)
+	short.lifetime = DT * 0.5
+	var keeper := ShotRequest.polar(Vector2(7, 0), 0.0, 0.0)
+	keeper.lifetime = 10.0
+	manager.emitter.request_shot_id(short)
+	var keep_id := manager.emitter.request_shot_id(keeper)
+	var short_id := manager.emitter.request_shot_id(short)
+	manager.step(DT)
+	assert_true(manager.emitter.is_bullet_alive(keep_id))
+	assert_false(manager.emitter.is_bullet_alive(short_id))
+	assert_eq(manager.pool.pos[manager.pool.slot_of(keep_id)].x, 7.0)
+
+
+func test_user_state_is_visible_to_hooks_and_travels_with_the_bullet() -> void:
+	var b := UserCounter.new()
+	var bid := manager.emitter.register_behavior(b)
+	var dying := ShotRequest.polar(Vector2.ZERO, 0.0, 0.0)
+	dying.lifetime = DT * 0.5
+	manager.emitter.request_shot_id(dying)  # slot 0, dies first tick
+	var req := ShotRequest.polar(Vector2(3, 0), 0.0, 0.0)
+	req.behavior_id = bid
+	req.lifetime = 10.0
+	req.user = {"count": 0}
+	var id := manager.emitter.request_shot_id(req)
+	for i in 3:
+		manager.step(DT)
+	var slot := manager.pool.slot_of(id)
+	assert_eq(slot, 0, "survivor moved into the freed slot")
+	var state: Dictionary = manager.pool.user[slot]
+	var count: int = state["count"]
+	assert_eq(count, 3)
+
+
+class UserCounter:
+	extends BulletBehavior
+	func on_update(pool: BulletPool, index: int, _delta: float) -> void:
+		pool.user[index]["count"] += 1
+
+
 # --- several hits per tick, bounds, late big bullets, teleport (QA review) -----
 
 func _hit_counter(hb: Hurtbox) -> Array[int]:

@@ -26,6 +26,7 @@ godot --path .            # runs scenes/main.tscn
 | Move | `W` `A` `S` `D` | Left stick |
 | Aim | Mouse (relative to the ship on screen) | Right stick |
 | Fire | Left mouse button | Right trigger |
+| Dash (0.2 s invulnerable, 1.5 s cooldown; toward the move direction, or the aim direction when standing still) | `Space` or `Shift` | `B` / Right bumper |
 | Bullet stress test on/off | `F1` | Back / Select |
 | Cycle stress target (2k / 5k / 10k) | `F2` | `Y` / Triangle |
 
