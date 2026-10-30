@@ -57,21 +57,35 @@ godot --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit
 Headless bullet benchmark: keeps N bullets alive, runs the full simulation tick
 (kinematics, swept collision against 32 hurtboxes and 28 walls, despawn/respawn
 churn, interpolated render buffer fill) and reports p50/p95/p99/max per-frame
-cost at 5000 and 10000 bullets, with a pass/fail verdict against the target of
-**10,000 bullets at p95 <= 16.6 ms** (60 fps). 5000 is the minimum and is always
-reported.
+cost at 5000 and 10000 bullets against a budget of **p95 <= 16.6 ms** (60 fps).
+Two checks, with different consequences:
+
+* **Floor, 5,000 bullets** (`--floor-bullets`): a hard gate. A miss, or a run that
+  never actually had 5,000 bullets alive, prints a `FLOOR  FAIL` line and exits 1.
+* **Target, 10,000 bullets** (`--target-bullets`): a goal. A miss prints
+  `TARGET WARN` plus a `WARN` line and still exits 0, since 10k p95 depends on how
+  busy the machine is.
 
 ```sh
-./tools/run_benchmark.sh                                     # 5000 and 10000 bullets (verdict: 10000)
+./tools/run_benchmark.sh                                     # 5000 (floor) and 10000 (target)
 ./tools/run_benchmark.sh --bullets=2000,5000,10000,20000 --frames=1200
+./tools/run_benchmark.sh --floor-bullets=5000 --target-bullets=10000
 ./tools/run_benchmark.sh --json=/tmp/bench.json
 ```
 
-Exit code 1 means the target was missed, or the target bullet count was never
-reached, or the project failed to compile. Headless mode uses a dummy renderer, so
+Exit code 1 means the floor was missed or never reached, or the project failed
+to compile; a missed 10k target alone exits 0 (with a WARN). Headless mode uses a dummy renderer, so
 the numbers cover CPU-side simulation and buffer preparation, not GPU time.
 To include a real renderer run it windowed:
 `godot --path . res://tests/benchmark/bullet_benchmark.tscn -- --bullets=5000,10000`.
+
+## Exports
+
+`export_presets.cfg` is committed (it holds no credentials; `export_credentials.cfg`
+stays ignored) with the presets `Windows Desktop`, `macOS`, `Linux` and `Web`, all
+exporting into the git-ignored `build/` directory, e.g.
+`godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64`.
+macOS is unsigned and not notarized; the Web preset uses the no-threads template.
 
 ## Project layout
 

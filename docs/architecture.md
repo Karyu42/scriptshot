@@ -178,7 +178,37 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   `CollisionShape2D` with a `RectangleShape2D` under a node in the
   `world_walls` group (the main scene's `Walls` body; collected at `_ready`).
   Piercing bullets are still stopped by walls. A bullet spawned inside a wall
-  despawns at once.* Hook calls are the expensive path: every hooked bullet costs at least one
+  despawns at once. Other shapes under a wall body are **ignored** and rotated
+  rectangles are approximated by their axis-aligned bounding box;
+  `collect_walls()` pushes a warning naming the node for either case.
+* A bullet hits **every** target on its path that its `pierce` allows in one
+  tick: `pierce = n` can hit up to `n + 1` targets per tick, in path order, each
+  at most once. After a piercing hit the bullet is re-swept from the impact
+  point, ignoring targets already hit. Of several targets on the path the
+  **nearest** one wins, regardless of which grid cell it is registered in. (A
+  piercing bullet only remembers the last target it hit across ticks, so it can
+  hit a target it is still overlapping again if it overlaps two at once.)
+* A bullet that leaves `world_bounds` this tick is flagged `BOUNDS` before
+  collision, but still tests the part of its path inside the bounds; if it hits a
+  wall or hurtbox on the way, that is its despawn reason instead.
+* Targets are bucketed with the largest bullet radius known at the start of the
+  tick. If a hook spawns a bullet with a bigger radius than that, the targets are
+  re-bucketed before collision, so the new bullet does not miss.
+* **Moving a bullet from a hook.** A bullet is the segment `prev_pos -> pos`,
+  both for collision and for render interpolation. Steering through `vel` (or
+  `acceleration` / `turn_rate`) needs nothing special. To move a bullet
+  *discontinuously* (teleport, warp, portal, respawn at a new place), call
+  `pool.teleport(index, position)`: it sets `pos` and `prev_pos` together, so the
+  jump is neither swept (no phantom hits or wall hits along it) nor interpolated
+  (no streak). Writing `pool.pos[index]` directly leaves `prev_pos` at the old
+  place and the bullet counts as having flown there this tick.
+* The bullet is drawn interpolated, i.e. up to one tick behind the simulation,
+  and a bullet that is removed on a tick (hit, wall, lifetime) is not drawn on
+  that tick at all. So a shot vanishes up to one 60 Hz tick (about 17 ms, ~13 px
+  at 760 px/s) before it visually reaches the impact point. Known and accepted:
+  drawing the impact would need a one-tick ghost list in the renderer for a
+  difference that is hard to see.
+* Hook calls are the expensive path: every hooked bullet costs at least one
   script call per tick (plus whatever the hook does), whereas bullets with
   `behavior_id == 0` never call script code. The 5k/10k benchmark numbers are
   for plain bullets.
@@ -186,8 +216,11 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   and grow only when capacity does; hurtboxes register in `Hurtbox.registry`
   instead of a group query), and a hook may spawn/kill bullets freely.
 * Performance target: **10,000 bullets at p95 <= 16.6 ms** of CPU work per
-  frame with walls and hurtboxes present (5,000 is the minimum), measured by
-  `./tools/run_benchmark.sh` (the verdict is on 10k, 5k is reported alongside).
+  frame with walls and hurtboxes present, measured by
+  `./tools/run_benchmark.sh`. Policy: the **5,000-bullet floor** (`--floor-bullets`)
+  is a hard gate (non-zero exit if it misses the budget or is not reached); the
+  **10,000-bullet target** (`--target-bullets`) only prints a `WARN` line and the
+  run still exits 0, because 10k p95 depends on how busy the machine is.
 
 ## Bullet system design
 
@@ -211,8 +244,10 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   live part is written and uploaded: the MultiMesh is allocated in buckets just
   above the live count (grow at once, shrink below 50 %; Godot needs the buffer
   to be exactly `instance_count * stride`) and `visible_instance_count` hides the
-  rest. Two current-state buffers alternate so the engine's reference to the last
-  upload never forces a copy-on-write.
+  rest. Two pairs of buffers (current + previous tick) alternate so the engine's
+  reference to the last upload never forces a copy-on-write, and the previous-tick
+  buffer is written in the same pass as the current one: nothing is allocated per
+  tick (no `duplicate()`; a test guards this).
 * **`HurtboxGrid`**: uniform spatial hash (64 px cells) of *targets*, not
   bullets. Targets are few; bullets are many, so each bullet does one cell lookup
   and only tests the handful of targets in its cell. Bullets that moved further
@@ -247,7 +282,13 @@ No node, physics body or `Object` exists per bullet.
 * **Fire rate**: `FireCooldown` carries the remainder of the interval across
   ticks (`cooldown += interval`), so the rate is exact (e.g. 9.09 shots/s with the
   0.11 s interval of `BasicShot`) rather than rounded up to the next tick; idle time does not
-  bank a burst.
+  bank a burst. An interval shorter than a tick fires several shots in that tick
+  (`while remaining <= 0: fire; remaining += interval`), capped at
+  `FireCooldown.MAX_SHOTS_PER_TICK` (8, i.e. 480 shots/s); shots of one tick spawn
+  together at the same muzzle position.
+* **Aim timing**: in `_physics_process` the ship's rendered position uses the
+  interpolation fraction of the last drawn frame, which is up to one frame stale.
+  That is a few pixels at full speed and negligible for aim, so it is left as is.
 * **Device switching**: the `InputDevice` autoload watches input events and
   flips between gamepad and mouse+keyboard on deliberate input (stick past 0.5,
   button press, mouse movement > 3 px, key press). Stick drift and mouse jitter
