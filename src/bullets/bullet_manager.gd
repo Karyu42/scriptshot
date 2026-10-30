@@ -14,8 +14,19 @@ extends Node2D
 ## default priority of 0.
 const PHYSICS_PRIORITY := 100
 
-## Hard cap on simultaneously alive bullets (excess spawns are dropped).
+## Physical size of the bullet pool: the memory that is allocated up front. The
+## number of bullets the game actually allows is `logical_cap` (never more than this).
 @export var capacity := 16384
+## Saturation model, PROVISIONAL defaults (not decided by Karyu; configurable):
+## the most bullets that may be alive at once, whoever owns them. A shot that
+## would exceed it is dropped (observably, see ShotEmitter.get_dropped_count()).
+## Clamped to `capacity`. Matches the 10,000-bullet performance target.
+@export var logical_cap := 10000
+## Slots of `logical_cap` that only enemy and boss bullets (owner_layer with
+## Layers.ENEMY) may take, so player scripts can never starve enemy attacks.
+## -1 (default) = 20% of the cap (2,000 with the default cap). Player and
+## unowned bullets can fill at most `logical_cap - enemy_reserve` slots in total.
+@export var enemy_reserve := -1
 ## Bullets are despawned when they leave this rectangle (world space).
 @export var world_bounds := Rect2(-1312, -752, 2624, 1504)
 ## Spatial hash cell size for collision, in pixels.
@@ -48,6 +59,8 @@ var last_hit_count := 0
 ## Bullets reflected by Reflector zones in the last step.
 var last_reflect_count := 0
 var last_wall_hit_count := 0
+## Hits that a can_hit() veto turned down in the last step.
+var last_veto_count := 0
 ## Microseconds spent in each phase of the last step(), indexed by Phase.
 var last_phase_usec := PackedInt32Array([0, 0, 0, 0, 0])
 
@@ -59,7 +72,13 @@ var _renderer: BulletRenderer
 var _behaviors: Array[BulletBehavior] = [null]
 var _sim_time := 0.0
 var _dropped_reported := 0
+var _dropped_by_limit_reported := PackedInt32Array([0, 0])
+var _dropped_by_owner_reported := PackedInt32Array([0, 0, 0])
 var _last_warning_time := -INF
+## Per-slot index+1 into walls.hit_wall for bullets that hit a wall this tick
+## (0 = none). Set after the wall sweep and cleared before removal; see
+## wall_normal_of().
+var _wall_hit_index := PackedInt32Array()
 
 
 func _init() -> void:
@@ -68,6 +87,8 @@ func _init() -> void:
 
 func _ready() -> void:
 	pool = BulletPool.new(capacity)
+	_wall_hit_index.resize(capacity)
+	set_bullet_limits(logical_cap, enemy_reserve)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
 	reflector_grid = HurtboxGrid.new(world_bounds, cell_size)
 	walls = WallGrid.new(world_bounds, cell_size)
@@ -84,6 +105,18 @@ func _ready() -> void:
 func _physics_process(delta: float) -> void:
 	if auto_step:
 		step(delta)
+
+
+## Sets the saturation limits at runtime (see `logical_cap` / `enemy_reserve`;
+## reserve -1 = 20% of the cap). The cap is clamped to the physical capacity and
+## the reserve to the cap. Bullets already alive are never removed by this.
+func set_bullet_limits(cap: int, reserve: int = -1) -> void:
+	var effective_cap := clampi(cap, 0, pool.capacity)
+	logical_cap = cap
+	enemy_reserve = reserve
+	@warning_ignore("integer_division")
+	var auto_reserve := effective_cap / 5
+	pool.set_limits(effective_cap, auto_reserve if reserve < 0 else reserve)
 
 
 ## Registers a behaviour and returns the id for ShotRequest.behavior_id.
@@ -185,10 +218,12 @@ func step(delta: float) -> void:
 
 	# Walls first: a bullet that hits one is clipped to the impact point, so the
 	# hurtbox test below only sees the part of its path before the wall.
+	last_veto_count = 0
 	last_wall_hit_count = walls.sweep_bullets(pool)
 	for k in last_wall_hit_count:
 		var i := walls.hit_bullets[k]
 		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
+		_wall_hit_index[i] = k + 1
 
 	var t2 := Time.get_ticks_usec()
 	# Reflector zones act before hurtboxes, so a bullet turned around at a mirror's
@@ -220,6 +255,8 @@ func step(delta: float) -> void:
 		var id := pool.behavior[slot]
 		if id != 0:
 			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
+	for k in last_wall_hit_count:
+		_wall_hit_index[walls.hit_bullets[k]] = 0
 	pool.flush_dead()
 	var t4 := Time.get_ticks_usec()
 
@@ -237,6 +274,18 @@ func step(delta: float) -> void:
 	last_step_usec = t5 - t0
 
 
+## Surface normal (unit vector pointing out of the wall) of the wall that bullet
+## `slot` hit this tick, or Vector2.ZERO if it did not hit one. Valid during this
+## tick's despawn hooks (BulletBehavior.on_despawn with DespawnReason.WALL, also
+## on_hit of a bullet that hit a wall in the same tick), not after removal.
+## Slots are stable there unless a hook despawns bullets itself. See WallGrid.
+func wall_normal_of(slot: int) -> Vector2:
+	if slot < 0 or slot >= pool.count:
+		return Vector2.ZERO
+	var k := _wall_hit_index[slot]
+	return walls.normal_of_hit(k - 1, pool) if k > 0 else Vector2.ZERO
+
+
 ## Removes all bullets (no hooks are called).
 func clear_bullets() -> void:
 	pool.clear()
@@ -245,18 +294,26 @@ func clear_bullets() -> void:
 
 
 ## Emits ShotEmitter.pool_saturated if shots were dropped since the last tick,
-## and pushes a warning at most once per saturation_warning_interval.
+## and pushes a warning at most once per saturation_warning_interval. The warning
+## says which limit refused the shots and whose they were.
 func _report_saturation() -> void:
 	var dropped_now := pool.dropped_total - _dropped_reported
 	if dropped_now <= 0:
 		return
 	_dropped_reported = pool.dropped_total
+	var by_cap := pool.dropped_by_limit[BulletPool.DropLimit.LOGICAL_CAP] - _dropped_by_limit_reported[BulletPool.DropLimit.LOGICAL_CAP]
+	var by_reserve := pool.dropped_by_limit[BulletPool.DropLimit.ENEMY_RESERVE] - _dropped_by_limit_reported[BulletPool.DropLimit.ENEMY_RESERVE]
+	var by_player := pool.dropped_by_owner[BulletPool.OWNER_PLAYER] - _dropped_by_owner_reported[BulletPool.OWNER_PLAYER]
+	var by_enemy := pool.dropped_by_owner[BulletPool.OWNER_ENEMY] - _dropped_by_owner_reported[BulletPool.OWNER_ENEMY]
+	_dropped_by_limit_reported = pool.dropped_by_limit.duplicate()
+	_dropped_by_owner_reported = pool.dropped_by_owner.duplicate()
 	emitter.pool_saturated.emit(dropped_now, pool.dropped_total)
 	if _sim_time - _last_warning_time >= saturation_warning_interval:
 		_last_warning_time = _sim_time
 		saturation_warnings_emitted += 1
-		push_warning("BulletManager: bullet pool saturated (capacity %d); dropped %d shot(s) this tick, %d in total. Raise BulletManager.capacity or fire fewer bullets."
-			% [pool.capacity, dropped_now, pool.dropped_total])
+		push_warning("BulletManager: bullet pool saturated (logical cap %d, enemy reserve %d, physical capacity %d); dropped %d shot(s) this tick: %d at the cap, %d by the enemy reserve; player %d, enemy %d, unowned %d. %d dropped in total. Fire fewer bullets, or raise BulletManager.logical_cap / capacity."
+			% [pool.logical_cap, pool.enemy_reserve, pool.capacity, dropped_now, by_cap, by_reserve,
+				by_player, by_enemy, dropped_now - by_player - by_enemy, pool.dropped_total])
 
 
 ## One swept pass over the bullets against every active Reflector zone.
@@ -312,6 +369,13 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	# untouched instead of being consumed by an untouchable target.
 	if not hurtbox.active:
 		return
+	# Opt-in veto (ShotRequest.can_hit_veto): asked before any damage or pierce
+	# bookkeeping. Unflagged bullets only pay for this one byte read per hit.
+	if pool.can_hit_veto[bullet] != 0:
+		var veto_id := pool.behavior[bullet]
+		if veto_id != 0 and not _get_behavior(veto_id).can_hit(pool, bullet, hurtbox):
+			last_veto_count += 1
+			return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:

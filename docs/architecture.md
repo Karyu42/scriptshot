@@ -76,6 +76,7 @@ retained, so one instance can be mutated and re-submitted any number of times.
 | `hit_mask` | `int` | `Layers.ENEMY` | Layers it can hit; `0` = decorative, hits nothing |
 | `color` | `Color` | warm yellow | Flat draw colour |
 | `behavior_id` | `int` | `0` | Id from `register_behavior()`; `0` = plain bullet (fast path, no hooks). A reflection resets it to `0` |
+| `can_hit_veto` | `bool` | `false` | Opt in to `BulletBehavior.can_hit()` before each hit lands (see "Hit veto"). Needs `behavior_id != 0` |
 | `pierces_script_invuln` | `bool` | `false` | A "piercing" attack: ignores the player's *script* invulnerability (never the engine i-frames), see "Health" |
 | `acceleration` | `float` | `0.0` | px/s^2 along the heading (negative brakes, never reverses) |
 | `turn_rate` | `float` | `0.0` | Heading change in rad/s (curving shots) |
@@ -101,14 +102,23 @@ func request_shot_id(request: ShotRequest) -> int     # stable bullet id (> 0), 
 func request_shot(request: ShotRequest) -> bool       # same, bool: false = pool full, shot dropped
 func request_shots(requests: Array) -> int            # returns number accepted
 func is_bullet_alive(id: int) -> bool                 # false for stale / invalid ids
-func get_dropped_count() -> int                       # shots dropped because the pool was full (cumulative)
-func is_saturated() -> bool                           # pool is full right now
+func get_dropped_count() -> int                       # shots dropped, any reason (cumulative)
+func get_dropped_count_by_owner(owner_layer) -> int   # ... by who fired them (PLAYER / ENEMY / 0 = unowned)
+func get_dropped_count_by_limit(limit) -> int         # ... by BulletPool.DropLimit.LOGICAL_CAP / ENEMY_RESERVE
+func is_saturated(owner_layer := Layers.PLAYER) -> bool   # a shot from this side would be dropped right now
+func get_headroom(owner_layer := Layers.PLAYER) -> int    # how many more shots from this side fit right now
 signal pool_saturated(dropped_now: int, dropped_total: int)
 func register_behavior(behavior: BulletBehavior) -> int   # id for ShotRequest.behavior_id
 func reflect_bullet(id, new_owner_layer, reverse := false, new_damage := 1.0, keep_script := false) -> bool  # see "reflecting bullets"
-func get_bullet_count() -> int
-func get_capacity() -> int
+func get_bullet_count() -> int                        # all live bullets
+func get_owner_count(owner_layer) -> int              # live bullets of PLAYER / ENEMY (incl. bosses) / 0 = unowned
+func get_capacity() -> int                            # physical pool size (memory)
+func get_logical_cap() -> int                         # max live bullets allowed (default 10,000)
+func get_enemy_reserve() -> int                       # slots only enemies / bosses may use (default 2,000)
+func get_wall_normal(id: int) -> Vector2              # normal of the wall this bullet hit this tick, else ZERO
 ```
+
+See "Saturation model" below for the cap, the reserve and the counters.
 
 Spawning is immediate and synchronous: the bullet exists when the call returns,
 `on_spawn` has run, and it is first simulated on the next physics tick. Spawning
@@ -199,8 +209,9 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
 | --- | --- |
 | `on_spawn(pool, index)` | Right after the bullet is created |
 | `on_update(pool, index, delta)` | Every physics tick after integration, while alive (never for a bullet that already died this tick). Velocity/heading changes apply from the next tick |
+| `can_hit(pool, index, hurtbox) -> bool` | Only for bullets spawned with `can_hit_veto = true`: asked just before a hit lands. `false` vetoes it, see "Hit veto" |
 | `on_hit(pool, index, hurtbox)` | Contact with a hurtbox, after the hurtbox's own `hit` signal and before the bullet is despawned (or its `pierce` decremented). Not called for a bullet that is already dead |
-| `on_despawn(pool, index, reason)` | Just before removal, exactly once per bullet (also for bullets another hook marked dead; not for ones already removed). `reason` is a `BulletPool.DespawnReason`: `LIFETIME`, `BOUNDS`, `HIT`, `MANUAL`, `CLEARED`, `WALL` |
+| `on_despawn(pool, index, reason)` | Just before removal, exactly once per bullet (also for bullets another hook marked dead; not for ones already removed). `reason` is a `BulletPool.DespawnReason`: `LIFETIME`, `BOUNDS`, `HIT`, `MANUAL`, `CLEARED`, `WALL`, `INVALID` (values are append-only; `INVALID` = killed for a non-finite NaN/inf write by the batch API) |
 
 `behavior.emitter` is set at registration so hooks can spawn child bullets
 (splitting, trails). To remove a bullet from a hook call `pool.mark_dead(index)`.
@@ -218,18 +229,24 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   (`BulletManager.PHYSICS_PRIORITY`), after the default-priority nodes (player,
   enemies). A bullet spawned by the player this tick is integrated and rendered
   this tick; it is not a tick late.
-* Capacity is fixed (`BulletManager.capacity`, default 16384). A full pool drops
-  new shots; it never allocates. Drops are observable: `get_dropped_count()`,
-  `is_saturated()`, the `pool_saturated` signal (at most once per tick, with the
-  number dropped that tick and the total) and a `push_warning` rate-limited by
-  `BulletManager.saturation_warning_interval` (simulated seconds, default 2).
+* Capacity is fixed (`BulletManager.capacity`, default 16384) and the game allows
+  fewer live bullets than that (`logical_cap`, default 10,000, plus an enemy
+  reserve: see "Saturation model"). A pool at its limit drops new shots; it
+  never allocates. Drops are observable: `get_dropped_count()` (and the per-owner
+  / per-limit variants), `is_saturated()`, the `pool_saturated` signal (at most
+  once per tick, with the number dropped that tick and the total) and a
+  `push_warning` rate-limited by `BulletManager.saturation_warning_interval`
+  (simulated seconds, default 2) that says which limit was hit and whose shots
+  were dropped.
 * Bullets leave the simulation when they exit `BulletManager.world_bounds`.
 * Collision is **swept**: a bullet is the segment from where it was at the start
   of the tick (`pool.prev_pos`) to where it is now, so fast bullets do not
   tunnel through thin hurtboxes or walls. Impact positions passed to
   `Hurtbox.hit` are the actual contact points.
 * Bullets collide with `world` walls by default and despawn there with reason
-  `WALL`; `on_despawn` still fires. Opt out per bullet with
+  `WALL`; `on_despawn` still fires, and can read the wall's **surface normal**
+  with `BulletManager.wall_normal_of(slot)` / `ShotEmitter.get_wall_normal(id)`
+  (see "Wall normals"). Opt out per bullet with
   `ShotRequest.collide_world = false`. Walls are axis-aligned rectangles:
   `BulletManager.add_wall(Rect2)` / `clear_walls()`, plus every
   `CollisionShape2D` with a `RectangleShape2D` under a node in the
@@ -278,6 +295,97 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   is a hard gate (non-zero exit if it misses the budget or is not reached); the
   **10,000-bullet target** (`--target-bullets`) only prints a `WARN` line and the
   run still exits 0, because 10k p95 depends on how busy the machine is.
+
+## Saturation model (PROVISIONAL, not decided by Karyu)
+
+Chief of Staff's decision: a logical cap of 10,000 live bullets plus a reserve
+that only enemy and boss shots can use, independent of the physical pool size.
+The numbers below are **provisional defaults, configurable, and not decided by
+Karyu**.
+
+| Setting | Default | Where |
+| --- | --- | --- |
+| Physical pool (memory) | 16,384 | `BulletManager.capacity` (unchanged) |
+| Logical cap: most live bullets, whoever owns them | **10,000** (clamped to `capacity`) | `BulletManager.logical_cap`, `set_bullet_limits()` |
+| Enemy reserve: slots only enemy/boss bullets may take | **2,000** (`-1` = 20% of the cap) | `BulletManager.enemy_reserve`, `set_bullet_limits()` |
+
+Rules (`BulletPool.spawn` / `spawn_simple`, O(1), no allocation):
+
+* A shot from an **enemy or boss** (`owner_layer` has `Layers.ENEMY`) is accepted
+  while `count < logical_cap`.
+* A shot from **anyone else** (player, unowned) is accepted while
+  `count < logical_cap - enemy_reserve`.
+
+So player scripts can fill the pool up to `cap - reserve` and no further: the
+last `reserve` slots are always there for enemy attacks, however many bullets a
+script spawns. The reverse is not true: a screen full of enemy bullets (up to
+the cap) leaves the player no room, because the player's limit is a *total*, not
+a share. Boss bullets use `Layers.ENEMY` too (there is no separate boss layer);
+a bullet owned by both bits counts as the player's, like `Layers.hostile_to()`.
+
+Lowering the cap at runtime (`set_bullet_limits`) never removes bullets; it only
+refuses new ones until enough have despawned. A reflected bullet keeps its slot,
+so a reflection is never refused. The benchmark lifts both limits
+(`logical_cap = capacity`, `enemy_reserve = 0`) so it can measure any count.
+
+**Per-owner live counters.** `pool.owner_counts[]` (indexed `OWNER_NONE` /
+`OWNER_PLAYER` / `OWNER_ENEMY`) is updated in O(1) by spawn, removal (swap-remove
+included), `reflect()` (an owner change moves the count) and `clear()`. A bullet
+marked dead but not yet flushed still holds its slot and still counts. Read it
+with `pool.owner_count(layer)` or `ShotEmitter.get_owner_count(layer)`. Code
+that writes `pool.owner_layer[i]` directly bypasses the counters; use
+`reflect()`, or call `pool.recount_owners()` afterwards (`counters_consistent()`
+checks it in tests). The debug HUD shows `bullets N / cap (player P, enemy E, dropped D)`.
+Counters are per owner side only: there is no per-emitter-id counter, because
+requests carry no emitter id today (it would cost an extra array moved on every
+swap-remove); a script can count its own shots through `request_shot_id`.
+
+**Drops stay observable.** `get_dropped_count()` is the total;
+`get_dropped_count_by_owner(layer)` splits it by who fired, and
+`get_dropped_count_by_limit(BulletPool.DropLimit.X)` by which limit refused the
+shot: `LOGICAL_CAP` (the pool held the maximum) or `ENEMY_RESERVE` (there was
+room, but only for enemies). Both splits sum to the total. `is_saturated(layer)`
+and `get_headroom(layer)` answer "would my next shot be dropped" and "how many
+more fit" for a given side (default: the player, which is what scripts fire as).
+The `pool_saturated(dropped_now, dropped_total)` signal and the rate-limited
+warning are unchanged in shape; the warning text now names the limit and the
+owners.
+
+## Wall normals
+
+Every wall hit also carries the wall's surface normal: a unit vector pointing out
+of the wall, the face of the (radius-inflated) wall the bullet's path entered
+through. `WallGrid.normal_of_hit(k, pool)` returns it for hit `k` (parallel to
+`hit_bullets[k]` / `hit_t[k]`) and `WallGrid.last_normal` belongs to `first_hit()`. Scripts get it during the
+tick the bullet hit: `BulletManager.wall_normal_of(slot)` or
+`ShotEmitter.get_wall_normal(bullet_id)` inside `on_despawn` with reason `WALL`
+(`Vector2.ZERO` if the bullet did not hit a wall this tick, and after removal).
+It is computed on demand from the stored wall index and path (a bullet that hit
+a wall stores two values; the normal itself is only worked out when a script asks),
+so the sweep pays nothing for it.
+
+Corner rules, so results are deterministic: a path that enters two faces at the
+same instant (a perfectly diagonal approach into a corner) takes the face on the
+axis it moves faster along, and the x face on an exact tie; two walls reached at
+the same instant: the one added first; a bullet that starts inside a wall is
+pushed out through the nearest face (ties: left, right, top, bottom).
+
+## Hit veto (`can_hit`)
+
+A bullet spawned with `ShotRequest.can_hit_veto = true` and a `behavior_id`
+asks its behaviour `can_hit(pool, index, hurtbox)` right before a hit lands,
+before any damage, `on_hit` or pierce bookkeeping. Returning `false` makes the
+bullet ignore that target: no damage, no `hit` signal, no `on_hit`, `pierce` is
+not used, and the bullet is not consumed. It is asked again next tick while it
+still overlaps (the piercing "last hit" memory is only set by hits that landed).
+
+Cost: bullets without the flag are never asked. The manager reads one flag byte
+per *hit* (not per bullet per tick); the collision loop reads the flag only while
+at least one flagged bullet is alive (`pool.veto_count`). Flagged bullets sweep
+their path and list up to `BulletPool.VETO_MAX_HITS` (4) hits, so a vetoed
+target does not hide the next one behind it; a fifth consecutive veto would.
+Reflection clears the flag together with the rest of the script state
+(`keep_script` keeps it).
 
 ## Bullet system design
 
@@ -368,6 +476,8 @@ remain exports so they can be tuned.)
 | Default | Value | Where |
 | --- | --- | --- |
 | Pool capacity | 16384 bullets | `BulletManager.capacity` |
+| Logical bullet cap | **10,000** live bullets (provisional) | `BulletManager.logical_cap` |
+| Enemy reserve | **2,000** of the cap, enemy/boss shots only (provisional) | `BulletManager.enemy_reserve` |
 | Pool-full behaviour | drop the new shot, observable (see above) | `BulletPool.spawn`, `BulletManager._report_saturation()` |
 | Saturation warning rate limit | one per 2 simulated seconds | `BulletManager.saturation_warning_interval` (0 = every saturated tick) |
 | Weapon cooldown | `ShotPattern.fire_interval`, 0.11 s for `BasicShot` | `ShotPattern` / `BasicShot` |
@@ -607,9 +717,9 @@ Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything i
 
 ## Known gaps and deliberate non-goals
 
-* **Saturation model (pillars 3.3)**: a 10k logical bullet cap with a reserve for
-  enemy shots is **not implemented** here. The pool still drops new shots when it
-  is full (see "Overflow policy"); the cap/reserve is a separate follow-up.
+* **Saturation model (pillars 3.3)**: implemented, with provisional defaults (see
+  "Saturation model"). Not done: a per-emitter-id counter, a separate boss owner,
+  and a guaranteed *player* share when enemies fill the pool.
 * **Overheal** (hp above `max_hp`): not implemented. `set_hp` clamps to
   `[0, max_hp]` as specified; pillars 12 leaves overheal as a design call.
 * **Bullet id reuse**: an id packs a handle and a 31-bit generation that is bumped
@@ -634,8 +744,8 @@ Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything i
 2. **Interpolation quality.** Bullet interpolation uses the engine's linear
    ("fast") lerp, which is exact for straight bullets and approximate for
    strongly curving ones within a single 1/60 s tick.
-3. **Overflow policy.** A full pool still drops new shots, now observably (see
-   above). Alternative: recycle the oldest bullet. Drop is predictable for
+3. **Overflow policy.** A pool at its limit still drops new shots, observably (see
+   "Saturation model"). Alternative: recycle the oldest bullet. Drop is predictable for
    scripts; recycle never loses the newest shot.
 4. **Lua hook granularity.** Per-bullet `on_update` callbacks from Lua will be the
    dominant cost beyond a few hundred hooked bullets. Prefer declarative

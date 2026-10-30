@@ -6,8 +6,10 @@ extends RefCounted
 
 
 ## Emitted at most once per bullet-system tick when shots were dropped because
-## the pool was full. `dropped_now` = shots dropped since the last emission,
-## `dropped_total` = lifetime total (same as get_dropped_count()).
+## the pool hit a limit (the logical cap, or the enemy reserve for a non-enemy
+## shooter). `dropped_now` = shots dropped since the last emission, `dropped_total`
+## = lifetime total (same as get_dropped_count()). Which limit and whose shots:
+## get_dropped_count_by_limit() / get_dropped_count_by_owner().
 signal pool_saturated(dropped_now: int, dropped_total: int)
 
 
@@ -67,21 +69,70 @@ func register_behavior(_behavior: BulletBehavior) -> int:
 	return 0
 
 
-## Total number of shots dropped because the pool was full, since creation.
+## Total number of shots dropped (refused) since creation, whatever the reason:
+## the logical cap or the enemy reserve (see get_dropped_count_by_limit()).
 func get_dropped_count() -> int:
 	return 0
 
 
-## True while the pool is full: any shot requested right now would be dropped.
-func is_saturated() -> bool:
+## Shots dropped since creation that were fired by `owner_layer`'s side:
+## Layers.PLAYER, Layers.ENEMY (enemies and bosses), or 0 for unowned shots.
+func get_dropped_count_by_owner(_owner_layer: int) -> int:
+	return 0
+
+
+## Shots dropped since creation because of one limit: BulletPool.DropLimit.LOGICAL_CAP
+## (the pool held the maximum number of bullets) or BulletPool.DropLimit.ENEMY_RESERVE
+## (the pool still had room, but only for enemy and boss bullets).
+func get_dropped_count_by_limit(_limit: int) -> int:
+	return 0
+
+
+## True while a shot from `owner_layer` (default Layers.PLAYER, what scripts fire)
+## would be dropped right now. A player shot is already refused once the pool
+## holds `logical_cap - enemy_reserve` bullets; an enemy shot only at `logical_cap`.
+func is_saturated(_owner_layer: int = Layers.PLAYER) -> bool:
 	return false
 
 
-## Number of bullets currently alive.
+## How many more shots from `owner_layer` would be accepted right now before one
+## is dropped (0 = saturated). Use it to throttle a script's output.
+func get_headroom(_owner_layer: int = Layers.PLAYER) -> int:
+	return 0
+
+
+## Number of bullets currently alive (including ones marked dead this tick that
+## still hold their slot).
 func get_bullet_count() -> int:
 	return 0
 
 
-## Maximum number of simultaneously alive bullets.
+## Live bullets owned by `owner_layer`'s side: Layers.PLAYER, Layers.ENEMY (enemies
+## and bosses), or 0 for unowned bullets. Reflected bullets move to their new
+## owner. Constant time.
+func get_owner_count(_owner_layer: int) -> int:
+	return 0
+
+
+## Physical size of the bullet pool (memory); the logical cap can only be lower.
 func get_capacity() -> int:
 	return 0
+
+
+## Most bullets that may be alive at once, whoever owns them (PROVISIONAL default
+## 10,000).
+func get_logical_cap() -> int:
+	return 0
+
+
+## Slots of the logical cap that only enemy and boss bullets may take.
+func get_enemy_reserve() -> int:
+	return 0
+
+
+## Surface normal (unit vector pointing out of the wall) of the wall that bullet
+## `id` hit this tick, or Vector2.ZERO if it did not hit one. Only meaningful
+## inside this tick's hooks for that bullet (e.g. on_despawn with
+## BulletPool.DespawnReason.WALL).
+func get_wall_normal(_id: int) -> Vector2:
+	return Vector2.ZERO

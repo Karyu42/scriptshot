@@ -24,6 +24,16 @@ func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
 	pass
 
 
+## Veto for a hit that is about to land; only asked for bullets spawned with
+## ShotRequest.can_hit_veto. Return false to let the bullet ignore `hurtbox`:
+## no damage, no on_hit, no pierce used, the bullet is not consumed and flies on
+## (it is asked again next tick while it still overlaps the target). Runs before
+## any damage or pierce bookkeeping; keep it cheap and do not despawn or spawn
+## from it (use on_hit / on_update for that).
+func can_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> bool:
+	return true
+
+
 ## When the bullet overlaps a hurtbox, before the bullet is despawned
 ## (pierce > 0 keeps it alive). The hurtbox's own `hit` signal fires first.
 func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
