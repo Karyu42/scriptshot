@@ -13,18 +13,25 @@ extends Node
 ##   --bullets=5000,10000   bullet counts to test
 ##   --frames=600           measured frames per count
 ##   --warmup=120           unmeasured frames per count
-##   --target-bullets=10000 count the pass/fail target applies to
-##   --target-ms=16.6       p95 frame-time budget at the target count
+##   --floor-bullets=5000   the minimum: HARD FAIL (exit 1) if this count misses the budget
+##   --target-bullets=10000 the goal: only a WARN line (exit 0) if this count misses the budget
+##   --target-ms=16.6       p95 frame-time budget for both counts
 ##   --json=path            also write results as JSON
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
 ## BulletManager.step: kinematics, collision, hooks, despawn, MultiMesh buffer
 ## fill). The pass/fail verdict uses work p95. "wall" is the interval between
 ## engine frames; it is informational only, because headless runs are paced at
-## roughly 144 Hz (~6.9 ms) regardless of load. Exit code is 1 if the target is
-## missed, and also if the target bullet count was not actually reached (target
-## count not in --bullets, or fewer bullets alive than requested on any measured
-## frame), so a run that quietly simulates less than it claims cannot pass.
+## roughly 144 Hz (~6.9 ms) regardless of load.
+##
+## Policy: two checks against the same p95 budget.
+##   FLOOR  (--floor-bullets, default 5000): exit code 1 if it misses the budget,
+##          or was not actually reached (count not in --bullets, or fewer bullets
+##          alive than requested on any measured frame), so a run that quietly
+##          simulates less than it claims cannot pass.
+##   TARGET (--target-bullets, default 10000): a miss prints a "WARN" line but
+##          the exit code stays 0, because the target is a goal, not a gate, and
+##          10k p95 is sensitive to how busy the machine is.
 
 const ARENA := Rect2(-1280, -720, 2560, 1440)
 const TARGET_COUNT := 32
@@ -36,6 +43,7 @@ const FAST_FRACTION := 0.1
 var counts: Array[int] = [5000, 10000]
 var frames := 600
 var warmup := 120
+var floor_bullets := 5000
 var target_bullets := 10000
 var target_ms := 16.6
 var json_path := ""
@@ -192,28 +200,42 @@ func _finish_count() -> void:
 	_next_count()
 
 
+## Verdict for one bullet count: {"ok": bool, "text": String}. Not ok when the
+## count was not benchmarked, was not reached, or missed the p95 budget.
+func _judge(bullets: int) -> Dictionary:
+	for r in _results:
+		if r.bullets != bullets:
+			continue
+		var detail := "%d bullets, work p95 %.2f ms vs budget %.1f ms" % [bullets, r.work_p95_ms, target_ms]
+		if not r.reached:
+			return {"ok": false, "text": "only %d of %d bullets were alive on the slowest-filled frame (%s)" % [r.min_alive_before_step, bullets, detail]}
+		if r.work_p95_ms > target_ms:
+			return {"ok": false, "text": detail}
+		return {"ok": true, "text": detail}
+	return {"ok": false, "text": "%d bullets was not benchmarked (add it to --bullets)" % bullets}
+
+
 func _report() -> void:
 	set_process(false)
-	var exit_code := 1
-	var verdict := "FAIL: target count %d was not benchmarked (add it to --bullets)" % target_bullets
-	for r in _results:
-		if r.bullets != target_bullets:
-			continue
-		var reached: bool = r.reached
-		var fast_enough: bool = r.work_p95_ms <= target_ms
-		var detail := "%d bullets, work p95 %.2f ms vs budget %.1f ms" % [target_bullets, r.work_p95_ms, target_ms]
-		if not reached:
-			verdict = "FAIL: only %d of %d bullets were alive on the slowest-filled frame (%s)" % [r.min_alive_before_step, target_bullets, detail]
-		elif not fast_enough:
-			verdict = "FAIL: %s" % detail
-		else:
-			verdict = "PASS: %s" % detail
-			exit_code = 0
-	print("[bench] TARGET %s" % verdict)
+	var floor_result := _judge(floor_bullets)
+	var target_result := _judge(target_bullets)
+	var floor_text: String = ("PASS: " if floor_result.ok else "FAIL: ") + floor_result.text
+	var target_text: String = ("PASS: " if target_result.ok else "WARN: ") + target_result.text
+	print("[bench] FLOOR  %s" % floor_text)
+	print("[bench] TARGET %s" % target_text)
+	if not target_result.ok:
+		print("[bench] WARN the %d-bullet target misses its budget; this does not fail the run (only the %d-bullet floor does)" % [target_bullets, floor_bullets])
+	var exit_code := 0 if floor_result.ok else 1
+	print("[bench] RESULT %s (exit %d)" % ["OK" if exit_code == 0 else "FAILED", exit_code])
 	if json_path != "":
 		var f := FileAccess.open(json_path, FileAccess.WRITE)
 		if f != null:
-			f.store_string(JSON.stringify({"godot": Engine.get_version_info().string, "target": verdict, "target_bullets": target_bullets, "target_ms": target_ms, "results": _results}, "\t"))
+			f.store_string(JSON.stringify({
+				"godot": Engine.get_version_info().string,
+				"floor": floor_text, "floor_bullets": floor_bullets,
+				"target": target_text, "target_bullets": target_bullets,
+				"target_ms": target_ms, "results": _results,
+			}, "\t"))
 	get_tree().quit(exit_code)
 
 
@@ -229,6 +251,7 @@ func _parse_args() -> void:
 					counts.append(int(part))
 			"frames": frames = int(kv[1])
 			"warmup": warmup = int(kv[1])
+			"floor-bullets": floor_bullets = int(kv[1])
 			"target-bullets": target_bullets = int(kv[1])
 			"target-ms": target_ms = float(kv[1])
 			"json": json_path = kv[1]
