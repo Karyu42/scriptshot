@@ -23,14 +23,14 @@ itself lives in `scripting/` and is not part of the core.
 
 | Path | Contents |
 | --- | --- |
-| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), `InputDevice` autoload, `Main` sandbox scene script |
-| `src/player/` | `Player`, `MovementMath`, `AimMath`, `FireCooldown`, `AimReticle`, `BasicShot` (default weapon) |
+| `src/core/` | Cross-cutting types: `Layers`, the shot interface (`ShotRequest`, `ShotEmitter`, `ShotContext`, `ShotPattern`, `BulletBehavior`), placeholder `Health`, `InputDevice` autoload, `Main` sandbox scene script |
+| `src/player/` | `Player`, `MovementMath`, `AimMath`, `FireCooldown`, `TriggerState`, `AimReticle`, `BasicShot` (default weapon) |
 | `src/bullets/` | `BulletPool`, `BulletManager`, `BulletRenderer`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `BulletShotEmitter`, `BulletStressTest` |
-| `src/enemies/` | Enemies (currently only `TrainingDummy`) |
+| `src/enemies/` | Enemies: `TrainingDummy`, `Turret` (aims at and shoots the player) |
 | `src/world/` | Arena drawing / world pieces |
 | `src/camera/` | `FollowCamera`, `CameraMath` |
 | `src/fx/` | Reserved for effects (hit flashes, particles, shake sources) |
-| `scenes/` | `main.tscn` (playable sandbox), `player.tscn`, `training_dummy.tscn` |
+| `scenes/` | `main.tscn` (playable sandbox), `player.tscn`, `training_dummy.tscn`, `turret.tscn` |
 | `tests/unit/` | GUT unit and smoke tests |
 | `tests/benchmark/` | Headless bullet benchmark |
 | `scripting/` | Reserved for the Lua side. The core never depends on it |
@@ -99,6 +99,9 @@ func request_shot_id(request: ShotRequest) -> int     # stable bullet id (> 0), 
 func request_shot(request: ShotRequest) -> bool       # same, bool: false = pool full, shot dropped
 func request_shots(requests: Array) -> int            # returns number accepted
 func is_bullet_alive(id: int) -> bool                 # false for stale / invalid ids
+func get_dropped_count() -> int                       # shots dropped because the pool was full (cumulative)
+func is_saturated() -> bool                           # pool is full right now
+signal pool_saturated(dropped_now: int, dropped_total: int)
 func register_behavior(behavior: BulletBehavior) -> int   # id for ShotRequest.behavior_id
 func get_bullet_count() -> int
 func get_capacity() -> int
@@ -128,10 +131,21 @@ to a bullet across ticks, keep its **id** instead of its slot.
 
 ### `ShotContext` + `ShotPattern` -- the weapon / script entry point
 
-`ShotPattern.fire(context, emitter)` is called by the player each time the
-trigger may fire. `ShotPattern.fire_interval` (seconds) is the cooldown the
-player applies between calls while the trigger is held. A Lua binding provides a
-`ShotPattern` subclass that forwards `fire()` to a Lua function.
+Two entry points, both optional:
+
+* `ShotPattern.update(context, emitter, delta)` runs **every physics tick while the
+  pattern is equipped**, before `fire()`. It sees the aim, the muzzle and the
+  trigger state, so charge, channel and burst weapons can emit shots themselves.
+* `ShotPattern.fire(context, emitter)` is called by the player whenever the trigger
+  is held and `fire_interval` seconds have passed since the last call. This is the
+  simple "hold to autofire" path and works exactly as before.
+
+`ShotPattern.auto_fire` (default `true`) controls the second path: set it to
+`false` for patterns that drive everything from `update()`; the player then never
+calls `fire()` and `fire_interval` is ignored.
+
+A Lua binding provides a `ShotPattern` subclass that forwards `update()` / `fire()`
+to Lua functions.
 
 `ShotContext` (read-only for patterns):
 
@@ -142,7 +156,23 @@ player applies between calls while the trigger is held. A Lua binding provides a
 | `shooter_velocity` | Shooter's current velocity, px/s |
 | `target_mask` | Layers the shot should be able to hit (set `ShotRequest.hit_mask` from it) |
 | `time` | Seconds since the shooter was created |
-| `shot_index` | Trigger pull counter |
+| `shot_index` | Number of `fire()` calls so far |
+| `trigger_pressed` | Fire button is down this tick |
+| `trigger_just_pressed` / `trigger_just_released` | Edge flags, true for exactly one tick |
+| `trigger_held_time` | Seconds held continuously, counting this tick. On the release tick it still holds the length of the hold that just ended (that is when a charge weapon reads it); `0` on later ticks |
+
+Charge weapon sketch (see `tests/unit/test_weapon_update.gd`):
+
+```gdscript
+class_name ChargeShot extends ShotPattern
+func _init() -> void:
+    auto_fire = false
+func update(ctx: ShotContext, emitter: ShotEmitter, _delta: float) -> void:
+    if ctx.trigger_just_released:
+        var r := ShotRequest.polar(ctx.muzzle_position, ctx.aim_angle, 400.0)
+        r.damage = ctx.trigger_held_time * 4.0
+        emitter.request_shot(r)
+```
 
 Minimal example (`src/player/basic_shot.gd`):
 
@@ -186,7 +216,10 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   enemies). A bullet spawned by the player this tick is integrated and rendered
   this tick; it is not a tick late.
 * Capacity is fixed (`BulletManager.capacity`, default 16384). A full pool drops
-  new shots and counts them in `pool.dropped_total`; it never allocates.
+  new shots; it never allocates. Drops are observable: `get_dropped_count()`,
+  `is_saturated()`, the `pool_saturated` signal (at most once per tick, with the
+  number dropped that tick and the total) and a `push_warning` rate-limited by
+  `BulletManager.saturation_warning_interval` (simulated seconds, default 2).
 * Bullets leave the simulation when they exit `BulletManager.world_bounds`.
 * Collision is **swept**: a bullet is the segment from where it was at the start
   of the tick (`pool.prev_pos`) to where it is now, so fast bullets do not
@@ -199,7 +232,8 @@ Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
   `CollisionShape2D` with a `RectangleShape2D` under a node in the
   `world_walls` group (the main scene's `Walls` body; collected at `_ready`).
   Piercing bullets are still stopped by walls. A bullet spawned inside a wall
-  despawns at once.* Hook calls are the expensive path: every hooked bullet costs at least one
+  despawns at once.
+* Hook calls are the expensive path: every hooked bullet costs at least one
   script call per tick (plus whatever the hook does), whereas bullets with
   `behavior_id == 0` never call script code. The 5k/10k benchmark numbers are
   for plain bullets.
@@ -281,8 +315,45 @@ No node, physics body or `Object` exists per bullet.
   interpolation is on, so the player, camera and bullets render smoothly above
   60 Hz. The camera snaps to its target on start (no slide-in from the origin).
 
+## Provisional defaults
+
+These are placeholders chosen to make the sandbox playable. Each is a single
+variable or export, listed here so they are easy to find and change:
+
+| Default | Value | Where |
+| --- | --- | --- |
+| Pool capacity | 16384 bullets | `BulletManager.capacity` |
+| Pool-full behaviour | drop the new shot, observable (see above) | `BulletPool.spawn`, `BulletManager._report_saturation()` |
+| Saturation warning rate limit | one per 2 simulated seconds | `BulletManager.saturation_warning_interval` (0 = every saturated tick) |
+| Weapon cooldown | `ShotPattern.fire_interval`, 0.11 s for `BasicShot` | `ShotPattern` / `BasicShot` |
+| Autofire | on (`ShotPattern.auto_fire = true`) | `ShotPattern.auto_fire` |
+| Player max hp | 5 | `Health.max_hp` (set in `player.tscn`) |
+| Player i-frames after a non-lethal hit | 0.6 s | `Health.invulnerability_time` |
+| Damage rule | a hit costs `ShotRequest.damage` hp (default 1) | `Health.damage()` |
+| Death | player hides, `died` is emitted, `Main` respawns it at the origin after 1.5 s | `Player._on_died`, `Main` |
+| Friendly fire | none: shooters set `hit_mask = Layers.hostile_to(own_layer)` | `Layers.hostile_to`, `ShotContext.target_mask` |
+| Turret sandbox enemy | 1.1 s interval, 260 px/s, range 700 px, 1 damage | `Turret` exports |
+
+### Player health (placeholder)
+
+`Health` (`src/core/health.gd`) is a deliberately small **placeholder** pending
+the real damage / death design: `hp`, `max_hp`, `damage(amount) -> bool`, `heal()`,
+`reset()`, signals `damaged(amount, hp)`, `died`, `invulnerability_changed(active)`,
+plus short i-frames after a non-lethal hit. While invulnerable the player's
+`Hurtbox` is switched off, so bullets pass through instead of being consumed.
+`Player` forwards `damaged` and `died` and offers `respawn(at)`.
+
+### No friendly fire
+
+Bullets only hit hurtboxes whose layer is in their `hit_mask`. Player shots use
+`Layers.hostile_to(Layers.PLAYER)` (= `ENEMY`), enemy shots use
+`Layers.hostile_to(Layers.ENEMY)` (= `PLAYER`). The rule is a convention enforced
+by whoever builds the `ShotRequest` (the player's `ShotContext.target_mask` and
+`Turret` do); the manager itself honours whatever mask a request carries.
+
 ## Open design questions
 
+<<<<<<< HEAD
 1. **Non-rectangular level geometry.** Bullet-vs-wall collision supports
    axis-aligned rectangles only. Polygons or tile maps would need another
    broad phase (or `PhysicsServer2D` queries for hooked bullets only).
@@ -292,17 +363,31 @@ No node, physics body or `Object` exists per bullet.
 3. **Overflow policy.** A full pool drops new shots. Alternative: recycle the
    oldest bullet. Drop is predictable for scripts; recycle never loses the
    newest shot.
+=======
+1. **Bullet vs. world collision.** Bullets currently ignore `world` geometry and
+   only die at `world_bounds`. Options: a second spatial hash of wall rects
+   (cheap, fits rectangular arenas), or batched `PhysicsServer2D` point/shape
+   queries for hooked bullets only. Needs a decision on level geometry.
+2. **Rendering at high refresh rates.** Bullets are simulated and drawn on the
+   60 Hz tick while the player and camera are interpolated. A 144 Hz display
+   shows bullets updating at 60 Hz. Fix is cheap (extrapolate by velocity in the
+   shader with a global uniform) but is a visual-policy call.
+3. **Overflow policy.** A full pool still drops new shots, now observably (see
+   above). Alternative: recycle the oldest bullet. Drop is predictable for
+   scripts; recycle never loses the newest shot.
+>>>>>>> ede054e (docs: interface additions and provisional defaults for saturation, weapon update, health)
 4. **Lua hook granularity.** Per-bullet `on_update` callbacks from Lua will be the
    dominant cost beyond a few hundred hooked bullets. Prefer declarative
    kinematics (`acceleration`, `turn_rate`, params) plus occasional hooks, or add
    a batch hook (`on_update_batch(pool, indices)`)? Needs input from the
    Scripting Engineer.
-5. **Weapon timing ownership.** `ShotPattern.fire_interval` is a fixed cooldown
-   owned by the pattern. Scripts that need channelled / charged / burst weapons
-   will want a per-tick `update(context, emitter, delta)` entry point.
-6. **Player damage and death.** The player has a hurtbox and emits `damaged`, but
-   no health, death or i-frames. Friendly-fire rules (`ENEMY_BULLET` vs `PLAYER`
-   only?) also need to be fixed before enemies shoot.
+5. **Weapon timing ownership.** `ShotPattern.update()` now exists, so scripts can
+   run charge / channel / burst weapons. Open: should cooldown ownership move
+   entirely into scripts (drop `fire_interval`), and should `update()` also be
+   called while the player is dead or the weapon is holstered?
+6. **Real health and death design.** `Health` is a placeholder (hp, i-frames, dies
+   at 0). Open: hp vs. hit-points-per-hit, shields, death consequences, enemy
+   health, whether i-frames should consume or pass bullets.
 7. **Renderer and scaling.** The project uses GL Compatibility (widest
    hardware, web-exportable, headless friendly; no 2D MSAA) with
    `canvas_items` stretch, aspect `keep`. Forward+/Mobile and integer
