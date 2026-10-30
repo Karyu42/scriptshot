@@ -47,7 +47,7 @@ func _update_hud() -> void:
 	var stress := "ON" if _stress.enabled else "off"
 	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]" % [
 		Engine.get_frames_per_second(),
-		_bullets.pool.count,
+		_bullets.alive_count(),
 		_bullets.pool.logical_cap,
 		_bullets.pool.owner_counts[BulletPool.OWNER_PLAYER],
 		_bullets.pool.owner_counts[BulletPool.OWNER_ENEMY],

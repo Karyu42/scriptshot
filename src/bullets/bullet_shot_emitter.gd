@@ -59,7 +59,7 @@ func get_headroom(owner_layer: int = Layers.PLAYER) -> int:
 
 
 func get_bullet_count() -> int:
-	return _manager.pool.count
+	return _manager.alive_count()
 
 
 func get_owner_count(owner_layer: int) -> int:
