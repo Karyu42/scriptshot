@@ -109,8 +109,8 @@ jobs:
         run: |
           {
             echo "### GUT"
-            grep -E "^(Scripts|Tests|Passing Tests|Failing Tests|Risky/Pending|Asserts|Time) " reports/gut.log || true
-            grep -E "All tests passed|tests failed|Failing" reports/gut.log | head -3 || true
+            sed 's/\x1b\[[0-9;]*m//g' reports/gut.log \
+              | grep -E "^(Scripts|Tests|Passing Tests|Failing Tests|Risky/Pending|Asserts|Time) |All tests passed|tests? failed" || true
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload reports
