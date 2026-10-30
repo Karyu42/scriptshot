@@ -31,7 +31,7 @@ func test_build_output_directory_is_ignored() -> void:
 	assert_has(_gitignore_lines(), "/build/", "export_presets.cfg writes into build/")
 
 
-const REQUIRED_PRESETS: Array[String] = ["Windows Desktop", "macOS", "Linux", "Web"]
+const REQUIRED_PRESETS: Array[String] = ["Windows Desktop", "macOS", "Linux", "Web", "Android"]
 
 
 func _preset_names(cfg: ConfigFile) -> Array[String]:
@@ -42,7 +42,7 @@ func _preset_names(cfg: ConfigFile) -> Array[String]:
 	return names
 
 
-func test_export_presets_file_exists_with_the_four_ci_presets() -> void:
+func test_export_presets_file_exists_with_the_five_ci_presets() -> void:
 	assert_true(FileAccess.file_exists("res://export_presets.cfg"), "export_presets.cfg must be committed")
 	var cfg := ConfigFile.new()
 	assert_eq(cfg.load("res://export_presets.cfg"), OK, "export_presets.cfg parses")
