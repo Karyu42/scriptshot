@@ -1,5 +1,6 @@
 -- homing.lua: slow-launching shots that accelerate and home on the nearest enemy.
 -- Uses: native homing (no per-frame Lua), accel, on_death.
+-- Engine status: `accel` maps to ShotRequest.acceleration; `max_speed` and `homing` have no engine equivalent yet.
 
 return {
   name = "Seeker",
@@ -22,7 +23,7 @@ return {
           retarget = 0.2,
         },
         on_death = function(b, why)
-          if why == "expire" then flash("#ff6b6b") end   -- a miss feels like a miss
+          if why == "lifetime" then flash("#ff6b6b") end   -- a miss feels like a miss
         end,
       }
     end
