@@ -33,6 +33,10 @@ var acceleration := 0.0
 var turn_rate := 0.0
 ## How many extra targets the bullet passes through before despawning.
 var pierce := 0
+## Whether the bullet collides with the `world` layer (static walls). On by
+## default; turn it off for bullets that should fly through walls. A bullet that
+## hits a wall despawns with BulletPool.DespawnReason.WALL.
+var collide_world := true
 ## Free scratch values handed to behaviour hooks (e.g. wave amplitude/phase).
 var param_a := 0.0
 var param_b := 0.0
@@ -69,5 +73,6 @@ func reset() -> void:
 	acceleration = 0.0
 	turn_rate = 0.0
 	pierce = 0
+	collide_world = true
 	param_a = 0.0
 	param_b = 0.0

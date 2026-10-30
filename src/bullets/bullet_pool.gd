@@ -14,7 +14,9 @@ extends RefCounted
 ## array on the first write when another reference exists). Reading through a
 ## local alias is fine.
 
-enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED }
+## Why a bullet was removed (passed to BulletBehavior.on_despawn). New reasons are
+## only ever appended, so existing values stay stable.
+enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL }
 
 ## Maximum number of simultaneously alive bullets. Fixed at construction.
 var capacity := 0
@@ -28,6 +30,10 @@ var dropped_total := 0
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
+## Position at the start of the current tick (where the bullet was before
+## advance() moved it). The segment prev_pos -> pos is what swept collision
+## tests, and what the renderer interpolates between.
+var prev_pos := PackedVector2Array()
 var vel := PackedVector2Array()
 ## Unit vector for visual orientation.
 var rot := PackedVector2Array()
@@ -43,6 +49,8 @@ var color := PackedColorArray()
 var hit_mask := PackedInt32Array()
 var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
+## 1 = collides with the `world` layer (walls), 0 = flies through walls.
+var collide_world := PackedByteArray()
 ## Instance id of the last hurtbox a piercing bullet hit (avoids re-hitting
 ## the same target every tick while overlapping).
 var last_hit := PackedInt64Array()
@@ -62,6 +70,7 @@ func _init(p_capacity: int = 16384) -> void:
 	assert(p_capacity > 0, "BulletPool capacity must be positive")
 	capacity = p_capacity
 	pos.resize(capacity)
+	prev_pos.resize(capacity)
 	vel.resize(capacity)
 	rot.resize(capacity)
 	radius.resize(capacity)
@@ -76,6 +85,7 @@ func _init(p_capacity: int = 16384) -> void:
 	hit_mask.resize(capacity)
 	behavior.resize(capacity)
 	pierce.resize(capacity)
+	collide_world.resize(capacity)
 	last_hit.resize(capacity)
 	dead_reason.resize(capacity)
 	pending.resize(capacity)
@@ -92,6 +102,7 @@ func spawn(request: ShotRequest) -> int:
 	count += 1
 	spawned_total += 1
 	pos[i] = request.position
+	prev_pos[i] = request.position
 	vel[i] = request.velocity
 	if is_nan(request.angle):
 		var speed := request.velocity.length()
@@ -110,6 +121,7 @@ func spawn(request: ShotRequest) -> int:
 	hit_mask[i] = request.hit_mask
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
+	collide_world[i] = 1 if request.collide_world else 0
 	last_hit[i] = 0
 	dead_reason[i] = 0
 	if request.radius > max_radius:
@@ -133,6 +145,7 @@ func spawn_simple(
 	count += 1
 	spawned_total += 1
 	pos[i] = position
+	prev_pos[i] = position
 	vel[i] = velocity
 	var speed := velocity.length()
 	rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
@@ -148,6 +161,7 @@ func spawn_simple(
 	hit_mask[i] = mask
 	behavior[i] = 0
 	pierce[i] = 0
+	collide_world[i] = 1
 	last_hit[i] = 0
 	dead_reason[i] = 0
 	if bullet_radius > max_radius:
@@ -169,6 +183,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 	for i in n:
 		if dead_reason[i] != 0:
 			continue
+		prev_pos[i] = pos[i]
 		var a := age[i] + delta
 		age[i] = a
 		if a >= lifetime[i]:
@@ -207,20 +222,18 @@ func mark_dead(i: int, reason: int = DespawnReason.MANUAL) -> void:
 
 
 ## Removes every bullet marked dead. Returns how many were removed.
+##
+## Allocation-free and order-independent: marked slots are visited in marking
+## order; removing slot `s` moves the current last bullet into it, and if that
+## bullet is itself dead (it carries its dead flag along) the same slot is
+## removed again. A marked slot that has already been truncated away
+## (s >= count) was the last bullet and is gone by then.
 func flush_dead() -> int:
 	var removed := pending_count
-	if removed == 0:
-		return 0
-	if removed == 1:
-		_remove_at(pending[0])
-	else:
-		# Removing in descending order keeps swap-removal correct: the element
-		# swapped into a freed slot always comes from above every remaining
-		# pending slot.
-		var sorted := pending.slice(0, removed)
-		sorted.sort()
-		for k in range(removed - 1, -1, -1):
-			_remove_at(sorted[k])
+	for k in removed:
+		var s := pending[k]
+		while s < count and dead_reason[s] != 0:
+			_remove_at(s)
 	pending_count = 0
 	return removed
 
@@ -248,6 +261,7 @@ func _remove_at(i: int) -> void:
 	var last := count - 1
 	if i != last:
 		pos[i] = pos[last]
+		prev_pos[i] = prev_pos[last]
 		vel[i] = vel[last]
 		rot[i] = rot[last]
 		radius[i] = radius[last]
@@ -262,6 +276,7 @@ func _remove_at(i: int) -> void:
 		hit_mask[i] = hit_mask[last]
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
+		collide_world[i] = collide_world[last]
 		last_hit[i] = last_hit[last]
 	dead_reason[i] = dead_reason[last] if i != last else 0
 	dead_reason[last] = 0

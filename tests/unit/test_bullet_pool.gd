@@ -192,7 +192,7 @@ func test_respawned_slot_does_not_inherit_old_state() -> void:
 func test_flush_dead_removes_exactly_the_marked_bullets() -> void:
 	for i in 8:
 		_spawn_at_x(float(i))
-	for i in [0, 3, 5, 7]:
+	for i: int in [0, 3, 5, 7]:
 		pool.mark_dead(i)
 	assert_eq(pool.count, 8, "marking alone removes nothing")
 	assert_eq(pool.flush_dead(), 4)
@@ -215,7 +215,7 @@ func test_flush_dead_handles_all_bullets_marked() -> void:
 func test_flush_dead_handles_marks_in_any_order() -> void:
 	for i in 8:
 		_spawn_at_x(float(i))
-	for i in [6, 1, 7, 2]:
+	for i: int in [6, 1, 7, 2]:
 		pool.mark_dead(i)
 	pool.flush_dead()
 	assert_eq(_xs(), [0.0, 3.0, 4.0, 5.0])
@@ -346,3 +346,93 @@ func test_advance_skips_bullets_already_marked_dead() -> void:
 	pool.advance(DT, BOUNDS)
 	assert_eq(pool.pos[0], Vector2.ZERO)
 	assert_eq(pool.pending_count, 1)
+
+
+# --- sweep support, world flag, allocation-free flush -------------------------
+
+func test_spawn_starts_with_prev_pos_at_spawn_point_and_collides_with_world() -> void:
+	var i := pool.spawn(ShotRequest.polar(Vector2(5, 6), 0.0, 100.0))
+	assert_eq(pool.prev_pos[i], Vector2(5, 6))
+	assert_eq(pool.collide_world[i], 1)
+	var r := ShotRequest.polar(Vector2.ZERO, 0.0, 10.0)
+	r.collide_world = false
+	var j := pool.spawn(r)
+	assert_eq(pool.collide_world[j], 0)
+	var k := pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 1.0)
+	assert_eq(pool.collide_world[k], 1)
+
+
+func test_advance_records_the_previous_position() -> void:
+	pool.spawn(ShotRequest.polar(Vector2(0, 0), 0.0, 60.0))
+	pool.advance(DT, BOUNDS)
+	assert_eq(pool.prev_pos[0], Vector2(0, 0))
+	assert_almost_eq(pool.pos[0].x, 1.0, 0.0001)
+	pool.advance(DT, BOUNDS)
+	assert_almost_eq(pool.prev_pos[0].x, 1.0, 0.0001)
+	assert_almost_eq(pool.pos[0].x, 2.0, 0.0001)
+
+
+func test_swap_removal_moves_prev_pos_and_world_flag_with_the_bullet() -> void:
+	var a := ShotRequest.polar(Vector2(0, 0), 0.0, 60.0)
+	var b := ShotRequest.polar(Vector2(100, 0), 0.0, 60.0)
+	b.collide_world = false
+	pool.spawn(a)
+	pool.spawn(b)
+	pool.advance(DT, BOUNDS)
+	pool.despawn(0)
+	assert_eq(pool.count, 1)
+	assert_almost_eq(pool.pos[0].x, 101.0, 0.0001)
+	assert_almost_eq(pool.prev_pos[0].x, 100.0, 0.0001)
+	assert_eq(pool.collide_world[0], 0)
+
+
+func test_wall_is_a_despawn_reason_and_old_values_are_unchanged() -> void:
+	assert_eq(BulletPool.DespawnReason.LIFETIME, 0)
+	assert_eq(BulletPool.DespawnReason.BOUNDS, 1)
+	assert_eq(BulletPool.DespawnReason.HIT, 2)
+	assert_eq(BulletPool.DespawnReason.MANUAL, 3)
+	assert_eq(BulletPool.DespawnReason.CLEARED, 4)
+	assert_eq(BulletPool.DespawnReason.WALL, 5)
+
+
+func test_flush_dead_matches_a_reference_for_random_mark_sets() -> void:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 12345
+	var big := BulletPool.new(64)
+	for round_index in 200:
+		big.clear()
+		var n := rng.randi_range(1, 64)
+		for i in n:
+			big.spawn_simple(Vector2(float(i), 0.0), Vector2.ZERO, 10.0)
+		var doomed := {}
+		var marks: Array[int] = []
+		for i in n:
+			if rng.randf() < 0.5:
+				marks.append(i)
+		marks.shuffle()
+		for i in marks:
+			doomed[float(i)] = true
+			big.mark_dead(i)
+		var expected: Array[float] = []
+		for i in n:
+			if not doomed.has(float(i)):
+				expected.append(float(i))
+		assert_eq(big.flush_dead(), marks.size())
+		var survivors: Array[float] = []
+		for i in big.count:
+			survivors.append(big.pos[i].x)
+			assert_eq(big.dead_reason[i], 0, "survivor flagged dead (round %d)" % round_index)
+		survivors.sort()
+		assert_eq(survivors, expected, "round %d" % round_index)
+		if survivors != expected:
+			break
+
+
+func test_flush_dead_does_not_reallocate_its_work_list() -> void:
+	for i in 8:
+		_spawn_at_x(float(i))
+	var size_before := pool.pending.size()
+	pool.mark_dead(1)
+	pool.mark_dead(2)
+	pool.flush_dead()
+	assert_eq(pool.pending.size(), size_before, "pending stays a fixed-size scratch array")

@@ -39,19 +39,23 @@ func test_reset_restores_defaults_for_reuse() -> void:
 	r.param_b = 1.0
 	r.reset()
 	var fresh := ShotRequest.new()
-	for prop in ["position", "velocity", "lifetime", "radius", "damage", "hit_mask", "color", "behavior_id", "acceleration", "turn_rate", "pierce", "param_a", "param_b"]:
-		assert_eq(r.get(prop), fresh.get(prop), prop)
+	for prop: String in ["position", "velocity", "lifetime", "radius", "damage", "hit_mask", "color", "behavior_id", "acceleration", "turn_rate", "pierce", "param_a", "param_b"]:
+		var got: Variant = r.get(prop)
+		var want: Variant = fresh.get(prop)
+		var same: bool = got == want
+		assert_true(same, "%s was not reset to its default" % prop)
 	assert_true(is_nan(r.angle))
 
 
 func test_layers_are_distinct_bits_matching_project_layer_order() -> void:
-	var all := [Layers.PLAYER, Layers.ENEMY, Layers.PLAYER_BULLET, Layers.ENEMY_BULLET, Layers.WORLD]
+	var all: Array[int] = [Layers.PLAYER, Layers.ENEMY, Layers.PLAYER_BULLET, Layers.ENEMY_BULLET, Layers.WORLD]
 	var seen := 0
-	for bit in all:
+	for bit: int in all:
 		assert_eq(seen & bit, 0, "overlapping layer bit")
 		seen |= bit
 	assert_eq(Layers.PLAYER, 1)
 	assert_eq(Layers.WORLD, 16)
 	for i in all.size():
-		assert_eq(ProjectSettings.get_setting("layer_names/2d_physics/layer_%d" % (i + 1)),
-			["player", "enemy", "player_bullet", "enemy_bullet", "world"][i])
+		var layer_name: String = ProjectSettings.get_setting("layer_names/2d_physics/layer_%d" % (i + 1))
+		var expected_names: Array[String] = ["player", "enemy", "player_bullet", "enemy_bullet", "world"]
+		assert_eq(layer_name, expected_names[i])

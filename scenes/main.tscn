@@ -1,4 +1,4 @@
-[gd_scene load_steps=13 format=3]
+[gd_scene load_steps=20 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/arena.gd" id="2_arena"]
@@ -21,13 +21,34 @@ size = Vector2(64, 1568)
 [sub_resource type="RectangleShape2D" id="Rect_WallRight"]
 size = Vector2(64, 1568)
 
+[sub_resource type="RectangleShape2D" id="Rect_BlockA"]
+size = Vector2(180, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockB"]
+size = Vector2(180, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockC"]
+size = Vector2(36, 220)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockD"]
+size = Vector2(36, 220)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockE"]
+size = Vector2(240, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockF"]
+size = Vector2(160, 36)
+
+[sub_resource type="RectangleShape2D" id="Rect_BlockG"]
+size = Vector2(160, 36)
+
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
 
 [node name="Arena" type="Node2D" parent="."]
 script = ExtResource("2_arena")
 
-[node name="Walls" type="StaticBody2D" parent="."]
+[node name="Walls" type="StaticBody2D" parent="." groups=["world_walls"]]
 collision_layer = 16
 collision_mask = 0
 
@@ -46,6 +67,34 @@ shape = SubResource("Rect_WallLeft")
 [node name="WallRight" type="CollisionShape2D" parent="Walls"]
 position = Vector2(1312, 0)
 shape = SubResource("Rect_WallRight")
+
+[node name="BlockA" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-250, 80)
+shape = SubResource("Rect_BlockA")
+
+[node name="BlockB" type="CollisionShape2D" parent="Walls"]
+position = Vector2(250, 80)
+shape = SubResource("Rect_BlockB")
+
+[node name="BlockC" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-600, -20)
+shape = SubResource("Rect_BlockC")
+
+[node name="BlockD" type="CollisionShape2D" parent="Walls"]
+position = Vector2(600, -20)
+shape = SubResource("Rect_BlockD")
+
+[node name="BlockE" type="CollisionShape2D" parent="Walls"]
+position = Vector2(0, -230)
+shape = SubResource("Rect_BlockE")
+
+[node name="BlockF" type="CollisionShape2D" parent="Walls"]
+position = Vector2(-880, 120)
+shape = SubResource("Rect_BlockF")
+
+[node name="BlockG" type="CollisionShape2D" parent="Walls"]
+position = Vector2(880, 120)
+shape = SubResource("Rect_BlockG")
 
 [node name="Dummies" type="Node2D" parent="."]
 

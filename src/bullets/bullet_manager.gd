@@ -1,8 +1,18 @@
 class_name BulletManager
 extends Node2D
 ## Owns the bullet pool and runs the whole bullet simulation once per physics
-## tick: hooks -> kinematics -> collision -> hit/despawn hooks -> removal ->
-## render upload. No node, physics body or Object per bullet.
+## tick: kinematics -> hooks -> wall + hurtbox collision (swept) -> hit/despawn
+## hooks -> removal -> render upload. No node, physics body or Object per bullet.
+##
+## Keep this node at the world origin (it is the parent of the bullet renderer,
+## and bullet positions are world positions).
+
+## Bullets spawned by other nodes earlier in the same physics tick (the player's
+## weapon, stress tests, Lua shot scripts) must be integrated and drawn on that
+## same tick. Godot runs _physics_process in ascending process_physics_priority
+## (ties broken by tree order), so the manager runs after everything at the
+## default priority of 0.
+const PHYSICS_PRIORITY := 100
 
 ## Hard cap on simultaneously alive bullets (excess spawns are dropped).
 @export var capacity := 16384
@@ -16,32 +26,45 @@ extends Node2D
 @export var auto_step := true
 ## Visual stretch of bullets along their heading (1 = round).
 @export var bullet_stretch := 1.0
+## On _ready, every CollisionObject2D in this group that is on the `world` layer
+## contributes its (axis-aligned) RectangleShape2D shapes as bullet walls.
+@export var walls_group := &"world_walls"
 
 var pool: BulletPool
 var grid: HurtboxGrid
+var walls: WallGrid
 var emitter: ShotEmitter
 
-## Duration of the last step() call in microseconds, and how many bullets were
-## alive afterwards. Used by the HUD and the benchmark.
+## Duration of the last step() call in microseconds.
 var last_step_usec := 0
+## Bullet-vs-hurtbox and bullet-vs-wall hits found by the last step().
 var last_hit_count := 0
+var last_wall_hit_count := 0
+## Microseconds spent in each phase of the last step(), indexed by Phase.
+var last_phase_usec := PackedInt32Array([0, 0, 0, 0, 0])
+
+enum Phase { TARGETS_AND_ADVANCE, HOOKS_AND_WALLS, HURTBOXES, DESPAWN, RENDER }
 
 var _renderer: BulletRenderer
 var _behaviors: Array[BulletBehavior] = [null]
 
 
+func _init() -> void:
+	process_physics_priority = PHYSICS_PRIORITY
+
+
 func _ready() -> void:
 	pool = BulletPool.new(capacity)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
+	walls = WallGrid.new(world_bounds, cell_size)
 	emitter = BulletShotEmitter.new(self)
+	collect_walls()
 	if render_enabled:
 		_renderer = BulletRenderer.new()
 		_renderer.name = "Renderer"
 		_renderer.stretch = bullet_stretch
-		# Bullets are simulated on the fixed tick and drawn as-is.
-		_renderer.physics_interpolation_mode = Node.PHYSICS_INTERPOLATION_MODE_OFF
 		add_child(_renderer)
-		_renderer.setup(capacity)
+		_renderer.setup(capacity, world_bounds)
 
 
 func _physics_process(delta: float) -> void:
@@ -54,6 +77,39 @@ func register_behavior(behavior: BulletBehavior) -> int:
 	behavior.emitter = emitter
 	_behaviors.append(behavior)
 	return _behaviors.size() - 1
+
+
+## Adds a static wall rectangle (world space) that bullets collide with unless
+## they were spawned with collide_world = false.
+func add_wall(rect: Rect2) -> void:
+	walls.add_wall(rect)
+
+
+func clear_walls() -> void:
+	walls.clear_walls()
+
+
+## (Re)reads walls from `walls_group`: every CollisionObject2D on the `world`
+## layer contributes its RectangleShape2D children, as their world-space bounding
+## box. Returns the number of walls added. Existing walls are kept.
+func collect_walls() -> int:
+	var added := 0
+	if not is_inside_tree():
+		return added
+	for node in get_tree().get_nodes_in_group(walls_group):
+		var body := node as CollisionObject2D
+		if body == null or (body.collision_layer & Layers.WORLD) == 0:
+			continue
+		for child in body.get_children():
+			var shape_node := child as CollisionShape2D
+			if shape_node == null or shape_node.disabled:
+				continue
+			var rect_shape := shape_node.shape as RectangleShape2D
+			if rect_shape == null:
+				continue
+			walls.add_wall(shape_node.global_transform * Rect2(-rect_shape.size * 0.5, rect_shape.size))
+			added += 1
+	return added
 
 
 ## Spawns a bullet from a request and runs its on_spawn hook. Returns the slot
@@ -76,28 +132,58 @@ func step(delta: float) -> void:
 
 	_collect_targets()
 	pool.advance(delta, world_bounds)
+	var t1 := Time.get_ticks_usec()
 
-	# Script hooks: only bullets that asked for them.
+	# Script hooks: only bullets that asked for them. A hook may have killed a
+	# later bullet in the list already; dead bullets get no more updates.
 	for k in pool.hooked_count:
 		var i := pool.hooked[k]
-		_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
+		if pool.dead_reason[i] == 0:
+			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 
-	# Collision against hurtboxes.
+	# Walls first: a bullet that hits one is clipped to the impact point, so the
+	# hurtbox test below only sees the part of its path before the wall.
+	last_wall_hit_count = walls.sweep_bullets(pool)
+	for k in last_wall_hit_count:
+		var i := walls.hit_bullets[k]
+		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
+
+	var t2 := Time.get_ticks_usec()
 	last_hit_count = grid.collide_bullets(pool)
 	for k in last_hit_count:
-		_apply_hit(grid.hit_bullets[k], grid.hit_targets[k])
+		_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
 
-	# Despawn hooks, then actually remove the dead.
-	for k in pool.pending_count:
-		var i := pool.pending[k]
-		var id := pool.behavior[i]
+	# A bullet that reached a wall despawns there (unless a hurtbox already
+	# claimed it earlier on its path: first reason wins).
+	for k in last_wall_hit_count:
+		pool.mark_dead(walls.hit_bullets[k], BulletPool.DespawnReason.WALL)
+
+	var t3 := Time.get_ticks_usec()
+	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
+	# dead (they are appended to the pending list and visited too); every bullet
+	# is announced exactly once, and slots that no longer hold a dead bullet
+	# (removed from inside a hook) are skipped.
+	var p := 0
+	while p < pool.pending_count:
+		var slot := pool.pending[p]
+		p += 1
+		if slot >= pool.count or pool.dead_reason[slot] == 0:
+			continue
+		var id := pool.behavior[slot]
 		if id != 0:
-			_get_behavior(id).on_despawn(pool, i, pool.dead_reason[i] - 1)
+			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
 	pool.flush_dead()
+	var t4 := Time.get_ticks_usec()
 
 	if _renderer != null:
 		_renderer.update_from(pool)
-	last_step_usec = Time.get_ticks_usec() - t0
+	var t5 := Time.get_ticks_usec()
+	last_phase_usec[Phase.TARGETS_AND_ADVANCE] = t1 - t0
+	last_phase_usec[Phase.HOOKS_AND_WALLS] = t2 - t1
+	last_phase_usec[Phase.HURTBOXES] = t3 - t2
+	last_phase_usec[Phase.DESPAWN] = t4 - t3
+	last_phase_usec[Phase.RENDER] = t5 - t4
+	last_step_usec = t5 - t0
 
 
 ## Removes all bullets (no hooks are called).
@@ -109,21 +195,30 @@ func clear_bullets() -> void:
 
 func _collect_targets() -> void:
 	grid.begin(pool.max_radius)
-	for node in get_tree().get_nodes_in_group(Hurtbox.GROUP):
-		var hb := node as Hurtbox
-		if hb != null and hb.active and hb.is_visible_in_tree():
+	var targets := Hurtbox.registry
+	for k in targets.size():
+		var hb := targets[k]
+		if hb.active and hb.is_visible_in_tree():
 			grid.add_circle(hb.global_position, hb.radius, hb.layer, hb)
 
 
-func _apply_hit(bullet: int, target: int) -> void:
+func _apply_hit(bullet: int, target: int, t: float) -> void:
+	# An earlier hit's hook may have killed this bullet in the meantime.
+	if pool.dead_reason[bullet] != 0:
+		return
 	var hurtbox := grid.target_ref[target] as Hurtbox
 	if hurtbox == null or not is_instance_valid(hurtbox):
 		return
-	hurtbox.receive_hit(pool.damage[bullet], pool.pos[bullet], pool.vel[bullet])
+	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
+	var piercing := pool.pierce[bullet] > 0
+	if not piercing:
+		# The bullet stops where it touched the target.
+		pool.pos[bullet] = impact
+	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet])
 	var id := pool.behavior[bullet]
 	if id != 0:
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)
-	if pool.pierce[bullet] > 0:
+	if piercing:
 		pool.pierce[bullet] -= 1
 		pool.last_hit[bullet] = hurtbox.get_instance_id()
 	else:
