@@ -5,6 +5,12 @@ extends RefCounted
 ## Concrete implementation: BulletShotEmitter. See docs/architecture.md.
 
 
+## Emitted at most once per bullet-system tick when shots were dropped because
+## the pool was full. `dropped_now` = shots dropped since the last emission,
+## `dropped_total` = lifetime total (same as get_dropped_count()).
+signal pool_saturated(dropped_now: int, dropped_total: int)
+
+
 ## Spawns one bullet and returns its stable id (> 0), or -1 if the bullet pool
 ## is full (the shot is dropped, never queued). The id stays valid for exactly
 ## the bullet's lifetime; see is_bullet_alive().
@@ -40,6 +46,16 @@ func request_shots(requests: Array) -> int:
 func register_behavior(_behavior: BulletBehavior) -> int:
 	push_error("ShotEmitter.register_behavior() is abstract")
 	return 0
+
+
+## Total number of shots dropped because the pool was full, since creation.
+func get_dropped_count() -> int:
+	return 0
+
+
+## True while the pool is full: any shot requested right now would be dropped.
+func is_saturated() -> bool:
+	return false
 
 
 ## Number of bullets currently alive.

@@ -23,6 +23,14 @@ func register_behavior(behavior: BulletBehavior) -> int:
 	return _manager.register_behavior(behavior)
 
 
+func get_dropped_count() -> int:
+	return _manager.pool.dropped_total
+
+
+func is_saturated() -> bool:
+	return _manager.pool.is_full()
+
+
 func get_bullet_count() -> int:
 	return _manager.pool.count
 
