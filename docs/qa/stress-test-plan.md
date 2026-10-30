@@ -2,11 +2,12 @@
 
 Goal: prove Scriptshot holds a **16.6 ms (60 FPS) p95 frame time** at **10,000 bullets (target)**, with **5,000 bullets as the hard floor**, and catch regressions in CI.
 These are the agreed numbers: budget 16.6 ms (not 16.7), floor 5k, target 10k.
-Status: the headless part exists in the core scaffold (PR #2, head 2026abe): `tests/benchmark/bullet_benchmark.tscn`, run via
-`./tools/run_benchmark.sh --json=PATH`. The scene itself exits 1 on a p95 miss, on a target count that was not benchmarked, and on a
-shortfall (fewer bullets alive than requested); its default target is 10,000 bullets at 16.6 ms. CI runs it as the `perf` job
-with `--target-bullets=5000` (so the benchmark's own verdict is the 5k floor) and `tools/ci/check_perf.py` applies the floor/target policy to its
-JSON (`results[].work_p50_ms / work_p95_ms / work_p99_ms / reached / min_alive_before_step`). Still missing: the windowed run,
+Status: the headless part exists on `main` (core scaffold, PR #2): `tests/benchmark/bullet_benchmark.tscn`, run via
+`./tools/run_benchmark.sh --json=PATH`. The scene has the same policy built in: `--floor-bullets=5000` is a hard fail (exit 1 on a p95 miss, on a
+count that was not benchmarked, or on a shortfall, i.e. fewer bullets alive than requested) and `--target-bullets=10000` only prints a WARN (exit 0),
+both against `--target-ms=16.6`. CI runs it as the `perf` job with those flags, and `tools/ci/check_perf.py` stays the gate: it applies the same
+floor/target policy to the JSON (`results[].work_p50_ms / work_p95_ms / work_p99_ms / reached / min_alive_before_step`), writes the step summary and
+does the optional baseline check. Still missing: the windowed run,
 dense-collision mode, and the Lua variants below (blocked on the Lua binding decision).
 
 Gaps in the current benchmark (planned follow-ups):
@@ -55,7 +56,7 @@ spend at most **~50% of the frame budget (8 ms)** at the target count. If it is 
 
 ## 5. CI integration
 - `perf` job in `.github/workflows/ci.yml` runs on every PR and push to main (about 15 s). 5k is a hard gate and 10k is warn-only (`tools/ci/check_perf.py`, unit-tested in `tools/ci/test_check_perf.py` and run in the same job).
-  Measured headroom is about 3x (p95 ~5 ms), so shared-runner noise should not flake it. Add a nightly schedule when the Lua modes exist.
+  On a shared, loaded box 5k measured p95 4.5-8.6 ms and 10k 7.7-13.7 ms, so 5k has about 2x headroom and 10k is close to the budget, which is why it only warns. Add a nightly schedule when the Lua modes exist.
 - `tools/ci/check_perf.py` enforces `--p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000` and the optional `--baseline` regression check
   (5k regression fails, 10k regression warns). It appends the full table to `$GITHUB_STEP_SUMMARY`, and `bench.json` is uploaded as an artifact.
 

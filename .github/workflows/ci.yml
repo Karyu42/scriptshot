@@ -159,15 +159,15 @@ jobs:
       - name: Run benchmark (5k floor + 10k target)
         run: |
           mkdir -p reports
-          # run_benchmark.sh imports (and fails on script/resource errors), then runs the scene, which
-          # exits 1 when the --target-bullets count is not benchmarked, was not actually reached
-          # (fewer alive than requested), or misses --target-ms at p95.
-          # Its own default target is 10,000, but our policy is 5k = hard floor and 10k = warn-only,
-          # so the benchmark's verdict is pinned to the 5k floor here and check_perf.py judges 10k.
+          # run_benchmark.sh imports (and fails on script/resource errors), then runs the scene with the
+          # same policy as check_perf.py: --floor-bullets is a hard fail (exit 1 on a p95 miss, or if the
+          # count was not benchmarked/reached) and --target-bullets only prints a WARN (exit 0).
+          # check_perf.py stays the CI gate (it also writes the step summary and the baseline check).
           # The JSON is written either way; a benchmark failure is tolerated only if it left JSON
           # behind and was not caused by an import/script error (those print "run_benchmark.sh: ...").
           set +e
-          ./tools/run_benchmark.sh --bullets=2000,5000,10000 --target-bullets=5000 --target-ms=16.6 \
+          ./tools/run_benchmark.sh --bullets=2000,5000,10000 --floor-bullets=5000 --target-bullets=10000 \
+            --target-ms=16.6 \
             --json="$PWD/reports/bench.json" 2>&1 | tee reports/bench.log
           rc=${PIPESTATUS[0]}
           set -e
@@ -206,14 +206,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { preset: "Windows Desktop", platform: "windows.x86_64", mode: release, out: "build/windows/scriptshot.exe" }
-          - { preset: "macOS",           platform: "macos.universal", mode: release, out: "build/macos/scriptshot.zip" }
-          - { preset: "Linux",           platform: "linux.x86_64",   mode: release, out: "build/linux/scriptshot.x86_64" }
+          - { preset: "Windows Desktop", platform: "windows.x86_64", mode: release, out: "build/windows/Scriptshot.exe" }
+          - { preset: "macOS",           platform: "macos.universal", mode: release, out: "build/macos/Scriptshot.zip" }
+          - { preset: "Linux",           platform: "linux.x86_64",   mode: release, out: "build/linux/Scriptshot.x86_64" }
           - { preset: "Web",             platform: "web.wasm32",     mode: release, out: "build/web/index.html" }
-          - { preset: "Android",         platform: "android.arm64",  mode: debug,   out: "build/android/scriptshot-debug.apk" }
+          - { preset: "Android",         platform: "android.arm64",  mode: debug,   out: "build/android/Scriptshot-debug.apk" }
+          # Output paths equal the export_path of each preset in export_presets.cfg.
           # iOS is NOT a release target. If an iOS compile check is ever wanted it must run on a macOS
           # runner and is low priority; leave this commented out:
-          # - { preset: "iOS", platform: "ios.universal", mode: debug, out: "build/ios/scriptshot.xcodeproj" }
+          # - { preset: "iOS", platform: "ios.universal", mode: debug, out: "build/ios/Scriptshot.xcodeproj" }
     steps:
       - uses: actions/checkout@v4
         with:
