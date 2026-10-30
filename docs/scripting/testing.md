@@ -36,8 +36,8 @@ that exist today.
 - `RealScriptWorld(manager: BulletManager, emitter: ShotEmitter, player: Player, walls: WallGrid)`: production.
 - `FakeScriptWorld`: an in-memory bullet table (`ids`, `pos`, `vel`, `age`, `alive`, a generation counter), a recorded list of
   `spawn / kill / teleport / reflect / set_player_hp` calls, scripted `hits()` and `walls()` event feeds, a fake clock and a
-  seeded `RandomNumberGenerator`. It implements the **packed stable-id scheme of PR #4 (1d2fe2c)**: `id = (generation << 32) | handle`, `handle` indexing an
-  indirection table of slots, `generation` bumped when a handle is released, `-1` for none (not the old `(index, generation)` pair; stable ids are not on `main` yet), so id-reuse
+  seeded `RandomNumberGenerator`. It implements the **packed stable-id scheme of PR #4 (on `main`)**: `id = (generation << 32) | handle`, `handle` indexing an
+  indirection table of slots, `generation` bumped when a handle is released, `-1` for none (not the old `(index, generation)` pair; the packed ids are on `main` since PR #4), so id-reuse
   tests do not need the engine.
 
 ```gdscript
@@ -47,7 +47,7 @@ func rng() -> RandomNumberGenerator: return null
 func spawn(req: ShotRequest) -> int: return -1                # stable id or -1
 func kill(id: int, reason: int) -> bool: return false
 func teleport(id: int, p: Vector2) -> bool: return false
-func reflect(id: int, new_owner_layer: int, reverse: bool, new_damage: float = 1.0, keep_script: bool = false) -> bool: return false   # [PR #4]
+func reflect(id: int, new_owner_layer: int, reverse: bool, new_damage: float = 1.0, keep_script: bool = false) -> bool: return false   # on main (PR #4)
 func view(ids: PackedInt64Array, out: BulletViews) -> void: pass   # batch read (pos, vel, age, params); fills the packed-copy backing of the batch view
 func player_state() -> PlayerState: return null
 ```
@@ -64,10 +64,12 @@ A small set (30-40 tests) of GUT scripts that build `BulletManager` + `ShotEmitt
 |---|---|
 | Spawn | `spawn` in `on_fire` is synchronous (ids returned, bullets in the pool before `fire` returns); `spawn` in `on_tick` / `on_hit` is deferred to the next tick; deferred cap (8,192/tick) counts the surplus |
 | Kill / ids | `b:kill()` -> `mark_dead(MANUAL)`; stale id after swap-remove or slot reuse is a no-op (generation mismatch); `DespawnReason` values LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL reach `on_despawn` (and INVALID once the saturation PR adds it: a NaN/inf written to `vx`/`vy`/`pa`/`pb` kills the bullet with `INVALID` and bumps `bad_writes`; a request record with `behavior >= 2^24` is dropped and counted) |
-| Spawn owner | a bullet spawned from a hook inherits the spawner's `owner_layer`; a `team` field or behavior record naming the other layer does not change it; only `reflect` (limited by `max_reflections`) does |
-| Hit order | `receive_hit` -> `on_hit` -> pierce-- or `mark_dead(HIT)`; the `can_hit` filter vetoes before `receive_hit` |
+| Bad spawn record | a request record with a non-finite field, `behavior >= 2^24` or undefined `flags` bits, or a `cmds` SPAWN row outside `-1 <= row < n`, is **dropped**: not spawned, counted in `bad_writes`, reported (script name and line, rate-limited); **the parent bullet does not despawn** (it stays alive and keeps flying, no `on_death`); a NaN written to the parent's own `vx` does kill it (`INVALID`, once the saturation PR adds it) |
+| Spawn owner **[planned]** | inheritance is not on `main` yet, so these cases wait for it: a bullet spawned from a hook inherits the spawner's `owner_layer`; a behavior record naming the other layer does not change it; only `reflect` (limited by `max_reflections`) does |
+| Spawn `team` **[planned]** | `team` is inherited from the spawner like the owner (decided): `spawn{team = "enemy"}` from a player bullet or weapon spawns a **player** bullet, logs one warning (script name and line, rate-limited) and does not fail; `spawn{team = "player"}` from a player shot (the same team) is accepted silently; `b:spawn` and `v:spawn` follow the same rule |
+| Hit order | `receive_hit` -> `on_hit` -> pierce-- or `mark_dead(HIT)`; the `can_hit` filter vetoes before `receive_hit` (**coming in the saturation PR**, not on `main`: add the case with it) |
 | Teleport **[main]** | a Lua position jump maps to `BulletPool.teleport`, **no swept hit** through a hurtbox between old and new position (regression for raw `pos` writes) |
-| Reflect **[PR #4]** | `reflect(id, layer, reverse, new_damage, keep_script)` flips `owner_layer`, with `reverse` the velocity, sets damage to `new_damage` (default 1), clears behaviour and `user` unless `keep_script`; the second reflection returns `false` (`max_reflections = 1`, `0` = unlimited); `owner_layer` is stripped from `hit_mask` |
+| Reflect **[main]** | `reflect(id, layer, reverse, new_damage, keep_script)` flips `owner_layer`, with `reverse` the velocity, sets damage to `new_damage` (default 1), clears behaviour and `user` unless `keep_script`; the second reflection returns `false` (`max_reflections = 1`, `0` = unlimited); `owner_layer` is stripped from `hit_mask` |
 | Batch view | the **same script** runs on the packed-copy backing and (later) the native backing and produces identical command logs; bounds, read-only and expiry rules as in api.md *The batch view* (the diverging error reports are asserted per backing) |
 | Player writes | `PlayerState` setters apply immediately in the engine; the Lua `player` proxy commits the write set at the end of the callback and commits nothing on error or watchdog stop; `player.invulnerable` writes only the script layer (`pierces_script_invuln` shots ignore it, engine i-frames are never cancelled) |
 | Capability grants | prompt appears for any script requesting `os`/`io`/`debug`/`package`/`native`; grants keyed by content hash; in-game-editor edits carry the grant; external saves use per-session "Trust this file while I edit it" (cleared on restart); an edit adding a capability prompts for just that one; hot reload re-checks grants |
@@ -136,7 +138,7 @@ if [ "$import_status" -eq 134 ] && grep -q '\[ DONE \] reimport' "$LOG_DIR/impor
 
 (c) any other non-zero status, or a 134 without `[ DONE ] reimport`, or any `ERROR` / `Failed to load`, stays a failure. (d) When the extension is absent (a pure-GDScript job) behaviour is unchanged.
 
-**Proposals (nothing was filed or posted):** an upstream godotengine/godot issue with the blank-project repro and the backtrace, and a Scriptshot tracking issue linking it and the fallbacks above.
+**Tracking:** Karyu decided not to file an upstream report. The crash is tracked in https://github.com/Karyu42/scriptshot/issues/7 (blank-project repro, backtrace excerpt and the `.godot/extension_list.cfg` pre-seed workaround above).
 
 ### 2.3 Matrix
 
@@ -262,7 +264,7 @@ One test per row of api.md "Errors":
 | Missing optional hooks | no error |
 | Wrong return types, NaN/inf values | the facade rejects or clamps (spike case `facade_bad_values`), never reaches the pool |
 | 64 live coroutines per weapon exceeded | `fire` returns an error value; the 65th is not created |
-| Own script frees the player (`on_hurt`) while writing player state | writes are no-ops (PR #4) |
+| Own script frees the player (`on_hurt`) while writing player state | writes are no-ops (`PlayerState`, on `main` since PR #4) |
 
 ## 7. Scripted-bullet benchmark (QA's JSON format)
 

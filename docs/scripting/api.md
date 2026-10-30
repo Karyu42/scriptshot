@@ -3,16 +3,17 @@
 Status: **draft for review**. Nothing here is implemented yet. Points that depend on the
 bullet system being built by the Gameplay Engineer are marked **[OI-n]** (open interface
 question) and collected at the end. v0.2 aligns the draft with the design pillars (PR #1),
-the core scaffold (PR #2, now on `main`, checked against `main` 39ff259), the gameplay defaults and `PlayerState`
-(PR #4, checked against head **1d2fe2c**), the measured spike results ([spike-results.md](spike-results.md)) and
+the core scaffold (PR #2) and the gameplay defaults and `PlayerState` (PR #4); both are now on `main`
+(PR #4 merged as 4e52673; every engine name below was re-checked against `main` 1f3be32), the measured spike results ([spike-results.md](spike-results.md)) and
 Karyu's sandbox decisions. Engine names are quoted verbatim (`ShotContext.muzzle_position`,
 `BulletPool.DespawnReason`, ...) so each Lua concept can be traced to code.
 
-**Engine status markers.** **[main]** = exists on `main` today. **[PR #4]** = exists only on the open PR #4
-(1d2fe2c), not merged: stable ids, `request_shot_id`, `ShotPattern.update`/`auto_fire`/`reset`, `trigger_*` context
-fields, `owner_layer` handling, `reflect_bullet`, `PlayerState`, `Health.try_damage`, `pierces_script_invuln`.
-**[planned]** = agreed but not written (batch API, wall normal, `can_hit`, per-owner counters). Unmarked engine
-names are on `main`. `BulletPool.teleport` is **[main]** (`bullet_pool.gd`, via PR #2).
+**Engine status markers.** **[main]** = exists on `main` today. PR #4 is merged (4e52673), so these are all **[main]** now and
+carry no tag: stable ids, `request_shot_id`, `ShotPattern.update`/`auto_fire`/`reset`, `trigger_*` context fields,
+`owner_layer` handling, `reflect_bullet` and `max_reflections`, `PlayerState`, `Health.try_damage`, `pierces_script_invuln`.
+**Coming in the saturation PR** = in the Gameplay Engineer's upcoming saturation PR, **not on `main` yet**
+(`DespawnReason.INVALID`, per-owner live counters, the wall normal, the `can_hit` veto). **[planned]** = agreed but not written anywhere (batch API,
+spawn owner inheritance). Unmarked engine names are on `main`.
 
 Players write shots in Lua. A script is a single `.lua` file that returns a *weapon*
 table. The engine calls into it when you fire and on shot events. Everything else
@@ -39,7 +40,7 @@ bullets on screen and only pay for Lua when you actually say something interesti
 
 ## Conventions
 
-Fixed by the bullet system (PR #2 / #4), repeated here so scripts and engine agree:
+Fixed by the bullet system (PR #2 / #4, both on `main`), repeated here so scripts and engine agree:
 
 - **Coordinates: y points down** (Godot screen space). Positions are pixels in arena space.
 - **Angles are radians, 0 = +x, increasing clockwise on screen** (a consequence of y-down).
@@ -50,15 +51,15 @@ Fixed by the bullet system (PR #2 / #4), repeated here so scripts and engine agr
   hurtbox applies the damage*.** Scripts never apply damage to enemies directly.
 - **Own bullets never hurt their owner.** `ShotRequest.owner_layer` (default `Layers.PLAYER`) is
   stripped from `hit_mask` at spawn, whatever a script asks for. Reflecting changes the owner.
-- **[planned]** **Spawned bullets inherit the owner of whoever spawned them.** (Not implemented on main or in PR #4 yet; this is the agreed rule the pool will enforce.) A bullet spawned from a hook (`v:spawn`, `b:spawn`, `spawn`) **inherits `owner_layer` from the bullet or emitter whose hook spawned it. It is never taken from the behavior record or from a field the script passes.** Karyu's rule is that own bullets never hurt you, and the only way to change an owner is `reflect`, which is guarded by `max_reflections`. If a script (or a behavior record) could choose the owner of what it spawns, it could mint enemy-owned bullets that bypass that guard. **Lifetime and colour do come from the behavior record.**
+- **[planned]** **Spawned bullets inherit the owner of whoever spawned them.** (Not implemented on `main` (1f3be32), not in PR #4 and not in the saturation branch; this is the agreed rule the pool will enforce.) A bullet spawned from a hook (`v:spawn`, `b:spawn`, `spawn`) **inherits `owner_layer` from the bullet or emitter whose hook spawned it. It is never taken from the behavior record or from a field the script passes.** Karyu's rule is that own bullets never hurt you, and the only way to change an owner is `reflect`, which is guarded by `max_reflections`. If a script (or a behavior record) could choose the owner of what it spawns, it could mint enemy-owned bullets that bypass that guard. **Lifetime and colour do come from the behavior record.**
 - **Slots are not handles.** Despawning swap-removes: the last bullet moves into the freed slot, so a
   pool *index* is only valid inside one hook call (`BulletBehavior`: "only valid for the duration of the
   call"). Anything that outlives the call (timers, `b` handles stored in `state`, coroutines) uses the
-  **stable id** **[PR #4]**: `id = (generation << 32) | handle`, always `> 0`, `-1` = none. `handle` indexes an
+  **stable id**: `id = (generation << 32) | handle`, always `> 0`, `-1` = none. `handle` indexes an
   **indirection table** (`handle -> current slot`); `generation` is bumped when a handle is released, so a stale id is
   detected even after its handle was reused (`pool.id_of(index)`, `pool.slot_of(id)` -> slot or `-1`, `pool.is_alive(id)`,
   `ShotEmitter.request_shot_id()`, `ShotEmitter.is_bullet_alive(id)`). A Lua `b` wraps the id and resolves it to a slot on
-  each access. On `main` today only slots exist; the Lua binding depends on PR #4 for ids.
+  each access. Stable ids are on `main` (PR #4); the Lua binding depends on them.
 - **Spawning is synchronous from weapon code and queued from bullet callbacks.** `spawn{}` inside
   `on_fire` / `update` calls `ShotEmitter.request_shot_id()`: the bullet exists on return and `spawn`
   returns its handle (or `nil` if the pool or the player's share is full). Inside bullet callbacks
@@ -88,7 +89,7 @@ return {
 
 `ctx` is a read-only **snapshot** of `ShotContext` taken when the callback starts (it does not change
 while a coroutine is parked in `wait()`; read `player` or call `ctx:refresh()` for live values). Fields
-match the engine one to one (the seven base names, `muzzle_position` ... `shot_index`, are on `main`; the `trigger_*` fields are **[PR #4]**):
+match the engine one to one (the seven base names, `muzzle_position` ... `shot_index`, are on `main`; the `trigger_*` fields arrived with PR #4, now on `main`):
 
 | Lua | `ShotContext` field | Notes |
 |---|---|---|
@@ -99,9 +100,9 @@ match the engine one to one (the seven base names, `muzzle_position` ... `shot_i
 | `ctx.target_mask` | `target_mask` | layers the shot may hit (`Layers`); default for `hit_mask` |
 | `ctx.time` | `time` | seconds since the shooter was created |
 | `ctx.n` (`ctx.shot_count`) | `shot_index` | number of `fire()` calls so far |
-| `ctx.pressed` | `trigger_pressed` **[PR #4]** | fire button down this tick |
-| `ctx.just_pressed`, `ctx.just_released` | `trigger_just_pressed`, `trigger_just_released` **[PR #4]** | edge flags, one tick |
-| `ctx.held_time` | `trigger_held_time` **[PR #4]** | seconds held continuously; **on the release tick it still holds the length of the hold that just ended** (charge weapons read it there) |
+| `ctx.pressed` | `trigger_pressed` | fire button down this tick |
+| `ctx.just_pressed`, `ctx.just_released` | `trigger_just_pressed`, `trigger_just_released` | edge flags, one tick |
+| `ctx.held_time` | `trigger_held_time` | seconds held continuously; **on the release tick it still holds the length of the hold that just ended** (charge weapons read it there) |
 | `ctx.dt` | none (constant) | `1/60` |
 | `ctx.device` | `InputDevice` autoload (new field) | `"kbm"`, `"pad"`, `"touch"` |
 | `ctx.hp` | `PlayerState.get_hp()` (new field) | snapshot of `player.hp` |
@@ -111,8 +112,8 @@ There is **no `ctx.owner` and no `ctx.charge`** (the engine has neither): the pl
 
 ### How `on_fire` runs (coroutines vs. the synchronous `ShotPattern.fire`)
 
-The engine calls `ShotPattern.fire(context, emitter)` synchronously and expects it to return (`main` has
-only `fire`). **[PR #4]** adds `ShotPattern.update(context, emitter, delta)`, called **every physics tick while the
+The engine calls `ShotPattern.fire(context, emitter)` synchronously and expects it to return (PR #4 added
+`update` and `reset` next to `fire`). `main` has `ShotPattern.update(context, emitter, delta)`, called **every physics tick while the
 pattern is equipped, before `fire()`** (`auto_fire = true` keeps the hold-to-fire path; `auto_fire = false` makes
 `update` the only driver), and **`ShotPattern.reset()`**, called when the player respawns so a weapon drops state it
 carries between ticks (a charge, a burst in progress); the Lua binding maps it to the script's `on_reset` (optional)
@@ -217,7 +218,7 @@ All optional. Unspecified fields take engine defaults.
 |---|---|---|
 | `damage` | `1` | damage per hit |
 | `radius` | `4` | collision radius (px) |
-| `team` | inherited (`"player"` for a player weapon) | **read-only in spirit: the owner is inherited from the spawner** (see *Conventions*); a different value passed here is ignored with a warning, and the only way to change a shot's team is `reflect`. It maps to `ShotRequest.owner_layer`; `hit_mask` defaults to `Layers.hostile_to(owner)`. Own layer is always stripped from `hit_mask` (no self-hits). Custom tags go in `tags` |
+| `team` | inherited (`"player"` for a player weapon) | **Decided (Gameplay Engineer): `team` is inherited from the spawner, matching the owner rule** (see *Conventions*); a value passed here is **ignored with a warning** (the Lua facade logs it, rate-limited like other script warnings), and the only way to change a shot's team is `reflect`. It maps to `ShotRequest.owner_layer`; `hit_mask` defaults to `Layers.hostile_to(owner)`. Own layer is always stripped from `hit_mask` (no self-hits). Custom tags go in `tags` |
 | `hit_mask` | hostile layers | optional narrowing (layers); cannot include the owner's layer |
 | `tags` | `{}` | free-form strings, e.g. `{"fire", "child"}`, readable by callbacks and enemies |
 | `knockback` | `0` | impulse applied to what is hit **[OI-4]** |
@@ -240,14 +241,14 @@ All optional. Unspecified fields take engine defaults.
 | `on_hit(b, hit)` | on collision with a valid target |
 | `on_wall(b, wall)` | see *Hits* (today this is `on_death` with `why == "wall"`; no normal yet) |
 | `on_expire(b)` | sugar for `on_death` with `why == "lifetime"` |
-| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (coming: new `DespawnReason.INVALID`, added by the Gameplay Engineer in the saturation PR after PR #4; the bullet was killed because a batch hook wrote a NaN or inf)** |
+| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (coming: new `DespawnReason.INVALID`, coming in the Gameplay Engineer's saturation PR, not on `main` (`DespawnReason` has six values there today); the bullet was killed because a batch hook wrote a NaN or inf)** |
 | `on_tick(b, dt)` | per-bullet tick (hook option A). **Metered, opt-in**; combine with `tick_every = n` (the engine skips natively, so skipped ticks cost ~0). ~1.6-2.1 us per bullet per call |
 | `on_batch(bs, dt)` | whole-bucket update (hook option B), the recommended way to steer many bullets every tick; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
 
 #### Spawn fields -> engine mapping
 
-Where each field lands in `ShotRequest` (`main` 39ff259; `pierces_script_invuln` and the other PR #4 additions are marked). **Fields marked "none yet" have no engine
+Where each field lands in `ShotRequest` (`main` 1f3be32, which includes PR #4). **Fields marked "none yet" have no engine
 equivalent**: until the engine grows them the ScriptHost accepts the field, logs a one-time console
 note and ignores it (never an error), or emulates it where a built-in behaviour is cheap (see
 [spike-results.md](spike-results.md), interface diff).
@@ -262,13 +263,14 @@ note and ignores it (never an error), or emulates it where a built-in behaviour 
 | `lifetime` / `life` | `lifetime` | exists |
 | `damage`, `radius`, `color` | `damage`, `radius`, `color` | exists |
 | `pierce` | `pierce` (extra targets before despawn) | exists |
-| `null_pierce` | **`pierces_script_invuln`** (`ShotRequest` field and per-bullet pool flag, handed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; the native migration keeps the same bit) | **[PR #4]** |
-| `team` / `hit_mask` | `owner_layer` and `hit_mask` (owner layer stripped) | exists |
+| `null_pierce` | **`pierces_script_invuln`** (`ShotRequest` field and per-bullet pool flag, handed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; the native migration keeps the same bit) | exists (PR #4, on `main`) |
+| `team` | **not a settable field**: `owner_layer` is inherited from the spawner (**decided**: Gameplay Engineer and Karyu's own-bullets rule); a passed value is ignored with a warning. Inheritance itself is **[planned]** (see *Conventions*) | `owner_layer` exists; **inheritance [planned]** |
+| `hit_mask` | `hit_mask` (owner layer stripped) | exists |
 | `collide_world` (default `true`) | `collide_world`; a wall hit despawns with reason `WALL` | exists |
 | `state` | `user` (`pool.user[i]`, moves with swap-remove, reset on despawn) | exists |
 | `on_*` callbacks | `behavior_id` from `register_behavior()`, one per distinct callback set | exists |
 | scratch numbers for batch/tick code | `param_a`, `param_b` | exists |
-| `bounce` | none yet (`WallGrid` only despawns, reason `WALL`); needs the wall normal, which is coming with the `WallGrid` hit | **none yet** |
+| `bounce` | none yet (`WallGrid` only despawns, reason `WALL`); needs the wall normal, which is coming in the saturation PR (not on `main`) | **none yet** |
 | `drag`, `gravity`, `max_speed`, `min_speed`, `spin_accel` | none yet | **none yet** |
 | `homing` | none yet (needs a spatial query over `HurtboxGrid`) | **none yet** |
 | `knockback` | none yet (owner-side, with `receive_hit`) | **none yet** |
@@ -282,8 +284,9 @@ Speed was clamped to 1,200 px/s until swept collision existed (PR #1 B3); PR #2 
 collision, so the clamp is expected to be lifted: confirm the final limit with the Gameplay Engineer.
 
 Spawning from inside another shot: `b:spawn{...}` is the same as `spawn{...}` but with
-`pos`, `angle`, `team`, `owner`, `damage` and `parent` defaulted from `b` and
-`generation = b.generation + 1`.
+`pos`, `angle`, `damage` and `parent` defaulted from `b` and
+`generation = b.generation + 1`. `team` (and `owner`) is not defaulted but **always inherited** from `b`; a value passed
+for it is ignored with a warning (decided, see the `team` row of *Spawn fields*).
 
 ## The shot handle (`b`)
 
@@ -308,7 +311,7 @@ Methods:
 | `b:alive()` | is it still in play | `is_alive(id)` |
 | `b:kill()` | remove it now; `on_death` runs with `why == "manual"` | `BulletPool.mark_dead(slot, MANUAL)`; `on_death` is the `on_despawn` hook |
 | `b:teleport(pos)` | discontinuous move (same as `b.pos = pos`) | `BulletPool.teleport(slot, pos)` **[main]** |
-| `b:reflect(team, reverse, new_damage, keep_script)` | hand the shot to the other faction (parry / deflect); `reverse = true` flips velocity and heading | `ShotEmitter.reflect_bullet(id, new_owner_layer, reverse := false, new_damage := 1.0, keep_script := false)` **[PR #4]** |
+| `b:reflect(team, reverse, new_damage, keep_script)` | hand the shot to the other faction (parry / deflect); `reverse = true` flips velocity and heading | `ShotEmitter.reflect_bullet(id, new_owner_layer, reverse := false, new_damage := 1.0, keep_script := false)` |
 | `b:spawn{...}` | spawn a child (see above) | `request_shot_id` (queued from callbacks) |
 | `b:split(n, opts)` | spawn `n` children fanned out; see *Splitting* | |
 | `b:every(dt, fn)` | call `fn(b)` every `dt` seconds; stops if the shot dies | native timer heap |
@@ -319,7 +322,7 @@ Methods:
 | `b:steer_toward(pos_or_entity, rate)` | one-off turn of heading toward a target, `rate` rad/s | writes velocity |
 
 `b:reflect(team, reverse, new_damage, keep_script)` / global `reflect(b, team, ...)` maps to
-`ShotEmitter.reflect_bullet` **[PR #4]** and returns `false`, changing nothing, for a dead shot, a team other than
+`ShotEmitter.reflect_bullet` (on `main`) and returns `false`, changing nothing, for a dead shot, a team other than
 `"player"`/`"enemy"`, or a shot that has **used up its reflections**: `BulletPool.max_reflections` defaults to **1**
 (no ping-pong; `0` means unlimited) and counts every owner change, by a reflector zone or by a script. On success the
 shot's `owner_layer` becomes the new team, `hit_mask` becomes `Layers.hostile_to(new_owner)` (it can never hit its new
@@ -424,7 +427,7 @@ synchronous hook cannot know. A `killed` signal may come with the enemy health w
 
 ### Walls (`on_wall`)
 
-`WallGrid` reports only the **time of impact `t`** along the swept path today; **the wall normal is coming, returned with
+`WallGrid` reports only the **time of impact `t`** along the swept path today; **the wall normal is coming in the saturation PR (not on `main`), returned with
 the `WallGrid` hit** (Gameplay Engineer). Until then a wall hit just despawns the bullet with `DespawnReason.WALL` after clipping it to the impact
 point. So: `on_wall(b, wall)` is delivered as `on_death(b, "wall")`; `wall.pos` is the clipped position and
 **`wall.normal` is `nil`** until that lands and is then the unit normal of the face that was hit. **OI-17** tracks it (plus a
@@ -480,7 +483,7 @@ spawn { state = { seen = {}, jumps = 3 }, on_hit = chain }
 
 The child is born outside the target (the pool only remembers the last target for *piercing* bullets, so a child born
 at `hit.pos` would be hit again on its first swept test), and `can_hit` keeps it from re-hitting a target it has
-already chained through once `can_hit` exists **[planned]**; until then give the chain `pierce`-free paths that do not
+already chained through once `can_hit` exists (coming in the saturation PR, not on `main`); until then give the chain `pierce`-free paths that do not
 cross a seen target, or accept the double hit.
 
 `sense.*` queries are fast spatial queries (over `HurtboxGrid`), not full scans, and exist only once the matching Fragment is earned (see below).
@@ -574,7 +577,7 @@ Rules for both backings (rules 3 and 4 differ in how a violation is reported, as
 2. **Reads and writes are plain numbers.** Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
    are applied when the callback returns; a callback that errors or is stopped by the watchdog applies nothing (as for
    `player` writes). The host sanitizes written values at commit, on both backings: **velocities are clamped to the engine's speed limit, and a NaN or inf
-   written to `vx`, `vy`, `pa` or `pb` kills that bullet** (despawn reason `INVALID`, coming), increments a counter (`get_script_stats().bad_writes`) and is reported in the script
+   written to `vx`, `vy`, `pa` or `pb` kills that bullet** (despawn reason `INVALID`, coming in the saturation PR, not on `main`), increments a counter (`get_script_stats().bad_writes`) and is reported in the script
    error console with the script name and line, rate-limited (once per 5 s per site, like callback errors). Do not write non-finite numbers. **The reported line differs by backing:** the packed backing reports the line where the `on_batch` function is *defined* (it cannot see individual writes), the native backing the line of the *first bad write*. A `v:spawn` record with an invalid `behavior` id (not an exact integer below 2^24; request records are `float32`) is dropped and reported the same way.
 3. **Do not write a read-only column** (`px`, `py`, `age`, `id`). The native backing raises "column 'px' is read-only". The packed
    backing cannot (columns are bare packed arrays, measured): the write changes only the throw-away copy the pool made for this call
@@ -605,7 +608,7 @@ per frame (dispatch 0.7 ms vs 4.4 ms uncapped at 2000 hits).
 
 Shot scripts may change the player, not only read it (PR #1: `player` is live, readable **and**
 writable). The Lua `player` table is a thin proxy over the engine's validated script surface,
-**`PlayerState`** **[PR #4, 1d2fe2c; not on `main` yet]** (`player.state`: "the single, validated surface a script (and the future Lua
+**`PlayerState`** (on `main` since PR #4, `src/player/player_state.gd`; `player.state`: "the single, validated surface a script (and the future Lua
 binding) uses to read and change the player"):
 
 ```lua
@@ -654,7 +657,7 @@ player:dash(angle)               -- dash(angle): the dash button's action and ru
   `hurtbox.receive_hit(damage, pos, vel)` and **`Health` applies it** (5 max hp, 0.75 s i-frames, regeneration
   after 5 s). `set_hp` does *not* go through `Health.damage`: no i-frames, no `damaged` signal, regen timer
   untouched, and a heal in the same tick as a hit lands after it (apply point). Scripts never call
-  `receive_hit` on the player. **[PR #4]** `Health.try_damage(amount, source_flags)` reports why a hit did or did not land:
+  `receive_hit` on the player. `Health.try_damage(amount, source_flags)` (on `main`) reports why a hit did or did not land:
   `APPLIED`, `BLOCKED_ENGINE` (hit i-frames or a dash: nothing pierces these), `BLOCKED_SCRIPT` (script invulnerability; the same
   attack with `pierces_script_invuln` would have landed) or `IGNORED` (not a positive number, or already dead); the
   `damage_blocked` signal carries it. The Lua side may read it in `on_hurt`-style hooks; it does not change engine behaviour.
@@ -663,7 +666,7 @@ player:dash(angle)               -- dash(angle): the dash button's action and ru
   synchronous and hit-rate only, so it runs under the same budget as other callbacks. **Engine ask OI-16.**
 - **Write detection, not provenance.** The `player` proxy keeps a `__newindex` **only to detect writes** and emit events that
   boss counters can read (the Rift teleport counter, the Equalizer, the Eater's Hunger meter). **Nothing is tagged
-  and nothing is stored**: no record of which script or weapon wrote, no "modified" flag. `PlayerState` in PR #4 has no
+  and nothing is stored**: no record of which script or weapon wrote, no "modified" flag. `PlayerState` on `main` has no
   such signals and applies writes immediately, so **the events are emitted by the Lua binding's `player` proxy**
   (`ScriptHost`) when a write is committed (see *When writes apply*), and only if the committed value differs from the
   old one. Event names (**proposed**; the Gameplay Engineer and the Game Designer confirm them, and may prefer to host
@@ -674,14 +677,14 @@ player:dash(angle)               -- dash(angle): the dash button's action and ru
   | `script_wrote` | `field: StringName` (`hp`, `max_hp`, `invulnerable`, `pos`, `vel`, `speed`, `regen_*`), `old: Variant`, `new: Variant` (after clamping) | every committed write |
   | `script_teleported` | `from: Vector2`, `to: Vector2` | `pos` writes (the Rift/Equalizer counters listen here) |
 
-  For invulnerability the engine already has **`Health.script_invulnerability_changed(active)`** **[PR #4]** (an on/off edge, no
-  source, also fired when the layer expires), and `Player.teleported(position)` **[PR #4]** fires for every discontinuous move
+  For invulnerability the engine already has **`Health.script_invulnerability_changed(active)`** (on `main`; an on/off edge, no
+  source, also fired when the layer expires), and `Player.teleported(position)` (on `main`) fires for every discontinuous move
   *including respawn*, so it cannot serve as write detection; `script_teleported` is the script-only counterpart.
   NaN/rejected writes emit nothing. The events carry no source, so the same event is emitted whether the write came from
   a weapon script, a pasted script or a future mod.
 - **Interface still needed from the Gameplay Engineer (OI-16):** a `Health` hook for `on_hurt`
   (e.g. a `damage_modifier: Callable`) and a `player_changed` signal for the UI. Everything else this section uses
-  (`set_speed`, the regen setters, `dash(angle)`, the script/engine invulnerability layers) **exists in PR #4**.
+  (`set_speed`, the regen setters, `dash(angle)`, the script/engine invulnerability layers) **exists on `main`** (PR #4).
 
 ## Capabilities
 
@@ -790,7 +793,7 @@ can see how close you are. Values are starting values, aligned with PR #1 sectio
 | Limit | Default (tunable) | What happens when exceeded |
 |---|---|---|
 | Live bullets, total (pool) | **PC: 10,000**, floor **5,000** (the cap auto-lowers on weak hardware, never below the floor); web/mobile have their own starting values (PR #1 section 10) | new `spawn` calls beyond the player's share return `nil` and the editor shows "bullet cap reached" |
-| Player share of the cap | **7,000 at 10,000; 3,500 at the 5,000 floor** (30% reserved for enemy and boss bullets: 3,000 / 1,500) | player-owned bullets are hard-capped at the share; enemy/boss bullets may use the whole pool. Needs per-owner live counters in `BulletPool` (**OI-18c**) |
+| Player share of the cap | **7,000 at 10,000; 3,500 at the 5,000 floor** (30% reserved for enemy and boss bullets: 3,000 / 1,500) | player-owned bullets are hard-capped at the share; enemy/boss bullets may use the whole pool. Needs per-owner live counters in `BulletPool` (**OI-18c**, coming in the saturation PR, not on `main`) |
 | Pool capacity | `BulletManager.capacity` 16,384 (the logical cap sits below it) | a full pool drops the shot, observably (`get_dropped_count`, `pool_saturated`) |
 | Spawns per tick | 500 per script | surplus returns `nil`/`false`, counted |
 | Child generation depth | 16 | `spawn` returns `nil` with a one-time message |
@@ -945,7 +948,7 @@ Save the file and the game reloads it, no restart needed.
 
 ## Open interface questions
 
-Refreshed against PR #1 (f0fe292), `main` (39ff259, includes PR #2) and PR #4 (1d2fe2c). **Answered** items are kept so the numbers stay stable.
+Refreshed against PR #1 (f0fe292) and `main` (1f3be32, which includes PR #2 and PR #4); the saturation PR is not merged yet. **Answered** items are kept so the numbers stay stable.
 
 **Answered**
 
@@ -954,41 +957,41 @@ Refreshed against PR #1 (f0fe292), `main` (39ff259, includes PR #2) and PR #4 (1
 - **[OI-11]** Sandbox policy (PR #1 f0fe292): full Lua for every script, capabilities via `needs` behind a **capability prompt for any script that requests `os`/`io`/`debug`/`package`/`native`, with per-content-hash grants** (see *The capability prompt*, *Grants*); only the in-game **import flow and its stronger warning are deferred** (sharing is out of scope for now); limited mode later (PR #1 Q2).
 - **[OI-12]** Fixed 60 Hz; the native motion subset is `acceleration`, `turn_rate`, `pierce`, `collide_world`, `param_a/b`
   (see the mapping table for what is missing).
-- **[OI-13]** Pool layout and handles: dense SoA, swap-remove, **[PR #4]** stable ids `(generation<<32)|handle` through a handle->slot indirection table, `pool.user`.
+- **[OI-13]** Pool layout and handles: dense SoA, swap-remove, stable ids `(generation<<32)|handle` (PR #4, on `main`) through a handle->slot indirection table, `pool.user`.
 
 **Engine-ask status (Gameplay Engineer, latest)**
 
 | Ask | Status |
 |---|---|
 | `BulletPool.teleport(i, p)` (OI-19) | **done**: on `main` via PR #2 |
-| Wall normal (OI-17) | **coming**: returned with the `WallGrid` hit; `wall.normal` and `bounce` follow it |
-| `can_hit` (OI-18a) | **agreed shape**: an opt-in per-bullet flag, runs before damage and before pierce |
-| `pierces_script_invuln` (Lua `null_pierce`) | **exists in PR #4 (1d2fe2c)**: `ShotRequest` field and pool flag, passed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; **not a new engine ask**; the native pool keeps the bit |
-| Per-owner live counters (OI-18c) | **planned**: in the saturation PR (10k logical cap plus an enemy reserve), after PR #4 |
-| `PlayerState` script/engine invulnerability queries (OI-16) | **exist in PR #4**: `is_script_invulnerable()`, `is_engine_invulnerable()` and the time getters; `set_invulnerable` writes the script layer only |
-| Player write-detection events (OI-16) | **proposed here**, emitted by the Lua binding (`script_wrote`, `script_teleported`); PR #4's `PlayerState` has no such signals and applies writes immediately |
+| Wall normal (OI-17) | **coming in the saturation PR** (not on `main`): returned with the `WallGrid` hit; `wall.normal` and `bounce` follow it |
+| `can_hit` (OI-18a) | **coming in the saturation PR** (not on `main`); agreed shape: an opt-in per-bullet flag, runs before damage and before pierce |
+| `pierces_script_invuln` (Lua `null_pierce`) | **exists on `main` (PR #4)**: `ShotRequest` field and pool flag, passed to `Health.try_damage` as `SOURCE_PIERCES_SCRIPT_INVULN`; **not a new engine ask**; the native pool keeps the bit |
+| Per-owner live counters (OI-18c) | **coming in the saturation PR** (10k logical cap plus an enemy reserve), **not on `main` yet** |
+| `PlayerState` script/engine invulnerability queries (OI-16) | **exist on `main`** (PR #4): `is_script_invulnerable()`, `is_engine_invulnerable()` and the time getters; `set_invulnerable` writes the script layer only |
+| Player write-detection events (OI-16) | **proposed here**, emitted by the Lua binding (`script_wrote`, `script_teleported`); `PlayerState` on `main` has no such signals and applies writes immediately |
 | Batch API, `request_batch`, `request_polar`, stable id column, bucketing (OI-15) | **planned**: the Gameplay Engineer's pool refactor, after the saturation PR, built against spike-results.md section 8 |
 | Native zero-copy batch view (OI-20) | **approved, narrow** (Karyu, relayed; storage rule agreed with the Gameplay Engineer: only per-bullet hooks force GDScript storage); needs the C++ contract of spike-results.md section 8.3 and the lua-gdextension P4 patch |
 
 **For the Gameplay Engineer**
 
-- **[OI-3]** Teams: `owner_layer` + `Layers.hostile_to`, no shot-vs-shot collisions, own layer stripped (answered by PR #4); open: custom factions?
+- **[OI-3]** Teams: `owner_layer` + `Layers.hostile_to`, no shot-vs-shot collisions, own layer stripped (answered by PR #4, on `main`); open: custom factions?
 - **[OI-4]** Hit pipeline: owner applies damage in `receive_hit`, `on_hit` runs after (answered; see *Hits*).
 - **[OI-5]** Rendering: sprite names, trails, feedback effects, ownership.
 - **[OI-6]** Spatial queries for `sense.*` / `near`: nearest/in-range query on `HurtboxGrid` with a cost bound.
 - **[OI-8]** Enemy hit responses (absorb / reflect / armor, PR #1 5.1): are they decided in the hurtbox owner or in
-  the bullet system, and how does a script learn the response (`hit.response`)? Also parry: PR #4 notes the
-  `reflect_bullet` mechanism exists but no trigger decides which bullets get reflected.
+  the bullet system, and how does a script learn the response (`hit.response`)? Also parry: `main` (PR #4) has the
+  `reflect_bullet` mechanism but no trigger decides which bullets get reflected.
 - **[OI-14]** `pool.user` / `ShotRequest.user`: ref-counted copy, reset on despawn (answered); event records must hold the reference.
 - **[OI-15]** Hook interface (**planned, pool refactor**): `update_mode` (NONE/PER_BULLET/BATCH), `update_interval`, `update_slice`,
   `event_mask`, `event_cap`, `on_update_batch(UpdateBatch)`, `on_events`, command buffer, stable id column, bucketing by behavior,
   `ShotEmitter.request_polar` / `request_batch` (spike-results.md section 8; the Lua-facing shape is the batch view `v`).
-- **[OI-16]** Player: still open are a `Health` hook for `on_hurt` and a `player_changed` signal. PR #4 already provides `set_speed`,
+- **[OI-16]** Player: still open are a `Health` hook for `on_hurt` and a `player_changed` signal. `main` (PR #4) already provides `set_speed`,
   the regen setters, `dash(angle)` and the invulnerability layers; the write-detection events are emitted by the Lua binding (see *The player*).
-- **[OI-17]** `WallGrid`: **normal returned with the hit (coming)**; bounce count; `on_wall` event.
-- **[OI-18]** (a) `can_hit`: **opt-in per-bullet flag, before damage and pierce (agreed shape)**; (b) re-read `pierce`
-  after `on_hit`; (c) per-owner live counters in `BulletPool` for the player/enemy split (**saturation PR, after #4**).
-- **[OI-19]** `BulletPool.teleport(index, position)` (**done, PR #2, on main**) and `reflect` exposure confirmed (PR #4); batch
+- **[OI-17]** `WallGrid`: **normal returned with the hit (coming in the saturation PR, not on `main`)**; bounce count; `on_wall` event.
+- **[OI-18]** (a) `can_hit`: **opt-in per-bullet flag, before damage and pierce (agreed shape; coming in the saturation PR, not on `main`)**; (b) re-read `pierce`
+  after `on_hit`; (c) per-owner live counters in `BulletPool` for the player/enemy split (**coming in the saturation PR**, not on `main`).
+- **[OI-19]** `BulletPool.teleport(index, position)` (**done, PR #2, on main**) and `reflect` exposure confirmed (PR #4, on `main`); batch
   position writes use a `TELEPORT` command (`v:teleport`).
 - **[OI-20]** Native batch view (C++ pool; only per-bullet hooks force GDScript storage, declarative and batch-hook-only bullets are native): implement the descriptor contract of spike-results.md
   section 8.3 (column descriptors, bounds, validity window, stride-6 command buffer, separate request-batch buffer); lua-gdextension needs the P4 patch to bind it.

@@ -190,7 +190,7 @@ Player scripts (.lua)            Godot / native side
 - A script slot is `(weapon_id, callbacks_mask, state_ref, timer_list)`. Callbacks are not copied
   per bullet; bullets of the same `spawn` definition share one callbacks table. Bullets with no
   callbacks have script slot = 0 and **never touch Lua after spawn**.
-- Handles given to Lua wrap the engine's **packed stable id** `(generation << 32) | handle` (**PR #4**: an indirection table maps `handle` to the current slot), so stale handles are detected without
+- Handles given to Lua wrap the engine's **packed stable id** `(generation << 32) | handle` (PR #4, on `main`: an indirection table maps `handle` to the current slot), so stale handles are detected without
   holding engine objects. Position jumps from Lua map to `BulletPool.teleport(i, p)`, never raw `pos` writes (swept
   collision would see a phantom hit).
 
@@ -214,7 +214,7 @@ Player scripts (.lua)            Godot / native side
   (stride 6) applied after the call; that makes B 25-40% cheaper than per-bullet hooks, not 10x. The real wins are **declarative
   fields (zero Lua), slicing, native throttling, and one budget scope per batch** (spike-results.md sections 5 and 8). Reads such
   as `b.pos` in per-bullet callbacks use a lazy proxy that reads once per field per tick.
-- **Pooling**: bullet slots are recycled (swap-remove: slots are valid only inside one hook call; Lua holds PR #4 stable ids `(generation << 32) | handle`); Lua-side per-shot `state` tables come from a free list
+- **Pooling**: bullet slots are recycled (swap-remove: slots are valid only inside one hook call; Lua holds stable ids (on `main` since PR #4) `(generation << 32) | handle`); Lua-side per-shot `state` tables come from a free list
   and are cleared on death; callback tables are shared; coroutines for `run`/`wait` come from a
   pool (limits coroutine churn, relates to issue #240).
 - **Caps**: live bullets, spawns per tick and generation depth are enforced in the native spawn
