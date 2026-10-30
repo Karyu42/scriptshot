@@ -440,6 +440,36 @@ func test_flush_dead_does_not_reallocate_its_work_list() -> void:
 
 # --- teleport / claim_from_bounds ------------------------------------------------
 
+func test_teleport_sets_pos_and_prev_pos() -> void:
+	var p := BulletPool.new(8)
+	var i := p.spawn_simple(Vector2(10, 10), Vector2(60, 0), 5.0)
+	p.advance(1.0 / 60.0, Rect2(-1000, -1000, 2000, 2000))
+	assert_ne(p.pos[i], p.prev_pos[i], "it moved this tick")
+	p.teleport(i, Vector2(300, -40))
+	assert_eq(p.pos[i], Vector2(300, -40))
+	assert_eq(p.prev_pos[i], Vector2(300, -40), "no sweep segment and no interpolation smear")
+	assert_eq(p.vel[i], Vector2(60, 0), "velocity is untouched")
+
+
+func test_a_teleported_bullet_keeps_moving_normally_next_tick() -> void:
+	var p := BulletPool.new(8)
+	var i := p.spawn_simple(Vector2.ZERO, Vector2(60, 0), 5.0)
+	p.teleport(i, Vector2(500, 0))
+	p.advance(1.0 / 60.0, Rect2(-1000, -1000, 2000, 2000))
+	assert_eq(p.prev_pos[i], Vector2(500, 0))
+	assert_almost_eq(p.pos[i].x, 501.0, 0.001)
+
+
+func test_teleport_survives_swap_removal() -> void:
+	var p := BulletPool.new(8)
+	p.spawn_simple(Vector2.ZERO, Vector2.ZERO, 5.0)
+	var last := p.spawn_simple(Vector2(5, 5), Vector2.ZERO, 5.0)
+	p.teleport(last, Vector2(9, 9))
+	p.despawn(0)
+	assert_eq(p.pos[0], Vector2(9, 9))
+	assert_eq(p.prev_pos[0], Vector2(9, 9))
+
+
 func test_claim_from_bounds_only_relabels_bounds_deaths() -> void:
 	var p := BulletPool.new(8)
 	var a := p.spawn_simple(Vector2.ZERO, Vector2.ZERO, 5.0)

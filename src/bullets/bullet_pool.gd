@@ -211,6 +211,18 @@ func advance(delta: float, bounds: Rect2) -> void:
 			hooked_count += 1
 
 
+## Moves bullet `i` to `p` discontinuously, e.g. a teleport or a script that
+## places a bullet somewhere new. Sets both pos and prev_pos, so the move is not
+## swept (no phantom hits or wall hits along the jump) and not interpolated (no
+## streak across the screen). Hooks must use this instead of writing `pos[i]`
+## when the bullet should not travel there: a plain `pos[i] = p` leaves
+## prev_pos stale, so the bullet is treated as having flown from its old
+## position this tick. (Ordinary steering via `vel` needs nothing special.)
+func teleport(i: int, p: Vector2) -> void:
+	pos[i] = p
+	prev_pos[i] = p
+
+
 ## Marks slot `i` for removal at the next flush_dead(). Safe to call from
 ## hooks while iterating; a bullet can only be marked once (first reason wins).
 func mark_dead(i: int, reason: int = DespawnReason.MANUAL) -> void:

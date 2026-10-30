@@ -657,3 +657,37 @@ func test_bullet_spawned_by_a_hook_with_a_bigger_radius_than_any_so_far_still_hi
 	manager.emitter.request_shot(seed_req)
 	manager.step(DT)
 	assert_eq(counter[0], 1, "the big late bullet is not missed")
+
+
+func test_hook_writing_pos_directly_sweeps_from_the_old_position_but_teleport_does_not() -> void:
+	var hb := _hurtbox(Vector2(100, 0), Layers.ENEMY, 10.0)
+	var counter := _hit_counter(hb)
+	var tele := TeleportBehavior.new()
+	tele.to = Vector2(200, 0)
+	tele.use_teleport = false
+	var req := _shot(Vector2(0, 0), 1.0, manager.emitter.register_behavior(tele))
+	manager.emitter.request_shot(req)
+	manager.step(DT)
+	assert_eq(counter[0], 1, "a raw pos write is swept: phantom hit on the way")
+
+	manager.clear_bullets()
+	var tele2 := TeleportBehavior.new()
+	tele2.to = Vector2(200, 0)
+	tele2.use_teleport = true
+	manager.emitter.request_shot(_shot(Vector2(0, 0), 1.0, manager.emitter.register_behavior(tele2)))
+	manager.step(DT)
+	assert_eq(counter[0], 1, "teleport() is not swept: no new hit")
+	assert_eq(manager.pool.pos[0], Vector2(200, 0))
+	assert_eq(manager.pool.prev_pos[0], Vector2(200, 0))
+
+
+class TeleportBehavior:
+	extends BulletBehavior
+	var to := Vector2.ZERO
+	var use_teleport := true
+
+	func on_update(pool: BulletPool, index: int, _delta: float) -> void:
+		if use_teleport:
+			pool.teleport(index, to)
+		else:
+			pool.pos[index] = to
