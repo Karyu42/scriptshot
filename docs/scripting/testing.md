@@ -63,7 +63,8 @@ A small set (30-40 tests) of GUT scripts that build `BulletManager` + `ShotEmitt
 | Area | Cases |
 |---|---|
 | Spawn | `spawn` in `on_fire` is synchronous (ids returned, bullets in the pool before `fire` returns); `spawn` in `on_tick` / `on_hit` is deferred to the next tick; deferred cap (8,192/tick) counts the surplus |
-| Kill / ids | `b:kill()` -> `mark_dead(MANUAL)`; stale id after swap-remove or slot reuse is a no-op (generation mismatch); `DespawnReason` values LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL reach `on_despawn` |
+| Kill / ids | `b:kill()` -> `mark_dead(MANUAL)`; stale id after swap-remove or slot reuse is a no-op (generation mismatch); `DespawnReason` values LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL reach `on_despawn` (and INVALID once the saturation PR adds it: a NaN/inf written to `vx`/`vy`/`pa`/`pb` kills the bullet with `INVALID` and bumps `bad_writes`; a request record with `behavior >= 2^24` is dropped and counted) |
+| Spawn owner | a bullet spawned from a hook inherits the spawner's `owner_layer`; a `team` field or behavior record naming the other layer does not change it; only `reflect` (limited by `max_reflections`) does |
 | Hit order | `receive_hit` -> `on_hit` -> pierce-- or `mark_dead(HIT)`; the `can_hit` filter vetoes before `receive_hit` |
 | Teleport **[main]** | a Lua position jump maps to `BulletPool.teleport`, **no swept hit** through a hurtbox between old and new position (regression for raw `pos` writes) |
 | Reflect **[PR #4]** | `reflect(id, layer, reverse, new_damage, keep_script)` flips `owner_layer`, with `reverse` the velocity, sets damage to `new_damage` (default 1), clears behaviour and `user` unless `keep_script`; the second reflection returns `false` (`max_reflections = 1`, `0` = unlimited); `owner_layer` is stripped from `hit_mask` |

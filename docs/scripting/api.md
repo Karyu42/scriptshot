@@ -50,6 +50,7 @@ Fixed by the bullet system (PR #2 / #4), repeated here so scripts and engine agr
   hurtbox applies the damage*.** Scripts never apply damage to enemies directly.
 - **Own bullets never hurt their owner.** `ShotRequest.owner_layer` (default `Layers.PLAYER`) is
   stripped from `hit_mask` at spawn, whatever a script asks for. Reflecting changes the owner.
+- **Spawned bullets inherit the owner of whoever spawned them.** A bullet spawned from a hook (`v:spawn`, `b:spawn`, `spawn`) **inherits `owner_layer` from the bullet or emitter whose hook spawned it. It is never taken from the behavior record or from a field the script passes.** Karyu's rule is that own bullets never hurt you, and the only way to change an owner is `reflect`, which is guarded by `max_reflections`. If a script (or a behavior record) could choose the owner of what it spawns, it could mint enemy-owned bullets that bypass that guard. **Lifetime and colour do come from the behavior record.**
 - **Slots are not handles.** Despawning swap-removes: the last bullet moves into the freed slot, so a
   pool *index* is only valid inside one hook call (`BulletBehavior`: "only valid for the duration of the
   call"). Anything that outlives the call (timers, `b` handles stored in `state`, coroutines) uses the
@@ -216,7 +217,7 @@ All optional. Unspecified fields take engine defaults.
 |---|---|---|
 | `damage` | `1` | damage per hit |
 | `radius` | `4` | collision radius (px) |
-| `team` | `"player"` | `"player"` or `"enemy"` -> `ShotRequest.owner_layer`; `hit_mask` defaults to `Layers.hostile_to(owner)`. Own layer is always stripped from `hit_mask` (no self-hits). Custom tags go in `tags` |
+| `team` | inherited (`"player"` for a player weapon) | **read-only in spirit: the owner is inherited from the spawner** (see *Conventions*); a different value passed here is ignored with a warning, and the only way to change a shot's team is `reflect`. It maps to `ShotRequest.owner_layer`; `hit_mask` defaults to `Layers.hostile_to(owner)`. Own layer is always stripped from `hit_mask` (no self-hits). Custom tags go in `tags` |
 | `hit_mask` | hostile layers | optional narrowing (layers); cannot include the owner's layer |
 | `tags` | `{}` | free-form strings, e.g. `{"fire", "child"}`, readable by callbacks and enemies |
 | `knockback` | `0` | impulse applied to what is hit **[OI-4]** |
@@ -239,7 +240,7 @@ All optional. Unspecified fields take engine defaults.
 | `on_hit(b, hit)` | on collision with a valid target |
 | `on_wall(b, wall)` | see *Hits* (today this is `on_death` with `why == "wall"`; no normal yet) |
 | `on_expire(b)` | sugar for `on_death` with `why == "lifetime"` |
-| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"` |
+| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (coming: new `DespawnReason.INVALID`, added by the Gameplay Engineer in the saturation PR after PR #4; the bullet was killed because a batch hook wrote a NaN or inf)** |
 | `on_tick(b, dt)` | per-bullet tick (hook option A). **Metered, opt-in**; combine with `tick_every = n` (the engine skips natively, so skipped ticks cost ~0). ~1.6-2.1 us per bullet per call |
 | `on_batch(bs, dt)` | whole-bucket update (hook option B), the recommended way to steer many bullets every tick; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
@@ -573,8 +574,8 @@ Rules for both backings (rules 3 and 4 differ in how a violation is reported, as
 2. **Reads and writes are plain numbers.** Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
    are applied when the callback returns; a callback that errors or is stopped by the watchdog applies nothing (as for
    `player` writes). The host sanitizes written values at commit, on both backings: **velocities are clamped to the engine's speed limit, and a NaN or inf
-   written to `vx`, `vy`, `pa` or `pb` kills that bullet**, increments a counter (`get_script_stats().bad_writes`) and is reported in the script
-   error console with the script name and line, rate-limited (once per 5 s per site, like callback errors). Do not write non-finite numbers.
+   written to `vx`, `vy`, `pa` or `pb` kills that bullet** (despawn reason `INVALID`, coming), increments a counter (`get_script_stats().bad_writes`) and is reported in the script
+   error console with the script name and line, rate-limited (once per 5 s per site, like callback errors). Do not write non-finite numbers. **The reported line differs by backing:** the packed backing reports the line where the `on_batch` function is *defined* (it cannot see individual writes), the native backing the line of the *first bad write*. A `v:spawn` record with an invalid `behavior` id (not an exact integer below 2^24; request records are `float32`) is dropped and reported the same way.
 3. **Do not write a read-only column** (`px`, `py`, `age`, `id`). The native backing raises "column 'px' is read-only". The packed
    backing cannot (columns are bare packed arrays, measured): the write changes only the throw-away copy the pool made for this call
    and never reaches the engine. Use `v:teleport` to move a bullet.
