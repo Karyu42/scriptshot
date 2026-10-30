@@ -117,7 +117,7 @@ GUT runs headless exactly as today (`-s res://addons/gut/gut_cmdln.gd -gexit`).
 
 **What is known.** With the addon present, `godot --headless --path <project> --import` on a **blank project without a `.godot/` cache** exits **134** after the import finished; the second run exits 0
 (spike-results.md section 3). It is a **SIGSEGV null dereference (`si_addr=0x28`) inside the stripped Godot editor binary after `loading_editor_layout`**, with no frame in `libluagdextension`;
-`reloadable = false` does not help. **It does not reproduce on the real Scriptshot `main` with GUT: 4/4 cold imports pass (QA).** QA's artifacts are in `/workspace/pr3-review-artifacts/` (not committed).
+`reloadable = false` does not help. **It does not reproduce on the real Scriptshot `main` with GUT: 4/4 cold imports pass (QA).** QA's logs are not committed; the key backtrace excerpt and the findings are in https://github.com/Karyu42/scriptshot/issues/7.
 
 **What CI does now: nothing changes.** `tools/run_tests.sh` keeps its current import gate. No CI mitigation is claimed, and "run twice and ignore the first exit code" is **not** adopted as a blanket rule.
 

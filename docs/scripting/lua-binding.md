@@ -117,7 +117,7 @@ must not be merged into one submodule without that port, because the two extensi
 | With the patch set below, `api_version=4.6` | **Builds** (Linux x86_64 release and debug), **loads and passes** the spike's smoke test and the full adversarial suite on Godot 4.7.2 with outcomes **identical to the stock 0.8.2 binary**. |
 | `api_version=4.7` | **Fails** to compile: with `api_version >= 4.7` godot-cpp's `memnew` of a `RefCounted` type returns `Ref<T>` rather than `T*` (error in `memory.hpp`, first hit `LuaCoroutine`). |
 
-Patch set (`spike/patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch`, 144 lines, reverse-applies cleanly to the 0.8.2 tag; the
+Patch set (`spike/patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch`, 144 lines, applies forward onto the 0.8.2 tag; **EVIDENCE ONLY.** It is **not used by M1 or CI** (M1 uses the stock 0.8.2 binaries pinned by SHA256), it is **not a supported build**, and **`api_version=4.7` still fails** (the `memnew`/`Ref<>` port is not in it). The
 `lib/godot-cpp` pointer is a local symlink to `507ed9d`, not part of the patch): 3 path edits to `extension_api-4-6.json` in
 `tools/code_generation/generate_cpp_code.py`, `generate_lua_godot_api.py` and `tools/code_generator.py`; `#include <godot_cpp/classes/ref.hpp>` in
 `LuaError.hpp`, `LuaDebug.hpp`, `LuaASTNode.hpp`, `LuaASTQuery.hpp`, `LuaAST.hpp`, `LuaState.hpp`, `LuaParser.hpp`, `LuaObject.hpp`; and `PYTHON_BIN=python3` in the
@@ -223,7 +223,7 @@ Player scripts (.lua)            Godot / native side
 ### 3. Error isolation and runaway protection (as measured)
 
 - **Every callback runs in a host-owned `LuaCoroutine`** (pooled), with a **GDScript Callable count hook** (count 1,000) that checks
-  the instruction budget, the wall clock (300 ms in the spike), the memory estimate (64 MB) and the `os.exit` flag. On a verdict
+  the instruction budget, the wall clock (300 ms in the spike), the memory estimate (64 MB cap, **soft on stock**: only checked every 1,000 instructions) and the `os.exit` flag. On a verdict
   it returns `HOOK_YIELD`; the host sees the coroutine suspended with a reason and drops it. **A yield is not an error, so
   `pcall`, `xpcall`, `__close` and error handlers cannot swallow it.** The facade shows the script only validated, native Callables.
   Never line hooks.

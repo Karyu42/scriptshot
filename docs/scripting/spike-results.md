@@ -1,6 +1,6 @@
 # lua-gdextension spike results (Godot 4.7.2)
 
-Status: **measured, local, throwaway project** (`/workspace/scriptshot-spike`, not in this repo; the raw output
+Status: **measured, local, throwaway project** (a separate local project, not in this repo; the raw output
 files and the sources of every benchmark are in [`spike/`](spike/)). Nothing here touches the game repo.
 Written by the Scripting Engineer for PR #3. **Engine-state markers:** **[main]** = on `main` (39ff259), **[PR #4]** = only on PR #4 (head 1d2fe2c, not merged). Numbers are **medians (p95 where stated)** over repeated runs;
 the box is a shared KVM guest and noisy, so treat single digits after the
@@ -56,7 +56,7 @@ hook options below.
   (warm) run exits 0; the identical project without the addon exits 0.
   - **Scope:** it reproduces on a **blank project plus the addon** (3/3 here, and 3/3 for QA, also with a library built from source
     here). It does **not** reproduce on the real Scriptshot `main` with GUT: **4/4 cold imports pass** (QA).
-  - **Cause (QA's backtraces; artifacts in `/workspace/pr3-review-artifacts/`, not committed):** a **SIGSEGV, null dereference
+  - **Cause (QA's backtraces; the logs are on QA's local review run, not committed, and the key excerpt is in https://github.com/Karyu42/scriptshot/issues/7):** a **SIGSEGV, null dereference
     (`si_addr=0x28`), inside the stripped Godot editor binary after `loading_editor_layout`**; the process
     then ends with exit 134 (SIGABRT) after the fault, which QA's logs show first. **No frame is in `libluagdextension`.** Setting `reloadable = false` in the `.gdextension` does not help.
     (This box has no gdb; the backtrace comes from QA's run.)
@@ -455,7 +455,7 @@ count=100 5.01; **count=1,000 4.05 (+13%)**; count=10,000 3.67. So the watchdog 
 | same with a sentinel-rethrowing `pcall` | aborted after 463 ms |
 | unbounded table growth (2 M budget) | aborted; Lua memory 117 MB at abort, 36 MB after `collect_garbage()` |
 | `('a'):rep(2000/8000/16000):match('.-b')` | 17 / 211 / 862 ms, **budget not triggered** (a native call: few VM instructions) |
-| `('x'):rep(2^27)` | allowed, 128 MB, 587 ms; no memory cap in the binding |
+| `('x'):rep(2^27)` | allowed, 128 MB, 587 ms; no hard memory cap in the binding (the 64 MB cap is soft on stock) |
 | hook set on the main thread, loop inside a Lua-created coroutine | **not covered**: a 30 M-iteration loop ran to completion (the binding keeps hooks in a registry table keyed by thread) |
 | `LuaCoroutine` + a host Callable hook returning `HOOK_YIELD` | works: a finite loop finished after 90 yields; an infinite loop was stopped by the host after 21 slices (status "yield", dropping the coroutine kills it); **uncatchable by `pcall`** |
 | coroutine created *inside Lua*, passed to a GDScript Callable | arrives as `LuaCoroutine` (a `LuaThread`), `set_hook` works on it: the sandbox `coroutine.create/wrap` wrappers can register every child thread |
@@ -524,7 +524,7 @@ design (a Lua-function error hook on the main thread, full libraries, no wrapper
 > set** (`spike/sandbox/sandbox.lua`: wrapped `coroutine`, `pcall`/`xpcall`, bounded `string`, `os.exit` replacement, trimmed
 > `debug`, sanitized `package.loaded`, text-only `load`, no `__gc`, native facade).
 
-Budgets in the spike: 20 M instructions (~100 ms; deliberately far above the API default of 100,000 per callback so that tests are not decided by the budget), 300 ms wall clock, 64 MB memory; `string.rep` 1 MiB, pattern subject 1,024.
+Budgets in the spike: 20 M instructions (~100 ms; deliberately far above the API default of 100,000 per callback so that tests are not decided by the budget), 300 ms wall clock, 64 MB memory (a **soft** cap on stock: checked in the count hook, every 1,000 instructions); `string.rep` 1 MiB, pattern subject 1,024.
 
 | # | Attack | Naive | G1 |
 |---|---|---|---|
@@ -539,17 +539,17 @@ Budgets in the spike: 20 M instructions (~100 ms; deliberately far above the API
 | 9 | spin inside a coroutine the script created | **HUNG** (killed at 25 s) | stopped: instruction budget, 116 ms |
 | 10 | spin driven by a `coroutine.resume` loop | **HUNG** (killed at 25 s) | stopped: instruction budget, 128 ms |
 | 11 | spin in a `table.sort` comparator inside a `pcall` loop | **HUNG** (killed at 25 s) | stopped: instruction budget, 122 ms |
-| 12 | table memory bomb (1 KB strings) | error: instruction budget exceeded, 714 ms, 247.1 MB | stopped: memory cap, 269 ms, 64.0 MB |
-| 13 | `collectgarbage("stop")` + allocate | error: instruction budget exceeded, 85 ms, 51.7 MB | stopped: memory cap, 158 ms, 64.0 MB |
+| 12 | table memory bomb (1 KB strings) | error: instruction budget exceeded, 714 ms, 247.1 MB | stopped: memory cap (soft), 269 ms, 64.0 MB |
+| 13 | `collectgarbage("stop")` + allocate | error: instruction budget exceeded, 85 ms, 51.7 MB | stopped: memory cap (soft), 158 ms, 64.0 MB |
 | 14 | `("x"):rep(2^28)` | completes, 854 ms, 256.1 MB | error: string.rep: result too large (sandbox limit), 1 ms |
 | 15 | `debug.getupvalue` to reach the real `string.rep` behind the guard (`debug` granted) | n/a (no guard / no facade in the naive harness) | error: attempt to call a nil value (field 'getupvalue'), 1 ms |
-| 16 | `1 + f()` recursion | error: instruction budget exceeded, 358 ms, 30.6 MB | stopped: memory cap, 191 ms, 64.0 MB |
+| 16 | `1 + f()` recursion | error: instruction budget exceeded, 358 ms, 30.6 MB | stopped: memory cap (soft), 191 ms, 64.0 MB |
 | 17 | `__index` recursion (C stack) | error: C stack overflow, 0 ms | error: C stack overflow, 0 ms |
 | 18 | `local function f() pcall(f) end` | completes, 0 ms | completes, 0 ms |
 | 19 | `("a"):rep(20000):match(".-b")` | completes, 1363 ms | error: string.match: subject too long for pattern matching (sandbox limit), 0 ms |
 | 20 | the same pattern at the 1,024-char subject limit | not run | completes, 4 ms |
 | 21 | pattern bomb through `debug.getupvalue` on the `match` wrapper (`debug` granted) | not run | error: attempt to call a nil value (field 'getupvalue'), 0 ms |
-| 22 | 100 x 1 MiB `string.rep` allocations in a loop | not run | stopped: memory cap, 282 ms, 83.2 MB |
+| 22 | 100 x 1 MiB `string.rep` allocations in a loop | not run | stopped: memory cap (soft: 83.2 MB peak against the 64 MB cap), 282 ms |
 | 23 | `__gc` finalizer that spins, then `collectgarbage()` | not run | error: __gc finalizers are not available in scripts, 0 ms |
 | 24 | `debug.setmetatable` with a spinning `__gc` | not run | error: __gc finalizers are not available in scripts, 0 ms |
 | 25 | `xpcall(f, handler)` where the **handler spins** | not run | stopped: instruction budget, 119 ms |
@@ -653,7 +653,7 @@ export requires `variant/extensions_support=true` on web and the **dlink** templ
 | That build, on Godot 4.7.2 (editor and release template) | **Loads; smoke test passes; the 47-case adversarial suite gives outcomes identical to the stock 0.8.2 binary** (0 hangs, 47/47 `host_ok=true`; raw output `spike/results/adv_g1_source_build_46api.txt`). |
 | `api_version=4.7` | **Fails** at compile time: with `api_version >= 4.7`, `memnew(T)` of a `RefCounted` type returns **`Ref<T>`** instead of `T*` (`memory.hpp`; first hit `LuaCoroutine`). Blocked on the port below. |
 
-**Patch set** = `spike/patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch` (144 lines; reverse-applies cleanly to the 0.8.2 tag; the `lib/godot-cpp` pointer is a local symlink to `507ed9d`, not part of the patch):
+**Patch set** = `spike/patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch` (144 lines; applies forward onto the 0.8.2 tag; the `lib/godot-cpp` pointer is a local symlink to `507ed9d`, not part of the patch). **EVIDENCE ONLY.** It is **not used by M1 or CI** (M1 uses the stock 0.8.2 binaries pinned by SHA256), it is **not a supported build**, and **`api_version=4.7` still fails** (the `memnew`/`Ref<>` port is not in it).
 - `tools/code_generation/generate_cpp_code.py`, `generate_lua_godot_api.py`, `tools/code_generator.py`: `extension_api.json` -> `extension_api-4-6.json`;
 - `#include <godot_cpp/classes/ref.hpp>` in `src/LuaError.hpp`, `LuaDebug.hpp`, `LuaASTNode.hpp`, `LuaASTQuery.hpp`, `LuaAST.hpp`, `LuaState.hpp`, `LuaParser.hpp`, `LuaObject.hpp`;
 - environment: `PYTHON_BIN=python3` (the build hard-codes `python`); `lua_runtime=lua`, `api_version=4.6`.

@@ -19,7 +19,7 @@ To run it: copy this folder out of the repo, put the pinned lua-gdextension 0.8.
   script (`steer.lua`) and the `require` test modules (`mod_a.lua`, `sub/mod_b.lua`).
 - `run_adv.sh <naive|g1> [timeout]` one process per adversarial case, with heartbeat and timeout (`GODOT=/path/to/godot`).
 - `export_presets.cfg` presets for Linux, Web (threads, no-threads) and **Android (arm64-v8a + x86_64, non-gradle)**; no secrets, the debug keystore comes from the editor settings.
-- `patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch` the minimal patch that lets lua-gdextension 0.8.2 build against godot-cpp 10.0.0-stable with `api_version=4.6` (spike-results.md section 12).
+- `patches/lua-gdextension-0.8.2-godot-cpp-507ed9d.patch` (144 lines): **EVIDENCE ONLY.** The minimal patch with which lua-gdextension 0.8.2 built against godot-cpp 10.0.0-stable at `api_version=4.6` in the spike (spike-results.md section 12). It applies forward onto the 0.8.2 tag. It is **not used by M1 or CI**, **not a supported build**, and **`api_version=4.7` still fails** with it.
 - `results/` raw output: `adv_g1.txt` (47 cases, stock 0.8.2), `adv_g1_source_build_46api.txt` (same cases on the source build), `adv_naive.txt`,
   `hooks_pr_*.txt`, `hook_editor.txt` (contains the #240 churn, section d2), `view_shapes_*.txt`, `export_bench_headless_editor.txt`
   (the `SPIKE_RESULT` format), `web_*.txt`, ... Release-template numbers unless the name says `editor`.
