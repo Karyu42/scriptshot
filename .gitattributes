@@ -1,0 +1,30 @@
+# Normalize line endings; Godot text resources are LF everywhere.
+* text=auto eol=lf
+
+# Godot text formats
+*.gd      text eol=lf diff
+*.gdshader text eol=lf
+*.tscn    text eol=lf
+*.tres    text eol=lf
+*.godot   text eol=lf
+*.cfg     text eol=lf
+*.import  text eol=lf
+*.uid     text eol=lf
+*.sh      text eol=lf
+
+# Binary assets
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.webp binary
+*.ogg  binary
+*.wav  binary
+*.mp3  binary
+*.ttf  binary
+*.otf  binary
+*.woff2 binary
+*.res  binary
+*.scn  binary
+
+# Vendored third-party code: keep out of language stats and diffs
+addons/gut/** linguist-vendored

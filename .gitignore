@@ -1,0 +1,33 @@
+# Godot 4
+.godot/
+.nomedia
+*.translation
+
+# Mono / C# (not used, but keep stray build output out)
+.mono/
+data_*/
+mono_crash.*.json
+
+# Exports
+/export/
+/build/
+# export_presets.cfg is committed on purpose (it holds no secrets and CI/web
+# exports need it). Anything with credentials stays ignored.
+export_credentials.cfg
+*.apk
+*.aab
+*.exe
+*.pck
+*.dmg
+
+# Tooling output
+/tests/benchmark/results/
+*.tmp
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
