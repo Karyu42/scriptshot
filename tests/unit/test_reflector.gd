@@ -289,10 +289,10 @@ func test_a_script_reflection_counts_toward_the_guard() -> void:
 	assert_gt(m.pool.pos[_slot(id)].x, 260.0)
 
 
-func test_max_reflections_zero_means_unlimited_and_still_cannot_loop_in_place() -> void:
-	m.pool.max_reflections = 0
+func test_an_unlimited_zone_still_cannot_loop_in_place() -> void:
+	m.pool.max_reflections = 0  # scripts too: the explicit global switch
 	var r := _reflector(Vector2(200, 0))
-	r.max_reflections = 0
+	r.max_reflections = -1
 	r.reflects_owners = Layers.PLAYER | Layers.ENEMY
 	r.mode = Reflector.Mode.REVERSE
 	var id := _bullet(Vector2(0, 0), Vector2(300, 0))
@@ -383,7 +383,7 @@ func test_the_bullet_is_placed_at_the_zone_edge_not_inside_it() -> void:
 
 # --- consistency with the multi-hit sweep and teleport() ---------------------------
 
-func test_a_reflected_bullet_is_teleported_to_the_edge_without_a_phantom_sweep() -> void:
+func test_a_reflected_bullet_flies_on_from_the_edge_without_a_phantom_sweep() -> void:
 	var r := _reflector(Vector2(200, 0), 40.0)
 	r.mode = Reflector.Mode.REVERSE
 	var id := _bullet(Vector2(100, 0), Vector2(600, 0))
@@ -395,8 +395,13 @@ func test_a_reflected_bullet_is_teleported_to_the_edge_without_a_phantom_sweep()
 			break
 	assert_true(reflected)
 	var s := _slot(id)
-	assert_eq(m.pool.prev_pos[s], m.pool.pos[s], "pos and prev_pos agree: not swept, not interpolated across")
-	assert_lt(m.pool.pos[s].x, 200.0 - 40.0 + 1.0)
+	# The tick's leg before the mirror ends at the edge (156 = 200 - 40 + 4, the
+	# bullet's radius counts); prev_pos is that impact point, not where the tick
+	# began (150), so the renderer draws only the new leg, with no streak across
+	# the mirror. pos is the end of the rest of the tick along the new heading.
+	assert_almost_eq(m.pool.prev_pos[s].x, 156.0, 0.01)
+	assert_almost_eq(m.pool.pos[s].x, 152.0, 0.01, "0.4 of a 10 px tick, flying back")
+	assert_lt(m.pool.pos[s].x, m.pool.prev_pos[s].x)
 
 
 func test_a_reflected_bullet_does_not_sweep_into_a_hurtbox_past_the_impact() -> void:
@@ -426,8 +431,8 @@ func test_a_zone_that_declines_a_bullet_does_not_hide_the_zone_behind_it() -> vo
 func test_overlapping_zones_reflect_a_bullet_once_per_tick_even_when_unlimited() -> void:
 	var a := _reflector(Vector2(200, 0), 40.0)
 	var b := _reflector(Vector2(200, 0), 40.0)
-	a.max_reflections = 0
-	b.max_reflections = 0
+	a.max_reflections = -1
+	b.max_reflections = -1
 	var id := _bullet(Vector2(100, 0), Vector2(600, 0))
 	for t in 20:
 		m.step(DT)
@@ -563,15 +568,258 @@ func test_a_reflected_piercing_bullet_does_not_hit_the_target_it_pierced_again()
 	assert_eq(before.hits, 1, "now enemy-owned: it can never hit the enemy side again")
 
 
-func test_zones_act_before_hurtboxes_within_one_tick() -> void:
-	# Pinned behaviour: a bullet fast enough to cross a target and the mirror in one
-	# tick is reflected first; the hit the bullet would have had earlier on that
-	# same path is not delivered. (Bullets this fast are 200 px per 1/60 s tick.)
+func test_a_target_in_front_of_a_mirror_is_hit_first_even_within_one_tick() -> void:
+	# QA's repro: a non-piercing 30000 px/s bullet crosses an enemy 100 px in front
+	# of the mirror and the mirror itself in one 500 px tick. Time order: the enemy
+	# is hit (and consumes the bullet) before the mirror is reached.
 	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
 	var zone := _reflector(Vector2(150, 0), 30.0)
 	zone.mode = Reflector.Mode.REVERSE
-	var id := _piercing_player_bullet(Vector2(0, 0), 12000.0, 2)
+	var id := _bullet(Vector2(0, 0), Vector2(30000, 0))
 	_run(1)
+	assert_eq(before.hits, 1)
+	assert_false(m.emitter.is_bullet_alive(id), "consumed by the target")
+	assert_eq(zone.reflected_total, 0)
+	assert_eq(m.last_reflect_count, 0)
+
+
+func test_a_piercing_bullet_hits_the_target_then_is_reflected_in_the_same_tick() -> void:
+	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
+	var zone := _reflector(Vector2(150, 0), 30.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _piercing_player_bullet(Vector2(0, 0), 30000.0, 2)
+	_run(1)
+	var s := _slot(id)
+	assert_eq(before.hits, 1, "the nearer hit is no longer lost")
+	assert_eq(m.pool.owner_layer[s], Layers.ENEMY, "and the mirror still turned it around")
+	assert_eq(m.pool.pierce[s], 1, "one pierce spent on the target")
+	assert_lt(m.pool.vel[s].x, 0.0)
+
+
+func test_a_mirror_in_front_of_a_target_still_protects_it() -> void:
+	var behind := _counter(Vector2(300, 0), Layers.ENEMY, 10.0)
+	var zone := _reflector(Vector2(150, 0), 30.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _piercing_player_bullet(Vector2(0, 0), 30000.0, 2)
+	_run(1)
+	assert_eq(behind.hits, 0, "reflected before it could reach the target behind")
 	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
-	assert_eq(before.hits, 0)
-	assert_eq(m.pool.pos[_slot(id)], m.pool.prev_pos[_slot(id)], "placed at the impact point, not swept")
+
+
+func test_a_bullet_slower_than_200_px_per_tick_also_hits_a_target_close_in_front_of_the_mirror() -> void:
+	# The old condition was "faster than ~200 px per tick"; the real one was the
+	# distance between target and zone. 5000 px/s = 83 px per tick, target 20 px
+	# in front of the zone edge.
+	var before := _counter(Vector2(110, 0), Layers.ENEMY, 8.0)
+	var zone := _reflector(Vector2(170, 0), 30.0)  # edge (plus bullet radius) at x = 144
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _bullet(Vector2(80, 0), Vector2(5000, 0))
+	_run(2)
+	assert_eq(before.hits, 1)
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_a_wall_behind_the_mirror_no_longer_kills_a_bullet_the_mirror_turned_around() -> void:
+	m.add_wall(Rect2(300, -50, 20, 100))  # 70 px behind the zone's far edge
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var r := ShotRequest.polar(Vector2(0, 0), 0.0, 30000.0)
+	r.hit_mask = Layers.ENEMY
+	r.lifetime = 10.0
+	var id := m.emitter.request_shot_id(r)  # collides with walls
+	_run(1)
+	assert_true(m.emitter.is_bullet_alive(id), "the wall was behind the mirror: the bullet never reached it")
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+	assert_lt(m.pool.vel[_slot(id)].x, 0.0)
+	assert_lt(m.pool.pos[_slot(id)].x, 160.0, "flying back from the mirror's edge")
+
+
+func test_a_wall_in_front_of_the_mirror_still_stops_the_bullet() -> void:
+	m.add_wall(Rect2(100, -50, 20, 100))
+	var zone := _reflector(Vector2(300, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var r := ShotRequest.polar(Vector2(0, 0), 0.0, 30000.0)
+	r.hit_mask = Layers.ENEMY
+	r.lifetime = 10.0
+	var id := m.emitter.request_shot_id(r)
+	_run(1)
+	assert_false(m.emitter.is_bullet_alive(id))
+	assert_eq(zone.reflected_total, 0)
+
+
+func test_a_reflected_bullet_that_later_hits_a_wall_still_despawns_there() -> void:
+	# The "reflected this tick" bookkeeping must not leak into later ticks.
+	m.add_wall(Rect2(-80, -50, 20, 100))
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var r := ShotRequest.polar(Vector2(100, 0), 0.0, 600.0)
+	r.hit_mask = Layers.ENEMY
+	r.lifetime = 10.0
+	var id := m.emitter.request_shot_id(r)
+	_run(10)
+	assert_true(m.emitter.is_bullet_alive(id))
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+	_run(60)
+	assert_false(m.emitter.is_bullet_alive(id), "flew back across the arena into the wall")
+
+
+# --- the rest of the tick after a reflection -----------------------------------------
+
+func test_a_reflected_bullet_flies_the_remaining_fraction_of_the_tick_on_its_new_heading() -> void:
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	zone.speed_multiplier = 2.0
+	var id := _bullet(Vector2(100, 0), Vector2(6000, 0))  # 100 px per tick
+	_run(1)
+	var s := _slot(id)
+	# Impact at x = 156 after 0.56 of the tick; the remaining 0.44 tick at 12000 px/s
+	# going back is 88 px.
+	assert_almost_eq(m.pool.prev_pos[s].x, 156.0, 0.01)
+	assert_almost_eq(m.pool.pos[s].x, 156.0 - 88.0, 0.01)
+	assert_almost_eq(m.pool.vel[s].x, -12000.0, 0.01)
+
+
+func test_a_reflected_bullet_can_hit_its_new_targets_in_the_same_tick() -> void:
+	# The player's hurtbox is 30 px behind the mirror's edge, on the way back.
+	var player_box := _counter(Vector2(130, 0), Layers.PLAYER, 6.0)
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _bullet(Vector2(100, 0), Vector2(30000, 0))
+	_run(1)
+	assert_eq(player_box.hits, 1, "hit on the return leg without waiting a tick")
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_the_return_leg_is_clipped_at_a_wall() -> void:
+	m.add_wall(Rect2(100, -50, 20, 100))  # between the zone and the start, on the way back
+	var zone := _reflector(Vector2(300, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var r := ShotRequest.polar(Vector2(130, 0), 0.0, 30000.0)
+	r.hit_mask = Layers.ENEMY
+	r.lifetime = 10.0
+	var id := m.emitter.request_shot_id(r)
+	_run(1)
+	assert_false(m.emitter.is_bullet_alive(id), "turned around, then stopped by the wall on the way back")
+	assert_eq(zone.reflected_total, 1)
+
+
+func test_the_return_leg_never_reflects_a_second_time_in_the_same_tick() -> void:
+	var a := _reflector(Vector2(300, 0), 40.0)
+	var b := _reflector(Vector2(60, 0), 20.0)
+	for zone: Reflector in [a, b]:
+		zone.max_reflections = -1
+		zone.mode = Reflector.Mode.REVERSE
+		zone.reflects_owners = Layers.PLAYER | Layers.ENEMY
+	var id := _bullet(Vector2(150, 0), Vector2(30000, 0))
+	_run(1)
+	var s := _slot(id)
+	assert_eq(m.pool.reflect_count[s], 1, "b lies on the way back but is not consulted again this tick")
+	assert_eq(b.reflected_total, 0)
+	assert_lt(m.pool.pos[s].x, 40.0, "it flew right through b's zone")
+
+
+# --- the multi-zone list on one fast path ----------------------------------------------
+
+func test_a_fast_bullet_is_reflected_by_the_first_accepting_zone_and_the_stale_hits_are_dropped() -> void:
+	# Three full-circle zones in a row on a 500 px/tick path. Without the "drop the
+	# rest of the list once it was reflected" rule, the bullet would be reflected
+	# again by the second and third zone from impact points of the *old* path (the
+	# pool's own guard is lifted, so only the drop rule stops it).
+	m.pool.max_reflections = 0
+	var zones: Array[Reflector] = []
+	for x: float in [200.0, 300.0, 400.0]:
+		var z := _reflector(Vector2(x, 0), 30.0)
+		z.mode = Reflector.Mode.REVERSE
+		z.reflects_owners = Layers.PLAYER | Layers.ENEMY
+		zones.append(z)
+	var id := _bullet(Vector2(0, 0), Vector2(30000, 0))
+	_run(1)
+	var s := _slot(id)
+	assert_eq(zones[0].reflected_total, 1)
+	assert_eq(zones[1].reflected_total, 0, "stale: computed for the old path")
+	assert_eq(zones[2].reflected_total, 0)
+	assert_eq(m.pool.reflect_count[s], 1)
+	assert_eq(m.pool.owner_layer[s], Layers.ENEMY)
+	assert_eq(m.last_reflect_count, 1)
+	# Impact at 200 - 30 - 4 = 166 after 0.332 of the tick; 0.668 * 500 = 334 px back.
+	assert_almost_eq(m.pool.prev_pos[s].x, 166.0, 0.01)
+	assert_almost_eq(m.pool.pos[s].x, 166.0 - 334.0, 0.1)
+
+
+func test_a_declining_zone_does_not_hide_the_accepting_zone_behind_it_on_a_fast_path() -> void:
+	# The first zone's arc faces away, so it declines; the second reflects. Both lie
+	# on one 500 px tick, so both must be on the bullet's hit list (this fails if
+	# HurtboxGrid.MAX_ZONE_HITS drops to 1).
+	var decliner := _reflector(Vector2(150, 0), 30.0)
+	decliner.arc_degrees = 40.0
+	decliner.global_rotation = 0.0  # facing away from the shooter
+	var accepter := _reflector(Vector2(300, 0), 30.0)
+	var id := _bullet(Vector2(0, 0), Vector2(30000, 0))
+	_run(1)
+	assert_eq(decliner.reflected_total, 0)
+	assert_eq(accepter.reflected_total, 1)
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+
+
+func test_at_most_max_zone_hits_zones_are_listed_per_bullet_and_tick() -> void:
+	# Documented limit: MAX_ZONE_HITS (4) zones per bullet and tick. With four
+	# declining zones in front, the accepting fifth is not on the list that tick.
+	var x := 100.0
+	for k in HurtboxGrid.MAX_ZONE_HITS:
+		var z := _reflector(Vector2(x, 0), 10.0)
+		z.arc_degrees = 40.0
+		z.global_rotation = 0.0
+		x += 40.0
+	var accepter := _reflector(Vector2(x, 0), 10.0)
+	_bullet(Vector2(0, 0), Vector2(30000, 0))
+	_run(1)
+	assert_eq(accepter.reflected_total, 0)
+
+
+# --- the reflection guard: zone limit vs pool cap -----------------------------------------
+
+func test_a_zone_left_at_zero_follows_the_pool_wide_cap() -> void:
+	var r := _reflector(Vector2(200, 0))
+	r.mode = Reflector.Mode.REVERSE
+	r.reflects_owners = Layers.PLAYER | Layers.ENEMY
+	assert_eq(r.max_reflections, 0, "default: follow the pool")
+	assert_eq(r.effective_limit(m.pool), 1)
+	var id := _bullet(Vector2(0, 0), Vector2(300, 0))
+	_run(40)
+	assert_eq(m.pool.reflect_count[_slot(id)], 1)
+	# Send it back at the mirror: the zone follows the cap of 1 and declines.
+	m.pool.teleport(_slot(id), Vector2(0, 0))
+	m.pool.vel[_slot(id)] = Vector2(300, 0)
+	_run(40)
+	assert_eq(m.pool.reflect_count[_slot(id)], 1, "the zone did not bypass the pool's cap of 1")
+	assert_gt(m.pool.pos[_slot(id)].x, 200.0, "it flew on through the mirror")
+	# Raise the pool-wide cap and try once more.
+	m.pool.max_reflections = 2
+	assert_eq(r.effective_limit(m.pool), 2)
+	m.pool.teleport(_slot(id), Vector2(0, 0))
+	m.pool.vel[_slot(id)] = Vector2(300, 0)
+	_run(40)
+	assert_eq(m.pool.reflect_count[_slot(id)], 2)
+
+
+func test_a_positive_zone_limit_is_explicit_and_may_exceed_the_pool_cap() -> void:
+	var r := _reflector(Vector2(200, 0))
+	r.max_reflections = 3
+	assert_eq(r.effective_limit(m.pool), 3)
+	assert_eq(m.pool.max_reflections, 1)
+
+
+func test_a_negative_zone_limit_means_unlimited_for_that_zone_only() -> void:
+	var r := _reflector(Vector2(200, 0))
+	r.max_reflections = -1
+	assert_eq(r.effective_limit(m.pool), 0, "0 = unlimited in BulletPool.reflect() terms")
+	assert_eq(m.pool.max_reflections, 1, "scripts are still held to the pool's cap")
+	var id := _bullet(Vector2(0, 0), Vector2(300, 0))
+	assert_true(m.emitter.reflect_bullet(id, Layers.ENEMY))
+	assert_false(m.emitter.reflect_bullet(id, Layers.PLAYER))
+
+
+func test_pool_cap_zero_is_the_explicit_global_unlimited_switch() -> void:
+	m.pool.max_reflections = 0
+	var r := _reflector(Vector2(200, 0))
+	assert_eq(r.effective_limit(m.pool), 0)

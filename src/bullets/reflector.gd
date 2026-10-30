@@ -53,9 +53,14 @@ const MAX_SPEED_MULTIPLIER := 20.0
 ## Reflect-once guard: a bullet that has already changed owner this many times
 ## (by any reflector or by a script's reflect_bullet) is not reflected again, so
 ## two reflectors, or a reflector and a script, cannot ping-pong a bullet
-## forever. 1 = once (default, the pillars' rule); 0 = no limit. This zone's own
-## limit; scripts calling reflect_bullet() are held to BulletPool.max_reflections.
-@export var max_reflections := 1
+## forever.
+##   0 (default) = follow the pool-wide cap, BulletPool.max_reflections (1 = once,
+##                 the pillars' rule). A zone left at 0 can never bypass the cap.
+##   N > 0       = this zone's own explicit limit, which may be above the pool's.
+##   < 0         = explicitly unlimited for this zone (opt-in; a bullet still
+##                 cannot loop in place, and is reflected once per tick at most).
+## Scripts calling reflect_bullet() are held to BulletPool.max_reflections.
+@export var max_reflections := 0
 ## Damage a reflected bullet deals: **1** by default, whatever the shooter's script
 ## gave it (design pillars 5.4; provisional). A negative value keeps the bullet's
 ## own damage.
@@ -95,13 +100,24 @@ func is_active() -> bool:
 	return enabled and reflects_owners != 0 and radius > 0.0 and is_visible_in_tree()
 
 
+## The reflection limit this zone applies to `pool`'s bullets, in the terms of
+## BulletPool.reflect(): 0 = unlimited, > 0 = at most that many.
+func effective_limit(pool: BulletPool) -> int:
+	if max_reflections < 0:
+		return 0
+	if max_reflections == 0:
+		return pool.max_reflections
+	return max_reflections
+
+
 ## Called by the bullet manager when bullet `slot` of `pool` touched the zone at
 ## `impact`. Applies every rule (guard, direction, arc) and, if they pass,
 ## changes owner / colour / velocity. Returns true if the bullet was reflected.
 func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 	if not is_active() or slot < 0 or slot >= pool.count or pool.dead_reason[slot] != 0:
 		return false
-	if max_reflections > 0 and pool.reflect_count[slot] >= max_reflections:
+	var limit := effective_limit(pool)
+	if limit > 0 and pool.reflect_count[slot] >= limit:
 		return false
 	var from_center := impact - global_position
 	var velocity := pool.vel[slot]
@@ -112,7 +128,7 @@ func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 		return false
 	var old_owner := pool.owner_layer[slot]
 	var new_owner := Layers.hostile_to(old_owner)
-	if new_owner == 0 or not pool.reflect(slot, new_owner, false, reflected_damage, keep_script, max_reflections):
+	if new_owner == 0 or not pool.reflect(slot, new_owner, false, reflected_damage, keep_script, limit):
 		return false
 	var speed := velocity.length() * _safe_multiplier()
 	var heading := _new_heading(velocity, from_center, impact)

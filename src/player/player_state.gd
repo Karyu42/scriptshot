@@ -165,7 +165,9 @@ func get_speed() -> float:
 
 
 ## Top running speed in px/s, clamped to [0, MAX_SPEED]; NaN is ignored. Returns
-## the resulting speed.
+## the resulting speed. The dash is never slower than running: above
+## dash_distance / dash_duration (800 px/s by default) it covers max_speed *
+## dash_duration instead of the tuned distance (see DashMath).
 func set_speed(value: float) -> float:
 	if not _ok():
 		return 0.0

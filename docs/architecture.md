@@ -475,7 +475,15 @@ tick (i-frames, death) is skipped by the later bullets, which pass through.
 `dash_finished` and `teleported(position)` (the camera cuts to the player on it).
 
 NaN to a setter is ignored with a rate-limited warning (`ScriptWarnings`: the first
-3 of each kind are printed, then silence).
+3 of each kind are printed per 10 s window, then silence until the window has
+passed; the next warning then also says how many were suppressed meanwhile, so a
+script that breaks again later is not silent for the rest of the session).
+
+**For script authors:** while `player.invulnerable` is on, a normal bullet that
+reaches the player is *consumed* (it does no damage and is gone); it does not pass
+through. That is what lets a piercing bullet (`null_pierce` /
+`pierces_script_invuln`) arrive at `damage()` and land while ordinary ones are
+absorbed. Only hit i-frames and the dash let bullets pass through unconsumed.
 
 ### The dash
 
@@ -486,11 +494,24 @@ machine; `Player` wires them to input and `move_and_slide()`. The curve is
 
 so the dash launches at `peak` (1800 px/s with the defaults: 160 px in 0.2 s, running speed 300, power 2) and decays
 smoothly into running speed, with `peak` solved so the burst covers exactly
-`dash_distance`. Per-tick displacement comes from the exact integral, so the
+`dash_distance` (160 px is the design pillars' figure, not decided by Karyu). Per-tick displacement comes from the exact integral, so the
 distance is the same at any tick rate. Dashing collides with walls like normal
 movement (it stops at them, it never tunnels). Tuning: `dash_distance` (needs
-`>= max_speed * dash_duration`), `dash_duration`, `dash_curve_power` (0 = constant
+`>= max_speed * dash_duration`, see below), `dash_duration`, `dash_curve_power` (0 = constant
 speed, higher = sharper launch), `dash_invulnerability`, `dash_cooldown`.
+
+*The 160 px is the burst.* When it ends the player hands over to normal movement
+at running speed with the momentum it has: with no key held, friction carries it
+about 20 px further (at the defaults), so a dash followed by letting go travels
+roughly 180 px in total. Holding the dash direction keeps running at 300 px/s.
+
+*A dash is never slower than running.* If a script raises the running speed with
+`PlayerState.set_speed()` above `dash_distance / dash_duration` (800 px/s by
+default), the tuned distance would be shorter than just running for the burst's
+duration. Then the burst becomes a constant-speed dash at running speed covering
+`max_speed * dash_duration` (`DashMath.effective_distance()`), instead of the
+curve dipping below running speed (800 to 1200 px/s) or collapsing to a standstill
+(above 1200 px/s, where the peak used to clamp to 0).
 
 ### No friendly fire, and reflecting bullets
 
@@ -540,34 +561,61 @@ owner (an ENEMY-owned bullet has `hit_mask = PLAYER`). Other owners pass through
 | `reflects_owners` | `Layers.PLAYER` | owner layers reflected (flags) |
 | `mode` | `MIRROR` | `REVERSE` straight back; `MIRROR` reflect across the surface normal at the impact; `AIM_AT_TARGET` send it at `target` (falls back to reverse) |
 | `speed_multiplier` | 1 | reflected speed / incoming speed, clamped to [0, 20], NaN = 1 |
-| `max_reflections` | 1 | reflect-once guard: a bullet that has changed owner this many times (by any reflector *or* a script) is not reflected again; 0 = unlimited |
+| `max_reflections` | 0 | reflect-once guard: a bullet that has changed owner this many times (by any reflector *or* a script) is not reflected again. 0 = follow the pool-wide cap (`BulletPool.max_reflections`, default 1), N > 0 = this zone's own limit, < 0 = unlimited for this zone |
 | `reflected_damage` | 1 | damage of a reflected bullet (pillars 5.4); negative keeps the bullet's own |
 | `keep_script` | `false` | keep the bullet's behaviour, `user` data and params after reflecting |
 | `enabled` | true | also inactive while hidden |
 
 Plus `target: Node2D` (set by whoever wires the scene), the `bullet_reflected(bullet_id, new_owner)` signal and `reflected_total`.
 
-How it runs: inside `BulletManager.step()`, between the wall sweep and the
-hurtbox pass. Active reflectors are bucketed into a second `HurtboxGrid`
-(`BulletManager.reflector_grid`) whose `collide_bullets(pool, true)` matches the
-zone's layer against each bullet's `owner_layer` (instead of `hit_mask`), using
-the same swept, grid-walking test, so fast bullets cannot tunnel through a zone.
-That is one pass over the bullets however many reflectors exist, nothing when
-there are none, and no per-bullet nodes. Like the piercing sweep it lists
-several hits per bullet in path order (up to `HurtboxGrid.MAX_ZONE_HITS` = 4 zones),
-so a zone that declines a bullet (arc facing away, guard, bullet moving away) does
-not hide the zone behind it. Rules applied to each candidate hit: guard, "must be
-moving toward the centre", arc test at the impact point. Once a zone reflects a
-bullet the rest of that bullet's hit list is stale and dropped, so a bullet is
-reflected at most once per tick. The reflected bullet is placed at the impact
-point with `pool.teleport()` (`pos` and `prev_pos` together: no phantom sweep of
-the old path, no interpolated streak), so it never ends a tick inside the zone.
-Reflection acts before hurtboxes, so the bullet never reaches the reflector's body
-that tick. (Consequence, pinned by a test: a bullet that crosses a target *and* a
-mirror within one tick, i.e. moves faster than ~200 px per tick, is reflected first
-and does not deliver the earlier hit of that tick. A piercing bullet that meets the
-target on an earlier tick keeps that hit.) A bullet that left the world bounds this tick is already dead and is
-not reflected. `BulletManager.last_reflect_count` reports reflections in the last step.
+How it runs: inside `BulletManager.step()`, after the wall sweep. Active reflectors
+are bucketed into a second `HurtboxGrid` (`BulletManager.reflector_grid`) whose
+`collide_bullets(pool, true)` matches the zone's layer against each bullet's
+`owner_layer` (instead of `hit_mask`), using the same swept, grid-walking test, so
+fast bullets cannot tunnel through a zone. That is one pass over the bullets
+however many reflectors exist, nothing when there are none, and no per-bullet
+nodes. Like the piercing sweep it lists several zones per bullet in path order (up
+to `HurtboxGrid.MAX_ZONE_HITS` = 4 zones per bullet and tick; a fifth on the same
+tick's path is not seen), so a zone that declines a bullet (arc facing away, guard,
+bullet moving away) does not hide the zone behind it.
+
+**Events are delivered in time order.** The zone crossings and the hurtbox hits of
+a bullet are merged by their position along the tick's path (`hit_t`; a zone wins
+a tie) and delivered one by one (`BulletManager._resolve_hits_in_time_order()`):
+
+* a target in front of a mirror is hit first, even for a bullet that crosses both
+  in one tick (a non-piercing bullet is consumed by it and never reaches the
+  mirror; a piercing one hits it and then reflects);
+* a mirror in front of a target turns the bullet around before it reaches the
+  target;
+* rules for each zone crossing: guard, "must be moving toward the centre", arc test
+  at the impact point. A zone that declines lets the next event happen;
+* once a zone reflects a bullet the old path is over: the rest of that bullet's
+  events were computed for a path it no longer follows and are dropped, so a bullet
+  is reflected at most once per tick;
+* a wall behind the mirror does not despawn a bullet the mirror turned around
+  before it got there (the bullet's wall hit of this tick is cancelled); a wall in
+  front of the mirror still stops it before the mirror.
+
+**The rest of the tick after a reflection.** A reflected bullet does not wait for
+the next tick: `_continue_reflected()` flies it from the impact point along its new
+velocity for the remaining `(1 - t) * delta`, against walls and against the
+hurtboxes of its *new* side (`HurtboxGrid.sweep_segment()`), in time order like
+any bullet, so it can hit the player or a wall on its way back in the same tick.
+`prev_pos` is the impact point and `pos` the end of that leg (clipped at a wall), so
+the renderer interpolates the new leg only: no streak across the mirror, no
+phantom sweep of the old path past the impact. A bullet spawned already inside a
+zone is reflected in place, so it can end its first tick inside the zone; every
+other reflected bullet starts the new leg on the zone's edge, heading away.
+
+`Reflector.max_reflections`: **0 (default) follows the pool-wide cap**
+(`BulletPool.max_reflections`, 1 = once), so a zone can never silently bypass it;
+`N > 0` is this zone's own explicit limit (it may be above the pool's cap); `< 0`
+is an explicit "unlimited" for this zone. The pool-wide `max_reflections = 0`
+remains the one global switch for "unlimited" (it applies to scripts too).
+
+A bullet that left the world bounds this tick is already dead and is not reflected.
+`BulletManager.last_reflect_count` reports reflections in the last step.
 
 `Mirror` (`src/enemies/mirror.gd`, `scenes/mirror.tscn`, one in the main scene) is
 the test enemy: a dummy whose 150 degree arc turns toward the player at 2.5 rad/s.
@@ -624,7 +672,6 @@ Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything i
   does not (one hit, then i-frames). Left as is; making it deterministic by damage
   or age would cost a sort per tick.
 * **End-of-callback writes**: see "Timing of writes" above (the binding's job).
-* **Same-tick fast bullets across target and mirror**: see the Reflector notes.
 
 ## Open design questions
 
