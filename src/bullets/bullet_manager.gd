@@ -141,6 +141,11 @@ func step(delta: float) -> void:
 		if pool.dead_reason[i] == 0:
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 
+	# A hook may have spawned a bullet bigger than any the targets were bucketed
+	# for; re-bucket with the new margin so it does not miss targets by a hair.
+	if pool.max_radius > grid.get_margin():
+		_collect_targets()
+
 	# Walls first: a bullet that hits one is clipped to the impact point, so the
 	# hurtbox test below only sees the part of its path before the wall.
 	last_wall_hit_count = walls.sweep_bullets(pool)
@@ -156,7 +161,9 @@ func step(delta: float) -> void:
 	# A bullet that reached a wall despawns there (unless a hurtbox already
 	# claimed it earlier on its path: first reason wins).
 	for k in last_wall_hit_count:
-		pool.mark_dead(walls.hit_bullets[k], BulletPool.DespawnReason.WALL)
+		var wall_bullet := walls.hit_bullets[k]
+		pool.mark_dead(wall_bullet, BulletPool.DespawnReason.WALL)
+		pool.claim_from_bounds(wall_bullet, BulletPool.DespawnReason.WALL)
 
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -203,8 +210,10 @@ func _collect_targets() -> void:
 
 
 func _apply_hit(bullet: int, target: int, t: float) -> void:
-	# An earlier hit's hook may have killed this bullet in the meantime.
-	if pool.dead_reason[bullet] != 0:
+	# An earlier hit's hook may have killed this bullet in the meantime. (A bullet
+	# that only left the world bounds this tick still counts its last segment.)
+	var dead := pool.dead_reason[bullet]
+	if dead != 0 and dead != BulletPool.DespawnReason.BOUNDS + 1:
 		return
 	var hurtbox := grid.target_ref[target] as Hurtbox
 	if hurtbox == null or not is_instance_valid(hurtbox):
@@ -223,6 +232,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		pool.last_hit[bullet] = hurtbox.get_instance_id()
 	else:
 		pool.mark_dead(bullet, BulletPool.DespawnReason.HIT)
+		pool.claim_from_bounds(bullet, BulletPool.DespawnReason.HIT)
 
 
 func _get_behavior(id: int) -> BulletBehavior:

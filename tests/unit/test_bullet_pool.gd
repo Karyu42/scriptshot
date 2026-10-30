@@ -436,3 +436,21 @@ func test_flush_dead_does_not_reallocate_its_work_list() -> void:
 	pool.mark_dead(2)
 	pool.flush_dead()
 	assert_eq(pool.pending.size(), size_before, "pending stays a fixed-size scratch array")
+
+
+# --- teleport / claim_from_bounds ------------------------------------------------
+
+func test_claim_from_bounds_only_relabels_bounds_deaths() -> void:
+	var p := BulletPool.new(8)
+	var a := p.spawn_simple(Vector2.ZERO, Vector2.ZERO, 5.0)
+	var b := p.spawn_simple(Vector2.ZERO, Vector2.ZERO, 5.0)
+	var c := p.spawn_simple(Vector2.ZERO, Vector2.ZERO, 5.0)
+	p.mark_dead(a, BulletPool.DespawnReason.BOUNDS)
+	p.mark_dead(b, BulletPool.DespawnReason.LIFETIME)
+	p.claim_from_bounds(a, BulletPool.DespawnReason.HIT)
+	p.claim_from_bounds(b, BulletPool.DespawnReason.HIT)
+	p.claim_from_bounds(c, BulletPool.DespawnReason.HIT)
+	assert_eq(p.dead_reason[a], BulletPool.DespawnReason.HIT + 1)
+	assert_eq(p.dead_reason[b], BulletPool.DespawnReason.LIFETIME + 1)
+	assert_eq(p.dead_reason[c], 0, "alive bullets stay alive")
+	assert_eq(p.pending_count, 2, "relabelling does not queue the bullet twice")

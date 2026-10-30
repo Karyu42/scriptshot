@@ -221,6 +221,15 @@ func mark_dead(i: int, reason: int = DespawnReason.MANUAL) -> void:
 	pending_count += 1
 
 
+## A bullet that left the world bounds is marked dead (BOUNDS) before collision
+## runs, but it still gets to hit things on the part of its path inside the
+## bounds. If it did, that hit (or wall) is the real reason it ended: this
+## relabels such a bullet and does nothing for any other state.
+func claim_from_bounds(i: int, reason: int) -> void:
+	if dead_reason[i] == DespawnReason.BOUNDS + 1:
+		dead_reason[i] = reason + 1
+
+
 ## Removes every bullet marked dead. Returns how many were removed.
 ##
 ## Allocation-free and order-independent: marked slots are visited in marking

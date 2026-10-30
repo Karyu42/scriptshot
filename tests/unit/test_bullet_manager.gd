@@ -534,3 +534,126 @@ func test_hurtbox_registry_tracks_the_tree_without_group_lookups() -> void:
 	hb.get_parent().remove_child(hb)
 	assert_eq(Hurtbox.registry.size(), before)
 	hb.free()
+
+
+# --- several hits per tick, bounds, late big bullets, teleport (QA review) -----
+
+func _hit_counter(hb: Hurtbox) -> Array[int]:
+	var counter: Array[int] = [0]
+	hb.hit.connect(func(_dmg: float, _pos: Vector2, _vel: Vector2) -> void: counter[0] += 1)
+	return counter
+
+
+func test_pierce_three_hits_three_targets_in_a_single_tick() -> void:
+	var counters: Array = []
+	for x: float in [-100.0, 0.0, 100.0]:
+		counters.append(_hit_counter(_hurtbox(Vector2(x, 0), Layers.ENEMY, 10.0)))
+	var b := SnapshotBehavior.new()
+	var req := _shot(Vector2(-200, 0), 400.0, manager.emitter.register_behavior(b))
+	req.pierce = 3
+	manager.emitter.request_shot(req)
+	manager.step(DT)
+	for c: Array[int] in counters:
+		assert_eq(c[0], 1, "every target hit exactly once")
+	assert_eq(b.hits, 3)
+	assert_eq(manager.pool.count, 1, "pierce 3 is not used up by 3 hits")
+	assert_eq(manager.pool.pierce[0], 0)
+	assert_almost_eq(manager.pool.pos[0].x, 200.0, 0.01, "it flew on to the end of its path")
+
+
+func test_qa_repro_pierce_5_at_5000_px_s_past_three_targets_20_px_apart() -> void:
+	var counters: Array = []
+	for k in 3:
+		counters.append(_hit_counter(_hurtbox(Vector2(20.0 * float(k), 0), Layers.ENEMY, 4.0)))
+	var req := ShotRequest.polar(Vector2(-30, 0), 0.0, 5000.0)
+	req.radius = 4.0
+	req.pierce = 5
+	manager.emitter.request_shot(req)
+	manager.step(DT)
+	for k in 3:
+		var c: Array[int] = counters[k]
+		assert_eq(c[0], 1, "target %d hit once (the old code hit only the 1st and 3rd)" % k)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.pool.pierce[0], 2)
+
+
+func test_last_allowed_hit_stops_the_bullet_at_the_impact() -> void:
+	var hbs: Array[Hurtbox] = []
+	for x: float in [-100.0, 0.0, 100.0]:
+		hbs.append(_hurtbox(Vector2(x, 0), Layers.ENEMY, 10.0))
+	var b := SnapshotBehavior.new()
+	var req := _shot(Vector2(-200, 0), 400.0, manager.emitter.register_behavior(b))
+	req.pierce = 1
+	manager.emitter.request_shot(req)
+	watch_signals(hbs[0])
+	watch_signals(hbs[1])
+	watch_signals(hbs[2])
+	manager.step(DT)
+	assert_signal_emit_count(hbs[0], "hit", 1)
+	assert_signal_emit_count(hbs[1], "hit", 1)
+	assert_signal_not_emitted(hbs[2], "hit")
+	assert_eq(manager.pool.count, 0)
+	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.HIT])
+	assert_almost_eq(b.despawn_positions[0].x, -14.0, 0.01, "stopped where it touched the second target")
+
+
+func test_bullet_crossing_world_bounds_still_hits_a_target_on_its_last_segment() -> void:
+	var hb := _hurtbox(Vector2(480, 0), Layers.ENEMY, 10.0)
+	var counter := _hit_counter(hb)
+	var b := SnapshotBehavior.new()
+	# 450 -> 550: leaves the 500 px bounds this tick, but passes the target first.
+	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
+	manager.step(DT)
+	assert_eq(counter[0], 1)
+	assert_eq(manager.pool.count, 0)
+	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.HIT], "the hit, not the bounds, is why it ended")
+	assert_almost_eq(b.despawn_positions[0].x, 466.0, 0.01)
+
+
+func test_bullet_leaving_world_bounds_without_a_target_despawns_as_bounds() -> void:
+	var b := SnapshotBehavior.new()
+	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
+	manager.step(DT)
+	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.BOUNDS])
+
+
+func test_bullet_leaving_bounds_through_a_wall_is_stopped_by_the_wall() -> void:
+	manager.add_wall(Rect2(470, -50, 10, 100))
+	var hb := _hurtbox(Vector2(490, 0), Layers.ENEMY, 5.0)
+	var counter := _hit_counter(hb)
+	var b := SnapshotBehavior.new()
+	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
+	manager.step(DT)
+	assert_eq(counter[0], 0, "the wall shields the target")
+	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
+
+
+class BigBulletSpawner:
+	extends BulletBehavior
+	var done := false
+	var at := Vector2.ZERO
+	var radius := 20.0
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		if done:
+			return
+		done = true
+		var req := ShotRequest.with_velocity(at, Vector2.ZERO)
+		req.radius = radius
+		req.hit_mask = Layers.ENEMY
+		emitter.request_shot(req)
+
+
+func test_bullet_spawned_by_a_hook_with_a_bigger_radius_than_any_so_far_still_hits() -> void:
+	# Targets are bucketed with the largest bullet radius known when the tick
+	# starts (4 here). The hook spawns a radius-20 bullet whose overlap with the
+	# target (x 50, r 10) reaches 30 px, 11 px beyond the 14 px bucketing reach.
+	var hb := _hurtbox(Vector2(50, 0), Layers.ENEMY, 10.0)
+	var counter := _hit_counter(hb)
+	var spawner := BigBulletSpawner.new()
+	spawner.at = Vector2(79.5, 0)
+	var seed_req := _shot(Vector2(-300, 300), 1.0, manager.emitter.register_behavior(spawner))
+	seed_req.hit_mask = 0
+	manager.emitter.request_shot(seed_req)
+	manager.step(DT)
+	assert_eq(counter[0], 1, "the big late bullet is not missed")

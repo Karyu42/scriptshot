@@ -142,14 +142,17 @@ func sweep_bullets(pool: BulletPool) -> int:
 	var ncols := cols
 	var nrows := rows
 	var short_sq := SHORT_PATH * SHORT_PATH
+	var bounds_dead := BulletPool.DespawnReason.BOUNDS + 1
 	for i in n:
-		if bflag[i] == 0 or bdead[i] != 0:
+		# A bullet flagged for leaving the world bounds this tick still tests the
+		# part of its path inside them.
+		if bflag[i] == 0 or (bdead[i] != 0 and bdead[i] != bounds_dead):
 			continue
 		var p := bpos[i]
 		var q := bprev[i]
 		var d := p - q
 		var best := 2.0
-		if d.length_squared() <= short_sq:
+		if bdead[i] == 0 and d.length_squared() <= short_sq:
 			# Fast path: the walls near the end position are all in its cell.
 			var fx := (p.x - ox) * inv
 			var fy := (p.y - oy) * inv
