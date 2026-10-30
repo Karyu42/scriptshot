@@ -16,7 +16,7 @@ Nothing here limits what a player may write (P2). Elites and rare bosses are *qu
 8. Visual and audio language per rarity, with GL Compatibility fallbacks
 9. Simulation: expected times and densities
 10. Engineering notes (what to build, how to test)
-11. New open questions (Q17–Q24 live in `pillars.md`)
+11. Decisions on the rarity questions (Q17–Q24, in the `pillars.md` decisions log)
 
 ## 1. Goals and constraints
 
@@ -100,6 +100,8 @@ Every affix punishes **one habit** and rewards **one idea**. None blocks an API,
 | **Blinker** | Offensive/Utility | T2 | After taking **≥ 15 damage within 1 s** it teleports 400 px (0.5 s telegraph ring at the target, once per 4 s) | threshold 10, 300 px, cooldown 3 s | Burst dumps of damage in one second | Sustained, tracking damage |
 | **Null-shot** | Offensive/Utility | T2 | Every 5 s fires one telegraphed **Null bullet** (≥ 0.8 s warning, white-violet). It ignores the script flag `player.invulnerable` and overheal, **but respects engine i-frames** (pillars §12.1/§12.2). 1 damage | every 4 s, two bullets | Scripts that try to skip the fight (god mode, auto-heal) | Dash and movement; engine i-frames |
 
+**First playable (decided Q23):** only **Splitting, Summoner, Bulwark, Phasing and Null-shot** ship first; **Mirrored, Warded and Blinker** stay specified here and ship later. Until then, rare elites pick their two affixes from the five that exist (different groups), and of the legendary signatures only **Hydra** is fully available (Prism Knight, Nullwalker and Phase Choir need Mirrored, Blinker or Warded).
+
 *Exclusions:* Splitting × Summoner (spawn overload), Blinker × Phasing (both anti-burst), plus the base exclusions of §3.2. **Affix choice** is `hash(seed, chunk, encounter, "aff", n)` over the allowed set for that tier/base, `n` = 0, 1.
 
 Reuse of existing engine work (pillars §5.5): Bulwark, Mirrored and Phasing are **per-`Hurtbox` hit responses** (`HIT/ABSORB/REFLECT` with an arc), the same code the Shieldbearer, Mirror and Phaser need. Null-shot needs a **`null_pierce` flag** on `ShotRequest`/`BulletPool` (one bit) honoured by the player's damage path. Splitting and Summoner are enemy-side scripts. Nothing here changes the Lua API.
@@ -122,7 +124,7 @@ Natural elite odds alone give a **median of 75 s and a p90 of 186 s** of straigh
 - It spawns once per save; killing any elite or the Herald cancels it.
 - **Result (simulation §9):** first elite at a **median of 64 s, p90 75 s**; 100 % within 80 s.
 
-The Herald is the **single intentional exception to "the world is a pure function of the seed"**: its position depends on the player's heading and time. It is not saved as part of the layout, only the fact that it happened. (Open question Q21.)
+The Herald is the **single intentional exception to "the world is a pure function of the seed"**: its position depends on the player's heading and time. It is not saved as part of the layout, only the fact that it happened. (**Decided (Chief of Staff, Karyu can override), Q21:** allowed as the one exception.)
 
 ## 4. Boss frequency and boss rarity
 
@@ -132,7 +134,7 @@ The Herald is the **single intentional exception to "the world is a pure functio
 1. **Frequency falls** with tier (a tier-dependent quota base). A player at T1 sees a beacon every **~2 min** of straight walking; at T4+ every **~5 min**.
 2. **Rarity of the variant rises** with tier: from only common bosses in T0, to about one in six being rare in T1, to **~45 % rare and ~22 % legendary** at T4+.
 
-So a "common" boss gets less common further out, and the *special* ones become the point of going far. (Open question Q17 asks whether this is what Karyu means.)
+So a "common" boss gets less common further out, and the *special* ones become the point of going far. (**Decided (Chief of Staff, Karyu can override), Q17:** both dials, as built.)
 
 ### 4.2 Quota per region (replaces the single `p_first` of pillars §6.3)
 The structure of the hybrid rule is unchanged (canonical order, quota per region, distance pity); only the base probabilities depend on the region's tier `T = ring k`:
@@ -270,7 +272,7 @@ for region R in canonical order:
 - **Costs:** the whole pass is cheap (ring 34 is 1,225 regions × 64 chunks × ≤3 encounters), cached once per save. On web (no threads) it runs in slices over frames while the player walks, always staying ≥ 2 rings ahead.
 
 ### 6.5 Persistence
-- **Killed elites do not respawn.** Save a set of `(chunk, encounter_index)` for killed elites (a per-chunk bitmask, ≤ 3 bits). Regular enemies keep the 5-minute respawn rule of pillars §6.2. (Open question Q20.)
+- **Killed elites do not respawn.** Save a set of `(chunk, encounter_index)` for killed elites (a per-chunk bitmask, ≤ 3 bits). Regular enemies keep the 5-minute respawn rule of pillars §6.2. (**Decided (Chief of Staff, Karyu can override), Q20:** elites never respawn.)
 - **Killed bosses:** unchanged (pillars §6.3): the boss chunk becomes ordinary. Rarity is part of the generated boss, so a re-load yields the same variant until it is killed.
 - The Herald is saved as a single flag (`herald_done`).
 
@@ -358,7 +360,7 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 **Reading it.**
 - **G1 holds:** the Herald makes the first elite arrive at **64 s median, 75 s at p90** for both movement models.
 - **Rare elites** arrive after about 4 minutes of straight walking (9 minutes if wandering and fighting): "early excitement" without being routine.
-- **Rare bosses** are a **6–8 minute** event of straight walking; **legendary bosses** about **one per 27 minutes of straight far-world walking** (≈ 2.9 hours for the slow wandering model). That is deliberately very rare; Q18 asks whether it is too rare for the Wander style.
+- **Rare bosses** are a **6–8 minute** event of straight walking; **legendary bosses** about **one per 27 minutes of straight far-world walking** (≈ 2.9 hours for the slow wandering model). That is deliberately very rare. **Decided (Chief of Staff, Karyu can override), Q18:** keep these rates for the first playable and tune from playtests; the Wander style is the first thing to check, and the odds are a data table.
 - Straight-walk **beacon cadence per tier**: T1 117 s, T2 223 s, T3 277 s, T4+ 310 s (§4.2), so boss *frequency* does fall outward.
 - Estimators for the legendary targets rest on few finds in a 30-minute horizon (66–70 % found for Straight, 16–20 % for Wander); treat them as order-of-magnitude, and re-run with a longer horizon if the table is tuned.
 
@@ -370,8 +372,8 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 4. **Engine items** (extends pillars §5.5): per-`Hurtbox` `ABSORB/REFLECT` arcs (shared with Shieldbearer/Mirror/Phaser); a `null_pierce` bit on `ShotRequest`/`BulletPool`; a bullet **owner flip** (Sower Overgrowth, Mirrored: same code path as reflection); a `signature` recorder (Archivist Echo reuses the Habituation signature buckets of pillars §5.3).
 5. **Budgets:** elites and escorts count against the per-platform enemy-bullet reserve (pillars §3.3). Summoner caps (6/8 alive) and Splitting halves must respect it; Null rings are ≤ 24 bullets.
 6. **Cue cost cap:** ≤ 12 cue-drawing elites on screen (§8.3); `draw_arc` segment count 32.
-7. **QA checklist (GL Compatibility):** web and Android: blend-mode ADD halo; the shimmer sting from `AudioStreamGenerator`; no cue depends on a shader that is Forward+/Mobile-only.
+7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD halo and the shimmer sting from `AudioStreamGenerator` on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4.
 
-## 11. New open questions
+## 11. Decisions on the rarity questions
 
-Added to the open list in [`pillars.md`](pillars.md): **Q17** boss frequency vs. rarity reading, **Q18** legendary frequency target, **Q19** Shards and Level II, **Q20** elite respawn/farming, **Q21** the Herald as the one dynamic exception, **Q22** beacon radius by rarity, **Q23** launch affix set, **Q24** visual cue approach and QA check on GL Compatibility.
+The questions raised by this design (Q17–Q24) were **decided by the Chief of Staff under Karyu's delegation; Karyu can override any of them.** They are in the decisions log of [`pillars.md`](pillars.md) and are no longer open. Summary: **Q17** both dials, as built; **Q18** keep the current legendary rates for the first playable and tune from playtests; **Q19** Shards are a route to Level II at 25 per token; **Q20** elites never respawn; **Q21** the Herald is allowed as the seed-purity exception; **Q22** rare and legendary bosses use the same 5-chunk sense radius (a radius that grows with rarity would shorten the legendary cadence by about 37 % on straight walks, was not simulated, and is a later lever); **Q23** first-playable affixes are Splitting, Summoner, Bulwark, Phasing and Null-shot; **Q24** option A (this doc's cues), with the web and Android cue check assigned to QA & Build once those builds exist.

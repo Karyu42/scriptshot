@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **draft for review, revision 6 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Spawning, elites and rarity tiers are specified in the companion doc [`spawning-and-rarity.md`](spawning-and-rarity.md); §6.5 summarises it. `main` contains only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`). Other work is open in parallel: PR [#2](https://github.com/Karyu42/scriptshot/pull/2) (branch `feat/core-scaffold`, head `2026abe`: the Godot core with `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, tests and a benchmark) and PR [#3](https://github.com/Karyu42/scriptshot/pull/3) (branch `scripting/api-draft`: `docs/scripting/api.md` v0.1 and `docs/scripting/lua-binding.md`, **docs only, no Lua code yet**). When this doc names code it means those branches and uses their real names; nothing described here is on `main`, and anything not on those branches is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8, Q9, Q10, Q11 and Q13 are resolved and absent from the open list).
+> Status: **draft for review, revision 6 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Spawning, elites and rarity tiers are specified in the companion doc [`spawning-and-rarity.md`](spawning-and-rarity.md); §6.5 summarises it. `main` contains only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`). Other work is open in parallel: PR [#2](https://github.com/Karyu42/scriptshot/pull/2) (branch `feat/core-scaffold`, head `2026abe`: the Godot core with `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, tests and a benchmark) and PR [#3](https://github.com/Karyu42/scriptshot/pull/3) (branch `scripting/api-draft`: `docs/scripting/api.md` v0.1 and `docs/scripting/lua-binding.md`, **docs only, no Lua code yet**). When this doc names code it means those branches and uses their real names; nothing described here is on `main`, and anything not on those branches is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8–Q11, Q13 and Q17–Q24 are resolved and absent from the open list).
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -8,7 +8,7 @@ Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) wh
 
 ## Decisions log (2026-10-30)
 
-Decided by the project owner, except the row marked **provisional**. Everything else in this doc stays a proposal.
+Decided by the project owner (Karyu), except the row marked **provisional** and the rows marked **decided (Chief of Staff, Karyu can override)**. Those last rows (Q17–Q24) are calls the Chief of Staff made under Karyu's delegation: they are **working decisions the team builds on, distinct from Karyu's own decisions, and Karyu can still override any of them.** Everything else in this doc stays a proposal.
 
 | ID | Decision | Where it lands |
 |---|---|---|
@@ -25,6 +25,14 @@ Decided by the project owner, except the row marked **provisional**. Everything 
 | Q10 | **Constrained mode shape = D (hybrid):** S3 spellbook (unlockable API) as the spine, S2 RPG stats as the tuning layer, S1 meter as the implementation mechanism. **Not in the first release.** | §11 |
 | Q11 | **Constrained mode relation = B:** **shared world generator and bestiary, separate saves and progression;** scripts can be imported across modes and are **clamped to the mode's limits** (the editor shows what was clamped). | §11, §7.1 |
 | Q13 | **Editing on touch and controller = B:** the in-game editor works on every platform, plus **PC external-editor hot reload** (watch `shots/`) in the first release. **Phone pairing (LAN/QR companion editing) comes later.** | §10 |
+| Q17 | **Decided (Chief of Staff, Karyu can override): both dials, as built.** Boss *frequency* falls with tier (beacon about every 117 s of straight walking in T1 to 310 s in T4+) and the *share of rare and legendary bosses* rises with tier. | §6.3, §6.5, `spawning-and-rarity.md` §4 |
+| Q18 | **Decided (Chief of Staff, Karyu can override): keep the current legendary rates for the first playable** (about one legendary boss per 27 min of straight far-world walking) **and tune from playtests.** The odds stay a data table. | `spawning-and-rarity.md` §4.3, §9, §10 |
+| Q19 | **Decided (Chief of Staff, Karyu can override): Shards are an additional route to Sense Level II, 25 Shards per token** (plus Level II from rare and legendary boss kills). Level I Senses, Fragments and tier access are never for sale. | `spawning-and-rarity.md` §7 |
+| Q20 | **Decided (Chief of Staff, Karyu can override): elites never respawn.** Kills persist in the save as a per-chunk bitmask; regular enemies keep the 5-minute respawn rule. | `spawning-and-rarity.md` §6.5 |
+| Q21 | **Decided (Chief of Staff, Karyu can override): the Herald is allowed as the one exception to seed purity.** A single time-based common elite 60–80 s after leaving the safe zone, saved as one flag. | §6.5, §7, `spawning-and-rarity.md` §3.6 |
+| Q22 | **Decided (Chief of Staff, Karyu can override): rare and legendary bosses use the same 5-chunk sense radius** (beacon, hum) as common ones. A radius that grows with rarity stays a later tuning lever (re-simulate first). | §6.4, `spawning-and-rarity.md` §4 and §9 |
+| Q23 | **Decided (Chief of Staff, Karyu can override): the first-playable affixes are Splitting, Summoner, Bulwark, Phasing and Null-shot.** Mirrored, Warded and Blinker stay specified and ship later. | `spawning-and-rarity.md` §3.4 |
+| Q24 | **Decided (Chief of Staff, Karyu can override): option A.** Rarity cues use `_draw()` shapes, outline weights, one additive-blend halo and `AudioStreamGenerator` stings only (no Forward+/Mobile-only effect). **The cue check (additive halo plus `AudioStreamGenerator` stings on web and Android) is assigned to QA & Build once web and Android builds exist.** | §8.1, `spawning-and-rarity.md` §8.4, §10 |
 | **Q16 (PROVISIONAL)** | **Option A with all three safeguards:** tagging (L2) + clean-kill reward conditions (L3) + light diegetic flavour (L1, no global Corruption) + constrained-mode competition (L4), with (1) Level I Senses and tier progression never gated on cleanliness, (2) an Echo rematch per boss, (3) Null (flag-piercing) attacks from Tier 2 plus a few flavour bosses. **Provisional (Chief of Staff, 2026-10-30), pending Karyu; Karyu can still override.** This is **not** recorded as Karyu's decision. The team is building toward A. | §12, Q16 |
 | **Player state is writable** | **Rejected: read-only player state.** Scripts **can change player state** (HP, invulnerability, position, speed, etc.) via the `player` table. Nothing in this doc treats player state as off limits. The design answer to "god mode is one line away" is §12 (tags, rewards, diegetic rules, constrained mode), not a ban. Open follow-up: **Q16**. | §3.1, §12 |
 
@@ -661,7 +669,7 @@ Combine **L2 tagging as the baseline**, **L3 reward-side conditions** so progres
 
 ## Biggest open design questions
 
-Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q9 (replaced by elites and rarity tiers), Q10 (D), Q11 (B), Q13 (B)** and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). **Q16 is open but has a provisional working decision (option A), see the log and Q16.** Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
+Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q9 (replaced by elites and rarity tiers), Q10 (D), Q11 (B), Q13 (B)**; **Q17–Q24 decided by the Chief of Staff under Karyu's delegation (Karyu can override; see the log)**; and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). **Q16 is open but has a provisional working decision (option A), see the log and Q16.** Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision.
 
 ### Q5. Editing while the world is hostile (and the guard-rail numbers)
 - **A. Time slows to ~15% while the editor is open** (recommended start).
@@ -709,54 +717,3 @@ Player state is writable (decided). Options (levers L1–L4 from §12):
 - **D. Hard split (L4) only:** main mode is a pure sandbox with no tags; all fair play is constrained mode.
 - **Recommendation: A, with three corrections to the lean.** (1) **Never gate Level I Senses or tier progression on cleanliness**; gate only Level II/Seal/Codex-alternate/cosmetics, so one accidental write can't lock someone out of the core progression and "no restrictions" stays honest. (2) Add an **Echo rematch** per boss so a modified first kill can still earn the clean rewards later. (3) Make the diegetic layer **Null (flag-piercing) attacks on every boss from Tier 2 plus a few flavour bosses (Equalizer, Rift, Eater)**, and **skip a global Corruption meter** (a soft cap that conflicts with P2's spirit and is the hardest to balance). Also be upfront that **a clean tag is honor-system in an open-source client**: verified competition needs the constrained mode with replay validation (§12.5). B is too weak (god mode makes bosses and rewards pointless for anyone who tries it), C is too much rule overhead and risks feeling like a hidden ban, D throws away the sandbox's own sense of achievement.
 - **Interactions to decide with it:** regen/i-frame/dash writes are tagged (§12.6); leaderboard keys include the tag (Q15); whether `player.dash()` automation stays untagged (recommended: yes).
-
-### Q17. Is "common near the start, rarer further out" about boss frequency, rarity, or both? **[Karyu]**
-- **A. Both, as two dials (current build).** Boss *frequency* falls with tier (beacon about every 117 s of straight walking in T1 → 310 s in T4+), while the *chance of a rare or legendary variant* rises with tier (rare+legendary 14 % in T1 → 67 % in T4+).
-- **B. Frequency stays flat, only rarity changes.** Simpler to explain, but far from the start boss encounters are no rarer, and "bosses are rare" (P5) weakens.
-- **C. Frequency falls and rarity does not exist for bosses before T3.** Bosses feel rare only in the far world, and the near world has a long boss-free stretch.
-- **Recommendation: A.** It literally matches the brief ("common near the start, rarer further out") and keeps the first hour eventful. Detail in `spawning-and-rarity.md` §4.
-
-### Q18. How rare should legendary bosses and elites be? **[Karyu]**
-Simulated (straight walking from the tutorial exit): legendary boss **sighted at a median of 12.8 min, E[t] ≈ 27 min** (70 % of 30-minute walks find one); legendary elite median 12.7 min. For the slow **Wander** model (fighting and turning) E[t] is **≈ 2.4–2.9 hours** and only 16–20 % of 30-minute walks find one.
-- **A. Keep (about one per 27 min of straight far-world walking).**
-- **B. 2× rarer** (about one per ~55 min): truly mythic, many players see only a handful per save.
-- **C. 2× more common** (about one per ~13 min): friendlier to the Wander style, less special.
-- **Recommendation: A for the first playable,** then tune from play data; the odds are a data table (`spawning-and-rarity.md` §4.3, §10).
-
-### Q19. What are Shards for: Level II tokens or only cosmetics?
-- **A. Additional route to Sense Level II** (25 Shards = one token) beside the existing Level II rule, plus Level II from rare/legendary boss kills; Level I and Fragments are never for sale (current design).
-- **B. Cosmetics and Codex only,** no Level II route.
-- **C. Shards become the main route to Level II** (this only makes sense if Q16's outcome changes how Level II is earned).
-- **Recommendation: A.** It gives the elites a purpose that deepens scripts without gating the core progression. Revisit if Q16 changes the Level II rule.
-
-### Q20. Do elites respawn (farming)?
-- **A. Never** (kills persist in the save, like bosses; current design). Regular enemies respawn as before.
-- **B. Common elites respawn with their chunk (5 min out of the active ring),** rare and legendary never. Shards become farmable.
-- **C. All elites respawn after 30 min** away.
-- **Recommendation: A,** so exploring is the way to earn Shards, not looping one chunk. The cost is a save-size note: a per-chunk bitmask (≤ 3 bits per chunk with elites).
-
-### Q21. Is the Herald (guaranteed first elite) an acceptable exception to "the world is a pure function of the seed"?
-- **A. Yes, one dynamic, time-based Herald** (60–80 s after leaving the safe zone, 1,200 px ahead of the player). Median 64 s, p90 75 s.
-- **B. Seed-static only:** a fixed common elite at `D∞` 3–4 chunks in a hashed direction. Deterministic, but a player walking the other way gets no first elite for ~2–3 min.
-- **C. No guarantee** (natural median 75 s, p90 186 s).
-- **Recommendation: A.** Meeting the "first elite within ~90 s" goal matters more than purity for one event; it is saved as a single flag and does not change the layout.
-
-### Q22. Should rare and legendary bosses be sensed from farther away?
-The simulation uses the same **5-chunk beacon radius** for every rarity.
-- **A. Same radius** (current; simplest).
-- **B. Radius grows with rarity** (5 / 6 / 8 chunks), so a legendary hum and tick appear earlier and are easier to hunt; it shortens the legendary cadence by about 37 % for straight walks (strip 16 instead of 10 chunks wide) and was **not simulated**.
-- **C. Legendary gets a distinct long-range hum only** (audio, not a tick).
-- **Recommendation: A now;** if Q18 says the Wander style needs a help, B is the cheapest lever (re-run the simulation first).
-
-### Q23. Which affixes ship in the first playable?
-Eight are specified (Bulwark, Mirrored, Phasing, Warded, Splitting, Summoner, Blinker, Null-shot).
-- **A. All eight,** with the Herald limited to Splitting/Summoner.
-- **B. Five first:** Splitting, Summoner, Bulwark, Phasing, Null-shot (reuses the Shieldbearer/Phaser rules and the Null attack the bosses need anyway); Mirrored, Warded and Blinker later.
-- **C. Three:** Splitting, Summoner, Null-shot.
-- **Recommendation: B.** Each affix teaches one counter; five already cover "area", "angles", "timing" and "skipping the fight". Owner: Game Designer with the Gameplay Engineer.
-
-### Q24. Rarity cues without post-processing: approve the GL Compatibility approach?
-- **A. `_draw()` shapes, outline weights, one ADD-blend halo and `AudioStreamGenerator` stings only** (current; no Forward+/Mobile-only effect). QA must confirm the ADD-blend halo and the generator on web and Android before sign-off.
-- **B. A + a Forward+/Mobile-only bloom** on legendary cues for desktop users who have that renderer.
-- **C. Pre-rendered sprites and `.ogg` stings** (breaks "shapes only", P3).
-- **Recommendation: A.** The rarity must read in grayscale and on every platform; B can be added later without changing the rules. Owner: QA & Build for the platform check.
