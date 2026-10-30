@@ -33,6 +33,7 @@ env:
   GODOT_DIR: ${{ github.workspace }}/.godot-bin
   # tools/run_tests.sh and tools/run_benchmark.sh honour $GODOT.
   GODOT: ${{ github.workspace }}/.godot-bin/godot
+  PYTHONDONTWRITEBYTECODE: "1"
 
 jobs:
   test:
