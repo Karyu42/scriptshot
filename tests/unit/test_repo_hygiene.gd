@@ -66,3 +66,11 @@ func test_export_presets_write_into_build_and_hold_no_credentials() -> void:
 			if line.contains(key) and line.contains("="):
 				var value := line.get_slice("=", 1).strip_edges()
 				assert_true(value in ['""', "", "0", "false"], "credential-looking value in export_presets.cfg: %s" % line)
+
+
+func test_project_imports_etc2_astc_for_universal_macos_export() -> void:
+	var cfg := ConfigFile.new()
+	assert_eq(cfg.load("res://project.godot"), OK, "project.godot must parse")
+	var enabled: bool = str(cfg.get_value("rendering", "textures/vram_compression/import_etc2_astc", false)) == "true"
+	assert_true(enabled,
+		"macOS universal export needs ETC2/ASTC VRAM compression enabled")
