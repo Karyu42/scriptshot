@@ -17,6 +17,14 @@ extends RefCounted
 ## of them, which lets a bullet that moved less than SHORT_PATH this tick be
 ## checked with one cell lookup at its end position; only the rare faster bullets
 ## walk the cells under their whole path.
+##
+## Every hit can also report the wall's **surface normal** at the impact (a unit
+## vector pointing out of the wall, towards where the bullet came from): the
+## face of the radius-inflated wall the path entered through. It is deterministic
+## at corners: when the path enters two faces at the same instant (a perfectly
+## diagonal approach), the face on the axis the bullet moves faster along wins,
+## and the x face wins an exact tie. A bullet that starts inside a wall gets the
+## face it is closest to (ties: left, right, top, bottom).
 
 ## Paths shorter than this (pixels per tick) use the single-cell fast path.
 const SHORT_PATH := 24.0
@@ -38,6 +46,10 @@ var _heads := PackedInt32Array()
 var _entry_next := PackedInt32Array()
 var _entry_wall := PackedInt32Array()
 var _dirty := true
+## Wall index (and its corners) of the best hit of the last _best_hit() call.
+var _best_wall := -1
+var _best_lo := Vector2.ZERO
+var _best_hi := Vector2.ZERO
 
 # Results of the last sweep_bullets() call (parallel arrays, valid up to
 # hit_count). hit_t is the fraction of the bullet's path (prev_pos -> pos) at
@@ -45,6 +57,14 @@ var _dirty := true
 var hit_count := 0
 var hit_bullets := PackedInt32Array()
 var hit_t := PackedFloat32Array()
+## Which wall each hit touched, and the bullet's path delta (pos - prev_pos before
+## BulletManager clips it). The surface normal is derived from these on demand by
+## normal_of_hit(): computing it for every hit would cost more than the sweep
+## itself saves, and most hits never ask for it.
+var hit_wall := PackedInt32Array()
+var hit_d := PackedVector2Array()
+## Normal of the last hit found by first_hit() (Vector2.ZERO if it found none).
+var last_normal := Vector2.ZERO
 
 
 func _init(p_bounds: Rect2 = Rect2(-2048, -2048, 4096, 4096), p_cell_size: float = 64.0) -> void:
@@ -121,12 +141,16 @@ func needs_rebuild(max_bullet_radius: float) -> bool:
 ## Earliest wall hit of the path start -> start + d for a circle of radius
 ## `radius`, as a fraction t in [0, 1], or -1.0 if the path is clear.
 func first_hit(start: Vector2, d: Vector2, radius: float) -> float:
+	last_normal = Vector2.ZERO
 	if wall_count == 0:
 		return -1.0
 	if _dirty or radius > _max_radius:
 		rebuild(maxf(radius, _max_radius))
 	var best := _best_hit(start, d, radius)
-	return best if best <= 1.0 else -1.0
+	if best > 1.0:
+		return -1.0
+	last_normal = box_normal(start, d, _best_lo - Vector2(radius, radius), _best_hi + Vector2(radius, radius))
+	return best
 
 
 ## Sweeps every alive bullet of `pool` that has collide_world set and lists the
@@ -142,6 +166,8 @@ func sweep_bullets(pool: BulletPool) -> int:
 	if hit_bullets.size() < pool.capacity:
 		hit_bullets.resize(pool.capacity)
 		hit_t.resize(pool.capacity)
+		hit_wall.resize(pool.capacity)
+		hit_d.resize(pool.capacity)
 	var n := pool.count
 	var bpos := pool.pos
 	var bprev := pool.prev_pos
@@ -164,6 +190,7 @@ func sweep_bullets(pool: BulletPool) -> int:
 		var q := bprev[i]
 		var d := p - q
 		var best := 2.0
+		var best_w := -1
 		if bdead[i] == 0 and d.length_squared() <= short_sq:
 			# Fast path: the walls near the end position are all in its cell.
 			var fx := (p.x - ox) * inv
@@ -192,13 +219,17 @@ func sweep_bullets(pool: BulletPool) -> int:
 				if x_hi < lo.x or x_lo > hi.x or y_hi < lo.y or y_lo > hi.y:
 					continue
 				var t := _segment_vs_box(q, d, lo - Vector2(r, r), hi + Vector2(r, r))
-				if t >= 0.0 and t < best:
+				if t >= 0.0 and (t < best or (t == best and w < best_w)):
 					best = t
+					best_w = w
 		else:
 			best = _best_hit(q, d, brad[i])
+			best_w = _best_wall
 		if best <= 1.0:
 			hit_bullets[hit_count] = i
 			hit_t[hit_count] = best
+			hit_wall[hit_count] = best_w
+			hit_d[hit_count] = d
 			hit_count += 1
 	return hit_count
 
@@ -213,16 +244,82 @@ func _best_hit(start: Vector2, d: Vector2, radius: float) -> float:
 	var y1 := clampi(floori((maxf(start.y, end.y) + radius - _origin.y) * _inv_cell), 0, rows - 1)
 	var rv := Vector2(radius, radius)
 	var best := 2.0
+	_best_wall = -1
 	for cy in range(y0, y1 + 1):
 		for cx in range(x0, x1 + 1):
 			var e := _heads[cy * cols + cx]
 			while e != -1:
 				var w := _entry_wall[e]
 				var t := _segment_vs_box(start, d, _lo[w] - rv, _hi[w] + rv)
-				if t >= 0.0 and t < best:
+				# Strictly earlier wins; on an exact tie the lower wall index wins,
+				# so the reported normal does not depend on the cell visit order.
+				if t >= 0.0 and (t < best or (t == best and w < _best_wall)):
 					best = t
+					_best_wall = w
 				e = _entry_next[e]
+	_best_lo = _lo[_best_wall] if _best_wall >= 0 else Vector2.ZERO
+	_best_hi = _hi[_best_wall] if _best_wall >= 0 else Vector2.ZERO
 	return best
+
+
+## Surface normal of hit `k` of the last sweep_bullets() call (unit vector pointing
+## out of the wall, see the class comment). `pool` must still hold the swept bullet
+## in the slot it had during the sweep, and its `prev_pos` / `radius` unchanged.
+func normal_of_hit(k: int, pool: BulletPool) -> Vector2:
+	if k < 0 or k >= hit_count:
+		return Vector2.ZERO
+	var i := hit_bullets[k]
+	var r := pool.radius[i]
+	var rv := Vector2(r, r)
+	var w := hit_wall[k]
+	return box_normal(pool.prev_pos[i], hit_d[k], _lo[w] - rv, _hi[w] + rv)
+
+
+## Outward unit normal of the face of box lo..hi that the path start + d * t
+## enters through (see the class comment for the corner and inside rules).
+## `lo` / `hi` are the already-inflated box corners.
+static func box_normal(start: Vector2, d: Vector2, lo: Vector2, hi: Vector2) -> Vector2:
+	var tx := -INF
+	var ty := -INF
+	var nx := 0.0
+	var ny := 0.0
+	if absf(d.x) >= 1e-9:
+		if d.x > 0.0:
+			tx = (lo.x - start.x) / d.x
+			nx = -1.0
+		else:
+			tx = (hi.x - start.x) / d.x
+			nx = 1.0
+	if absf(d.y) >= 1e-9:
+		if d.y > 0.0:
+			ty = (lo.y - start.y) / d.y
+			ny = -1.0
+		else:
+			ty = (hi.y - start.y) / d.y
+			ny = 1.0
+	if tx <= 0.0 and ty <= 0.0:
+		# The path starts inside the box (or exactly on its surface): push out
+		# through the nearest face.
+		var left := start.x - lo.x
+		var right := hi.x - start.x
+		var top := start.y - lo.y
+		var bottom := hi.y - start.y
+		var m := minf(minf(left, right), minf(top, bottom))
+		if m == left:
+			return Vector2.LEFT
+		if m == right:
+			return Vector2.RIGHT
+		if m == top:
+			return Vector2.UP
+		return Vector2.DOWN
+	if tx > ty:
+		return Vector2(nx, 0.0)
+	if ty > tx:
+		return Vector2(0.0, ny)
+	# Exactly simultaneous entry: a corner. Prefer the axis moving faster.
+	if absf(d.x) >= absf(d.y):
+		return Vector2(nx, 0.0)
+	return Vector2(0.0, ny)
 
 
 ## Slab test: first t in [0, 1] at which start + d * t is inside the box lo..hi

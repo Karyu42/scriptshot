@@ -23,9 +23,52 @@ extends RefCounted
 
 ## Why a bullet was removed (passed to BulletBehavior.on_despawn). New reasons are
 ## only ever appended, so existing values stay stable.
-enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL }
+##
+## INVALID: the bullet was killed because a script wrote a non-finite value (NaN or
+## infinity) into its state; the Lua batch API uses it so such kills can be told
+## apart from a deliberate MANUAL despawn.
+enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL, INVALID }
 
-## Maximum number of simultaneously alive bullets. Fixed at construction.
+## Which limit refused a shot (see "Saturation model"). Used to index
+## `dropped_by_limit`.
+enum DropLimit {
+	## The pool already holds `logical_cap` bullets.
+	LOGICAL_CAP,
+	## The pool still has room, but the remaining slots are the enemy reserve and
+	## the shooter is not an enemy.
+	ENEMY_RESERVE,
+}
+
+## Owner slots of the per-owner counters (see owner_slot()).
+const OWNER_NONE := 0
+const OWNER_PLAYER := 1
+const OWNER_ENEMY := 2
+const OWNER_SLOTS := 3
+
+## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
+## does not hide the next target on the path (see can_hit_veto).
+const VETO_MAX_HITS := 4
+
+# --- saturation model ---------------------------------------------------------
+# PROVISIONAL (not decided by Karyu): the pool refuses a shot when
+#   * the pool already holds `logical_cap` bullets, whoever shoots, or
+#   * the shooter is not an enemy/boss and the pool already holds
+#     `logical_cap - enemy_reserve` bullets.
+# So the last `enemy_reserve` slots of the logical cap can only ever be taken by
+# enemy and boss bullets (owner_layer with Layers.ENEMY): player scripts cannot
+# starve enemy attacks however many bullets they spawn. The cap is independent
+# of the physical `capacity` (it can only be lower). BulletManager configures
+# both; a bare BulletPool defaults to cap = capacity, reserve = 0 (no reserve).
+# Use set_limits(); do not write these two directly.
+var logical_cap := 0
+var enemy_reserve := 0
+## Highest total a non-enemy shooter may bring the pool to (logical_cap - reserve).
+var _other_limit := 0
+
+
+## Maximum number of simultaneously alive bullets the *memory* holds. Fixed at
+## construction. The number of bullets the game allows is `logical_cap` (see
+## "Saturation model" below), which can be lower.
 var capacity := 0
 ## Number of alive bullets. Valid slots are [0, count).
 var count := 0
@@ -34,6 +77,22 @@ var max_radius := 0.0
 ## Lifetime statistics.
 var spawned_total := 0
 var dropped_total := 0
+## Shots rejected at spawn plus bullets killed (INVALID) because a script wrote a
+## NaN or inf. Not part of `dropped_total` (that one is about capacity).
+var invalid_total := 0
+## Bullets occupying a slot per owner (OWNER_NONE / OWNER_PLAYER / OWNER_ENEMY),
+## including ones marked dead but not yet flushed (they still hold their slot).
+## Kept in step by spawn, despawn, swap-remove, reflect() (an owner change moves
+## the count) and clear(). Read through owner_count(). Changing `owner_layer[i]`
+## directly bypasses the counters; use reflect(), or call recount_owners().
+var owner_counts := PackedInt32Array([0, 0, 0])
+## Shots refused since creation, by the shooter's owner slot and by the limit
+## that refused them (DropLimit). Both sum to `dropped_total`.
+var dropped_by_owner := PackedInt32Array([0, 0, 0])
+var dropped_by_limit := PackedInt32Array([0, 0])
+## How many alive bullets carry the can_hit_veto flag (lets the collision loop
+## skip the per-bullet check entirely while there are none).
+var veto_count := 0
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
@@ -65,6 +124,9 @@ var reflect_count := PackedByteArray()
 ## 1 = the bullet ignores the player's *script* invulnerability (not engine
 ## i-frames); see ShotRequest.pierces_script_invuln and Health.try_damage().
 var pierces_script_invuln := PackedByteArray()
+## 1 = the bullet's behaviour is asked BulletBehavior.can_hit() before each hit
+## lands (see ShotRequest.can_hit_veto). Ignored for bullets without a behaviour.
+var can_hit_veto := PackedByteArray()
 var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
 ## 1 = collides with the `world` layer (walls), 0 = flies through walls.
@@ -104,6 +166,8 @@ var hooked_count := 0
 func _init(p_capacity: int = 16384) -> void:
 	assert(p_capacity > 0, "BulletPool capacity must be positive")
 	capacity = p_capacity
+	logical_cap = capacity
+	_other_limit = capacity
 	pos.resize(capacity)
 	prev_pos.resize(capacity)
 	vel.resize(capacity)
@@ -121,6 +185,7 @@ func _init(p_capacity: int = 16384) -> void:
 	owner_layer.resize(capacity)
 	reflect_count.resize(capacity)
 	pierces_script_invuln.resize(capacity)
+	can_hit_veto.resize(capacity)
 	behavior.resize(capacity)
 	pierce.resize(capacity)
 	collide_world.resize(capacity)
@@ -139,9 +204,18 @@ func _init(p_capacity: int = 16384) -> void:
 ## Spawns a bullet from a ShotRequest. Returns its slot, or -1 if the pool is
 ## full. The slot is only stable until the next despawn.
 func spawn(request: ShotRequest) -> int:
-	if count >= capacity:
-		dropped_total += 1
+	if not (request.velocity.is_finite() and request.position.is_finite()):
+		_reject_invalid("BulletPool.spawn", "a shot with a non-finite position or velocity")
 		return -1
+	var owner_slot_i := OWNER_NONE
+	if (request.owner_layer & Layers.PLAYER) != 0:
+		owner_slot_i = OWNER_PLAYER
+	elif (request.owner_layer & Layers.ENEMY) != 0:
+		owner_slot_i = OWNER_ENEMY
+	if count >= (logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit):
+		_record_drop(owner_slot_i)
+		return -1
+	owner_counts[owner_slot_i] += 1
 	var i := count
 	count += 1
 	spawned_total += 1
@@ -149,10 +223,11 @@ func spawn(request: ShotRequest) -> int:
 	user[i] = request.user
 	pos[i] = request.position
 	prev_pos[i] = request.position
-	vel[i] = request.velocity
+	var velocity := BulletLimits.clamp_velocity(request.velocity)
+	vel[i] = velocity
 	if is_nan(request.angle):
-		var speed := request.velocity.length()
-		rot[i] = request.velocity / speed if speed > 0.0 else Vector2.RIGHT
+		var speed := velocity.length()
+		rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
 	else:
 		rot[i] = Vector2.from_angle(request.angle)
 	radius[i] = request.radius
@@ -167,6 +242,11 @@ func spawn(request: ShotRequest) -> int:
 	owner_layer[i] = request.owner_layer
 	reflect_count[i] = 0
 	pierces_script_invuln[i] = 1 if request.pierces_script_invuln else 0
+	if request.can_hit_veto:
+		can_hit_veto[i] = 1
+		veto_count += 1
+	else:
+		can_hit_veto[i] = 0
 	hit_mask[i] = request.hit_mask & ~request.owner_layer
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
@@ -187,9 +267,14 @@ func spawn_simple(
 	bullet_color: Color = Color(1.0, 0.82, 0.4),
 	mask: int = 0
 ) -> int:
-	if count >= capacity:
-		dropped_total += 1
+	if not (velocity.is_finite() and position.is_finite()):
+		_reject_invalid("BulletPool.spawn_simple", "a shot with a non-finite position or velocity")
 		return -1
+	velocity = BulletLimits.clamp_velocity(velocity)
+	if count >= _other_limit:
+		_record_drop(OWNER_NONE)
+		return -1
+	owner_counts[OWNER_NONE] += 1
 	var i := count
 	count += 1
 	spawned_total += 1
@@ -212,6 +297,7 @@ func spawn_simple(
 	owner_layer[i] = 0
 	reflect_count[i] = 0
 	pierces_script_invuln[i] = 0
+	can_hit_veto[i] = 0
 	hit_mask[i] = mask
 	behavior[i] = 0
 	pierce[i] = 0
@@ -253,7 +339,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 			if acc != 0.0:
 				var speed := v.length()
 				if speed > 0.0:
-					v *= maxf(speed + acc * delta, 0.0) / speed
+					v *= clampf(speed + acc * delta, 0.0, BulletLimits.MAX_SPEED) / speed
 			vel[i] = v
 		var p := pos[i] + v * delta
 		pos[i] = p
@@ -263,6 +349,49 @@ func advance(delta: float, bounds: Rect2) -> void:
 		if behavior[i] != 0:
 			hooked[hooked_count] = i
 			hooked_count += 1
+
+
+## The one way to write a bullet's velocity from outside the pool (hooks, the
+## batch/Lua commit): a velocity above BulletLimits.MAX_SPEED keeps its direction
+## and is cut to the ceiling. A NaN or inf kills the bullet with
+## DespawnReason.INVALID (counted in `invalid_total`, reported through
+## ScriptWarnings), leaves the old velocity in place and returns false.
+func set_velocity(i: int, v: Vector2) -> bool:
+	if i < 0 or i >= count or dead_reason[i] != 0:
+		return false
+	if not v.is_finite():
+		_kill_invalid(i, "BulletPool.set_velocity", "a non-finite velocity")
+		return false
+	vel[i] = BulletLimits.clamp_velocity(v)
+	return true
+
+
+## Re-checks the velocity of slot `i` after a hook may have written `vel[i]`
+## directly (the arrays are public): over the ceiling is clamped, NaN/inf kills
+## the bullet as INVALID. Returns false if it was killed. Does nothing for a
+## dead slot.
+func sanitize_velocity(i: int) -> bool:
+	if dead_reason[i] != 0:
+		return false
+	var v := vel[i]
+	if not v.is_finite():
+		_kill_invalid(i, "BulletPool.velocity", "a non-finite velocity")
+		return false
+	if BulletLimits.exceeds(v):
+		vel[i] = BulletLimits.clamp_velocity(v)
+	return true
+
+
+func _kill_invalid(i: int, key: String, what: String) -> void:
+	invalid_total += 1
+	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+	vel[i] = Vector2.ZERO
+	mark_dead(i, DespawnReason.INVALID)
+
+
+func _reject_invalid(key: String, what: String) -> void:
+	invalid_total += 1
+	ScriptWarnings.warn(key, "%s: rejected %s" % [key, what])
 
 
 ## Moves bullet `i` to `p` discontinuously, e.g. a teleport or a script that
@@ -331,14 +460,94 @@ func clear() -> void:
 	_slot_of_handle.fill(-1)
 	_rebuild_free_list()
 	user.fill(null)
+	owner_counts.fill(0)
+	veto_count = 0
 	count = 0
 	pending_count = 0
 	hooked_count = 0
 	dead_reason.fill(0)
 
 
+## True when the pool holds `logical_cap` bullets, i.e. every further shot is
+## refused whoever fires it. (A non-enemy shooter is refused earlier, see
+## can_spawn() / headroom().)
 func is_full() -> bool:
-	return count >= capacity
+	return count >= logical_cap
+
+
+# --- saturation model: limits and counters --------------------------------------
+
+## Sets the logical cap (clamped to [0, capacity]) and the enemy reserve (clamped
+## to [0, cap]). Lowering the cap below the current count never removes bullets:
+## it only refuses new shots until enough have despawned.
+func set_limits(cap: int, reserve: int) -> void:
+	logical_cap = clampi(cap, 0, capacity)
+	enemy_reserve = clampi(reserve, 0, logical_cap)
+	_other_limit = logical_cap - enemy_reserve
+
+
+## Owner slot (OWNER_NONE / OWNER_PLAYER / OWNER_ENEMY) of an `owner_layer` value.
+## Player wins when both bits are set, like Layers.hostile_to(). Enemy and boss
+## bullets share OWNER_ENEMY.
+static func owner_slot(layer: int) -> int:
+	if (layer & Layers.PLAYER) != 0:
+		return OWNER_PLAYER
+	if (layer & Layers.ENEMY) != 0:
+		return OWNER_ENEMY
+	return OWNER_NONE
+
+
+## Bullets currently occupying a slot that belong to `layer`'s owner slot.
+func owner_count(layer: int) -> int:
+	return owner_counts[owner_slot(layer)]
+
+
+## Highest total number of bullets a shooter of `layer` can bring the pool to.
+func limit_for(layer: int) -> int:
+	return logical_cap if owner_slot(layer) == OWNER_ENEMY else _other_limit
+
+
+## How many more bullets a shooter of `layer` could spawn right now.
+func headroom(layer: int) -> int:
+	return maxi(limit_for(layer) - count, 0)
+
+
+## True if a shot from `layer` would be accepted right now.
+func can_spawn(layer: int) -> bool:
+	return count < limit_for(layer)
+
+
+## Shots refused so far for `layer`'s owner slot.
+func dropped_for(layer: int) -> int:
+	return dropped_by_owner[owner_slot(layer)]
+
+
+## Rebuilds `owner_counts` and `veto_count` from the arrays (repair after code
+## wrote `owner_layer[i]` directly).
+func recount_owners() -> void:
+	owner_counts.fill(0)
+	veto_count = 0
+	for i in count:
+		owner_counts[owner_slot(owner_layer[i])] += 1
+		if can_hit_veto[i] != 0:
+			veto_count += 1
+
+
+## True if the counters match the arrays (debug / tests).
+func counters_consistent() -> bool:
+	var seen := PackedInt32Array([0, 0, 0])
+	var vetoes := 0
+	for i in count:
+		seen[owner_slot(owner_layer[i])] += 1
+		if can_hit_veto[i] != 0:
+			vetoes += 1
+	return seen == owner_counts and vetoes == veto_count and count == owner_counts[0] + owner_counts[1] + owner_counts[2]
+
+
+func _record_drop(owner_slot_i: int) -> void:
+	dropped_total += 1
+	dropped_by_owner[owner_slot_i] += 1
+	dropped_by_limit[DropLimit.LOGICAL_CAP if count >= logical_cap else DropLimit.ENEMY_RESERVE] += 1
 
 
 # --- stable handles ------------------------------------------------------------
@@ -439,6 +648,11 @@ func reflect(
 	var cap := max_reflections if limit < 0 else limit
 	if cap > 0 and reflect_count[slot] >= cap:
 		return false
+	var old_slot := owner_slot(owner_layer[slot])
+	var new_slot := owner_slot(new_owner_layer)
+	if old_slot != new_slot:
+		owner_counts[old_slot] -= 1
+		owner_counts[new_slot] += 1
 	owner_layer[slot] = new_owner_layer
 	if reflect_count[slot] < 255:
 		reflect_count[slot] += 1
@@ -453,6 +667,9 @@ func reflect(
 		param_a[slot] = 0.0
 		param_b[slot] = 0.0
 		pierces_script_invuln[slot] = 0
+		if can_hit_veto[slot] != 0:
+			can_hit_veto[slot] = 0
+			veto_count -= 1
 	if reverse:
 		vel[slot] = -vel[slot]
 		rot[slot] = -rot[slot]
@@ -461,6 +678,9 @@ func reflect(
 
 func _remove_at(i: int) -> void:
 	var last := count - 1
+	owner_counts[owner_slot(owner_layer[i])] -= 1
+	if can_hit_veto[i] != 0:
+		veto_count -= 1
 	_release_handle(_handle_of_slot[i])
 	if i != last:
 		var moved := _handle_of_slot[last]
@@ -484,6 +704,7 @@ func _remove_at(i: int) -> void:
 		owner_layer[i] = owner_layer[last]
 		reflect_count[i] = reflect_count[last]
 		pierces_script_invuln[i] = pierces_script_invuln[last]
+		can_hit_veto[i] = can_hit_veto[last]
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]

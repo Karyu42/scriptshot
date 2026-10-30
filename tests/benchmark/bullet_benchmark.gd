@@ -69,6 +69,10 @@ func _ready() -> void:
 	_rng.seed = 20260101
 	_manager = BulletManager.new()
 	_manager.capacity = 32768
+	# The benchmark measures raw simulation cost at any bullet count: lift the
+	# game's saturation limits (10k logical cap, enemy reserve) out of the way.
+	_manager.logical_cap = _manager.capacity
+	_manager.enemy_reserve = 0
 	_manager.world_bounds = ARENA.grow(32.0)
 	_manager.auto_step = false
 	add_child(_manager)
