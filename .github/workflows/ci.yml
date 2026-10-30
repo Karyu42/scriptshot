@@ -2,7 +2,8 @@
 #   test   : headless import + GUT suite (./tools/run_tests.sh) on every PR and push to main.
 #   perf   : headless bullet benchmark (./tools/run_benchmark.sh) on every PR. p95 <= 16.6 ms is a HARD gate at
 #            5,000 bullets (floor) and a warning-only target at 10,000 (tools/ci/check_perf.py).
-#   export : manual (workflow_dispatch) Windows/macOS/Linux/Web export stub.
+#   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
+#   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
 # Headless numbers use the dummy renderer: they measure CPU simulation cost, not GPU/rendering.
 # See docs/qa/stress-test-plan.md.
 name: CI
@@ -34,6 +35,16 @@ env:
   # tools/run_tests.sh and tools/run_benchmark.sh honour $GODOT.
   GODOT: ${{ github.workspace }}/.godot-bin/godot
   PYTHONDONTWRITEBYTECODE: "1"
+  # Toolchain pins, taken from the Godot 4.7.2-stable tag (godotengine/godot): Android from
+  # platform/android/java/app/config.gradle (compileSdk 36, buildTools 36.1.0, ndkVersion 29.0.14206865,
+  # Java 17), Python/SCons from .github/actions/godot-deps (SCons 4.10.1), Emscripten from
+  # .github/workflows/web_builds.yml (EM_VERSION 4.0.11). Update them together with GODOT_VERSION.
+  JAVA_VERSION: "17"
+  ANDROID_COMPILE_SDK: "36"
+  ANDROID_BUILD_TOOLS: "36.1.0"
+  ANDROID_NDK_VERSION: "29.0.14206865"
+  SCONS_VERSION: "4.10.1"
+  EMSCRIPTEN_VERSION: "4.0.11"
 
 jobs:
   test:
@@ -182,8 +193,11 @@ jobs:
 
   export:
     name: Export (${{ matrix.preset }})
-    # Stub: manual only. Preset names must match export_presets.cfg exactly. export_presets.cfg is
-    # committable now (PR #2 un-ignored it; export_credentials.cfg stays ignored); there is no file yet.
+    # Manual only. Preset names must match export_presets.cfg exactly (commit it; PR #2 un-ignored it,
+    # export_credentials.cfg stays ignored). Everything is exported from Linux with the headless editor:
+    # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
+    # DEBUG apk signed with a throwaway debug keystore generated below. Release signing for Android needs a
+    # keystore secret (GODOT_ANDROID_KEYSTORE_RELEASE_*), which is Karyu's call and is not wired up.
     if: github.event_name == 'workflow_dispatch' && inputs.run_export
     needs: test
     runs-on: ubuntu-24.04
@@ -192,10 +206,14 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { preset: "Windows Desktop", platform: "windows.x86_64", out: "build/windows/scriptshot.exe" }
-          - { preset: "macOS",           platform: "macos.universal", out: "build/macos/scriptshot.zip" }
-          - { preset: "Linux",           platform: "linux.x86_64",   out: "build/linux/scriptshot.x86_64" }
-          - { preset: "Web",             platform: "web.wasm32",     out: "build/web/index.html" }
+          - { preset: "Windows Desktop", platform: "windows.x86_64", mode: release, out: "build/windows/scriptshot.exe" }
+          - { preset: "macOS",           platform: "macos.universal", mode: release, out: "build/macos/scriptshot.zip" }
+          - { preset: "Linux",           platform: "linux.x86_64",   mode: release, out: "build/linux/scriptshot.x86_64" }
+          - { preset: "Web",             platform: "web.wasm32",     mode: release, out: "build/web/index.html" }
+          - { preset: "Android",         platform: "android.arm64",  mode: debug,   out: "build/android/scriptshot-debug.apk" }
+          # iOS is NOT a release target. If an iOS compile check is ever wanted it must run on a macOS
+          # runner and is low priority; leave this commented out:
+          # - { preset: "iOS", platform: "ios.universal", mode: debug, out: "build/ios/scriptshot.xcodeproj" }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -234,21 +252,126 @@ jobs:
           grep -F " $tpz" SHA512-SUMS.txt | sha512sum -c -
           dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
           mkdir -p "$dest" && unzip -q "$tpz" -d tpl && mv tpl/templates/* "$dest/"
+
+      # ---- Android only: JDK, SDK packages, throwaway debug keystore, editor settings ----
+      - name: Set up JDK ${{ env.JAVA_VERSION }} (Android)
+        if: matrix.preset == 'Android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Install Android SDK packages (Android)
+        if: matrix.preset == 'Android'
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager" || { echo "::error::sdkmanager not found under $sdk (runner image changed?)"; exit 1; }
+          "$sdkmanager" --licenses >/dev/null < <(yes)
+          "$sdkmanager" "platform-tools" "build-tools;${ANDROID_BUILD_TOOLS}" "platforms;android-${ANDROID_COMPILE_SDK}"
+          echo "ANDROID_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+      - name: Generate debug keystore and editor settings (Android)
+        if: matrix.preset == 'Android'
+        run: |
+          set -euo pipefail
+          # Throwaway key, regenerated every run. The well-known debug credentials are not secrets.
+          # APKs from different runs therefore cannot be installed over each other (uninstall first).
+          ks="$RUNNER_TEMP/debug.keystore"
+          keytool -genkeypair -keystore "$ks" -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Scriptshot CI Debug,O=Scriptshot,C=US"
+          {
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$ks"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android"
+          } >> "$GITHUB_ENV"
+          # The headless editor reads the SDK/JDK locations from its editor settings file.
+          major_minor="${GODOT_VERSION%.*}"
+          mkdir -p "$HOME/.config/godot"
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo
+            echo '[resource]'
+            echo "export/android/java_sdk_path = \"$JAVA_HOME\""
+            echo "export/android/android_sdk_path = \"$ANDROID_SDK_DIR\""
+          } > "$HOME/.config/godot/editor_settings-${major_minor}.tres"
+
+      - name: Check export preset policy
+        run: |
+          set -euo pipefail
+          test -f export_presets.cfg || { echo "::error::export_presets.cfg missing (commit it; see PR #2 .gitignore note)"; exit 1; }
+          python3 tools/ci/check_export_preset.py export_presets.cfg "${{ matrix.preset }}"
       # PLACEHOLDER: per-platform native Lua libraries. If the binding is a GDExtension, each
-      # export needs that platform's library next to the .gdextension file, and the Web build
-      # needs a wasm32 build (threads/no-threads must match the Web export preset).
+      # export needs that platform's library under bin/<platform>/ (see docs/qa/release-builds.md);
+      # Web needs the wasm32 build matching the Web preset's thread_support, Android needs arm64.
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
       - name: Export
         run: |
           set -euo pipefail
-          test -f export_presets.cfg || { echo "::error::export_presets.cfg missing (commit it; see PR #2 .gitignore note)"; exit 1; }
           mkdir -p "$(dirname '${{ matrix.out }}')"
           "$GODOT" --headless --path . --import || true
-          "$GODOT" --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"
+          "$GODOT" --headless --path . --export-${{ matrix.mode }} "${{ matrix.preset }}" "${{ matrix.out }}"
           ls -la "$(dirname '${{ matrix.out }}')"
       - uses: actions/upload-artifact@v4
         with:
           name: scriptshot-${{ matrix.preset }}
           path: build/
+
+  # DISABLED stub (runs only when vars.ENABLE_NATIVE_LIBS == 'true'). Native builds of GDExtension libraries on GitHub-hosted runners, one per
+  # platform, each uploading bin/<platform>/. Enable (set the variable) only when the binding decision
+  # needs it and tools/ci/build_native_libs.sh exists. Toolchain pins come from the Godot 4.7.2 tag (see env).
+  # Note: upstream Godot 4.7.2 builds macOS on macos-26; this project decided macos-14 (Apple Silicon).
+  native-libs:
+    name: Native libs (${{ matrix.platform }})
+    # Off until the repository variable ENABLE_NATIVE_LIBS is set to 'true'.
+    if: ${{ vars.ENABLE_NATIVE_LIBS == 'true' }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: "linux.x86_64",    runner: ubuntu-24.04,    target: linux }
+          - { platform: "windows.x86_64",  runner: windows-latest,  target: windows }  # MSVC (preinstalled VS Build Tools)
+          - { platform: "macos.universal", runner: macos-14,        target: macos }
+          - { platform: "web.wasm32",      runner: ubuntu-24.04,    target: web }       # threads and nothreads variants
+          - { platform: "android.arm64",   runner: ubuntu-24.04,    target: android }
+          # - { platform: "ios.universal", runner: macos-14, target: ios }  # not a release target; optional compile check only
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install SCons ${{ env.SCONS_VERSION }}
+        shell: bash
+        run: python -m pip install "scons==${SCONS_VERSION}"
+      - name: Set up Emscripten ${{ env.EMSCRIPTEN_VERSION }}
+        if: matrix.target == 'web'
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+          no-cache: true
+      - name: Set up JDK ${{ env.JAVA_VERSION }} and NDK ${{ env.ANDROID_NDK_VERSION }}
+        if: matrix.target == 'android'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+      - name: Install Android NDK
+        if: matrix.target == 'android'
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          "$sdk/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_ROOT=$sdk/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+      - name: Build
+        shell: bash
+        run: bash tools/ci/build_native_libs.sh "${{ matrix.platform }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-libs-${{ matrix.platform }}
+          path: bin/${{ matrix.platform }}/
+          if-no-files-found: error
