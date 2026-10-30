@@ -1,0 +1,12 @@
+crossOriginIsolated check after load...
+[error] WARNING: Property not found: 'lua_gdextension/lua_script_language/script_import_map'.
+[error]    at: get_setting_with_override (core/config/project_settings.cpp:435)
+[log] SPIKE_INFO godot=4.7.2-stable (official) os=Web web=true threads=true mobile=false renderer=WebKit WebGL cpu=
+[log] SPIKE_INFO lua runtime=lua version=Lua 5.4
+[log] SPIKE_RESULT mode=C n=1000 alive=1000 hooked=0 lua_ms_med=0.005 lua_ms_p95=0.010 step_ms_med=1.323 step_ms_p95=1.856 frame_ms_med=16.67 frame_ms_p95=17.02 fps=60.0 lua_mem_kb=66
+[log] SPIKE_RESULT mode=A n=1000 alive=999 hooked=999 lua_ms_med=4.320 lua_ms_p95=5.980 step_ms_med=5.685 step_ms_p95=8.434 frame_ms_med=16.68 frame_ms_p95=19.05 fps=58.0 lua_mem_kb=66
+[log] SPIKE_RESULT mode=B n=1000 alive=999 hooked=999 lua_ms_med=1.610 lua_ms_p95=2.935 step_ms_med=2.734 step_ms_p95=4.555 frame_ms_med=16.67 frame_ms_p95=18.38 fps=59.0 lua_mem_kb=198
+[log] SPIKE_RESULT mode=B+hook n=1000 alive=999 hooked=999 lua_ms_med=1.914 lua_ms_p95=4.020 step_ms_med=3.126 step_ms_p95=5.965 frame_ms_med=16.68 frame_ms_p95=19.75 fps=60.0 lua_mem_kb=701
+[log] SPIKE_DONE
+crossOriginIsolated = True
+elapsed 240.1s

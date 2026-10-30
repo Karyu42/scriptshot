@@ -1,0 +1,72 @@
+WARNING: Property not found: 'lua_gdextension/lua_script_language/script_import_map'.
+     at: get_setting_with_override (core/config/project_settings.cpp:435)
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+Godot 4.7.2-stable (official) Lua Lua 5.4
+
+### (c1) Count-hook overhead on a pure Lua arithmetic loop (5000000 iterations, ~20000000 VM instructions)
+| hook | median ms | p95 ms |
+| off | 33.22 | 35.26 |
+| on, Lua-function hook, count=100 | 354.29 | 378.27 |
+| on, Lua-function hook, count=1000 | 85.16 | 410.65 |
+| on, Lua-function hook, count=10000 | 69.95 | 78.05 |
+| on, Lua-function hook, count=100000 | 72.47 | 87.27 |
+| on, GDScript Callable hook, count=1000 | 95.80 | 97.04 |
+| on, GDScript Callable hook, count=10000 | 74.80 | 76.82 |
+(hook calls for Lua hook count=1000 over this loop: ~20000)
+
+### (c2) Hook overhead on realistic bullet callbacks (4000 per-bullet tick_cmd-style calls / frame)
+| hook | median ms/frame | p95 ms/frame |
+| off | 3.60 | 3.70 |
+| on, Lua-function hook, count=100 | 5.01 | 5.49 |
+| on, Lua-function hook, count=1000 | 4.05 | 4.25 |
+| on, Lua-function hook, count=10000 | 3.67 | 3.96 |
+
+### (c3) Does the hook interrupt runaway code? (state stays usable afterwards)
+  while true do end  (budget 2M instr)           -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:8: in hook '?'
+	[string "..."]:11: in function <[string "..."]:11>) status=2
+    aborted after 8.3 ms; hook-counted instructions: 2001000
+  next call L.ok() on same state                 -> ok
+  for 2000: pcall(function() while true do end end)  [raw pcall] -> swallowed 2000 budget errors, script kept running
+    took 228.0 ms: a raw pcall SWALLOWS the budget error (an unbounded `while true do pcall(...) end` never terminates; observed hang in a first run)
+  same, with sandbox pcall that re-raises the budget sentinel -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:17: in function 'base.pcall'
+	[string "..."]:12: in function <[string "..."]:12>) status=2
+    aborted after 462.9 ms
+  unbounded table growth (budget 2M instr)       -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:8: in hook '?'
+	[string "..."]:26: in function <[string "..."]:26>) status=2
+    Lua memory after abort: 117.4 MB
+    Lua memory after collect_garbage: 36.0 MB
+  pathological ('a'):rep(2000):match('.-b') -> <null> after 16.8 ms (budget NOT triggered: only a few VM instructions)
+  pathological ('a'):rep(8000):match('.-b') -> <null> after 211.1 ms (budget NOT triggered: only a few VM instructions)
+  pathological ('a'):rep(16000):match('.-b') -> <null> after 862.5 ms (budget NOT triggered: only a few VM instructions)
+  ('x'):rep(2^27) -> 134217728, took 587.2 ms, Lua mem now 128.7 MB (no memory cap in binding)
+
+### (c4) Hook inheritance for coroutines (finite loops, 30M iterations; budget 2M instr)
+  Lua-created coroutine.wrap loop (hook set on main thread) -> 30000000
+    took 254.3 ms (an aborted run would be ~ms; a full run ~hundreds of ms)
+  LuaCoroutine + HOOK_YIELD every 100k instr: finished after 90 yields (status=-1, result=9000003000000)
+  infinite loop in LuaCoroutine: host stopped resuming after 21 slices; status=1 (yield-based budget; discarding the coroutine kills it)
+
+### (d1) Error isolation: errors must come back as values, never crash
+  err_plain                                      -> LuaError([string "..."]:28: boom
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:28: in function <[string "..."]:28>) status=2
+  err_table                                      -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:29: in function <[string "..."]:29>) status=2
+  err_nil                                        -> LuaError([string "..."]:30: attempt to index a nil value (local 'x')
+stack traceback:
+	[string "..."]:30: in function <[string "..."]:30>) status=2
+  err_in_pcall                                   -> false:inner
+  err_in_coro             

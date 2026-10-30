@@ -1,0 +1,42 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+Godot 4.7.2-stable (official) | Lua Lua 5.4 | PR #2 pool/manager copied from feat/core-scaffold
+per config: 3 x 150 frames after 40 warmup; render off, 32 hurtboxes, steady-state respawn churn (as tests/benchmark)
+
+### Tick hooks: hook-phase ms per tick (median / p95); `step` = whole BulletManager.step; copy/lua/apply = breakdown medians for option B
+| N | scripted | option | hook med | hook p95 | step med | step p95 | copy in | Lua call | apply | hooked bullets |
+|---|---|---|---|---|---|---|---|---|---|---|
+
+### Events at 200/frame (N=4000): per-bullet Lua call vs drained batch (ms per frame incl. applying the deferred spawns it produced; Lua-only in brackets for batch)
+| event | per-bullet dispatch med | p95 | batch dispatch med (fill+Lua+return) | p95 | batch Lua-call only | deferred-spawn apply next tick (per-bullet / batch) |
+|---|---|---|---|---|---|---|
+| on_spawn | 0.134 | 0.166 | 0.221 | 0.283 | 0.177 | 0.000 / 0.000 |
+| on_hit | 0.483 | 0.832 | 0.573 | 0.697 | 0.398 | 0.829 / 0.825 |
+| on_despawn | 0.477 | 0.546 | 0.562 | 0.643 | 0.387 | 0.833 / 0.825 |
+
+### Hit spam (N=4000): ms per frame for the on_hit dispatch
+| hits/frame | policy | dispatch median | p95 | Lua-call only | deferred-spawn apply | events dropped per frame |
+|---|---|---|---|---|---|---|
+| 200 | per-bullet call, unlimited | 0.481 | 0.605 | 0.000 | 0.829 | 0 |
+| 200 | batch, unlimited | 0.581 | 0.896 | 0.403 | 0.833 | 0 |
+| 200 | batch, cap 256/tick, drop rest | 0.588 | 0.980 | 0.404 | 0.859 | 0 |
+| 200 | batch, cap 256 + coalesce rest into 1 summary | 0.568 | 0.952 | 0.395 | 0.820 | 0 |
+| 1000 | per-bullet call, unlimited | 2.449 | 3.116 | 0.000 | 4.228 | 0 |
+| 1000 | batch, unlimited | 2.754 | 3.112 | 1.911 | 4.051 | 0 |
+| 1000 | batch, cap 256/tick, drop rest | 0.770 | 0.901 | 0.481 | 1.032 | 744 |
+| 1000 | batch, cap 256 + coalesce rest into 1 summary | 0.855 | 1.058 | 0.496 | 1.042 | 0 |
+| 2000 | per-bullet call, unlimited | 5.133 | 5.790 | 0.000 | 8.663 | 0 |
+| 2000 | batch, unlimited | 5.978 | 7.976 | 4.204 | 8.433 | 0 |
+| 2000 | batch, cap 256/tick, drop rest | 0.920 | 1.193 | 0.510 | 1.086 | 1744 |
+| 2000 | batch, cap 256 + coalesce rest into 1 summary | 1.089 | 1.320 | 0.527 | 1.103 | 0 |
+| 5000 | per-bullet call, unlimited | 12.114 | 13.187 | 0.000 | 11.478 | 0 |
+| 5000 | batch, unlimited | 14.181 | 15.592 | 10.188 | 11.566 | 0 |
+| 5000 | batch, cap 256/tick, drop rest | 1.104 | 1.233 | 0.444 | 0.991 | 4744 |
+| 5000 | batch, cap 256 + coalesce rest into 1 summary | 1.492 | 1.671 | 0.459 | 0.996 | 0 |
+
+### fire(): Lua spawning n bullets in one call (ms per fire call)
+| n bullets | GDScript baseline | Lua: ShotRequest fields + request_shot | Lua: emitter:polar(floats) | Lua: packed batch |
+|---|---|---|---|---|
+| 10 | 0.025 | 0.086 | 0.050 | 0.034 |
+| 100 | 0.242 | 0.793 | 0.447 | 0.280 |
+| 1000 | 1.440 | 4.741 | 2.844 | 1.739 |

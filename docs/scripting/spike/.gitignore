@@ -1,0 +1,11 @@
+addons/
+.godot/
+out*/
+*.apk
+*.idsig
+*.uid
+*.so
+*.dll
+*.dylib
+*.wasm
+*.pck
