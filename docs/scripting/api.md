@@ -548,9 +548,11 @@ spawn { speed = 200, bucket = "wave",
 ### The batch view `v` (Lua-facing contract, backend-agnostic)
 
 `v` is **an object, not raw arrays**, so that its backing can change without any change to scripts. Today the backing
-is **packed copies** made by the GDScript pool; the C++ bullet pool (approved by Karyu for *plain* bullets, see
-spike-results.md section 8.3) will back the same object with **zero-copy userdata over native pool memory**. Hooked and
-scripted bullets stay on the GDScript pool and keep the packed-copy backing. A script that follows the rules below cannot tell which backing it got.
+is **packed copies** made by the GDScript pool; the C++ bullet pool (approved by Karyu as a narrow view, see
+spike-results.md section 8.3) will back the same object with **zero-copy userdata over native pool memory**. **Only per-bullet
+hooks (`on_tick` and the GDScript `BulletBehavior` callbacks) force GDScript storage and the packed-copy backing**;
+declarative bullets and bullets whose only hook is `on_batch` live in the native pool and get the zero-copy view once it exists.
+Queued `on_hit` / `on_despawn` events do not change where a bullet lives. A script that follows the rules below cannot tell which backing it got.
 
 | Member | Meaning |
 |---|---|
@@ -561,7 +563,7 @@ scripted bullets stay on the GDScript pool and keep the packed-copy backing. A s
 | `v.age[i]` | seconds since spawn, read-only |
 | `v.pa[i]`, `v.pb[i]` | the per-bullet scratch numbers `param_a` / `param_b`, **read/write** |
 | `v:teleport(i, x, y)`, `v:kill(i)`, `v:reflect(i, layer, reverse)` | structural commands for the bullet at index `i` |
-| `v:spawn_polar(x, y, angle, speed, life)`, `v:spawn{...}` | spawn children (deferred; subject to the spawn caps, `nil`/counted when over) |
+| `v:spawn_polar(x, y, angle, speed, life)`, `v:spawn{...}` | spawn children (deferred; written to a separate request-batch buffer and referenced by one command, see spike-results.md 8.3; subject to the spawn caps, counted when over) |
 
 Rules for both backings (rules 3 and 4 differ in how a violation is reported, as stated; a script that follows them behaves the same on both):
 
@@ -570,7 +572,9 @@ Rules for both backings (rules 3 and 4 differ in how a violation is reported, as
    `pairs` or `ipairs` on a column; use `v.n`.
 2. **Reads and writes are plain numbers.** Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
    are applied when the callback returns; a callback that errors or is stopped by the watchdog applies nothing (as for
-   `player` writes). The host sanitizes written velocities (NaN ignored, clamped to the engine's speed limit).
+   `player` writes). The host sanitizes written values at commit, on both backings: **velocities are clamped to the engine's speed limit, and a NaN or inf
+   written to `vx`, `vy`, `pa` or `pb` kills that bullet**, increments a counter (`get_script_stats().bad_writes`) and is reported in the script
+   error console with the script name and line, rate-limited (once per 5 s per site, like callback errors). Do not write non-finite numbers.
 3. **Do not write a read-only column** (`px`, `py`, `age`, `id`). The native backing raises "column 'px' is read-only". The packed
    backing cannot (columns are bare packed arrays, measured): the write changes only the throw-away copy the pool made for this call
    and never reaches the engine. Use `v:teleport` to move a bullet.
@@ -963,7 +967,7 @@ Refreshed against PR #1 (f0fe292), `main` (39ff259, includes PR #2) and PR #4 (1
 | `PlayerState` script/engine invulnerability queries (OI-16) | **exist in PR #4**: `is_script_invulnerable()`, `is_engine_invulnerable()` and the time getters; `set_invulnerable` writes the script layer only |
 | Player write-detection events (OI-16) | **proposed here**, emitted by the Lua binding (`script_wrote`, `script_teleported`); PR #4's `PlayerState` has no such signals and applies writes immediately |
 | Batch API, `request_batch`, `request_polar`, stable id column, bucketing (OI-15) | **planned**: the Gameplay Engineer's pool refactor, after the saturation PR, built against spike-results.md section 8 |
-| Native zero-copy batch view (OI-20) | **approved for plain bullets** (Karyu, relayed); needs the C++ contract of spike-results.md section 8.3 and the lua-gdextension P4 patch |
+| Native zero-copy batch view (OI-20) | **approved, narrow** (Karyu, relayed; storage rule agreed with the Gameplay Engineer: only per-bullet hooks force GDScript storage); needs the C++ contract of spike-results.md section 8.3 and the lua-gdextension P4 patch |
 
 **For the Gameplay Engineer**
 
@@ -985,8 +989,8 @@ Refreshed against PR #1 (f0fe292), `main` (39ff259, includes PR #2) and PR #4 (1
   after `on_hit`; (c) per-owner live counters in `BulletPool` for the player/enemy split (**saturation PR, after #4**).
 - **[OI-19]** `BulletPool.teleport(index, position)` (**done, PR #2, on main**) and `reflect` exposure confirmed (PR #4); batch
   position writes use a `TELEPORT` command (`v:teleport`).
-- **[OI-20]** Native batch view (C++ pool, plain bullets only): implement the descriptor contract of spike-results.md
-  section 8.3 (column descriptors, bounds, validity window, command buffer); lua-gdextension needs the P4 patch to bind it.
+- **[OI-20]** Native batch view (C++ pool; only per-bullet hooks force GDScript storage, declarative and batch-hook-only bullets are native): implement the descriptor contract of spike-results.md
+  section 8.3 (column descriptors, bounds, validity window, stride-6 command buffer, separate request-batch buffer); lua-gdextension needs the P4 patch to bind it.
 
 **For Karyu** (still open)
 

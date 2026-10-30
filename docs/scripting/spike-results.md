@@ -284,10 +284,10 @@ func apply_vel(indices: PackedInt32Array, v: PackedFloat32Array) -> void        
 func teleport(index: int, position: Vector2) -> void     # [main] (bullet_pool.gd:221): sets pos AND prev_pos
 
 # ---- Command buffer / manager ----
-# ops: 1 SPAWN(x,y,angle,speed,...), 2 KILL(id), 3 SET_PARAM(id,a,b), 4 TELEPORT(id,x,y), 5 REFLECT(id,layer,reverse)
+# ops: 1 SPAWN (references a run of request-batch records in a separate buffer: index + count, see 8.3), 2 KILL(id), 3 SET_PARAM(id,a,b), 4 TELEPORT(id,x,y), 5 REFLECT(id,layer,reverse)
 var script_budget_ms := 3.0                      # BulletManager: per-frame script time; slices round-robin when exhausted
 var max_deferred_spawns := 8192                  # per tick; surplus counted in get_deferred_dropped_count()
-func get_script_stats() -> Dictionary            # hooks run/skipped, events queued/coalesced, ms by phase
+func get_script_stats() -> Dictionary            # hooks run/skipped, events queued/coalesced, bad_writes (non-finite column writes), ms by phase
 
 # ---- ShotEmitter (additions) ----
 func request_polar(x: float, y: float, angle: float, speed: float, lifetime: float, behavior_id: int) -> bool
@@ -320,7 +320,7 @@ The player-facing API (`on_tick`, `on_batch(bs, dt)`, `on_hit`, ...) is a thin l
 ### 8.2 The batch view: shapes, overhead and the pick (backend-agnostic)
 
 **Requirement (Gameplay Engineer, Karyu):** one Lua-facing batch accessor, **identical for scripts** over two backings: **packed copies** made by the
-GDScript pool now, and **zero-copy userdata over native pool memory** later (C++ pool, plain bullets). Choose the cheapest shape that can
+GDScript pool now, and **zero-copy userdata over native pool memory** later (C++ pool; which bullets are native: 8.3). Choose the cheapest shape that can
 swap its backing without script changes, and measure the wrapper against raw access.
 
 Kernel per bullet: read `pos(x,y)`, `vel(x,y)`, `age`, a `sqrt`-based steering step, write `out_vel(x,y)`; `n = 4,000`, 61 repetitions; **three runs** on the
@@ -349,8 +349,9 @@ commands, **0-based**), spelled out in api.md *The batch view `v`*.
 
 ### 8.3 Native zero-copy backing: the C++ contract, and how it reaches Lua
 
-**Scope (Karyu, relayed): narrow.** Only a **plain-bullet batch view** is native: the C++ pool hands Lua a read/write view of its own SoA columns for a bucket of plain bullets
-(no per-bullet script callbacks). **Hooked and scripted bullets stay in the GDScript pool on packed copies**, and nothing else in core knows about Lua. One accessor, two backings (8.2).
+**Scope (Karyu, relayed; storage rule agreed with the Gameplay Engineer): narrow.** The C++ pool hands Lua a read/write view of its own SoA columns for a bucket of bullets. **Where a bullet lives is decided by one rule:**
+only **per-bullet hooks** (`on_update` / `on_tick` and the GDScript `BulletBehavior` callbacks) **force GDScript storage** (and with it the packed-copy backing). **Declarative bullets and batch-hook-only bullets (`on_batch`) live in the native pool and get the zero-copy view once P4 exists.**
+**Queued `on_hit` and `on_despawn` events do not force GDScript storage** (they are delivered through the event queue, not by touching the columns). Nothing else in core knows about Lua. One accessor, two backings (8.2); until P4 exists every batch bucket runs on packed copies.
 
 **A. What lua-gdextension allows (read from the source and tested on 0.8.2 / the source build).**
 
@@ -384,9 +385,12 @@ typedef struct ss_batch_view {
     uint64_t       epoch;           /* the pool's epoch when this view was filled */
     const uint64_t *live_epoch;     /* the pool's CURRENT epoch; compared on every access */
     ss_column id, px, py, vx, vy, age, pa, pb;
-    float         *cmds;            /* command buffer, stride-6 records: op, id, a, b, c, d */
+    float         *cmds;            /* command buffer, stride-6 records: op, id, a, b, c, d (teleport, kill, reflect, spawn reference) */
     uint32_t       cmd_cap;         /* records */
     uint32_t      *cmd_count;       /* records written so far */
+    float         *spawn_buf;       /* request-batch buffer, stride-8 records (below); written by v:spawn / v:spawn_polar */
+    uint32_t       spawn_cap;       /* records */
+    uint32_t      *spawn_count;     /* records written so far */
 } ss_batch_view;
 ```
 
@@ -399,9 +403,28 @@ typedef struct ss_batch_view {
    (after the command buffer has been applied)** and whenever it compacts, swap-removes, grows or reallocates its columns. Stale use raises "view expired" instead of reading freed memory. **While a hook runs, the pool must not move columns**: spawns and kills during
    the hook go through the command buffer (this already is the rule for batch B). Single-threaded: the hook runs on the main thread in the physics tick; no worker touches the columns meanwhile.
 5. **Write semantics.** Writable columns (`vx`, `vy`, `pa`, `pb`) point at **scratch copies**, filled from the live columns when the view is created (`4 columns x 4,000 x 4 B = 64 KB`, estimated 5-10 us), so (a) later reads in the callback see earlier writes, (b) an error or a
-   watchdog stop **commits nothing** (the pool discards the scratch, exactly as the packed backing and `player` writes), (c) the pool **sanitizes at commit** (NaN ignored, speed clamped) and copies back. Read-only columns point at the live memory; a write raises "column 'px' is read-only".
+   watchdog stop **commits nothing** (the pool discards the scratch, exactly as the packed backing and `player` writes), (c) the pool **sanitizes at commit** and copies back: speed is clamped, and **a NaN or inf in `vx`, `vy`, `pa` or `pb` kills that bullet and increments a counter** (below). Read-only columns point at the live memory; a write raises "column 'px' is read-only".
    Position changes are never writes: `v:teleport(i, x, y)` is a command (`BulletPool.teleport`).
-6. **Commands.** `v:teleport/kill/reflect/spawn_polar/spawn` append stride-6 records to `cmds` (bounds-checked against `cmd_cap`; over the cap counts and drops, like the other caps); the pool applies them **after the callback returns, in order**.
+6. **Commands and the request-batch buffer.** `v:teleport`, `v:kill` and `v:reflect` append **stride-6 records** to `cmds` (`op, id, a, b, c, d`; bounds-checked against `cmd_cap`; over the cap counts and drops, like the other caps). **`v:spawn` / `v:spawn_polar` do not use that record for the payload:** they write **stride-8 request records into the separate `spawn_buf`**, and a single `SPAWN` command record in `cmds` **references the run by index and count**:
+
+   | `cmds` record | `op` | `id` | `a` | `b` | `c`, `d` |
+   |---|---|---|---|---|---|
+   | `SPAWN` | spawn op | parent bullet id (0 = none) | **first record index** in `spawn_buf` | **record count** | unused (0) |
+
+   Consecutive `v:spawn` calls extend the last `SPAWN` run, so a burst of N children costs one command record and N request records. The pool feeds the run to `ShotEmitter.request_batch` (the same shape as the GDScript pool, so both backings spawn identically).
+   **Request-batch record (8 floats; integers are stored as exact floats below 2^24):**
+
+   | # | Field | Meaning |
+   |---|---|---|
+   | 0, 1 | `x`, `y` | spawn position (world space, px) |
+   | 2, 3 | `u`, `v` | velocity `vx, vy` **or**, with the `POLAR` flag, `angle` (rad) and `speed` (px/s) |
+   | 4 | `radius` | px |
+   | 5 | `damage` | |
+   | 6 | `flags` | bit 0 `POLAR` (fields 2, 3 are angle and speed), bit 1 `PIERCES_SCRIPT_INVULN` (maps to `pierces_script_invuln`, PR #4), remaining bits reserved (0) |
+   | 7 | `behavior` | behavior id; lifetime, colour, `owner_layer` and the other `ShotRequest` defaults come from the behavior record (OI-15), **to be confirmed by the Gameplay Engineer** |
+
+   The pool applies commands **after the callback returns, in order**; a bullet killed earlier in the same call ignores later commands. A `SPAWN` run that does not fit in `spawn_cap` is truncated to the records that fit (the rest counted and dropped).
+   **Commit sanitizing of written columns:** at commit the pool checks the scratch `vx`, `vy`, `pa`, `pb` of each bullet. **A NaN or inf kills that bullet** (despawn reason `MANUAL`, to be confirmed by the Gameplay Engineer; no damage is dealt), **increments a per-script counter** (`get_script_stats().bad_writes`) and is **reported in the script error console with the script name and line, rate-limited** (the same policy as callback errors: once per 5 s per site, with the count since the last report). The native backing checks finiteness at write time on the cold path only (a non-finite value records `lua_getinfo` current line of the first offending write per call), so the report carries that line; the packed backing can only detect it at commit and reports the script name and the line where the `on_batch` function is defined. The same rule applies on both backings, so a script behaves identically; only the reported line is more precise on the native one.
 7. **Getting the `lua_State` (the one hard question).** Our code never needs it under P4: the binding inside lua-gdextension owns the state; the pool passes the descriptor address through the extension's own call path. Under the C ABI shim the patched lua-gdextension returns the `lua_State*` of the state running the hook and the function-pointer table.
 8. **ABI/version pin.** Descriptor `abi_version`, Lua 5.4.8, godot-cpp `507ed9d`/`api_version=4.7` for our extension, and the lua-gdextension fork commit are pinned together in the pipeline; any change to the struct bumps `abi_version`.
 
@@ -683,5 +706,5 @@ covered by the shared pipeline (~2-3 days for web/threads and Android ABI checks
 1. Run the GUI editor on a real Wayland Linux and on Windows/macOS with the addon (#257 is not reproduced here).
 2. QA: run the APK on an x86_64 emulator with KVM (testing.md); run Windows and macOS exports (not run here).
 3. Decided: stock 0.8.2 + G1 for M1; the fork port to godot-cpp 10 and then P1-P3 at lower priority than M1 integration, not gated on import (Karyu: sharing/import deferred). Open: when to schedule the port (estimated ~2 engineer-weeks).
-4. Answered (Karyu, relayed): hybrid C++ is approved for **plain bullets, narrow zero-copy view**; the accessor design is section 8.2, the contract section 8.3. Open: P4 patch vs C ABI shim (P4 preferred), and who writes the C++ side (the Gameplay Engineer, after the pool refactor).
+4. Answered (Karyu, relayed; storage rule agreed with the Gameplay Engineer): hybrid C++ is approved with a **narrow zero-copy view**; only per-bullet hooks force GDScript storage, declarative and batch-hook-only bullets live in the native pool; the accessor design is section 8.2, the contract section 8.3. Open: P4 patch vs C ABI shim (P4 preferred), and who writes the C++ side (the Gameplay Engineer, after the pool refactor).
 5. Karyu: determinism/seeding (OI-2); limited-mode shape.

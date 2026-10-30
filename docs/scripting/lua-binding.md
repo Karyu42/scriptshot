@@ -289,8 +289,8 @@ Answered since the first draft: **Godot version** = 4.7.2 (decided); **spike** =
 Still open:
 
 - Stock 0.8.2 + wrappers for M1; the fork port to godot-cpp 10 and then P1-P3 afterwards at lower priority than M1 integration (no longer gated on import): agreed? (Chief of Staff)
-- **Answered (Karyu, relayed): hybrid C++ is approved**, with a **narrow zero-copy Lua view of the native pool memory for plain bullets only**; hooked
-  and scripted bullets stay on GDScript packed copies, and one accessor design serves both backends (spike-results.md section 8). The view needs the
+- **Answered (Karyu, relayed): hybrid C++ is approved**, with a **narrow zero-copy Lua view of the native pool memory**; only per-bullet hooks force GDScript storage and packed copies,
+  while declarative and batch-hook-only bullets live in the native pool, and one accessor design serves both backends (spike-results.md section 8). The view needs the
   fork (lua-gdextension cannot register foreign userdata or hand out a `lua_State*` today): P4 patch preferred, a C ABI shim as the fallback.
 - Run the GUI editor on real Wayland Linux, Windows and macOS (#257), and the APK on a device or a KVM CI runner.
 - Determinism and seeding (api.md OI-2); the limited mode (deferred with sharing).
