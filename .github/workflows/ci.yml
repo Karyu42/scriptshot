@@ -1,0 +1,205 @@
+# Scriptshot CI: headless import + GUT tests on every PR and push to main.
+# Export and perf jobs are manual (workflow_dispatch) stubs until the project has
+# export_presets.cfg and a stress-test scene. See docs/qa/stress-test-plan.md.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_export:
+        description: "Run the export matrix (needs export_presets.cfg)"
+        type: boolean
+        default: false
+      run_perf:
+        description: "Run the bullet stress test (needs test/perf/stress_runner.tscn)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Single source of truth for the engine version. MUST match config/features in
+  # project.godot (e.g. "4.7") and be supported by the pinned GUT release
+  # (GUT 9.7.x for Godot 4.7.x; GUT 9.6.x for 4.6.x).
+  GODOT_VERSION: "4.7.2"
+  GODOT_CHANNEL: stable
+  GODOT_DIR: ${{ github.workspace }}/.godot-bin
+
+jobs:
+  test:
+    name: Import + GUT tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Cache Godot binary
+        id: cache-godot
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | grep -v mono | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+
+      - name: Godot version
+        run: |
+          echo "$GODOT_DIR" >> "$GITHUB_PATH"
+          "$GODOT_DIR/godot" --headless --version
+
+      - name: Guard - project and tests exist
+        run: |
+          set -euo pipefail
+          test -f project.godot || { echo "::error::project.godot missing"; exit 1; }
+          test -f addons/gut/gut_cmdln.gd || { echo "::error::GUT not installed at addons/gut (commit it, or install it in CI)"; exit 1; }
+          n=$(find test -name 'test_*.gd' 2>/dev/null | wc -l)
+          echo "Found $n GUT test scripts under test/"
+          [ "$n" -gt 0 ] || { echo "::error::no test_*.gd files under test/"; exit 1; }
+          # Warn if project.godot features do not match GODOT_VERSION major.minor
+          want="${GODOT_VERSION%.*}"
+          grep -q "config/features=.*\"$want\"" project.godot || echo "::warning::project.godot config/features does not list \"$want\""
+
+      - name: Headless import
+        run: |
+          set +e
+          godot --headless --path . --import 2>&1 | tee import.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          # Godot can print script/parse errors yet still exit 0, so scan the log too.
+          if grep -E "SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource" import.log; then
+            echo "::error::errors during headless import (see log above)"; exit 1
+          fi
+          # Some Godot builds exit non-zero after a clean --import; tests below are the real gate.
+          [ "$rc" -eq 0 ] || echo "::warning::godot --import exited $rc with no script errors in log"
+
+      - name: Run GUT tests (headless)
+        run: |
+          mkdir -p reports
+          # -gexit makes GUT quit with a non-zero exit code if any test fails.
+          godot --headless --path . -s addons/gut/gut_cmdln.gd \
+            -gdir=res://test -ginclude_subdirs \
+            -gjunit_xml_file=res://reports/gut-junit.xml \
+            -gexit 2>&1 | tee reports/gut.log
+
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            reports/
+            import.log
+          if-no-files-found: ignore
+
+  perf:
+    name: Bullet stress test (manual until the scene exists)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_perf
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Godot on PATH
+        run: echo "$GODOT_DIR" >> "$GITHUB_PATH"
+      - name: Headless import
+        run: godot --headless --path . --import || true
+      - name: Run stress test (headless, simulation cost only)
+        run: |
+          mkdir -p reports
+          # Scene must write reports/perf.json: {"steps":[{"bullets":N,"p50_ms":..,"p95_ms":..,"p99_ms":..}]}
+          godot --headless --path . res://test/perf/stress_runner.tscn -- \
+            --ramp=1000,2000,5000,10000 --seconds=10 --out=reports/perf.json
+      - name: Enforce frame-time budget
+        run: |
+          python3 tools/ci/check_perf.py reports/perf.json \
+            --target-bullets 5000 --p95-ms 16.6 --regression-pct 15 \
+            ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: perf-reports
+          path: reports/
+          if-no-files-found: ignore
+
+  export:
+    name: Export (${{ matrix.preset }})
+    # Stub: manual only. Preset names must match export_presets.cfg exactly.
+    if: github.event_name == 'workflow_dispatch' && inputs.run_export
+    needs: test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { preset: "Windows Desktop", out: "build/windows/scriptshot.exe" }
+          - { preset: "macOS",           out: "build/macos/scriptshot.zip" }
+          - { preset: "Linux",           out: "build/linux/scriptshot.x86_64" }
+          - { preset: "Web",             out: "build/web/index.html" }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Cache export templates
+        id: cache-templates
+        uses: actions/cache@v4
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.${{ env.GODOT_CHANNEL }}
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          tpz="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_export_templates.tpz"
+          curl -fsSL --retry 3 -O "$base/$tpz" -O "$base/SHA512-SUMS.txt"
+          grep -F " $tpz" SHA512-SUMS.txt | grep -v mono | sha512sum -c -
+          dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
+          mkdir -p "$dest" && unzip -q "$tpz" -d tpl && mv tpl/templates/* "$dest/"
+      - name: Export
+        run: |
+          set -euo pipefail
+          echo "$GODOT_DIR" >> "$GITHUB_PATH"; export PATH="$GODOT_DIR:$PATH"
+          test -f export_presets.cfg || { echo "::error::export_presets.cfg missing"; exit 1; }
+          mkdir -p "$(dirname '${{ matrix.out }}')"
+          godot --headless --path . --import || true
+          godot --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"
+          ls -la "$(dirname '${{ matrix.out }}')"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scriptshot-${{ matrix.preset }}
+          path: build/
