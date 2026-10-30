@@ -5,10 +5,23 @@ extends RefCounted
 ## Concrete implementation: BulletShotEmitter. See docs/architecture.md.
 
 
-## Queues one bullet. Returns true if it was accepted, false if the bullet pool
-## is full (the shot is dropped, never queued).
-func request_shot(_request: ShotRequest) -> bool:
-	push_error("ShotEmitter.request_shot() is abstract")
+## Spawns one bullet and returns its stable id (> 0), or -1 if the bullet pool
+## is full (the shot is dropped, never queued). The id stays valid for exactly
+## the bullet's lifetime; see is_bullet_alive().
+func request_shot_id(_request: ShotRequest) -> int:
+	push_error("ShotEmitter.request_shot_id() is abstract")
+	return -1
+
+
+## Same as request_shot_id() for callers that only care whether the shot was
+## accepted.
+func request_shot(request: ShotRequest) -> bool:
+	return request_shot_id(request) >= 0
+
+
+## True while the bullet with this id exists and has not been marked for
+## removal. False for stale or invalid ids.
+func is_bullet_alive(_id: int) -> bool:
 	return false
 
 

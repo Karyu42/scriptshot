@@ -10,8 +10,13 @@ func _init(manager: BulletManager) -> void:
 	_manager = manager
 
 
-func request_shot(request: ShotRequest) -> bool:
-	return _manager.spawn(request) >= 0
+func request_shot_id(request: ShotRequest) -> int:
+	var slot := _manager.spawn(request)
+	return _manager.pool.id_of(slot) if slot >= 0 else -1
+
+
+func is_bullet_alive(id: int) -> bool:
+	return _manager.pool.is_alive(id)
 
 
 func register_behavior(behavior: BulletBehavior) -> int:

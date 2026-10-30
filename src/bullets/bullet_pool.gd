@@ -9,6 +9,13 @@ extends RefCounted
 ## collision and hooks live in BulletManager / HurtboxGrid / BulletRenderer so
 ## each can be tested and optimised on its own.
 ##
+## Stable handles: slots move when bullets despawn, so every bullet also gets
+## an *id* that stays valid for exactly its lifetime. An id packs
+## (generation << 32) | handle, where `handle` indexes an indirection table
+## (handle -> current slot) and `generation` is bumped each time a handle is
+## released. Stale ids (bullet gone, handle possibly reused) are detected by
+## slot_of() / is_alive(). Ids are always > 0; -1 means "no bullet".
+##
 ## Performance note: the hot loop writes to the pool's own member arrays. Do
 ## not cache them in a local variable before writing (GDScript copies a packed
 ## array on the first write when another reference exists). Reading through a
@@ -56,6 +63,23 @@ var collide_world := PackedByteArray()
 var last_hit := PackedInt64Array()
 ## 0 = alive; otherwise DespawnReason + 1 (pending removal in flush_dead()).
 var dead_reason := PackedByteArray()
+## Free-form per-bullet script state (ShotRequest.user), parallel to the other
+## arrays: moved on swap-remove, reset to null when the bullet despawns.
+var user: Array = []
+
+# --- handle indirection ------------------------------------------------------
+const HANDLE_BITS := 32
+const HANDLE_MASK := (1 << HANDLE_BITS) - 1
+const GENERATION_MASK := 0x7FFFFFFF
+## handle -> current slot (-1 while the handle is free).
+var _slot_of_handle := PackedInt32Array()
+## handle -> generation of the bullet that currently owns it / will own it next.
+var _generation := PackedInt32Array()
+## slot -> handle, parallel to the bullet arrays.
+var _handle_of_slot := PackedInt32Array()
+## Stack of free handles; _free_count entries are valid.
+var _free_handles := PackedInt32Array()
+var _free_count := 0
 
 # --- per-tick work lists ----------------------------------------------------
 ## Slots marked dead this tick, in marking order (see flush_dead()).
@@ -90,6 +114,12 @@ func _init(p_capacity: int = 16384) -> void:
 	dead_reason.resize(capacity)
 	pending.resize(capacity)
 	hooked.resize(capacity)
+	user.resize(capacity)
+	_slot_of_handle.resize(capacity)
+	_generation.resize(capacity)
+	_handle_of_slot.resize(capacity)
+	_free_handles.resize(capacity)
+	_reset_handles()
 
 
 ## Spawns a bullet from a ShotRequest. Returns its slot, or -1 if the pool is
@@ -101,6 +131,8 @@ func spawn(request: ShotRequest) -> int:
 	var i := count
 	count += 1
 	spawned_total += 1
+	_assign_handle(i)
+	user[i] = request.user
 	pos[i] = request.position
 	prev_pos[i] = request.position
 	vel[i] = request.velocity
@@ -144,6 +176,8 @@ func spawn_simple(
 	var i := count
 	count += 1
 	spawned_total += 1
+	_assign_handle(i)
+	user[i] = null
 	pos[i] = position
 	prev_pos[i] = position
 	vel[i] = velocity
@@ -247,6 +281,15 @@ func despawn(i: int) -> void:
 
 ## Removes every bullet. Statistics are kept.
 func clear() -> void:
+	# Invalidate every outstanding id, then rebuild the free list.
+	for slot in count:
+		var h := _handle_of_slot[slot]
+		_generation[h] = (_generation[h] + 1) & GENERATION_MASK
+		if _generation[h] == 0:
+			_generation[h] = 1
+	_slot_of_handle.fill(-1)
+	_rebuild_free_list()
+	user.fill(null)
 	count = 0
 	pending_count = 0
 	hooked_count = 0
@@ -257,9 +300,68 @@ func is_full() -> bool:
 	return count >= capacity
 
 
+# --- stable handles ------------------------------------------------------------
+
+## Stable id of the bullet currently in `slot` (valid until it despawns).
+func id_of(slot: int) -> int:
+	assert(slot >= 0 and slot < count, "id_of: slot out of range")
+	var h := _handle_of_slot[slot]
+	return (_generation[h] << HANDLE_BITS) | h
+
+
+## Current slot of the bullet with this id, or -1 if the id is stale, invalid or
+## its bullet has despawned. A bullet that is marked dead but not yet flushed
+## still has a slot.
+func slot_of(id: int) -> int:
+	if id <= 0:
+		return -1
+	var h := id & HANDLE_MASK
+	if h >= capacity or (id >> HANDLE_BITS) != _generation[h]:
+		return -1
+	return _slot_of_handle[h]
+
+
+## True while the bullet exists and has not been marked for removal.
+func is_alive(id: int) -> bool:
+	var slot := slot_of(id)
+	return slot >= 0 and dead_reason[slot] == 0
+
+
+func _assign_handle(slot: int) -> void:
+	_free_count -= 1
+	var h := _free_handles[_free_count]
+	_slot_of_handle[h] = slot
+	_handle_of_slot[slot] = h
+
+
+func _release_handle(h: int) -> void:
+	var g := (_generation[h] + 1) & GENERATION_MASK
+	_generation[h] = g if g != 0 else 1
+	_slot_of_handle[h] = -1
+	_free_handles[_free_count] = h
+	_free_count += 1
+
+
+func _reset_handles() -> void:
+	_generation.fill(1)
+	_slot_of_handle.fill(-1)
+	_rebuild_free_list()
+
+
+func _rebuild_free_list() -> void:
+	for k in capacity:
+		_free_handles[k] = capacity - 1 - k  # pop order: handle 0 first
+	_free_count = capacity
+
+
 func _remove_at(i: int) -> void:
 	var last := count - 1
+	_release_handle(_handle_of_slot[i])
 	if i != last:
+		var moved := _handle_of_slot[last]
+		_handle_of_slot[i] = moved
+		_slot_of_handle[moved] = i
+		user[i] = user[last]
 		pos[i] = pos[last]
 		prev_pos[i] = prev_pos[last]
 		vel[i] = vel[last]
@@ -280,4 +382,5 @@ func _remove_at(i: int) -> void:
 		last_hit[i] = last_hit[last]
 	dead_reason[i] = dead_reason[last] if i != last else 0
 	dead_reason[last] = 0
+	user[last] = null
 	count = last

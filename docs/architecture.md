@@ -80,6 +80,7 @@ retained, so one instance can be mutated and re-submitted any number of times.
 | `pierce` | `int` | `0` | Extra targets to pass through before despawning |
 | `collide_world` | `bool` | `true` | Stop at `world` walls (despawn reason `WALL`). `false` = fly through walls |
 | `param_a`, `param_b` | `float` | `0.0` | Free scratch values for behaviour hooks |
+| `user` | `Variant` | `null` | Arbitrary per-bullet script state; hooks see it as `pool.user[index]`. The reference is copied, not the contents. Reset to `null` when the bullet despawns |
 
 Helpers: `ShotRequest.polar(position, heading_radians, speed)` and
 `ShotRequest.with_velocity(position, velocity)`.
@@ -94,8 +95,10 @@ Abstract base (`src/core/shot_emitter.gd`); the game provides
 `BulletShotEmitter`. Shooters never see `BulletManager` or `BulletPool`.
 
 ```gdscript
-func request_shot(request: ShotRequest) -> bool       # false = pool full, shot dropped
+func request_shot_id(request: ShotRequest) -> int     # stable bullet id (> 0), or -1 if pool full
+func request_shot(request: ShotRequest) -> bool       # same, bool: false = pool full, shot dropped
 func request_shots(requests: Array) -> int            # returns number accepted
+func is_bullet_alive(id: int) -> bool                 # false for stale / invalid ids
 func register_behavior(behavior: BulletBehavior) -> int   # id for ShotRequest.behavior_id
 func get_bullet_count() -> int
 func get_capacity() -> int
@@ -104,6 +107,24 @@ func get_capacity() -> int
 Spawning is immediate and synchronous: the bullet exists when the call returns,
 `on_spawn` has run, and it is first simulated on the next physics tick. Spawning
 from inside a hook is allowed.
+
+### Stable bullet ids
+
+Pool slots move: despawning swaps the last bullet into the freed slot. To refer
+to a bullet across ticks, keep its **id** instead of its slot.
+
+* `ShotEmitter.request_shot_id()` returns the new bullet's id; inside hooks use
+  `pool.id_of(index)`.
+* An id packs `(generation << 32) | handle`. `handle` indexes an indirection table
+  (`handle -> current slot`); `generation` is bumped whenever a handle is released,
+  so an id whose bullet is gone is detected even after its handle was reused by a
+  newer bullet. Ids are always `> 0`; `-1` means "no bullet".
+* `pool.slot_of(id) -> int` returns the current slot or `-1` if stale/invalid
+  (a bullet marked dead but not yet flushed still has a slot);
+  `pool.is_alive(id) -> bool` is false once a bullet is marked dead or removed.
+  Resolve an id to a slot, use it, and drop the slot before the next despawn.
+* Per-bullet script state goes in `ShotRequest.user` / `pool.user[index]`: it moves
+  with the bullet on swap-remove and is reset to `null` on despawn.
 
 ### `ShotContext` + `ShotPattern` -- the weapon / script entry point
 
@@ -139,7 +160,7 @@ Subclass, override what you need, register once, reference by id
 **only valid during the call** (slots are swapped when other bullets despawn).
 Read and write the pool's arrays directly: `pool.pos[index]`, `pool.vel[index]`,
 `pool.rot[index]`, `pool.age[index]`, `pool.lifetime[index]`, `pool.color[index]`,
-`pool.param_a[index]`, `pool.pierce[index]`, ...
+`pool.param_a[index]`, `pool.pierce[index]`, `pool.user[index]`, ...
 
 | Hook | When |
 | --- | --- |

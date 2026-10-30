@@ -40,6 +40,11 @@ var collide_world := true
 ## Free scratch values handed to behaviour hooks (e.g. wave amplitude/phase).
 var param_a := 0.0
 var param_b := 0.0
+## Arbitrary per-bullet script state (any Variant). Stored in the pool's `user`
+## array; hooks read and write it as pool.user[index]. The reference is copied,
+## not the contents: share or duplicate mutable values yourself. Cleared to null
+## when the bullet despawns.
+var user: Variant = null
 
 
 ## Request travelling along `heading` (radians) at `speed` (px/s).
@@ -76,3 +81,4 @@ func reset() -> void:
 	collide_world = true
 	param_a = 0.0
 	param_b = 0.0
+	user = null
