@@ -2,16 +2,18 @@
 
 Goal: prove Scriptshot holds a **16.6 ms (60 FPS) p95 frame time** at **10,000 bullets (target)**, with **5,000 bullets as the hard floor**, and catch regressions in CI.
 These are the agreed numbers: budget 16.6 ms (not 16.7), floor 5k, target 10k.
-Status: the headless part exists in the core scaffold (PR #2): `tests/benchmark/bullet_benchmark.tscn`, run via
-`./tools/run_benchmark.sh --json=PATH`. CI runs it as the `perf` job and `tools/ci/check_perf.py` gates on its JSON
-(`results[].work_p50_ms / work_p95_ms / work_p99_ms`). Still missing: the windowed run, dense-collision mode,
-and the Lua variants below (blocked on the Lua binding decision).
+Status: the headless part exists in the core scaffold (PR #2, head 2026abe): `tests/benchmark/bullet_benchmark.tscn`, run via
+`./tools/run_benchmark.sh --json=PATH`. The scene itself exits 1 on a p95 miss, on a target count that was not benchmarked, and on a
+shortfall (fewer bullets alive than requested); its default target is 10,000 bullets at 16.6 ms. CI runs it as the `perf` job
+with `--target-bullets=5000` (so the benchmark's own verdict is the 5k floor) and `tools/ci/check_perf.py` applies the floor/target policy to its
+JSON (`results[].work_p50_ms / work_p95_ms / work_p99_ms / reached / min_alive_before_step`). Still missing: the windowed run,
+dense-collision mode, and the Lua variants below (blocked on the Lua binding decision).
 
 Gaps in the current benchmark (planned follow-ups):
-- Only the 5k and 10k steps run by default, and bullets are scattered randomly, so there are few hits and no clustered collisions.
+- Bullets are scattered randomly (32 hurtboxes, 28 walls, a tenth of the bullets fast enough for the swept path), so there are few hits and no clustered collisions.
 - No bullets with behaviour hooks (`behavior_id != 0`), which is the path Lua will use.
 - The `RenderingServer` is the dummy one, so the MultiMesh upload cost is not measured.
-- A target count that is not benchmarked passes silently (`n/a`, exit 0). CI passes `--target-bullets` and `check_perf.py` fails if it is missing.
+- (Fixed in PR #2) A target count that is not benchmarked used to pass silently. It now fails, and `check_perf.py` also treats a missing count or `reached: false` as a floor failure or a 10k warning.
 
 ## 1. Scenario (`tests/benchmark/bullet_benchmark.tscn`; target design below)
 - A scene with a player, a fixed RNG seed, no input and no random spawns, so runs are comparable.

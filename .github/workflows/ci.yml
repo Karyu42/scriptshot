@@ -83,26 +83,15 @@ jobs:
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
 
-      # tools/run_tests.sh swallows import output (>/dev/null || true) and GUT exits 0 when a
-      # script that no test loads fails to parse, so do the import here and scan the log too.
-      - name: Headless import
-        run: |
-          set +e
-          "$GODOT" --headless --path . --import 2>&1 | tee import.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if grep -E "SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Failed to load GDExtension|GDExtension.*(error|failed)" import.log; then
-            echo "::error::errors during headless import (see log above)"; exit 1
-          fi
-          # Some Godot builds exit non-zero after a clean --import; the tests below are the real gate.
-          [ "$rc" -eq 0 ] || echo "::warning::godot --import exited $rc with no script errors in the log"
-
       - name: Run GUT tests (headless)
         run: |
           mkdir -p reports
-          # run_tests.sh = import + `godot --headless -s res://addons/gut/gut_cmdln.gd -gexit`;
-          # config comes from .gutconfig.json (tests/unit, test_*.gd). Extra args pass straight to GUT.
-          # Non-zero exit on any failure or unexpected engine error (GUT's error tracker).
+          # run_tests.sh = `godot --headless --import` + `-s res://addons/gut/gut_cmdln.gd -gexit`.
+          # It exits non-zero on a test failure, a non-zero import exit, or any line matching its
+          # ERROR_PATTERN (SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|
+          # Failed to instantiate) in the import or test output. Config: .gutconfig.json (tests/unit).
+          # Extra args pass straight to GUT. When the Lua GDExtension lands, add
+          # "Failed to load GDExtension" to ERROR_PATTERN in tools/run_tests.sh.
           ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
           exit "${PIPESTATUS[0]}"
 
@@ -122,7 +111,6 @@ jobs:
           name: test-reports
           path: |
             reports/
-            import.log
           if-no-files-found: ignore
 
   perf:
@@ -160,14 +148,21 @@ jobs:
       - name: Run benchmark (5k floor + 10k target)
         run: |
           mkdir -p reports
-          # 5000 = hard floor, 10000 = target; 2000 is informational. The benchmark's own verdict
-          # (--target-bullets/--target-ms) covers the 5k floor and makes it exit 1 on a miss; it still
-          # writes the JSON first, so tolerate exit 1 here and let check_perf.py be the single gate.
+          # run_benchmark.sh imports (and fails on script/resource errors), then runs the scene, which
+          # exits 1 when the --target-bullets count is not benchmarked, was not actually reached
+          # (fewer alive than requested), or misses --target-ms at p95.
+          # Its own default target is 10,000, but our policy is 5k = hard floor and 10k = warn-only,
+          # so the benchmark's verdict is pinned to the 5k floor here and check_perf.py judges 10k.
+          # The JSON is written either way; a benchmark failure is tolerated only if it left JSON
+          # behind and was not caused by an import/script error (those print "run_benchmark.sh: ...").
           set +e
           ./tools/run_benchmark.sh --bullets=2000,5000,10000 --target-bullets=5000 --target-ms=16.6 \
             --json="$PWD/reports/bench.json" 2>&1 | tee reports/bench.log
           rc=${PIPESTATUS[0]}
           set -e
+          if grep -q '^run_benchmark.sh:' reports/bench.log; then
+            echo "::error::benchmark run failed on import/script errors"; exit 1
+          fi
           [ -s reports/bench.json ] || { echo "::error::benchmark produced no JSON (exit $rc)"; exit 1; }
       - name: Enforce budget (5k hard fail, 10k warn-only)
         run: |
@@ -187,9 +182,8 @@ jobs:
 
   export:
     name: Export (${{ matrix.preset }})
-    # Stub: manual only. Preset names must match export_presets.cfg exactly, and the file must be
-    # committed. NOTE: .gitignore currently lists export_presets.cfg, which would make this job
-    # fail until that line is removed (keep export_credentials.cfg ignored).
+    # Stub: manual only. Preset names must match export_presets.cfg exactly. export_presets.cfg is
+    # committable now (PR #2 un-ignored it; export_credentials.cfg stays ignored); there is no file yet.
     if: github.event_name == 'workflow_dispatch' && inputs.run_export
     needs: test
     runs-on: ubuntu-24.04
@@ -249,7 +243,7 @@ jobs:
       - name: Export
         run: |
           set -euo pipefail
-          test -f export_presets.cfg || { echo "::error::export_presets.cfg missing (is it still in .gitignore?)"; exit 1; }
+          test -f export_presets.cfg || { echo "::error::export_presets.cfg missing (commit it; see PR #2 .gitignore note)"; exit 1; }
           mkdir -p "$(dirname '${{ matrix.out }}')"
           "$GODOT" --headless --path . --import || true
           "$GODOT" --headless --path . --export-release "${{ matrix.preset }}" "${{ matrix.out }}"

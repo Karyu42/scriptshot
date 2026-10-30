@@ -12,8 +12,12 @@ import unittest
 import check_perf
 
 
-def row(bullets, p50, p95, p99):
-    return {"bullets": bullets, "work_p50_ms": p50, "work_p95_ms": p95, "work_p99_ms": p99}
+def row(bullets, p50, p95, p99, reached=True, min_alive=None):
+    """Same keys as tests/benchmark/bullet_benchmark.gd writes (FABRICATED values)."""
+    return {"bullets": bullets, "frames": 600, "alive_at_end": bullets - 30,
+            "min_alive_before_step": bullets - 30 if min_alive is None else min_alive,
+            "reached": reached, "work_p50_ms": p50, "work_p95_ms": p95, "work_p99_ms": p99,
+            "work_max_ms": p99 + 1, "work_mean_ms": p50}
 
 
 def run(rows, *extra):
@@ -61,7 +65,7 @@ class CheckPerfTest(unittest.TestCase):
         self.assertIn("::warning::p95 18.25 ms > budget 16.6 ms at 10000 bullets (target)", out)
         self.assertNotIn("::error::", out)
         self.assertIn("**WARNING**", summ)
-        self.assertIn("over budget (warning)", summ)
+        self.assertIn("over budget / shortfall (warning)", summ)
         # p50/p95/p99 of the over-budget 10k row are still reported.
         self.assertIn("| 10000 | target | 12.00 | 18.25 | 22.00 |", summ)
 
@@ -86,6 +90,18 @@ class CheckPerfTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("::error::p95 regressed more than 25% vs baseline at 5000 bullets", out)
         self.assertIn("::warning::p95 regressed more than 25% vs baseline at 10000 bullets", out)
+
+    def test_5k_shortfall_is_hard_fail_even_if_fast(self):
+        code, out, summ = run([row(5000, 1.0, 1.5, 2.0, reached=False, min_alive=4100), row(10000, 7.0, 8.0, 10.0)])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::shortfall at 5000 bullets (hard floor): only 4100 were alive", out)
+        self.assertIn("**FAIL**", summ)
+
+    def test_10k_shortfall_warns_but_does_not_fail(self):
+        code, out, _ = run([row(5000, 3.5, 5.0, 6.2), row(10000, 1.0, 2.0, 3.0, reached=False, min_alive=8000)])
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::shortfall at 10000 bullets (target): only 8000 were alive", out)
+        self.assertNotIn("::error::", out)
 
     def test_unreadable_report_fails(self):
         out = io.StringIO()

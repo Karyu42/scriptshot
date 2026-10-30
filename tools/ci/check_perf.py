@@ -4,11 +4,15 @@
 Input: the JSON from `tools/run_benchmark.sh --json=PATH` (tests/benchmark/bullet_benchmark.gd):
 
     {"godot": "...", "target": "...",
-     "results": [{"bullets": 5000, "work_p50_ms": .., "work_p95_ms": .., "work_p99_ms": .., ...}, ...]}
+     "target_bullets": .., "target_ms": ..,
+     "results": [{"bullets": 5000, "work_p50_ms": .., "work_p95_ms": .., "work_p99_ms": ..,
+                  "reached": true, "min_alive_before_step": 4966, ...}, ...]}
 
 Policy (agreed targets):
-  * FLOOR   (default 5,000 bullets):  p95 > budget, or no result  -> HARD FAIL (exit 1)
-  * TARGET  (default 10,000 bullets): p95 > budget, or no result  -> ::warning:: + summary line, exit 0
+  * FLOOR   (default 5,000 bullets):  p95 > budget, no result, or a shortfall -> HARD FAIL (exit 1)
+  * TARGET  (default 10,000 bullets): p95 > budget, no result, or a shortfall -> ::warning:: + summary line, exit 0
+    A "shortfall" is the benchmark's own `"reached": false` (fewer bullets alive than requested on some
+    measured frame), which would otherwise let a run that simulates less than it claims look fast.
   * Optional --baseline: p95 regression > --regression-pct at FLOOR fails, at TARGET warns.
 
 "work" is the CPU time of one tick of bullet work on the headless dummy renderer. It is not a GPU
@@ -40,8 +44,8 @@ def table(results, floor, target, budget):
     for n, r in sorted(results.items()):
         role = "floor" if n == floor else "target" if n == target else ""
         if role:
-            ok = r["work_p95_ms"] <= budget
-            verdict = "pass" if ok else ("**FAIL**" if role == "floor" else "over budget (warning)")
+            ok = r["work_p95_ms"] <= budget and r.get("reached") is not False
+            verdict = "pass" if ok else ("**FAIL**" if role == "floor" else "over budget / shortfall (warning)")
         else:
             verdict = "info"
         lines.append(f"| {n} | {role} | {fmt(r, 'work_p50_ms')} | {fmt(r, 'work_p95_ms')} | "
@@ -58,6 +62,9 @@ def check(results, floor, target, budget, baseline=None, regression_pct=25.0):
         if r is None:
             sink.append(f"no result for {role} count of {n} bullets (was it passed to --bullets?)")
             return
+        if r.get("reached") is False:
+            sink.append(f"shortfall at {n} bullets ({role}): only {r.get('min_alive_before_step', '?')} were alive "
+                        f"on the slowest-filled frame, so the timing is not valid")
         p95 = r["work_p95_ms"]
         if p95 > budget:
             sink.append(f"p95 {p95:.2f} ms > budget {budget} ms at {n} bullets ({role})")
