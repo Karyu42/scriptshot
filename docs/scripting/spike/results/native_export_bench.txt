@@ -1,0 +1,7 @@
+SPIKE_INFO godot=4.7.2-stable (official) os=Linux web=false threads=true mobile=false renderer= cpu=Intel(R) Xeon(R) Processor
+SPIKE_INFO lua runtime=lua version=Lua 5.4
+SPIKE_RESULT mode=C n=1000 alive=1000 hooked=0 lua_ms_med=0.002 lua_ms_p95=0.002 step_ms_med=0.566 step_ms_p95=0.885 frame_ms_med=6.90 frame_ms_p95=6.96 fps=145.0 lua_mem_kb=82
+SPIKE_RESULT mode=A n=1000 alive=999 hooked=999 lua_ms_med=1.704 lua_ms_p95=3.160 step_ms_med=2.200 step_ms_p95=3.873 frame_ms_med=6.90 frame_ms_p95=7.07 fps=145.0 lua_mem_kb=82
+SPIKE_RESULT mode=B n=1000 alive=999 hooked=999 lua_ms_med=1.145 lua_ms_p95=1.658 step_ms_med=1.640 step_ms_p95=2.303 frame_ms_med=6.90 frame_ms_p95=7.09 fps=145.0 lua_mem_kb=304
+SPIKE_RESULT mode=B+hook n=1000 alive=999 hooked=999 lua_ms_med=1.462 lua_ms_p95=2.253 step_ms_med=2.001 step_ms_p95=3.093 frame_ms_med=6.90 frame_ms_p95=7.03 fps=145.0 lua_mem_kb=826
+SPIKE_DONE

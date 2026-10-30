@@ -1,0 +1,23 @@
+ADV test=spin mode=naive outcome=ERROR: instruction budget exceeded ms=9 peak_lua_mem_mb=0.3 host_ok=true heartbeat=ok
+ADV test=pcall_swallow mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=error_loop mode=naive outcome=ERROR: instruction budget exceeded ms=1004 peak_lua_mem_mb=0.3 host_ok=true heartbeat=ok
+ADV test=close_handler_spin mode=naive outcome=COMPLETED ms=9 peak_lua_mem_mb=0.3 host_ok=true heartbeat=ok
+ADV test=sethook_nil mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=sethook_own mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=sethook_via_package_loaded mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=load_bypass mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=coroutine_spin mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=coroutine_resume_loop mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=c_boundary_sort mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=memory_bomb_table mode=naive outcome=ERROR: instruction budget exceeded ms=714 peak_lua_mem_mb=247.1 host_ok=true heartbeat=ok
+ADV test=gc_stop_bomb mode=naive outcome=ERROR: instruction budget exceeded ms=85 peak_lua_mem_mb=51.7 host_ok=true heartbeat=ok
+ADV test=string_rep_bomb mode=naive outcome=COMPLETED ms=854 peak_lua_mem_mb=256.1 host_ok=true heartbeat=ok
+ADV test=string_rep_via_debug_upvalue mode=naive outcome=COMPLETED ms=0 peak_lua_mem_mb=0.1 host_ok=true heartbeat=ok
+ADV test=recursion_lua mode=naive outcome=ERROR: instruction budget exceeded ms=358 peak_lua_mem_mb=30.6 host_ok=true heartbeat=ok
+ADV test=recursion_c_index mode=naive outcome=ERROR: [string "user.lua"]:1: C stack overflow ms=0 peak_lua_mem_mb=0.1 host_ok=true heartbeat=ok
+ADV test=recursion_pcall mode=naive outcome=COMPLETED ms=0 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
+ADV test=pattern_bomb mode=naive outcome=COMPLETED ms=1363 peak_lua_mem_mb=0.2 host_ok=true heartbeat=ok
+ADV test=os_exit mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=os_exit_in_coroutine mode=naive outcome=HUNG (killed by external timeout 25s; game frozen) heartbeat=NONE
+ADV test=facade_rawset mode=naive outcome=COMPLETED ms=0 peak_lua_mem_mb=0.1 host_ok=true heartbeat=ok
+ADV test=facade_bad_values mode=naive outcome=ERROR: [string "user.lua"]:1: attempt to call a nil value (global 'spawn') ms=0 peak_lua_mem_mb=0.1 host_ok=true heartbeat=ok
