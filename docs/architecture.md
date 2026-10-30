@@ -353,29 +353,15 @@ by whoever builds the `ShotRequest` (the player's `ShotContext.target_mask` and
 
 ## Open design questions
 
-<<<<<<< HEAD
 1. **Non-rectangular level geometry.** Bullet-vs-wall collision supports
    axis-aligned rectangles only. Polygons or tile maps would need another
    broad phase (or `PhysicsServer2D` queries for hooked bullets only).
 2. **Interpolation quality.** Bullet interpolation uses the engine's linear
    ("fast") lerp, which is exact for straight bullets and approximate for
    strongly curving ones within a single 1/60 s tick.
-3. **Overflow policy.** A full pool drops new shots. Alternative: recycle the
-   oldest bullet. Drop is predictable for scripts; recycle never loses the
-   newest shot.
-=======
-1. **Bullet vs. world collision.** Bullets currently ignore `world` geometry and
-   only die at `world_bounds`. Options: a second spatial hash of wall rects
-   (cheap, fits rectangular arenas), or batched `PhysicsServer2D` point/shape
-   queries for hooked bullets only. Needs a decision on level geometry.
-2. **Rendering at high refresh rates.** Bullets are simulated and drawn on the
-   60 Hz tick while the player and camera are interpolated. A 144 Hz display
-   shows bullets updating at 60 Hz. Fix is cheap (extrapolate by velocity in the
-   shader with a global uniform) but is a visual-policy call.
 3. **Overflow policy.** A full pool still drops new shots, now observably (see
    above). Alternative: recycle the oldest bullet. Drop is predictable for
    scripts; recycle never loses the newest shot.
->>>>>>> ede054e (docs: interface additions and provisional defaults for saturation, weapon update, health)
 4. **Lua hook granularity.** Per-bullet `on_update` callbacks from Lua will be the
    dominant cost beyond a few hundred hooked bullets. Prefer declarative
    kinematics (`acceleration`, `turn_rate`, params) plus occasional hooks, or add

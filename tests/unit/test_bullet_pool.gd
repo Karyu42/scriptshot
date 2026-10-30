@@ -15,6 +15,12 @@ func _spawn_at_x(x: float, life: float = 10.0) -> int:
 	return pool.spawn_simple(Vector2(x, 0), Vector2.ZERO, life)
 
 
+## True if the user slot holds `expected`. (Variants are compared here rather
+## than passed to assert_*, which the project's unsafe-call warnings reject.)
+func _user_is(slot: int, expected: Variant) -> bool:
+	return pool.user[slot] == expected
+
+
 func _xs() -> Array:
 	var out := []
 	for i in pool.count:
@@ -509,7 +515,7 @@ func test_flush_dead_invalidates_exactly_the_removed_ids() -> void:
 	var ids: Array[int] = []
 	for i in 8:
 		ids.append(pool.id_of(_spawn_at_x(float(i))))
-	for i in [1, 4, 6]:
+	for i: int in [1, 4, 6]:
 		pool.mark_dead(i)
 	assert_false(pool.is_alive(ids[1]), "marked dead is no longer alive")
 	assert_eq(pool.slot_of(ids[1]), 1, "but it still has a slot until flushed")
@@ -562,9 +568,10 @@ func test_handle_table_survives_random_churn() -> void:
 			live.erase(id)
 			dead.append(id)
 	assert_eq(pool.count, live.size())
-	for id in live:
+	for id: int in live:
 		assert_true(pool.is_alive(id))
-		assert_eq(pool.pos[pool.slot_of(id)].x, live[id])
+		var spawned_x: float = live[id]
+		assert_eq(pool.pos[pool.slot_of(id)].x, spawned_x)
 	for id in dead:
 		if not live.has(id):
 			assert_false(pool.is_alive(id))
@@ -574,11 +581,11 @@ func test_handle_table_survives_random_churn() -> void:
 
 func test_user_defaults_to_null_and_comes_from_request() -> void:
 	pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 1.0)
-	assert_null(pool.user[0])
+	assert_true(_user_is(0, null))
 	var r := ShotRequest.new()
 	r.user = {"phase": 2.5, "tag": "wave"}
 	pool.spawn(r)
-	assert_eq(pool.user[1], {"phase": 2.5, "tag": "wave"})
+	assert_true(_user_is(1, {"phase": 2.5, "tag": "wave"}))
 	assert_eq(pool.user.size(), 8, "user array is parallel to the pool and never grows")
 
 
@@ -592,9 +599,9 @@ func test_user_moves_with_its_bullet_on_swap_remove() -> void:
 	pool.despawn(0)
 	var slot := pool.slot_of(id3)
 	assert_eq(slot, 0)
-	assert_eq(pool.user[slot], "state3", "user value travelled with its bullet")
-	assert_eq(pool.user[1], "state1")
-	assert_eq(pool.user[2], "state2")
+	assert_true(_user_is(slot, "state3"), "user value travelled with its bullet")
+	assert_true(_user_is(1, "state1"))
+	assert_true(_user_is(2, "state2"))
 
 
 func test_user_is_cleared_when_bullet_despawns() -> void:
@@ -603,11 +610,11 @@ func test_user_is_cleared_when_bullet_despawns() -> void:
 	pool.spawn(r)
 	pool.spawn(r)
 	pool.despawn(1)
-	assert_null(pool.user[1], "vacated tail slot is null")
+	assert_true(_user_is(1, null), "vacated tail slot is null")
 	pool.mark_dead(0)
 	pool.flush_dead()
-	assert_null(pool.user[0])
-	assert_null(pool.user[1])
+	assert_true(_user_is(0, null))
+	assert_true(_user_is(1, null))
 
 
 func test_respawned_slot_does_not_inherit_old_user_value() -> void:
@@ -616,7 +623,7 @@ func test_respawned_slot_does_not_inherit_old_user_value() -> void:
 	pool.spawn(r)
 	pool.despawn(0)
 	pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 1.0)
-	assert_null(pool.user[0])
+	assert_true(_user_is(0, null))
 
 
 func test_clear_nulls_user_values() -> void:
@@ -626,7 +633,7 @@ func test_clear_nulls_user_values() -> void:
 		pool.spawn(r)
 	pool.clear()
 	for i in 8:
-		assert_null(pool.user[i])
+		assert_true(_user_is(i, null))
 
 
 func test_user_slot_swap_remove_with_flush_of_many() -> void:
@@ -635,11 +642,11 @@ func test_user_slot_swap_remove_with_flush_of_many() -> void:
 		r.position = Vector2(float(i), 0)
 		r.user = i
 		pool.spawn(r)
-	for i in [0, 2, 5, 7]:
+	for i: int in [0, 2, 5, 7]:
 		pool.mark_dead(i)
 	pool.flush_dead()
 	assert_eq(pool.count, 4)
 	for i in pool.count:
-		assert_eq(pool.user[i], int(pool.pos[i].x), "user value matches its bullet at slot %d" % i)
+		assert_true(_user_is(i, int(pool.pos[i].x)), "user value matches its bullet at slot %d" % i)
 	for i in range(pool.count, 8):
-		assert_null(pool.user[i])
+		assert_true(_user_is(i, null))

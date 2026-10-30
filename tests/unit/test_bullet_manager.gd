@@ -582,7 +582,9 @@ func test_user_state_is_visible_to_hooks_and_travels_with_the_bullet() -> void:
 		manager.step(DT)
 	var slot := manager.pool.slot_of(id)
 	assert_eq(slot, 0, "survivor moved into the freed slot")
-	assert_eq(manager.pool.user[slot]["count"], 3)
+	var state: Dictionary = manager.pool.user[slot]
+	var count: int = state["count"]
+	assert_eq(count, 3)
 
 
 class UserCounter:
