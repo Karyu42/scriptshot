@@ -31,6 +31,15 @@ func is_bullet_alive(_id: int) -> bool:
 	return false
 
 
+## Hands a live bullet to another faction (a parry / reflect): `new_owner_layer`
+## is Layers.PLAYER or Layers.ENEMY. The bullet then only hits what is hostile
+## to the new owner (never the new owner itself) and is recoloured to that
+## faction's colour. With `reverse` its velocity is flipped too. Returns false
+## for a stale id or an invalid owner. See BulletPool.reflect().
+func reflect_bullet(_id: int, _new_owner_layer: int, _reverse: bool = false) -> bool:
+	return false
+
+
 ## Convenience for patterns: submits every ShotRequest in `requests`.
 ## Returns how many were accepted.
 func request_shots(requests: Array) -> int:

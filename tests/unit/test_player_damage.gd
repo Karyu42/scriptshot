@@ -1,5 +1,6 @@
 extends GutTest
-## Enemy bullets hurt the player (placeholder Health); nobody hurts their own side.
+## Enemy bullets hurt the player; nobody hurts their own side (a bullet's owner
+## layer is removed from its hit mask).
 
 const DT := 1.0 / 60.0
 
@@ -18,8 +19,10 @@ func before_each() -> void:
 	await wait_physics_frames(2)
 
 
-func _bullet_at(pos: Vector2, mask: int, dmg: float = 1.0) -> int:
+## An enemy-owned bullet by default (the ones that can hurt the player).
+func _bullet_at(pos: Vector2, mask: int, dmg: float = 1.0, owner_layer: int = Layers.ENEMY) -> int:
 	var r := ShotRequest.polar(pos, 0.0, 0.0)
+	r.owner_layer = owner_layer
 	r.hit_mask = mask
 	r.damage = dmg
 	r.lifetime = 5.0
@@ -34,10 +37,29 @@ func test_enemy_bullet_damages_player_and_is_consumed() -> void:
 
 
 func test_player_bullet_does_not_hurt_player() -> void:
-	var id := _bullet_at(player.global_position, Layers.hostile_to(Layers.PLAYER))
+	var id := _bullet_at(player.global_position, Layers.hostile_to(Layers.PLAYER), 1.0, Layers.PLAYER)
 	await wait_physics_frames(2)
 	assert_eq(player.health.hp, player.health.max_hp, "no friendly fire")
 	assert_true(bullets.emitter.is_bullet_alive(id), "and the bullet is not consumed by its own side")
+
+
+func test_player_owned_bullet_cannot_hurt_player_even_if_asked_to() -> void:
+	# A script that sets hit_mask to PLAYER anyway: the owner's layer is stripped.
+	var id := _bullet_at(player.global_position, Layers.PLAYER | Layers.ENEMY, 1.0, Layers.PLAYER)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp, "own bullets never hurt the player")
+	assert_true(bullets.emitter.is_bullet_alive(id))
+	assert_eq(bullets.pool.hit_mask[bullets.pool.slot_of(id)], Layers.ENEMY)
+
+
+func test_default_request_is_player_owned_and_harmless_to_player() -> void:
+	var r := ShotRequest.polar(player.global_position, 0.0, 0.0)
+	r.hit_mask = Layers.PLAYER
+	r.lifetime = 5.0
+	var id := bullets.emitter.request_shot_id(r)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp)
+	assert_true(bullets.emitter.is_bullet_alive(id))
 
 
 func test_enemy_bullet_does_not_hurt_enemies() -> void:
@@ -50,7 +72,7 @@ func test_enemy_bullet_does_not_hurt_enemies() -> void:
 
 func test_player_bullet_hurts_enemy() -> void:
 	var dummy: TrainingDummy = main.get_node("Dummies/Dummy1")
-	_bullet_at(dummy.global_position, Layers.hostile_to(Layers.PLAYER), 3.0)
+	_bullet_at(dummy.global_position, Layers.hostile_to(Layers.PLAYER), 3.0, Layers.PLAYER)
 	await wait_physics_frames(2)
 	assert_eq(dummy.health, dummy.max_health - 3.0)
 

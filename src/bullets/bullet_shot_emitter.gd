@@ -19,6 +19,10 @@ func is_bullet_alive(id: int) -> bool:
 	return _manager.pool.is_alive(id)
 
 
+func reflect_bullet(id: int, new_owner_layer: int, reverse: bool = false) -> bool:
+	return _manager.reflect(id, new_owner_layer, reverse)
+
+
 func register_behavior(behavior: BulletBehavior) -> int:
 	return _manager.register_behavior(behavior)
 

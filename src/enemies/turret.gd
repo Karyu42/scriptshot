@@ -31,6 +31,7 @@ func _physics_process(delta: float) -> void:
 	_request.lifetime = 4.0
 	_request.radius = 5.0
 	_request.damage = shot_damage
+	_request.owner_layer = Layers.ENEMY
 	_request.hit_mask = Layers.hostile_to(Layers.ENEMY)
-	_request.color = Color("ff6b8b")
+	_request.color = Layers.bullet_color(Layers.ENEMY)
 	emitter.request_shot(_request)

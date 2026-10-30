@@ -48,6 +48,7 @@ func test_spawn_copies_every_request_field() -> void:
 	r.radius = 6.0
 	r.damage = 2.5
 	r.hit_mask = Layers.PLAYER
+	r.owner_layer = Layers.ENEMY
 	r.color = Color.RED
 	r.behavior_id = 7
 	r.acceleration = 12.0
@@ -65,6 +66,7 @@ func test_spawn_copies_every_request_field() -> void:
 	assert_eq(pool.radius[0], 6.0)
 	assert_eq(pool.damage[0], 2.5)
 	assert_eq(pool.hit_mask[0], Layers.PLAYER)
+	assert_eq(pool.owner_layer[0], Layers.ENEMY)
 	assert_eq(pool.color[0], Color.RED)
 	assert_eq(pool.behavior[0], 7)
 	assert_eq(pool.accel[0], 12.0)

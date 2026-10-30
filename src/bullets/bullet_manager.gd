@@ -135,6 +135,15 @@ func spawn(request: ShotRequest) -> int:
 	return i
 
 
+## Hands the live bullet with stable id `id` to `new_owner_layer` (Layers.PLAYER
+## or Layers.ENEMY): it now hits only what is hostile to the new owner and takes
+## its faction colour. See BulletPool.reflect(). Returns false for a stale id.
+func reflect(id: int, new_owner_layer: int, reverse: bool = false) -> bool:
+	if not pool.is_alive(id):
+		return false
+	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse)
+
+
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()

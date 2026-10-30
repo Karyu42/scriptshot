@@ -22,6 +22,11 @@ var radius := 4.0
 var damage := 1.0
 ## Layers (see Layers) the bullet can hit. 0 = hits nothing (decorative).
 var hit_mask := Layers.ENEMY
+## Faction that fires the bullet: Layers.PLAYER (default; what scripts shoot
+## for) or Layers.ENEMY. The owner's own layer is always removed from hit_mask
+## when the bullet spawns, so a bullet can never hurt whoever fired it, whatever
+## hit_mask says. 0 = unowned (no stripping).
+var owner_layer := Layers.PLAYER
 ## Flat draw colour.
 var color := Color(1.0, 0.82, 0.4)
 ## Id returned by ShotEmitter.register_behavior(); 0 = plain bullet, no hooks.
@@ -73,6 +78,7 @@ func reset() -> void:
 	radius = 4.0
 	damage = 1.0
 	hit_mask = Layers.ENEMY
+	owner_layer = Layers.PLAYER
 	color = Color(1.0, 0.82, 0.4)
 	behavior_id = 0
 	acceleration = 0.0

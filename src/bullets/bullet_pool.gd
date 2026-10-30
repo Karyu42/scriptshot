@@ -54,6 +54,11 @@ var param_a := PackedFloat32Array()
 var param_b := PackedFloat32Array()
 var color := PackedColorArray()
 var hit_mask := PackedInt32Array()
+## Faction that fired the bullet (Layers.PLAYER or Layers.ENEMY; 0 = unowned,
+## e.g. spawn_simple). A bullet never hits its own faction: spawn() strips the
+## owner's layer from hit_mask, and reflect() re-derives hit_mask for the new
+## owner. See ShotRequest.owner_layer.
+var owner_layer := PackedInt32Array()
 var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
 ## 1 = collides with the `world` layer (walls), 0 = flies through walls.
@@ -107,6 +112,7 @@ func _init(p_capacity: int = 16384) -> void:
 	param_b.resize(capacity)
 	color.resize(capacity)
 	hit_mask.resize(capacity)
+	owner_layer.resize(capacity)
 	behavior.resize(capacity)
 	pierce.resize(capacity)
 	collide_world.resize(capacity)
@@ -150,7 +156,8 @@ func spawn(request: ShotRequest) -> int:
 	param_a[i] = request.param_a
 	param_b[i] = request.param_b
 	color[i] = request.color
-	hit_mask[i] = request.hit_mask
+	owner_layer[i] = request.owner_layer
+	hit_mask[i] = request.hit_mask & ~request.owner_layer
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
 	collide_world[i] = 1 if request.collide_world else 0
@@ -192,6 +199,7 @@ func spawn_simple(
 	param_a[i] = 0.0
 	param_b[i] = 0.0
 	color[i] = bullet_color
+	owner_layer[i] = 0
 	hit_mask[i] = mask
 	behavior[i] = 0
 	pierce[i] = 0
@@ -354,6 +362,30 @@ func _rebuild_free_list() -> void:
 	_free_count = capacity
 
 
+## Hands bullet `slot` to another faction: it now belongs to `new_owner_layer`
+## (Layers.PLAYER or Layers.ENEMY), hits only what is hostile to that faction
+## (hit_mask = Layers.hostile_to(new_owner_layer), so it can never hit its new
+## owner), and takes that faction's colour (Layers.bullet_color). Piercing
+## bookkeeping (`last_hit`) is cleared so the bullet can hit the old owner
+## right away. With `reverse` the velocity and heading are flipped too (a
+## parry that sends the bullet back where it came from). Returns false, and
+## changes nothing, for a dead slot or an owner that is not PLAYER or ENEMY.
+## Prefer ShotEmitter.reflect_bullet(id, ...) from scripts: it takes stable ids.
+func reflect(slot: int, new_owner_layer: int, reverse: bool = false) -> bool:
+	if slot < 0 or slot >= count or dead_reason[slot] != 0:
+		return false
+	if new_owner_layer != Layers.PLAYER and new_owner_layer != Layers.ENEMY:
+		return false
+	owner_layer[slot] = new_owner_layer
+	hit_mask[slot] = Layers.hostile_to(new_owner_layer)
+	color[slot] = Layers.bullet_color(new_owner_layer)
+	last_hit[slot] = 0
+	if reverse:
+		vel[slot] = -vel[slot]
+		rot[slot] = -rot[slot]
+	return true
+
+
 func _remove_at(i: int) -> void:
 	var last := count - 1
 	_release_handle(_handle_of_slot[i])
@@ -376,6 +408,7 @@ func _remove_at(i: int) -> void:
 		param_b[i] = param_b[last]
 		color[i] = color[last]
 		hit_mask[i] = hit_mask[last]
+		owner_layer[i] = owner_layer[last]
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]
