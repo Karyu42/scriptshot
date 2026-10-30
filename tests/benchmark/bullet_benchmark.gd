@@ -19,7 +19,9 @@ extends Node
 ##   --hooked=0.3           share (0..1) of the bullets that carry a no-op on_update hook
 ##                          (default 0 = no hooked bullets, the original workload; the same
 ##                          bullet trajectories are simulated at every fraction)
-##   --json=path            also write results as JSON (includes the hooked fraction)
+##   --backend=native       bullet backend: auto (default), gdscript or native.
+##                          auto follows SCRIPTSHOT_BULLET_BACKEND; unset stays on gdscript
+##   --json=path            also write results as JSON (includes the hooked fraction and backend)
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
 ## BulletManager.step: kinematics, collision, hooks, despawn, MultiMesh buffer
@@ -52,6 +54,8 @@ var target_ms := 16.6
 var json_path := ""
 ## Share of the bullets spawned with a no-op on_update hook (see --hooked).
 var hooked_fraction := 0.0
+## "auto", "gdscript" or "native". auto follows SCRIPTSHOT_BULLET_BACKEND.
+var backend_preference := "auto"
 
 var _manager: BulletManager
 var _rng := RandomNumberGenerator.new()
@@ -99,6 +103,7 @@ func _ready() -> void:
 	_manager.enemy_reserve = 0
 	_manager.world_bounds = ARENA.grow(32.0)
 	_manager.auto_step = false
+	_manager.backend_preference = backend_preference
 	add_child(_manager)
 	_noop_behavior_id = _manager.register_behavior(NoopHook.new())
 	_build_walls()
@@ -108,8 +113,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f"
-		% [Engine.get_version_info().string, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction])
+	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f"
+		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction])
 	_next_count()
 
 
@@ -120,7 +125,7 @@ func _process(_delta: float) -> void:
 
 	var t0 := Time.get_ticks_usec()
 	_top_up(_current_count)
-	var alive_before_step := _manager.pool.count
+	var alive_before_step := _manager.alive_count()
 	_manager.step(FIXED_DELTA)
 	var work := (Time.get_ticks_usec() - t0) / 1000.0
 
@@ -162,8 +167,7 @@ func _inside_wall(p: Vector2) -> bool:
 
 
 func _top_up(n: int) -> void:
-	var pool := _manager.pool
-	while pool.count < n:
+	while _manager.alive_count() < n:
 		_request.reset()
 		var spawn_at := Vector2.ZERO
 		for _attempt in 8:
@@ -203,7 +207,7 @@ func _finish_count() -> void:
 		"hooked_fraction": hooked_fraction,
 		"hooked_alive_at_end": _hooked_alive(),
 		"frames": _work_ms.size(),
-		"alive_at_end": _manager.pool.count,
+		"alive_at_end": _manager.alive_count(),
 		"min_alive_before_step": _min_alive,
 		"reached": _min_alive >= _current_count,
 		"wall_hits_last_step": _manager.last_wall_hit_count,
@@ -275,6 +279,7 @@ func _report() -> void:
 		if f != null:
 			f.store_string(JSON.stringify({
 				"godot": Engine.get_version_info().string,
+				"backend": _manager.backend,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
 				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "results": _results,
@@ -306,4 +311,8 @@ func _parse_args() -> String:
 				if not parsed.ok:
 					return parsed.error
 				hooked_fraction = parsed.value
+			"backend":
+				if not kv[1] in ["auto", "gdscript", "native"]:
+					return "--backend must be auto, gdscript or native, got '%s'" % kv[1]
+				backend_preference = kv[1]
 	return ""
