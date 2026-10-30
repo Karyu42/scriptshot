@@ -52,7 +52,8 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_update_aim()
-	if _cooldown.update(delta, Input.is_action_pressed("fire"), weapon.fire_interval if weapon != null else 0.0):
+	var shots := _cooldown.update(delta, Input.is_action_pressed("fire"), weapon.fire_interval if weapon != null else 0.0)
+	for _shot in shots:
 		_fire()
 
 	_flash = maxf(_flash - delta * 6.0, 0.0)
@@ -93,6 +94,11 @@ func _update_aim() -> void:
 		aim_point = global_position + aim_direction * 220.0
 	else:
 		var viewport := get_viewport()
+		# Note: get_render_position() uses the interpolation fraction of the last
+		# rendered frame, which is slightly stale inside a physics tick (at most
+		# one frame of the ship's motion, a few px at full speed). That is
+		# negligible for aiming, and the camera is the other half of the
+		# screen-space offset, so both stay consistent with what the player sees.
 		update_mouse_aim(viewport.get_mouse_position(), viewport.get_canvas_transform() * get_render_position())
 
 
