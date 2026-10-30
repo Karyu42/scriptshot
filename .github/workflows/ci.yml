@@ -1,6 +1,7 @@
 # Scriptshot CI.
 #   test   : headless import + GUT suite (./tools/run_tests.sh) on every PR and push to main.
-#   perf   : headless bullet benchmark (./tools/run_benchmark.sh), gated at p95 <= 16.6 ms @ 5000 bullets.
+#   perf   : headless bullet benchmark (./tools/run_benchmark.sh) on every PR. p95 <= 16.6 ms is a HARD gate at
+#            5,000 bullets (floor) and a warning-only target at 10,000 (tools/ci/check_perf.py).
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web export stub.
 # Headless numbers use the dummy renderer: they measure CPU simulation cost, not GPU/rendering.
 # See docs/qa/stress-test-plan.md.
@@ -153,23 +154,29 @@ jobs:
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
-      - name: Run benchmark
+      - name: Unit-test the perf gate (tools/ci/check_perf.py)
+        run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
+      - name: Run benchmark (5k floor + 10k target)
         run: |
           mkdir -p reports
-          # The benchmark exits 1 on its own verdict; --target-ms pins the budget to 16.6 ms here.
-          # Noisy shared runners: expect p95 ~5 ms vs 16.6 ms budget, so there is ~3x headroom.
+          # 5000 = hard floor, 10000 = target; 2000 is informational. The benchmark's own verdict
+          # (--target-bullets/--target-ms) covers the 5k floor and makes it exit 1 on a miss; it still
+          # writes the JSON first, so tolerate exit 1 here and let check_perf.py be the single gate.
+          set +e
           ./tools/run_benchmark.sh --bullets=2000,5000,10000 --target-bullets=5000 --target-ms=16.6 \
             --json="$PWD/reports/bench.json" 2>&1 | tee reports/bench.log
-          exit "${PIPESTATUS[0]}"
-      - name: Enforce budget and (optional) baseline regression
+          rc=${PIPESTATUS[0]}
+          set -e
+          [ -s reports/bench.json ] || { echo "::error::benchmark produced no JSON (exit $rc)"; exit 1; }
+      - name: Enforce budget (5k hard fail, 10k warn-only)
         run: |
-          set -o pipefail
-          # PERF_BASELINE (repo variable): path to a committed bench.json from main, e.g.
-          # docs/qa/baseline/bench.json. Unset = budget check only.
+          # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
+          # appended to the job's step summary. PERF_BASELINE (repo variable) = path to a committed
+          # bench.json from main (5k regression fails, 10k regression warns); unset = budget only.
           python3 tools/ci/check_perf.py reports/bench.json \
-            --target-bullets 5000 --p95-ms 16.6 --regression-pct 25 \
-            ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }} \
-            | tee -a "$GITHUB_STEP_SUMMARY"
+            --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25 \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
