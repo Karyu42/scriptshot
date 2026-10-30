@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **draft for review, revision 7 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Spawning, elites and rarity tiers are specified in the companion doc [`spawning-and-rarity.md`](spawning-and-rarity.md); §6.5 summarises it. **Repo state on 2026-10-30 (checked against `git log origin/main` and `gh pr list --state all`):** `main` (`4e52673`) now contains the **Godot core** (PR [#2](https://github.com/Karyu42/scriptshot/pull/2), merged: `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, swept collision, tests, benchmark), the **gameplay defaults** (PR [#4](https://github.com/Karyu42/scriptshot/pull/4), merged: health and regeneration, i-frames, dash, reflect and bullet ownership, `PlayerState`, `RespawnPoints`) and the **QA CI pipeline** (PR [#6](https://github.com/Karyu42/scriptshot/pull/6), merged). **Still open:** PR [#3](https://github.com/Karyu42/scriptshot/pull/3) (branch `scripting/api-draft`: the Lua shot API draft v0.2, the binding recommendation and the spike results; it carries the `qa-approved` label but is **not merged, and there is no Lua code in the game yet**, only spike code under `docs/scripting/spike/`) and this PR (#1, design docs only). A `feat/native-bullets` branch (C++ GDExtension prototype) exists without a PR. When this doc names code it means `main` unless it says PR #3, and anything not there is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8–Q13 and Q16–Q24 are resolved and absent from the open list; Q15 is narrowed to aim assist and sync).
+> Status: **draft for review, revision 7 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Spawning, elites and rarity tiers are specified in the companion doc [`spawning-and-rarity.md`](spawning-and-rarity.md); §6.5 summarises it. **Repo state on 2026-10-30 (checked against `git log origin/main` and `gh pr list --state all`):** `main` (`f7bf3bf`) now contains the **Godot core** (PR [#2](https://github.com/Karyu42/scriptshot/pull/2), merged: `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`, swept collision, tests, benchmark), the **gameplay defaults** (PR [#4](https://github.com/Karyu42/scriptshot/pull/4), merged: health and regeneration, i-frames, dash, reflect and bullet ownership, `PlayerState`, `RespawnPoints`), the **QA CI pipeline** (PR [#6](https://github.com/Karyu42/scriptshot/pull/6), merged) and the **scripting docs** (PR [#3](https://github.com/Karyu42/scriptshot/pull/3), merged: Lua shot API draft v0.2, binding recommendation, spike results under `docs/scripting/`; **docs and spike code only, there is no Lua code in the game yet**). **Still open:** this PR (#1, design docs only). A `feat/native-bullets` branch (C++ GDExtension prototype) exists without a PR. Release targets are Windows, macOS, Linux, Web and Android arm64 (iOS dropped). When this doc names code it means `main`, and anything not there is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8–Q13 and Q16–Q24 are resolved and absent from the open list; Q15 is narrowed to aim assist and sync).
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -16,7 +16,8 @@ Decided by the project owner (Karyu), except the rows marked **decided (Chief of
 | Q2 | **Maximum freedom.** The player's own scripts get **full Lua, including opt-in OS and file access**. The *only* engine-level guard rails are those that prevent crashes and hangs (instruction/time budgets, memory caps, error isolation, entity cap). OS and file access (and the other capabilities) are **opt-in per script and off by default for every script**, with a first-run prompt (§7.1). *Superseded in part on 2026-10-30 (3:26 PM, Karyu, see the row "No leaderboards, tags, clean-kill gating or in-game script sharing"):* the original "script sharing is in" and the import-specific warning were dropped. | §3.2, §7 |
 | Q3 | **Boss spawn: hybrid** of deterministic region quotas plus a distance-based pity bump (former option C). Same seed = same bosses. | §6.3 |
 | Q4 | **Death: respawn and keep everything** (former option A; Karyu). *Where* you respawn is refined by the "Death refinement" row (Chief of Staff). | §5.4 |
-| Q8 | **All platforms: PC mouse + keyboard, controller, web and mobile.** | §10 (and design implications in §3.2, §8, §9) |
+| Q8 | **All platforms: PC mouse + keyboard, controller, web and mobile.** *Mobile now means Android only, see the "Release targets" row.* | §10 (and design implications in §3.2, §8, §9) |
+| Release targets (iOS dropped) | **Release targets: Windows, macOS (ad-hoc signed, unsigned/not notarized), Linux, Web and Android arm64. iOS is dropped.** Attribution: *iOS dropped (Karyu, reported via the team; see the [QA review](https://github.com/Karyu42/scriptshot/pull/1#issuecomment-6526168086))*. The repo already says so: `docs/qa/release-builds.md` (line 3: "Release targets: Windows, macOS, Linux, Web and Android (arm64). iOS is not a release target."), `README.md` (export section: macOS ad-hoc signed, Android arm64 only) and the CI `export` job (PR #6). | §10, Q14 |
 | Health 1A | **5 HP shown as pips.** Most hits deal 1, boss attacks deal 1–2. HP regenerates 1 per 3 s after 5 s without damage. | §5.4 |
 | I-frames 2B | **0.75 s invulnerability after a hit** (the player blinks), plus a **dash that is invulnerable for 0.2 s on a 1.5 s cooldown**. | §5.4 |
 | Friendly fire 3C | **Your own bullets never hurt you.** A **reflected bullet becomes enemy-owned**, switches to the enemy colour and **can hit you**. | §5.1, §5.4 |
@@ -89,7 +90,7 @@ Fragments (see §4) unlock new *inputs and ideas* for your scripts; further from
 
 ### 3.1 Player-facing API
 
-> There is no Lua integration in the game yet: `main` has none, and the core (PR #2) deliberately keeps Lua out (`scripting/README.md` is a placeholder; the shot interface `ShotPattern`/`ShotEmitter` is the boundary a Lua binding plugs into). PR #3 (open, `qa-approved`) evaluates bindings and recommends `gilzoide/lua-gdextension` (Lua 5.4) behind a thin `ScriptHost` facade, with **spike results** that it loads and runs on Godot 4.7.2 (see Q14). This doc defines the **player-facing contract** only.
+> There is no Lua integration in the game yet: `main` has none, and the core (PR #2) deliberately keeps Lua out (`scripting/README.md` is a placeholder; the shot interface `ShotPattern`/`ShotEmitter` is the boundary a Lua binding plugs into). PR #3 (merged) evaluates bindings and recommends `gilzoide/lua-gdextension` (Lua 5.4) behind a thin `ScriptHost` facade, with **spike results** that it loads and runs on Godot 4.7.2 (see Q14). This doc defines the **player-facing contract** only.
 
 A shot script is a Lua file in `shots/` returning a table of callbacks. Only `on_fire` is required.
 
@@ -188,7 +189,7 @@ return {
 }
 ```
 
-**Who gets prompted.** **Any script that requests a capability** gets the same first-run prompt (§7.1), whether it was written in the editor or dropped into `shots/` from anywhere: the game cannot know where a file came from, so every script is treated the same. The prompt lists each requested capability with its label and a switch (default off). Grants are remembered **per script content hash**, so a changed script asks again. There is **no per-script profile field** for the Constrained mode; that mode clamps by **game mode**, not by script (§11).
+**Who gets prompted.** **Any script that requests a capability** gets the same first-run prompt (§7.1), whether it was written in the editor or dropped into `shots/` from anywhere: the game cannot know where a file came from, so every script is treated the same. The prompt lists each requested capability with its label and a switch (default off). Grants are **keyed by content hash**; edits made in the in-game editor carry the grant forward, external saves offer "Trust this file while I edit it", and only an edit that **adds** a capability prompts again, for the new one only (§7.1 item 4, PR #3 `api.md` *Grants*). There is **no per-script profile field** for the Constrained mode; that mode clamps by **game mode**, not by script (§11).
 
 **The sole engine-level guards (they exist to prevent crashes and hangs, never to shape gameplay):**
 
@@ -196,7 +197,8 @@ return {
 |---|---|---|
 | **Per-frame time budget** for all script callbacks | **3 ms on PC** (matches the scripting draft's default; 2 ms on web/mobile as a starting value, §10) | When exceeded, remaining script work for that frame is cut off as described in §3.3 (hooked bullets keep flying). A small `!` appears in the editor with the measured time. |
 | **Instruction budget per callback** (watchdog against infinite loops, e.g., Lua count hook) | **100,000 VM instructions per callback invocation** (the scripting draft's default, set by the Scripting Engineer in PR #3) | The callback is aborted with an error (`script timeout`) and the game keeps running. 3 consecutive timeouts suspend that script until it is saved again. |
-| **Memory cap** per script (separate Lua allocator accounting) | 64 MB on PC (the scripting draft's default), lower on web/mobile | Allocation beyond the cap raises a Lua error inside the script; the script is suspended and the editor shows the usage. |
+| **Wall-clock abort per callback** | **50 ms hard abort** (PR #3 `api.md` limits table; the spike used 300 ms) | The callback is aborted and handled like an instruction timeout (3 consecutive timeouts suspend the script). |
+| **Memory cap** per script (separate Lua allocator accounting) | 64 MB on PC (the scripting draft's default), lower on web/mobile | **Soft on the stock 0.8.2 binding**: the cap is only checked every 1,000 instructions (measured overshoot 64 → 83 MB), so a callback can briefly allocate past it; it is a **hard Lua "not enough memory" error only on a source build with the allocator patch** (PR #3). Either way the script is suspended and the editor shows the usage. |
 | **Error isolation** | always on | Every callback (`on_fire`, `update`, `on_hit`, `on_die`) runs in a protected call. A Lua error never crashes the game; it prints to the editor console with file/line and disables only that callback until the next save. The previous working version can be restored with one key. |
 | **Live-bullet cap** (keeps the pool/renderer alive) | **PC: 10,000 live bullets in total**, with a **5,000 floor** (see §3.3). Web and mobile have their own starting values in §10 | New `shoot` calls beyond the player's share are dropped and the editor shows "bullet cap reached". This is a performance ceiling, not a design limit. |
 | **Cap auto-lowering** | PC: from 10,000 down to the 5,000 floor, never below | If the frame budget (16.6 ms) can't be held at the current cap on this device (p95 over budget for 2 s), the cap steps down (10,000 → 7,500 → 5,000); below 5,000 a "hardware below minimum" notice is shown. The editor displays the current cap. |
@@ -215,8 +217,6 @@ Everything else is *not* restricted: loops, recursion, coroutines, global state,
 
 **Reserved capacity for enemies and bosses (B2).** Player scripts can't starve the world's bullets:
 
-| | Total cap | Reserved for enemy + boss bullets | Player scripts may use at most |
-|---|---|---|---|
 | Platform | Total cap | Reserved for enemy + boss bullets (30%) | Player scripts may use at most | Boss design budget (live bullets) | All regular enemies together |
 |---|---|---|---|---|---|
 | **PC** | 10,000 | **3,000** | **7,000** | **≤ 2,500** | **≤ 500** |
@@ -239,7 +239,7 @@ This reserve is a pool-protection rule in the same family as the cap (it keeps t
 
 ### 3.4 Lua API names vs. the scaffold and the scripting draft
 
-The Lua names in this doc (`shoot`, `update`, `on_die`, `sense.*`, `player`) are **design placeholders**. The Scripting Engineer's draft (`docs/scripting/api.md` v0.2, PR #3 / `scripting/api-draft`, open) uses `spawn{}`, `on_tick`, `on_death`, `world.*` and `b:` handles; the final player-facing names are owned by that draft. This table maps each concept to the **real** Godot-side names on `main` (PR #2 and PR #4) so engineers know where each one lands; it was written against PR #2 and **not re-audited against PR #4 and api.md v0.2**, which carry the authoritative mapping:
+The Lua names in this doc (`shoot`, `update`, `on_die`, `sense.*`, `player`) are **design placeholders**. The Scripting Engineer's draft (`docs/scripting/api.md` v0.2, PR #3, merged; `docs/scripting/api.md` on `main`) uses `spawn{}`, `on_tick`, `on_death`, `world.*` and `b:` handles; the final player-facing names are owned by that draft. This table maps each concept to the **real** Godot-side names on `main` (PR #2 and PR #4) so engineers know where each one lands; it was written against PR #2 and **not re-audited against PR #4 and api.md v0.2**, which carry the authoritative mapping:
 
 | This doc | Scripting draft v0.1 | Godot side (real name) | Status |
 |---|---|---|---|
@@ -252,7 +252,7 @@ The Lua names in this doc (`shoot`, `update`, `on_die`, `sense.*`, `player`) are
 | `ctx.shot_count` | `ctx.n` | `ShotContext.shot_index` | exists |
 | `ctx.dt` | `world.dt` | none (fixed 60 Hz tick, `physics_ticks_per_second=60`) | constant, expose |
 | `ctx.device` | n/a | `InputDevice` autoload (`src/core/input_device.gd`), not in `ShotContext` | new field |
-| `ctx.hp`, `player.hp` | `world.player.hp` | none: `Player` emits `damaged(amount)` but has no health (architecture open question 6) | new (§5.4) |
+| `ctx.hp`, `player.hp` | `world.player.hp` | **PR #4 (merged):** `Health` (5 max HP, regeneration, i-frames) behind `PlayerState.get_hp`/`set_hp` | exists (§5.4) |
 | `player.pos`, `player.vel` | `world.player.pos/vel` | `Player` (`CharacterBody2D`) position/`velocity` | exists, writes need facade |
 | `player.speed` | n/a | `Player.max_speed` (300.0) | exists |
 | `player.invulnerable`, `iframes` | n/a | `Hurtbox.active` ("Turn off to make the owner temporarily untouchable (i-frames)") plus new timers | partly exists |
@@ -531,7 +531,7 @@ A script is a program, and a file in `shots/` can come from anywhere, so **every
 ## 9. Scope guide (what to build first)
 Sequenced so that each step is playable. All of it targets **every platform in §10**, so platform-affecting choices are made early:
 1. **Done on `main` (PR #2 and PR #4):** player movement + aim + `BasicShot`, `InputDevice` (kbm/gamepad switching), `FollowCamera`, the bullet pool/renderer and `TrainingDummy`. Still to add: touch input and the web/mobile export checks.
-2. **Spike (before committing the stack): Lua binding + Godot 4 export to Web and Android/iOS** (spike results are in PR #3, see Q14; open). Then load `shots/default.lua`, `on_fire`, hot reload, in-game editor.
+2. **Spike (before committing the stack): Lua binding + Godot 4 export to Web and Android** (spike results are in PR #3, merged; see Q14). Then load `shots/default.lua`, `on_fire`, hot reload, in-game editor.
 3. Guard rails of §3.2 (time/instruction/memory budgets, error isolation) built together with the binding, not later.
 4. Drifter + Swarmer + player HP (pips, §5.4). `Player` currently emits `damaged(amount)` with no health.
 5. Chunked world, seed, regular spawns (§6.2).
@@ -545,14 +545,14 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 
 ---
 
-## 10. Platforms and input (decided Q8: PC, controller, web, mobile)
+## 10. Platforms and input (decided Q8: PC, controller, web, mobile = Android arm64; iOS dropped)
 
 | Platform | Play input | Script editing | Capability notes |
 |---|---|---|---|
 | **PC** (Win/Linux/macOS) | Mouse + keyboard (WASD + mouse aim) | Full in-game editor; also **external editor hot reload** (watch `shots/`), first release | Full Lua, opt-in capabilities `native`/`os`/`io`/`debug`/`package` (§3.2). **10,000** live bullets (floor 5,000), 3 ms script budget (§3.3) |
 | **Controller** | Left stick move, right stick aim + auto-fire past deadzone (or trigger) | Controller-friendly editor (below) | Same as PC |
 | **Web** | Mouse + keyboard (touch/controller if present) | In-game editor; Export / Import button for `.lua` files | **No OS or real file access** (browser sandbox): `native`, `os`, `io`, `package` unavailable (`io` may be a virtual file system, Q14). Lower bullet/time budgets (below). Needs a Lua binding that exports to Web (Q14). |
-| **Mobile** (Android, iOS) | Twin virtual sticks (left move, right aim + auto-fire) | Touch editor and/or companion editing (below) | File access limited to the app sandbox, no `os.execute`. Lower budgets. |
+| **Mobile** (Android arm64 only; iOS dropped) | Twin virtual sticks (left move, right aim + auto-fire) | Touch editor and/or companion editing (below) | File access limited to the app sandbox, no `os.execute`. Lower budgets. |
 
 ### 10.1 Design implications
 - **One game, one ruleset.** Enemies, Senses, damage, spawns and bosses are identical across platforms. The player's *device* is exposed as `ctx.device`, so scripts can adapt, but the engine adds no hidden bonuses. Aim assist is the one deliberate exception and is an open question (Q15).
@@ -683,10 +683,10 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q12 (
 - **Recommendation: A for now**, designing the Fragment/Codex systems so B can be added later without redoing progression. Note: the planned Constrained mode (§11) may want hubs or NPCs; this question must be revisited when that mode is scoped.
 
 ### Q14. Technical feasibility: Lua on Godot 4 for Web and mobile exports
-- **A. A Lua GDExtension (e.g., `lua-gdextension`) if it exports to Web/Android/iOS** (needs verification).
+- **A. A Lua GDExtension (e.g., `lua-gdextension`) if it exports to Web and Android** (needs verification).
 - **B. A custom thin C/C++ Lua 5.4 binding built for all targets** (more work, fully in our control).
 - **C. A pure-GDScript or pure-managed Lua interpreter** (portable but slow, may violate the bullet/budget targets).
-- **Status and recommendation: A.** The spike in PR #3 (open, `qa-approved`; `spike-results.md` §1) reports that lua-gdextension 0.8.2 (Lua 5.4) loads and runs on Godot 4.7.2 on Linux desktop, in a Web export (headless Chromium, threads and no-threads) and in a built and signed Android APK; it recommends the stock 0.8.2 release binaries behind `ScriptHost`, because an unmodified source build fails against godot-cpp 10. **iOS is not covered in what PR #3 reports**, and the performance figures are from the Linux headless runs, so keep the rule: do not commit to a platform promise until a Web and an Android export both run a 1,000-bullet script within the time budget. Also decide what `io` means on Web (absent vs. virtual file system backed by IndexedDB; recommendation: virtual FS limited to `shots/` and `data/`, with Export/Import).
+- **Status and recommendation: A.** The spike in PR #3 (merged; `docs/scripting/spike-results.md` §1) reports that lua-gdextension 0.8.2 (Lua 5.4) loads and runs on Godot 4.7.2 on Linux desktop and in a Web export (headless Chromium, threads and no-threads), and that an **Android arm64 APK was built and signed but not run** (no KVM; `lua-binding.md`); it recommends the stock 0.8.2 release binaries behind `ScriptHost`, because an unmodified source build fails against godot-cpp 10. The target set is **Windows, macOS, Linux, Web and Android arm64; iOS is dropped** (decisions log, `docs/qa/release-builds.md`). The performance figures are from the Linux headless runs, so keep the rule: do not commit to a platform promise until a Web and an Android export both run a 1,000-bullet script within the time budget. Also decide what `io` means on Web (absent vs. virtual file system backed by IndexedDB; recommendation: virtual FS limited to `shots/` and `data/`, with Export/Import).
 
 ### Q15. Aim assist and cloud sync (narrowed on 2026-10-30)
 The leaderboard part of this question is **closed**: Karyu dropped leaderboards (see the decisions log), so no per-platform boards, no device flags and no tag dimension are needed. What remains:
