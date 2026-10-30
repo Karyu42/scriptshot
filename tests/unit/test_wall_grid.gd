@@ -123,3 +123,25 @@ func test_sweep_scratch_buffers_are_reused() -> void:
 	for k in 5:
 		walls.sweep_bullets(pool)
 		assert_eq(walls.hit_bullets.size(), size)
+
+
+# --- shape_issue: what collect_walls() warns about -----------------------------
+
+func test_axis_aligned_rectangles_are_fine() -> void:
+	var rect := RectangleShape2D.new()
+	assert_eq(WallGrid.shape_issue(rect, Transform2D(0.0, Vector2(10, 10))), "")
+	assert_eq(WallGrid.shape_issue(rect, Transform2D(0.0, Vector2(3, 2), 0.0, Vector2(10, 10))), "", "scaled but not rotated")
+
+
+func test_rotated_rectangles_are_reported_as_approximated() -> void:
+	var issue := WallGrid.shape_issue(RectangleShape2D.new(), Transform2D(0.3, Vector2.ZERO))
+	assert_string_contains(issue, "rotated")
+	assert_string_contains(issue, "bounding box")
+
+
+func test_non_rectangle_shapes_are_reported_as_ignored() -> void:
+	for shape: Shape2D in [CircleShape2D.new(), CapsuleShape2D.new(), ConvexPolygonShape2D.new()]:
+		var issue := WallGrid.shape_issue(shape, Transform2D.IDENTITY)
+		assert_string_contains(issue, "ignored", shape.get_class())
+		assert_string_contains(issue, shape.get_class())
+	assert_string_contains(WallGrid.shape_issue(null, Transform2D.IDENTITY), "no shape")

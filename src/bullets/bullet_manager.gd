@@ -91,7 +91,9 @@ func clear_walls() -> void:
 
 ## (Re)reads walls from `walls_group`: every CollisionObject2D on the `world`
 ## layer contributes its RectangleShape2D children, as their world-space bounding
-## box. Returns the number of walls added. Existing walls are kept.
+## box (other shapes are ignored, rotated rectangles are approximated; both
+## push a warning, see WallGrid.shape_issue). Returns the number of walls added.
+## Existing walls are kept.
 func collect_walls() -> int:
 	var added := 0
 	if not is_inside_tree():
@@ -104,6 +106,9 @@ func collect_walls() -> int:
 			var shape_node := child as CollisionShape2D
 			if shape_node == null or shape_node.disabled:
 				continue
+			var issue := WallGrid.shape_issue(shape_node.shape, shape_node.global_transform)
+			if issue != "":
+				push_warning("BulletManager: wall shape %s %s" % [shape_node.get_path(), issue])
 			var rect_shape := shape_node.shape as RectangleShape2D
 			if rect_shape == null:
 				continue
