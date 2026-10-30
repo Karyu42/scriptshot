@@ -27,6 +27,10 @@ var hit_mask := Layers.ENEMY
 ## when the bullet spawns, so a bullet can never hurt whoever fired it, whatever
 ## hit_mask says. 0 = unowned (no stripping).
 var owner_layer := Layers.PLAYER
+## Boss-style "piercing" attack: the bullet ignores the player's *script*
+## invulnerability (Health.SOURCE_PIERCES_SCRIPT_INVULN). Engine i-frames (a hit's
+## i-frames, the dash) still block it. Off by default.
+var pierces_script_invuln := false
 ## Flat draw colour.
 var color := Color(1.0, 0.82, 0.4)
 ## Id returned by ShotEmitter.register_behavior(); 0 = plain bullet, no hooks.
@@ -79,6 +83,7 @@ func reset() -> void:
 	damage = 1.0
 	hit_mask = Layers.ENEMY
 	owner_layer = Layers.PLAYER
+	pierces_script_invuln = false
 	color = Color(1.0, 0.82, 0.4)
 	behavior_id = 0
 	acceleration = 0.0

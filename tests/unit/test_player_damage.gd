@@ -137,3 +137,59 @@ func test_turret_out_of_range_holds_fire() -> void:
 	player.global_position = turret.global_position + Vector2(turret.shot_range + 200.0, 0)
 	await wait_physics_frames(30)
 	assert_eq(bullets.pool.spawned_total, 0)
+
+
+# --- script invulnerability vs piercing attacks (QA B4) ----------------------------
+
+func _piercing_bullet_at(pos: Vector2) -> int:
+	var r := ShotRequest.polar(pos, 0.0, 0.0)
+	r.owner_layer = Layers.ENEMY
+	r.hit_mask = Layers.PLAYER
+	r.pierces_script_invuln = true
+	r.lifetime = 5.0
+	return bullets.emitter.request_shot_id(r)
+
+
+func test_script_invulnerability_blocks_normal_bullets_but_consumes_them() -> void:
+	player.state.set_invulnerable(true)
+	var id := _bullet_at(player.global_position, Layers.hostile_to(Layers.ENEMY), 2.0)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp, "no damage")
+	assert_false(bullets.emitter.is_bullet_alive(id), "the bullet hit the shielded player and is gone")
+	assert_false(player.health.is_engine_invulnerable(), "a blocked hit gives no i-frames")
+
+
+func test_a_piercing_bullet_hits_through_script_invulnerability() -> void:
+	player.state.set_invulnerable(true)
+	_piercing_bullet_at(player.global_position)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp - 1.0)
+	assert_true(player.health.is_engine_invulnerable(), "the hit gave normal i-frames")
+	assert_true(player.state.is_script_invulnerable(), "and left the script layer alone")
+
+
+func test_a_piercing_bullet_cannot_hit_through_hit_iframes() -> void:
+	player.state.set_invulnerable(true)
+	_piercing_bullet_at(player.global_position)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp - 1.0)
+	var second := _piercing_bullet_at(player.global_position)
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp - 1.0, "i-frames hold against piercing too")
+	assert_true(bullets.emitter.is_bullet_alive(second), "and the bullet passes through the i-framed player")
+
+
+func test_a_piercing_bullet_cannot_hit_during_a_dash() -> void:
+	player.state.set_invulnerable(true)
+	assert_true(player.try_dash(Vector2.UP))
+	var id := _piercing_bullet_at(player.global_position + Vector2(0, -20))
+	await wait_physics_frames(2)
+	assert_eq(player.health.hp, player.health.max_hp)
+	assert_true(bullets.emitter.is_bullet_alive(id))
+
+
+func test_script_false_does_not_end_a_dash_or_hit_iframes_on_the_live_player() -> void:
+	assert_true(player.try_dash(Vector2.RIGHT))
+	player.state.set_invulnerable(false)
+	assert_true((player.get_node("Hurtbox") as Hurtbox).active == false, "dash i-frames still switch the hurtbox off")
+	assert_true(player.health.is_engine_invulnerable())

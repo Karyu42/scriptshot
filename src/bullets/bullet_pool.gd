@@ -62,6 +62,9 @@ var owner_layer := PackedInt32Array()
 ## How many times the bullet has changed owner through reflect() (saturates at
 ## 255). Reflectors use it as their reflect-once guard against ping-pong.
 var reflect_count := PackedByteArray()
+## 1 = the bullet ignores the player's *script* invulnerability (not engine
+## i-frames); see ShotRequest.pierces_script_invuln and Health.try_damage().
+var pierces_script_invuln := PackedByteArray()
 var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
 ## 1 = collides with the `world` layer (walls), 0 = flies through walls.
@@ -117,6 +120,7 @@ func _init(p_capacity: int = 16384) -> void:
 	hit_mask.resize(capacity)
 	owner_layer.resize(capacity)
 	reflect_count.resize(capacity)
+	pierces_script_invuln.resize(capacity)
 	behavior.resize(capacity)
 	pierce.resize(capacity)
 	collide_world.resize(capacity)
@@ -162,6 +166,7 @@ func spawn(request: ShotRequest) -> int:
 	color[i] = request.color
 	owner_layer[i] = request.owner_layer
 	reflect_count[i] = 0
+	pierces_script_invuln[i] = 1 if request.pierces_script_invuln else 0
 	hit_mask[i] = request.hit_mask & ~request.owner_layer
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
@@ -206,6 +211,7 @@ func spawn_simple(
 	color[i] = bullet_color
 	owner_layer[i] = 0
 	reflect_count[i] = 0
+	pierces_script_invuln[i] = 0
 	hit_mask[i] = mask
 	behavior[i] = 0
 	pierce[i] = 0
@@ -389,19 +395,49 @@ func _rebuild_free_list() -> void:
 	_free_count = capacity
 
 
-## Hands bullet `slot` to another faction: it now belongs to `new_owner_layer`
-## (Layers.PLAYER or Layers.ENEMY), hits only what is hostile to that faction
-## (hit_mask = Layers.hostile_to(new_owner_layer), so it can never hit its new
-## owner), and takes that faction's colour (Layers.bullet_color). Piercing
-## bookkeeping (`last_hit`) is cleared so the bullet can hit the old owner
-## right away. With `reverse` the velocity and heading are flipped too (a
-## parry that sends the bullet back where it came from). Returns false, and
-## changes nothing, for a dead slot or an owner that is not PLAYER or ENEMY.
-## Prefer ShotEmitter.reflect_bullet(id, ...) from scripts: it takes stable ids.
-func reflect(slot: int, new_owner_layer: int, reverse: bool = false) -> bool:
+## Damage a reflected bullet deals unless told otherwise: **1**, whatever the
+## script gave the bullet (design pillars 5.4: "its script `damage` value is
+## ignored when hitting you"). Provisional until balance says otherwise.
+const REFLECTED_DAMAGE := 1.0
+## Pass as `new_damage` to keep the bullet's own damage.
+const KEEP_DAMAGE := -1.0
+## How many times a bullet may change owner through reflect(): 1 = at most one
+## reflection per bullet (pillars 5.4, prevents ping-pong); 0 = unlimited. Applies
+## to every reflect() call (scripts through ShotEmitter.reflect_bullet, Reflector
+## zones) unless the caller passes its own `limit`.
+var max_reflections := 1
+
+
+## Hands bullet `slot` to another faction (a reflection). The bullet:
+##   - belongs to `new_owner_layer` (Layers.PLAYER or Layers.ENEMY), hits only what
+##     is hostile to that faction (hit_mask = Layers.hostile_to(new owner), so it
+##     can never hit its new owner), and takes that faction's colour
+##     (Layers.bullet_color);
+##   - deals `new_damage` (default REFLECTED_DAMAGE = 1; KEEP_DAMAGE keeps its own);
+##   - is **no longer scripted**: behavior becomes 0 (a plain bullet; hooks stop,
+##     including on_despawn), `user` and `param_a/b` are cleared and it stops
+##     piercing script invulnerability. `keep_script` opts out of all of that for
+##     the rare reflection that should stay scripted;
+##   - has its piercing memory (`last_hit`) cleared and `reflect_count` raised;
+##   - with `reverse`, flies back (velocity and heading flipped).
+## Refuses, changing nothing and returning false, for a dead or invalid slot, an
+## owner that is not PLAYER or ENEMY, or a bullet that was already reflected
+## `limit` times (limit < 0 = use `max_reflections`; 0 = no limit). Prefer
+## ShotEmitter.reflect_bullet(id, ...) from scripts: it takes stable ids.
+func reflect(
+	slot: int,
+	new_owner_layer: int,
+	reverse: bool = false,
+	new_damage: float = REFLECTED_DAMAGE,
+	keep_script: bool = false,
+	limit: int = -1
+) -> bool:
 	if slot < 0 or slot >= count or dead_reason[slot] != 0:
 		return false
 	if new_owner_layer != Layers.PLAYER and new_owner_layer != Layers.ENEMY:
+		return false
+	var cap := max_reflections if limit < 0 else limit
+	if cap > 0 and reflect_count[slot] >= cap:
 		return false
 	owner_layer[slot] = new_owner_layer
 	if reflect_count[slot] < 255:
@@ -409,6 +445,14 @@ func reflect(slot: int, new_owner_layer: int, reverse: bool = false) -> bool:
 	hit_mask[slot] = Layers.hostile_to(new_owner_layer)
 	color[slot] = Layers.bullet_color(new_owner_layer)
 	last_hit[slot] = 0
+	if new_damage >= 0.0:
+		damage[slot] = new_damage
+	if not keep_script:
+		behavior[slot] = 0
+		user[slot] = null
+		param_a[slot] = 0.0
+		param_b[slot] = 0.0
+		pierces_script_invuln[slot] = 0
 	if reverse:
 		vel[slot] = -vel[slot]
 		rot[slot] = -rot[slot]
@@ -439,6 +483,7 @@ func _remove_at(i: int) -> void:
 		hit_mask[i] = hit_mask[last]
 		owner_layer[i] = owner_layer[last]
 		reflect_count[i] = reflect_count[last]
+		pierces_script_invuln[i] = pierces_script_invuln[last]
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]

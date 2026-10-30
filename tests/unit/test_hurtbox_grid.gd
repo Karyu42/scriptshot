@@ -436,3 +436,24 @@ func test_bullet_entering_the_grid_from_outside_tests_the_part_inside() -> void:
 func test_margin_getter_reports_the_bucketing_margin() -> void:
 	grid.begin(12.5)
 	assert_eq(grid.get_margin(), 12.5)
+
+
+# --- collide_bullets(match_owner) ---------------------------------------------------
+
+func test_match_owner_matches_the_zone_layer_against_the_bullets_owner() -> void:
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.PLAYER)
+	# A player-owned bullet that hits only enemies: not a hit in normal mode.
+	var i := pool.spawn_simple(Vector2(-10, 0), Vector2(20, 0), 10.0, 4.0, Color.WHITE, Layers.ENEMY)
+	pool.owner_layer[i] = Layers.PLAYER
+	pool.advance(1.0 / 60.0, Rect2(-512, -512, 1024, 1024))
+	assert_eq(grid.collide_bullets(pool), 0, "hit_mask is ENEMY, the target is PLAYER")
+	assert_eq(grid.collide_bullets(pool, true), 1, "by owner: a player-owned bullet touches a player-layer zone")
+
+
+func test_match_owner_ignores_bullets_of_other_owners() -> void:
+	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY)
+	var i := pool.spawn_simple(Vector2(-10, 0), Vector2(20, 0), 10.0, 4.0, Color.WHITE, Layers.ENEMY)
+	pool.owner_layer[i] = Layers.PLAYER
+	pool.advance(1.0 / 60.0, Rect2(-512, -512, 1024, 1024))
+	assert_eq(grid.collide_bullets(pool, true), 0)
+	assert_eq(grid.collide_bullets(pool, false), 1)

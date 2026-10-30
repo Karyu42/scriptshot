@@ -146,12 +146,20 @@ func spawn(request: ShotRequest) -> int:
 
 
 ## Hands the live bullet with stable id `id` to `new_owner_layer` (Layers.PLAYER
-## or Layers.ENEMY): it now hits only what is hostile to the new owner and takes
-## its faction colour. See BulletPool.reflect(). Returns false for a stale id.
-func reflect(id: int, new_owner_layer: int, reverse: bool = false) -> bool:
+## or Layers.ENEMY): it now hits only what is hostile to the new owner, takes its
+## faction colour, deals `new_damage` and (unless `keep_script`) stops being
+## scripted. See BulletPool.reflect(). Returns false for a stale id, an invalid
+## owner, or a bullet that has used up its reflections.
+func reflect(
+	id: int,
+	new_owner_layer: int,
+	reverse: bool = false,
+	new_damage: float = BulletPool.REFLECTED_DAMAGE,
+	keep_script: bool = false
+) -> bool:
 	if not pool.is_alive(id):
 		return false
-	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse)
+	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse, new_damage, keep_script)
 
 
 ## Advances the whole bullet simulation by `delta` seconds.
@@ -166,7 +174,8 @@ func step(delta: float) -> void:
 	# later bullet in the list already; dead bullets get no more updates.
 	for k in pool.hooked_count:
 		var i := pool.hooked[k]
-		if pool.dead_reason[i] == 0:
+		# A hook may have reflected (and so un-scripted) a later bullet in the list.
+		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
@@ -298,12 +307,18 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	var hurtbox := grid.target_ref[target] as Hurtbox
 	if hurtbox == null or not is_instance_valid(hurtbox):
 		return
+	# The grid was built before this tick's hits were delivered: an earlier hit may
+	# have switched the target off (i-frames, death). Such a bullet passes through
+	# untouched instead of being consumed by an untouchable target.
+	if not hurtbox.active:
+		return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:
 		# The bullet stops where it touched the target.
 		pool.pos[bullet] = impact
-	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet])
+	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
+	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
 	if id != 0:
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)

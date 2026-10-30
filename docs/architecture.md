@@ -71,11 +71,12 @@ retained, so one instance can be mutated and re-submitted any number of times.
 | `angle` | `float` | `NAN` | Visual orientation, radians. `NAN` = face along `velocity` |
 | `lifetime` | `float` | `2.0` | Seconds until the bullet despawns by itself |
 | `radius` | `float` | `4.0` | Collision and draw radius, px |
-| `damage` | `float` | `1.0` | Passed to `Hurtbox.hit` on impact |
+| `damage` | `float` | `1.0` | Passed to `Hurtbox.hit` on impact. A reflected bullet deals 1 instead (see "reflecting bullets") |
 | `owner_layer` | `int` | `Layers.PLAYER` | Faction that fires the bullet (`PLAYER` or `ENEMY`). Its own layer is always removed from `hit_mask` on spawn, so **a bullet can never hurt whoever fired it**. `0` = unowned, nothing stripped |
 | `hit_mask` | `int` | `Layers.ENEMY` | Layers it can hit; `0` = decorative, hits nothing |
 | `color` | `Color` | warm yellow | Flat draw colour |
-| `behavior_id` | `int` | `0` | Id from `register_behavior()`; `0` = plain bullet (fast path, no hooks) |
+| `behavior_id` | `int` | `0` | Id from `register_behavior()`; `0` = plain bullet (fast path, no hooks). A reflection resets it to `0` |
+| `pierces_script_invuln` | `bool` | `false` | A "piercing" attack: ignores the player's *script* invulnerability (never the engine i-frames), see "Health" |
 | `acceleration` | `float` | `0.0` | px/s^2 along the heading (negative brakes, never reverses) |
 | `turn_rate` | `float` | `0.0` | Heading change in rad/s (curving shots) |
 | `pierce` | `int` | `0` | Extra targets to pass through before despawning |
@@ -104,6 +105,7 @@ func get_dropped_count() -> int                       # shots dropped because th
 func is_saturated() -> bool                           # pool is full right now
 signal pool_saturated(dropped_now: int, dropped_total: int)
 func register_behavior(behavior: BulletBehavior) -> int   # id for ShotRequest.behavior_id
+func reflect_bullet(id, new_owner_layer, reverse := false, new_damage := 1.0, keep_script := false) -> bool  # see "reflecting bullets"
 func get_bullet_count() -> int
 func get_capacity() -> int
 ```
@@ -376,8 +378,10 @@ remain exports so they can be tuned.)
 
 ## Combat rules (decided 2026-10-30)
 
-Decided by Karyu on 2026-10-30. Every number is an `@export` so it can be tuned
-in the editor or from a script without code changes.
+Decided by Karyu on 2026-10-30, except the dash distance and burst length, which
+come from the design pillars doc (`docs/design/pillars.md` 5.4 on the design
+branch) and are marked below. Every number is an `@export` so it can be tuned in
+the editor or from a script without code changes.
 
 | Rule | Value | Where |
 | --- | --- | --- |
@@ -386,13 +390,13 @@ in the editor or from a script without code changes.
 | Regeneration | first hp 5 s after the last hit, then 1 hp every 3 s, up to max | `Health.regen_delay`, `regen_interval`, `regen_amount` |
 | Dash input | action `dash`: Space or Shift; gamepad B or right bumper | `project.godot` input map |
 | Dash direction | move direction, or the aim direction when not moving | `Player.try_dash()` |
-| Dash distance / burst length | 170 px in 0.18 s | `Player.dash_distance`, `dash_duration` |
+| Dash distance / burst length | 160 px in 0.2 s (**from the pillars doc**, not decided by Karyu) | `Player.dash_distance`, `dash_duration` |
 | Dash speed curve | hard launch decaying into running speed (`dash_curve_power` 2) | `DashMath` |
-| Dash invulnerability | 0.2 s from the start of the dash | `Player.dash_invulnerability` |
-| Dash cooldown | 1.5 s, measured from the start of the dash | `Player.dash_cooldown` |
+| Dash invulnerability | 0.2 s from the start of the dash (decided by Karyu; engine i-frames, scripts cannot cancel them) | `Player.dash_invulnerability` |
+| Dash cooldown | 1.5 s, measured from the start of the dash (decided by Karyu) | `Player.dash_cooldown` |
 | Dash input buffer | 0.1 s: a press while dashing / cooling down fires as soon as the dash is available. The dash never touches the weapon | `Player.dash_buffer_time`, `Player.request_dash()` |
 | Own bullets | never hurt the player (nor enemies their own side) | `ShotRequest.owner_layer` |
-| Reflecting | player side: scripts only (`reflect_bullet`). Enemy / boss side: `Reflector` zones, e.g. mirrors reflect PLAYER bullets, which become enemy-owned | `ShotEmitter.reflect_bullet`, `Reflector` |
+| Reflecting | player side: scripts only (`reflect_bullet`). Enemy / boss side: `Reflector` zones, e.g. mirrors reflect PLAYER bullets, which become enemy-owned, deal 1 damage (pillars 5.4), lose their script, and are reflected at most once | `ShotEmitter.reflect_bullet`, `Reflector` |
 | Death | respawn after 1.5 s at the last cleared boss arena, else the origin; keeps everything; hp resets to max | `RespawnPoints`, `Player.respawn()`, `Main` |
 
 Clarifications (all confirmed by Karyu on 2026-10-30):
@@ -411,8 +415,11 @@ Clarifications (all confirmed by Karyu on 2026-10-30):
 * **Respawn** happens `Main.respawn_delay` (1.5 s) after death at
   `RespawnPoints.get_respawn_position()`: the last cleared boss arena, or the
   origin if none has been cleared. Enemies, bullets, weapon and max hp are kept;
-  hp goes to `max_hp`, i-frames, the dash cooldown and any buffered dash are
-  cleared.
+  hp goes to `max_hp`; the engine i-frames, the dash cooldown, any buffered dash,
+  the fire button state (so a release that happened while dead is not a stale
+  release edge), the fire cooldown and the weapon's own state
+  (`ShotPattern.reset()`: a charge, a burst) are cleared. **Script invulnerability
+  persists** across a respawn: scripts own that layer, and clear it themselves.
 
 ### Respawn points (`RespawnPoints` autoload)
 
@@ -432,15 +439,43 @@ Signal: `respawn_position_changed(position)`.
 
 ### Health
 
-`Health` (`src/core/health.gd`): `hp`, `max_hp`, `damage(amount) -> bool`,
-`heal()`, `reset()`, `tick(delta)`, validated setters `set_hp()`, `set_max_hp()`,
-`set_invulnerable(seconds_or_bool)`, readers `is_dead()`, `is_invulnerable()`,
-`is_regenerating()`, `time_since_damage`, and signals `damaged(amount, hp)`,
-`healed(amount, hp)`, `died`, `invulnerability_changed(active)`. Invulnerability
-from any source (a hit, a dash, a script) shares one timer: a new source can only
-extend it. While invulnerable the player's `Hurtbox` is switched off, so bullets
-pass through instead of being consumed. `Player` forwards `damaged` and `died`
-and emits `dashed(direction)`.
+`Health` (`src/core/health.gd`): `hp`, `max_hp`, `damage(amount, source_flags := 0) -> bool`,
+`try_damage(amount, source_flags) -> DamageResult`, `heal()`, `reset()`,
+`tick(delta)`, validated setters `set_hp()`, `set_max_hp()` (whole numbers),
+`set_invulnerable(seconds_or_bool)`, engine-side `add_engine_invulnerability(seconds)`,
+readers `is_dead()`, `is_invulnerable()`, `is_engine_invulnerable()`,
+`is_script_invulnerable()`, `is_regenerating()`, `time_since_damage`, and signals
+`damaged(amount, hp)`, `healed(amount, hp)`, `died`, `damage_blocked(amount, result)`,
+`invulnerability_changed(active)` (either layer),
+`engine_invulnerability_changed(active)`, `script_invulnerability_changed(active)`.
+
+**Two invulnerability layers** (pillars 5.4 / 12.2):
+
+| Layer | Written by | Cleared by | Pierced by |
+| --- | --- | --- | --- |
+| *Engine i-frames*: hit i-frames (0.75 s) and the dash (0.2 s) | the engine (`add_engine_invulnerability`, extend-only: the longer one wins) | time, or `Health.reset()` (respawn) | nothing |
+| *Script invulnerability* | `set_invulnerable(seconds \| true \| false)` | `false`, `0` or less, time | attacks with `Health.SOURCE_PIERCES_SCRIPT_INVULN` (`ShotRequest.pierces_script_invuln`) |
+
+`set_invulnerable` only ever touches the script layer: `false` never cancels a dash
+or hit i-frames, `true` holds until cleared (no cap), seconds replace the script's
+previous value (INF allowed). `is_invulnerable()` is true if either layer is on.
+`try_damage()` says *why* a hit did not land: `APPLIED`, `BLOCKED_ENGINE`,
+`BLOCKED_SCRIPT` (the same attack with the piercing flag would have landed),
+`IGNORED` (not a positive number, or already dead), and `damage_blocked` carries it.
+
+The player's `Hurtbox` follows the **engine** layer only: bullets pass through the
+player during hit i-frames and dashes instead of being consumed. During script
+invulnerability the hurtbox stays on, so non-piercing bullets reach it and are
+consumed and blocked (`BLOCKED_SCRIPT`), while piercing ones land. The hurtbox
+tells the handler which bullet it was: `Hurtbox.last_hit_bullet_id` (stable id)
+and `last_hit_flags` are valid while `hit` is emitted; `Player._on_hit` passes the
+flags to `damage()`. A hurtbox that was switched off by an earlier hit in the same
+tick (i-frames, death) is skipped by the later bullets, which pass through.
+`Player` forwards `damaged` and `died`, and emits `dashed(direction)`,
+`dash_finished` and `teleported(position)` (the camera cuts to the player on it).
+
+NaN to a setter is ignored with a rate-limited warning (`ScriptWarnings`: the first
+3 of each kind are printed, then silence).
 
 ### The dash
 
@@ -449,7 +484,7 @@ machine; `Player` wires them to input and `move_and_slide()`. The curve is
 
     speed(t) = max_speed + (peak - max_speed) * (1 - t/duration)^power
 
-so the dash launches at `peak` (about 2230 px/s with the defaults) and decays
+so the dash launches at `peak` (1800 px/s with the defaults: 160 px in 0.2 s, running speed 300, power 2) and decays
 smoothly into running speed, with `peak` solved so the burst covers exactly
 `dash_distance`. Per-tick displacement comes from the exact integral, so the
 distance is the same at any tick rate. Dashing collides with walls like normal
@@ -468,10 +503,26 @@ bullets are harmless whatever a script asks for. Player shots are
 (`BulletManager.reflect`, `BulletPool.reflect(slot, ...)`) hands a live bullet to
 the other faction: `owner_layer` becomes `new_owner_layer`, `hit_mask` becomes
 `Layers.hostile_to(new_owner_layer)`, the colour becomes that faction's
-(`Layers.bullet_color`), the piercing `last_hit` memory is cleared, the bullet's
-`reflect_count` goes up, and with `reverse` the velocity and heading flip. It
-returns `false` (changing nothing) for a stale id, a bullet already marked dead,
-or an owner that is not `PLAYER` / `ENEMY`. Velocity is otherwise untouched.
+(`Layers.bullet_color`: player yellow, enemy `#FF5A4D`), the piercing `last_hit`
+memory is cleared, the bullet's `reflect_count` goes up, and with `reverse` the
+velocity and heading flip. Also:
+
+* **Damage is 1** (`BulletPool.REFLECTED_DAMAGE`; pillars 5.4: a reflected bullet
+  "can hit the player for 1 damage, its script `damage` value is ignored").
+  Parameterised: `reflect_bullet(id, owner, reverse, new_damage)`, and
+  `Reflector.reflected_damage`; `BulletPool.KEEP_DAMAGE` (or a negative zone value)
+  keeps the bullet's own damage.
+* **The bullet stops being scripted**: `behavior` becomes 0 (no more `on_update`,
+  `on_hit` or `on_despawn` hooks), `user` and `param_a/b` are cleared and
+  `pierces_script_invuln` is dropped. Opt in to keep all of it with
+  `reflect_bullet(..., keep_script = true)` / `Reflector.keep_script`.
+* **At most `BulletPool.max_reflections` reflections per bullet (default 1, pillars:
+  no ping-pong), on every path**: `reflect_bullet` returns `false` for a bullet
+  that used them up. 0 means unlimited. Zones apply their own `max_reflections`.
+
+It returns `false` (changing nothing) for a stale id, a bullet already marked dead,
+an owner that is not `PLAYER` / `ENEMY`, or a bullet past its reflection limit.
+Velocity is otherwise untouched.
 **The player side is scripts-only**: there is no built-in parry input.
 
 ### Reflector -- mirrors and shields for enemies and bosses
@@ -490,6 +541,8 @@ owner (an ENEMY-owned bullet has `hit_mask = PLAYER`). Other owners pass through
 | `mode` | `MIRROR` | `REVERSE` straight back; `MIRROR` reflect across the surface normal at the impact; `AIM_AT_TARGET` send it at `target` (falls back to reverse) |
 | `speed_multiplier` | 1 | reflected speed / incoming speed, clamped to [0, 20], NaN = 1 |
 | `max_reflections` | 1 | reflect-once guard: a bullet that has changed owner this many times (by any reflector *or* a script) is not reflected again; 0 = unlimited |
+| `reflected_damage` | 1 | damage of a reflected bullet (pillars 5.4); negative keeps the bullet's own |
+| `keep_script` | `false` | keep the bullet's behaviour, `user` data and params after reflecting |
 | `enabled` | true | also inactive while hidden |
 
 Plus `target: Node2D` (set by whoever wires the scene), the `bullet_reflected(bullet_id, new_owner)` signal and `reflected_total`.
@@ -510,7 +563,10 @@ reflected at most once per tick. The reflected bullet is placed at the impact
 point with `pool.teleport()` (`pos` and `prev_pos` together: no phantom sweep of
 the old path, no interpolated streak), so it never ends a tick inside the zone.
 Reflection acts before hurtboxes, so the bullet never reaches the reflector's body
-that tick. A bullet that left the world bounds this tick is already dead and is
+that tick. (Consequence, pinned by a test: a bullet that crosses a target *and* a
+mirror within one tick, i.e. moves faster than ~200 px per tick, is reflected first
+and does not deliver the earlier hit of that tick. A piercing bullet that meets the
+target on an earlier tick keeps that hit.) A bullet that left the world bounds this tick is already dead and is
 not reflected. `BulletManager.last_reflect_count` reports reflections in the last step.
 
 `Mirror` (`src/enemies/mirror.gd`, `scenes/mirror.tscn`, one in the main scene) is
@@ -528,17 +584,47 @@ every call on a freed player is a harmless no-op.
 | --- | --- |
 | `get_hp()`, `set_hp(v)` | clamped to `[0, max_hp]`; `set_hp(0)` kills (normal death and respawn). No i-frames, does not restart regen |
 | `get_max_hp()`, `set_max_hp(v)` | clamped to `[1, 1000]`; hp is pulled down if needed, raising does not heal |
-| `set_invulnerable(x)` | seconds (extends only; `0` or negative clears), or `true` (until cleared) / `false` (clear) |
-| `is_invulnerable()`, `get_invulnerable_time()` | any source (hit, dash, script) |
-| `get_position()`, `set_position(v)` | `set_position` teleports: resets physics interpolation (no smear), clamps to +-100000 |
+| `set_invulnerable(x)` | the **script layer** only: seconds (replaces the previous script value; `0` or negative clears), or `true` (until cleared, no cap) / `false` (clear). Never cancels dash or hit i-frames |
+| `is_invulnerable()`, `get_invulnerable_time()` | either layer |
+| `is_script_invulnerable()`, `get_script_invulnerable_time()`, `is_engine_invulnerable()`, `get_engine_invulnerable_time()` | one layer each (engine = hit i-frames and dash) |
+| `get_regen_delay()` / `set_regen_delay(s)`, `get_regen_interval()` / `set_regen_interval(s)`, `get_regen_amount()` / `set_regen_amount(v)` | regeneration tuning, clamped (delay `[0, 3600]`, interval `[0.05, 3600]`, amount `[0, max_hp]`), NaN ignored; each returns the resulting value |
+| `get_speed()`, `set_speed(v)` | top running speed, clamped to `[0, 5000]` px/s |
+| `dash(angle)` | starts a dash along `angle` (radians); the dash button's action and rules (cooldown, i-frames), not buffered; returns whether it started |
+| `get_position()`, `set_position(v)` | `set_position` teleports (`Player.teleport()`): resets physics interpolation (no smear), the camera cuts to the new place, clamps to +-100000 |
 | `get_velocity()`, `set_velocity(v)` | speed clamped to 5000 px/s |
 | `is_dashing()`, `can_dash()` | read-only dash state |
 | `get_dash_cooldown_left()`, `get_dash_cooldown()` | seconds left / total |
 | `get_dash_direction()`, `get_aim_direction()` | unit vectors |
 | `is_dead()`, `is_regenerating()`, `get_time_since_damage()` | read-only |
 
+**Timing of writes.** Every `PlayerState` write takes effect immediately, in the
+caller's context. The Lua binding is expected to apply a callback's writes at the
+end of the callback if it wants transactional behaviour; that buffering is the
+binding's job, not the state facade's (deliberately not built here).
+
 Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything in
 "The shot interface" above. Also for scripts: `player.request_dash()` (a buffered dash press) and `player.has_buffered_dash()`; the respawn service is the `RespawnPoints` autoload.
+
+## Known gaps and deliberate non-goals
+
+* **Saturation model (pillars 3.3)**: a 10k logical bullet cap with a reserve for
+  enemy shots is **not implemented** here. The pool still drops new shots when it
+  is full (see "Overflow policy"); the cap/reserve is a separate follow-up.
+* **Overheal** (hp above `max_hp`): not implemented. `set_hp` clamps to
+  `[0, max_hp]` as specified; pillars 12 leaves overheal as a design call.
+* **Bullet id reuse**: an id packs a handle and a 31-bit generation that is bumped
+  every time that handle is released (wrapping, skipping 0). A stale id could
+  match a new bullet only after 2^31 reuses of *one* handle: at 10k spawns per
+  second over 16384 handles that is over a century of play. Accepted, not guarded.
+* **Same-tick multi-hit order**: when several bullets reach one hurtbox in the
+  same tick, they are delivered in bullet-slot order. The first lands; if its hit
+  starts i-frames the hurtbox is off for the rest of the tick and the others pass
+  through (they are not consumed). Which bullet lands therefore depends on slot
+  order, which swap-remove makes arbitrary; the *amount* of damage taken per tick
+  does not (one hit, then i-frames). Left as is; making it deterministic by damage
+  or age would cost a sort per tick.
+* **End-of-callback writes**: see "Timing of writes" above (the binding's job).
+* **Same-tick fast bullets across target and mirror**: see the Reflector notes.
 
 ## Open design questions
 

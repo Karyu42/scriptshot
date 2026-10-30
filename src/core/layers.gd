@@ -24,9 +24,9 @@ static func hostile_to(shooter_layer: int) -> int:
 	return 0
 
 
-## Bullet colour of a faction: warm yellow for the player's bullets, pink-red
-## for enemy bullets. Reflected bullets are recoloured with it.
+## Bullet colour of a faction: warm yellow for the player's bullets, the pillars'
+## warm red `#FF5A4D` for enemy bullets. Reflected bullets are recoloured with it.
 static func bullet_color(owner_layer: int) -> Color:
 	if owner_layer & ENEMY:
-		return Color("ff6b8b")
+		return Color("ff5a4d")
 	return Color("ffd166")

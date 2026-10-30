@@ -53,8 +53,17 @@ const MAX_SPEED_MULTIPLIER := 20.0
 ## Reflect-once guard: a bullet that has already changed owner this many times
 ## (by any reflector or by a script's reflect_bullet) is not reflected again, so
 ## two reflectors, or a reflector and a script, cannot ping-pong a bullet
-## forever. 1 = once (default); 0 = no limit.
+## forever. 1 = once (default, the pillars' rule); 0 = no limit. This zone's own
+## limit; scripts calling reflect_bullet() are held to BulletPool.max_reflections.
 @export var max_reflections := 1
+## Damage a reflected bullet deals: **1** by default, whatever the shooter's script
+## gave it (design pillars 5.4; provisional). A negative value keeps the bullet's
+## own damage.
+@export var reflected_damage := 1.0
+## Opt-in: keep the reflected bullet scripted (behaviour hooks, `user` data,
+## params and the script-invulnerability flag survive). Off by default: a
+## reflected bullet is a plain enemy bullet and its script no longer owns it.
+@export var keep_script := false
 @export var enabled := true
 
 ## Where AIM_AT_TARGET sends bullets. Set by whoever wires the scene.
@@ -103,7 +112,7 @@ func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 		return false
 	var old_owner := pool.owner_layer[slot]
 	var new_owner := Layers.hostile_to(old_owner)
-	if new_owner == 0 or not pool.reflect(slot, new_owner):
+	if new_owner == 0 or not pool.reflect(slot, new_owner, false, reflected_damage, keep_script, max_reflections):
 		return false
 	var speed := velocity.length() * _safe_multiplier()
 	var heading := _new_heading(velocity, from_center, impact)

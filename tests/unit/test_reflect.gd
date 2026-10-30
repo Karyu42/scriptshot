@@ -57,7 +57,8 @@ func test_reflect_swaps_owner_mask_and_colour() -> void:
 	assert_eq(pool.color[i], Layers.bullet_color(Layers.PLAYER))
 
 
-func test_reflect_back_and_forth() -> void:
+func test_reflect_back_and_forth_when_the_limit_is_lifted() -> void:
+	pool.max_reflections = 0
 	var i := _enemy_bullet()
 	pool.reflect(i, Layers.PLAYER)
 	pool.reflect(i, Layers.ENEMY)
@@ -66,6 +67,7 @@ func test_reflect_back_and_forth() -> void:
 
 
 func test_reflect_never_lets_a_bullet_hit_its_new_owner() -> void:
+	pool.max_reflections = 0
 	var i := _enemy_bullet()
 	for owner_layer: int in [Layers.PLAYER, Layers.ENEMY, Layers.PLAYER]:
 		pool.reflect(i, owner_layer)
@@ -117,6 +119,7 @@ func test_owner_follows_the_bullet_through_swap_remove() -> void:
 
 
 func test_reflect_count_tracks_owner_changes_and_resets_per_bullet() -> void:
+	pool.max_reflections = 0
 	var a := _enemy_bullet()
 	assert_eq(pool.reflect_count[a], 0)
 	pool.reflect(a, Layers.PLAYER)
@@ -129,6 +132,7 @@ func test_reflect_count_tracks_owner_changes_and_resets_per_bullet() -> void:
 
 
 func test_reflect_count_saturates_and_follows_swap_remove() -> void:
+	pool.max_reflections = 0
 	var a := _enemy_bullet()
 	var b := _enemy_bullet()
 	for k in 300:
@@ -144,7 +148,7 @@ func test_reflect_count_saturates_and_follows_swap_remove() -> void:
 func test_faction_colours_are_distinct() -> void:
 	assert_ne(Layers.bullet_color(Layers.PLAYER), Layers.bullet_color(Layers.ENEMY))
 	assert_eq(Layers.bullet_color(Layers.PLAYER), Color("ffd166"))
-	assert_eq(Layers.bullet_color(Layers.ENEMY), Color("ff6b8b"))
+	assert_eq(Layers.bullet_color(Layers.ENEMY), Color("ff5a4d"), "pillars enemy red #FF5A4D")
 
 
 # --- through the manager and the emitter interface ---------------------------------

@@ -33,10 +33,20 @@ func is_bullet_alive(_id: int) -> bool:
 
 ## Hands a live bullet to another faction (a parry / reflect): `new_owner_layer`
 ## is Layers.PLAYER or Layers.ENEMY. The bullet then only hits what is hostile
-## to the new owner (never the new owner itself) and is recoloured to that
-## faction's colour. With `reverse` its velocity is flipped too. Returns false
-## for a stale id or an invalid owner. See BulletPool.reflect().
-func reflect_bullet(_id: int, _new_owner_layer: int, _reverse: bool = false) -> bool:
+## to the new owner (never the new owner itself), takes that faction's colour,
+## deals `new_damage` (default 1, BulletPool.KEEP_DAMAGE keeps its own) and stops
+## being scripted: its behaviour hooks, `user` data and params are cleared unless
+## `keep_script` is true. With `reverse` its velocity is flipped too.
+## A bullet can be reflected at most `BulletPool.max_reflections` times (default
+## once, so reflections cannot ping-pong): further calls return false, as do a
+## stale id or an invalid owner. See BulletPool.reflect().
+func reflect_bullet(
+	_id: int,
+	_new_owner_layer: int,
+	_reverse: bool = false,
+	_new_damage: float = 1.0,
+	_keep_script: bool = false
+) -> bool:
 	return false
 
 

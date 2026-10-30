@@ -85,8 +85,50 @@ func test_the_reflected_bullet_damages_the_player_and_never_the_mirror() -> void
 	_run(120)
 	assert_eq(mirror_body.hits, 0, "the mirror's own body is never hit by what it reflected")
 	assert_eq(player_box.hits, 1, "it came back and hurt the player")
-	assert_eq(player_box.last_damage, 2.0, "with its original damage")
+	assert_eq(player_box.last_damage, 1.0, "1 damage: the script's 2 is ignored (pillars 5.4)")
 	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_reflected_damage_is_a_property_of_the_zone() -> void:
+	var player_box := _counter(Vector2(0, 0), Layers.PLAYER, 14.0)
+	var r := _reflector(Vector2(200, 0), 40.0)
+	r.reflected_damage = 3.0
+	_bullet(Vector2(30, 0), Vector2(300, 0), Layers.PLAYER, 2.0)
+	_run(120)
+	assert_eq(player_box.last_damage, 3.0)
+
+
+func test_a_negative_reflected_damage_keeps_the_bullets_own() -> void:
+	var player_box := _counter(Vector2(0, 0), Layers.PLAYER, 14.0)
+	var r := _reflector(Vector2(200, 0), 40.0)
+	r.reflected_damage = -1.0
+	_bullet(Vector2(30, 0), Vector2(300, 0), Layers.PLAYER, 2.0)
+	_run(120)
+	assert_eq(player_box.last_damage, 2.0)
+
+
+func _scripted_bullet_through_zone(keep: bool) -> int:
+	var zone := _reflector(Vector2(200, 0))
+	zone.keep_script = keep
+	var id := _bullet(Vector2(0, 0), Vector2(300, 0))
+	m.pool.param_a[_slot(id)] = 5.0
+	m.pool.user[_slot(id)] = "u"
+	_run(40)
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY, "reflected")
+	return _slot(id)
+
+
+func test_a_zone_reflection_unscripts_the_bullet() -> void:
+	var s := _scripted_bullet_through_zone(false)
+	assert_eq(m.pool.param_a[s], 0.0)
+	assert_true(m.pool.user[s] == null, "user cleared")
+
+
+func test_keep_script_on_the_zone_keeps_the_scripts_data() -> void:
+	var s := _scripted_bullet_through_zone(true)
+	assert_eq(m.pool.param_a[s], 5.0)
+	var kept: bool = str(m.pool.user[s]) == "u"
+	assert_true(kept, "user kept")
 
 
 func test_a_player_bullet_that_stays_player_owned_would_have_hit_the_mirror() -> void:
@@ -240,14 +282,15 @@ func test_a_bullet_is_reflected_only_once_by_default() -> void:
 func test_a_script_reflection_counts_toward_the_guard() -> void:
 	_reflector(Vector2(200, 0))
 	var id := _bullet(Vector2(0, 0), Vector2(300, 0))
-	m.emitter.reflect_bullet(id, Layers.ENEMY)
-	m.emitter.reflect_bullet(id, Layers.PLAYER)
+	assert_true(m.emitter.reflect_bullet(id, Layers.ENEMY))
+	assert_false(m.emitter.reflect_bullet(id, Layers.PLAYER), "the script's own second reflection is refused too")
 	_run(60)
-	assert_eq(m.pool.owner_layer[_slot(id)], Layers.PLAYER, "mirror ignored the twice-reflected bullet")
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY, "enemy-owned, so the player-only mirror ignored it")
 	assert_gt(m.pool.pos[_slot(id)].x, 260.0)
 
 
 func test_max_reflections_zero_means_unlimited_and_still_cannot_loop_in_place() -> void:
+	m.pool.max_reflections = 0
 	var r := _reflector(Vector2(200, 0))
 	r.max_reflections = 0
 	r.reflects_owners = Layers.PLAYER | Layers.ENEMY
@@ -481,3 +524,54 @@ func test_no_reflectors_costs_nothing_in_the_step() -> void:
 	_bullet(Vector2.ZERO, Vector2(100, 0))
 	m.step(DT)
 	assert_eq(m.last_reflect_count, 0)
+
+
+# --- multi-hit pierce + reflect (#2 semantics) -----------------------------------
+
+func _piercing_player_bullet(from: Vector2, speed: float, pierce: int) -> int:
+	var r := ShotRequest.new()
+	r.position = from
+	r.velocity = Vector2(speed, 0)
+	r.owner_layer = Layers.PLAYER
+	r.hit_mask = Layers.ENEMY
+	r.pierce = pierce
+	r.lifetime = 10.0
+	r.collide_world = false
+	return m.emitter.request_shot_id(r)
+
+
+func test_a_piercing_bullet_hits_before_the_zone_and_is_then_reflected() -> void:
+	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
+	var after := _counter(Vector2(300, 0), Layers.ENEMY, 10.0)
+	var zone := _reflector(Vector2(150, 0), 30.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _piercing_player_bullet(Vector2(0, 0), 600.0, 2)
+	_run(60)
+	assert_eq(before.hits, 1, "pierced the target in front of the mirror")
+	assert_eq(after.hits, 0, "reflected before it could reach the one behind")
+	assert_true(m.emitter.is_bullet_alive(id))
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+	assert_lt(m.pool.vel[_slot(id)].x, 0.0)
+
+
+func test_a_reflected_piercing_bullet_does_not_hit_the_target_it_pierced_again() -> void:
+	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
+	var zone := _reflector(Vector2(150, 0), 30.0)
+	zone.mode = Reflector.Mode.REVERSE
+	_piercing_player_bullet(Vector2(0, 0), 600.0, 2)
+	_run(120)
+	assert_eq(before.hits, 1, "now enemy-owned: it can never hit the enemy side again")
+
+
+func test_zones_act_before_hurtboxes_within_one_tick() -> void:
+	# Pinned behaviour: a bullet fast enough to cross a target and the mirror in one
+	# tick is reflected first; the hit the bullet would have had earlier on that
+	# same path is not delivered. (Bullets this fast are 200 px per 1/60 s tick.)
+	var before := _counter(Vector2(50, 0), Layers.ENEMY, 10.0)
+	var zone := _reflector(Vector2(150, 0), 30.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _piercing_player_bullet(Vector2(0, 0), 12000.0, 2)
+	_run(1)
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+	assert_eq(before.hits, 0)
+	assert_eq(m.pool.pos[_slot(id)], m.pool.prev_pos[_slot(id)], "placed at the impact point, not swept")
