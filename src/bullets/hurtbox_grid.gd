@@ -251,6 +251,19 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	return hit_count
 
 
+## Sweeps one extra path segment of `bullet` (start -> start + d, radius `radius`)
+## against the targets matching `mask`, and appends its hits (up to `max_hits`, in
+## path order) to hit_bullets / hit_targets / hit_t after those of the last
+## collide_bullets() call. hit_t is the fraction of *this* segment. Returns how
+## many hits were added. BulletManager uses it for the part of a tick that a
+## reflected bullet flies after the mirror.
+func sweep_segment(bullet: int, start: Vector2, d: Vector2, radius: float, mask: int, last_target: int, max_hits: int) -> int:
+	var first := hit_count
+	if target_count > 0 and mask != 0 and max_hits > 0:
+		_sweep_bullet(bullet, start, d, radius, mask, last_target, max_hits)
+	return hit_count - first
+
+
 func get_target_instance_id(target: int) -> int:
 	return _target_id[target]
 

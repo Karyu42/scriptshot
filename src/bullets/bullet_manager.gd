@@ -60,6 +60,13 @@ var _behaviors: Array[BulletBehavior] = [null]
 var _sim_time := 0.0
 var _dropped_reported := 0
 var _last_warning_time := -INF
+## Bullets reflected by a zone this tick (slots, and the path fraction of the
+## reflection), plus a per-slot flag. They fly on after the mirror, see
+## _continue_reflected(), and the wall hit of their old path no longer counts.
+var _reflected_slots := PackedInt32Array()
+var _reflected_t := PackedFloat32Array()
+var _reflected_flag := PackedByteArray()
+var _reflected_count := 0
 
 
 func _init() -> void:
@@ -68,6 +75,9 @@ func _init() -> void:
 
 func _ready() -> void:
 	pool = BulletPool.new(capacity)
+	_reflected_slots.resize(capacity)
+	_reflected_t.resize(capacity)
+	_reflected_flag.resize(capacity)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
 	reflector_grid = HurtboxGrid.new(world_bounds, cell_size)
 	walls = WallGrid.new(world_bounds, cell_size)
@@ -191,20 +201,32 @@ func step(delta: float) -> void:
 		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
 
 	var t2 := Time.get_ticks_usec()
-	# Reflector zones act before hurtboxes, so a bullet turned around at a mirror's
-	# edge never reaches the mirror's body this tick (and, now enemy-owned, could
-	# not hit it anyway).
-	_reflect_bullets()
+	# Zones and hurtboxes are swept on the same (wall-clipped) path, then their hits
+	# are delivered per bullet in order of time along the path: a target in front of
+	# a mirror is hit before the mirror turns the bullet around, a mirror in front
+	# of a target turns it before it can reach the target. A reflected bullet then
+	# flies on for the rest of the tick along its new heading.
+	var zone_hits := _collect_zone_hits()
 	last_hit_count = grid.collide_bullets(pool)
-	for k in last_hit_count:
-		_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+	if zone_hits == 0:
+		for k in last_hit_count:
+			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+	else:
+		_resolve_hits_in_time_order(zone_hits)
+		_continue_reflected(delta)
 
 	# A bullet that reached a wall despawns there (unless a hurtbox already
-	# claimed it earlier on its path: first reason wins).
+	# claimed it earlier on its path: first reason wins). A bullet that a mirror
+	# turned around before the wall is not at that wall any more.
 	for k in last_wall_hit_count:
 		var wall_bullet := walls.hit_bullets[k]
+		if _reflected_flag[wall_bullet] != 0:
+			continue
 		pool.mark_dead(wall_bullet, BulletPool.DespawnReason.WALL)
 		pool.claim_from_bounds(wall_bullet, BulletPool.DespawnReason.WALL)
+	for r in _reflected_count:
+		_reflected_flag[_reflected_slots[r]] = 0
+	_reflected_count = 0
 
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -259,34 +281,113 @@ func _report_saturation() -> void:
 			% [pool.capacity, dropped_now, pool.dropped_total])
 
 
-## One swept pass over the bullets against every active Reflector zone.
-func _reflect_bullets() -> void:
+## One swept pass over the bullets against every active Reflector zone. Fills
+## reflector_grid's hit list (per bullet, in path order, up to
+## HurtboxGrid.MAX_ZONE_HITS zones) and returns its length; nothing is reflected
+## yet (see _resolve_hits_in_time_order()). Costs nothing while no zone exists.
+func _collect_zone_hits() -> int:
 	last_reflect_count = 0
+	_reflected_count = 0
 	var zones := Reflector.registry
 	if zones.is_empty():
-		return
+		return 0
 	reflector_grid.begin(pool.max_radius)
 	for k in zones.size():
 		var zone := zones[k]
 		if zone.is_active():
 			reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
-	var hits := reflector_grid.collide_bullets(pool, true)
-	# Hits come grouped per bullet, in path order (like the pierce sweep). Once a
-	# zone reflected a bullet, the rest of that bullet's list was computed for the
-	# old path, so it is dropped; a zone that declined it (arc, guard, wrong way)
-	# simply lets the next zone on the path have a go.
-	var reflected_bullet := -1
-	for k in hits:
-		var bullet := reflector_grid.hit_bullets[k]
-		if bullet == reflected_bullet:
+	return reflector_grid.collide_bullets(pool, true)
+
+
+## Delivers one tick's hurtbox hits (grid) and zone crossings (reflector_grid),
+## bullet by bullet, in order of time along the bullet's path (hit_t); a zone wins
+## a tie. Both lists are grouped per bullet in ascending slot order and ordered
+## by time within a bullet, so this is a merge.
+##
+##  * A hurtbox hit is delivered as usual (_apply_hit); a bullet it consumed takes
+##    no further part.
+##  * A zone crossing is offered to the zone (guard, direction, arc). A zone that
+##    declines lets the next event on the path happen. A zone that reflects ends
+##    the old path: every later event of that bullet in either list was computed
+##    for a path the bullet no longer follows, so it is dropped (at most one
+##    reflection per bullet per tick), and the bullet is queued for
+##    _continue_reflected().
+func _resolve_hits_in_time_order(zone_hits: int) -> void:
+	var kh := 0
+	var kz := 0
+	var hurt_hits := last_hit_count
+	while kh < hurt_hits or kz < zone_hits:
+		var hurt_bullet := grid.hit_bullets[kh] if kh < hurt_hits else pool.capacity
+		var zone_bullet := reflector_grid.hit_bullets[kz] if kz < zone_hits else pool.capacity
+		var bullet := mini(hurt_bullet, zone_bullet)
+		var reflected := false
+		while true:
+			var has_hurt := kh < hurt_hits and grid.hit_bullets[kh] == bullet
+			var has_zone := kz < zone_hits and reflector_grid.hit_bullets[kz] == bullet
+			if not has_hurt and not has_zone:
+				break
+			if reflected:
+				# The old path is over: skip what is left of it.
+				if has_hurt:
+					kh += 1
+				if has_zone:
+					kz += 1
+				continue
+			if has_zone and (not has_hurt or reflector_grid.hit_t[kz] <= grid.hit_t[kh]):
+				if _try_reflect(bullet, kz):
+					reflected = true
+				kz += 1
+			else:
+				_apply_hit(bullet, grid.hit_targets[kh], grid.hit_t[kh])
+				kh += 1
+
+
+## Offers zone hit `k` of reflector_grid to its zone. True if the bullet was reflected.
+func _try_reflect(bullet: int, k: int) -> bool:
+	var zone := reflector_grid.target_ref[reflector_grid.hit_targets[k]] as Reflector
+	if zone == null or not is_instance_valid(zone):
+		return false
+	var t := reflector_grid.hit_t[k]
+	var impact := pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
+	if not zone.reflect_bullet(pool, bullet, impact):
+		return false
+	last_reflect_count += 1
+	_reflected_slots[_reflected_count] = bullet
+	_reflected_t[_reflected_count] = t
+	_reflected_count += 1
+	_reflected_flag[bullet] = 1
+	return true
+
+
+## Lets every bullet reflected this tick fly on from its impact point along its new
+## velocity for the rest of the tick (the part after the reflection, `(1 - t) *
+## delta`), against walls and against the hurtboxes of its *new* side, in time
+## order like any other bullet. `prev_pos` is the impact point and `pos` the end of
+## that part (clipped at a wall), so the renderer interpolates the new leg only.
+## A bullet is reflected at most once per tick, so zones are not consulted again.
+func _continue_reflected(delta: float) -> void:
+	for r in _reflected_count:
+		var slot := _reflected_slots[r]
+		if pool.dead_reason[slot] != 0:
 			continue
-		var zone := reflector_grid.target_ref[reflector_grid.hit_targets[k]] as Reflector
-		if zone == null or not is_instance_valid(zone):
-			continue
-		var impact := pool.prev_pos[bullet].lerp(pool.pos[bullet], reflector_grid.hit_t[k])
-		if zone.reflect_bullet(pool, bullet, impact):
-			reflected_bullet = bullet
-			last_reflect_count += 1
+		var start := pool.pos[slot]  # the impact point (BulletPool.teleport)
+		var d := pool.vel[slot] * (1.0 - _reflected_t[r]) * delta
+		var wall_t := -1.0
+		if pool.collide_world[slot] != 0 and d != Vector2.ZERO:
+			wall_t = walls.first_hit(start, d, pool.radius[slot])
+			if wall_t >= 0.0:
+				d *= wall_t
+		pool.prev_pos[slot] = start
+		pool.pos[slot] = start + d
+		var first := grid.hit_count
+		var added := grid.sweep_segment(
+			slot, start, d, pool.radius[slot], pool.hit_mask[slot], pool.last_hit[slot], pool.pierce[slot] + 1
+		)
+		last_hit_count += added
+		for k in range(first, first + added):
+			_apply_hit(slot, grid.hit_targets[k], grid.hit_t[k])
+		if wall_t >= 0.0:
+			pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
 
 
 func _collect_targets() -> void:

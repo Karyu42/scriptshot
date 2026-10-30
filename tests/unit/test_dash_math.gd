@@ -68,3 +68,46 @@ func test_peak_never_negative() -> void:
 func test_default_dash_peaks_at_1800_px_per_second() -> void:
 	# pillars 5.4 dash (160 px over 0.2 s), 300 px/s running speed, power 2.
 	assert_almost_eq(DashMath.peak_speed(160.0, 0.2, 300.0, 2.0), 1800.0, 0.01)
+
+
+# --- running faster than the dash (PlayerState.set_speed above distance / duration) -----
+
+func test_effective_distance_is_the_tuned_distance_unless_running_is_faster() -> void:
+	assert_eq(DashMath.effective_distance(160.0, 0.2, 300.0), 160.0)
+	assert_eq(DashMath.effective_distance(160.0, 0.2, 800.0), 160.0, "exactly at the threshold")
+	assert_almost_eq(DashMath.effective_distance(160.0, 0.2, 1000.0), 200.0, 0.0001)
+
+
+func test_a_dash_is_never_slower_than_running() -> void:
+	for exit_speed: float in [800.0, 900.0, 1000.0, 1200.0, 1500.0, 5000.0]:
+		for i in 11:
+			var t := DUR * i / 10.0
+			assert_gte(DashMath.speed_at(t, DIST, DUR, exit_speed, 2.0), exit_speed - 0.01, "exit %s t %s" % [exit_speed, t])
+
+
+func test_a_dash_does_not_collapse_when_running_is_very_fast() -> void:
+	# Above 1200 px/s the unclamped peak went to 0 and the dash stalled.
+	var exit_speed := 5000.0
+	assert_almost_eq(DashMath.peak_speed(DIST, DUR, exit_speed, 2.0), exit_speed, 0.01)
+	assert_almost_eq(DashMath.distance_at(DUR, DIST, DUR, exit_speed, 2.0), exit_speed * DUR, 0.01, "covers running distance")
+	assert_gt(DashMath.distance_at(DUR / 2.0, DIST, DUR, exit_speed, 2.0), 0.0)
+
+
+func test_distance_stays_continuous_across_the_threshold() -> void:
+	var below := DashMath.distance_at(DUR, DIST, DUR, 799.0, 2.0)
+	var above := DashMath.distance_at(DUR, DIST, DUR, 801.0, 2.0)
+	assert_almost_eq(below, 160.0, 0.001)
+	assert_almost_eq(above, 801.0 * DUR, 0.001)
+	assert_lt(absf(above - below), 1.0)
+
+
+func test_dash_state_moves_the_effective_distance_at_a_high_running_speed() -> void:
+	var d := DashState.new()
+	d.exit_speed = 1000.0
+	d.start(Vector2.RIGHT)
+	var moved := Vector2.ZERO
+	var dt := 1.0 / 60.0
+	for k in 12:
+		moved += d.advance(dt) * dt
+	assert_false(d.active)
+	assert_almost_eq(moved.x, 200.0, 0.01)

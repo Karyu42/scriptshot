@@ -16,10 +16,24 @@ extends RefCounted
 ## which needs distance >= exit_speed * duration to launch above running speed
 ## (the defaults do: 160 px vs 60 px). Because the distance is known in closed
 ## form (distance_at), per-tick displacement is exact for any tick length.
+##
+## A dash can never be slower than running. If the running speed is so high that
+## exit_speed * duration exceeds `distance` (800 px/s with the defaults, e.g. a
+## script calling PlayerState.set_speed(1000)), the burst degenerates into a
+## constant-speed dash at running speed that covers exit_speed * duration, i.e.
+## more than `distance` (see effective_distance()) instead of the curve dipping
+## below running speed or collapsing to a standstill.
+
+
+## The distance the burst really covers: `distance`, or exit_speed * duration when
+## running is faster than the tuned dash.
+static func effective_distance(distance: float, duration: float, exit_speed: float) -> float:
+	return maxf(distance, exit_speed * duration)
 
 
 static func peak_speed(distance: float, duration: float, exit_speed: float, power: float) -> float:
-	return maxf(exit_speed + (distance - exit_speed * duration) * (power + 1.0) / duration, 0.0)
+	var covered := effective_distance(distance, duration, exit_speed)
+	return maxf(exit_speed + (covered - exit_speed * duration) * (power + 1.0) / duration, 0.0)
 
 
 ## Speed (px/s) `t` seconds into the dash. Past the end it is exit_speed.
@@ -32,7 +46,7 @@ static func speed_at(t: float, distance: float, duration: float, exit_speed: flo
 
 
 ## Distance (px) covered between the start and `t` seconds in. Reaches exactly
-## `distance` at t = duration (for a valid curve, see the header).
+## effective_distance() (= `distance` unless running is faster) at t = duration.
 static func distance_at(t: float, distance: float, duration: float, exit_speed: float, power: float) -> float:
 	var clamped := clampf(t, 0.0, duration)
 	var peak := peak_speed(distance, duration, exit_speed, power)
