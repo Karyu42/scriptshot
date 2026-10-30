@@ -10,11 +10,9 @@ shots in Lua**. MIT licensed.
 
 * **Godot 4.7.2 stable** (standard build, not .NET). Download from
   <https://github.com/godotengine/godot/releases/tag/4.7.2-stable>.
-* On the shared dev box it is already installed:
-  `~/.local/godot/4.7.2/Godot_v4.7.2-stable_linux.x86_64`, symlinked as
-  `godot` in `~/.local/bin` and `/usr/local/bin`. If `godot` is not on your
-  `PATH`, `export GODOT=~/.local/godot/4.7.2/Godot_v4.7.2-stable_linux.x86_64`
-  (the scripts below honour `$GODOT`).
+* Put the editor binary on your `PATH` as `godot`, or point `$GODOT` at it
+  (`export GODOT=/path/to/Godot_v4.7.2-stable_linux.x86_64`). The scripts in
+  `tools/` use `$GODOT` if set and `godot` otherwise.
 
 ## Run
 
@@ -26,7 +24,7 @@ godot --path .            # runs scenes/main.tscn
 | Action | Mouse + keyboard | Gamepad |
 | --- | --- | --- |
 | Move | `W` `A` `S` `D` | Left stick |
-| Aim | Mouse (world space) | Right stick |
+| Aim | Mouse (relative to the ship on screen) | Right stick |
 | Fire | Left mouse button | Right trigger |
 | Bullet stress test on/off | `F1` | Back / Select |
 | Cycle stress target (2k / 5k / 10k) | `F2` | `Y` / Triangle |
@@ -44,7 +42,9 @@ Unit and smoke tests use [GUT](https://github.com/bitwes/Gut) 9.7.1 (vendored in
 ```
 
 It imports the project (first run only needs a few seconds) and runs
-`tests/unit/`. Run a subset with `./tools/run_tests.sh -gselect=bullet_pool`.
+`tests/unit/`. Import, parse and compile errors fail the run (GDScript untyped
+and unsafe-access warnings are project-level errors; `tests/unit/test_project_integrity.gd`
+loads every script). Run a subset with `./tools/run_tests.sh -gselect=bullet_pool`.
 The raw command is:
 
 ```sh
@@ -55,17 +55,20 @@ godot --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit
 ## Benchmark
 
 Headless bullet benchmark: keeps N bullets alive, runs the full simulation tick
-(kinematics, collision against 32 hurtboxes, despawn/respawn churn, render
-buffer fill) and reports p50/p95/p99/max per-frame cost, with a pass/fail
-verdict against the target of **5000 bullets at p95 <= 16.7 ms** (60 fps).
+(kinematics, swept collision against 32 hurtboxes and 28 walls, despawn/respawn
+churn, interpolated render buffer fill) and reports p50/p95/p99/max per-frame
+cost at 5000 and 10000 bullets, with a pass/fail verdict against the target of
+**10,000 bullets at p95 <= 16.6 ms** (60 fps). 5000 is the minimum and is always
+reported.
 
 ```sh
-./tools/run_benchmark.sh                                     # 5000 and 10000 bullets
+./tools/run_benchmark.sh                                     # 5000 and 10000 bullets (verdict: 10000)
 ./tools/run_benchmark.sh --bullets=2000,5000,10000,20000 --frames=1200
 ./tools/run_benchmark.sh --json=/tmp/bench.json
 ```
 
-Exit code 1 means the target was missed. Headless mode uses a dummy renderer, so
+Exit code 1 means the target was missed, or the target bullet count was never
+reached, or the project failed to compile. Headless mode uses a dummy renderer, so
 the numbers cover CPU-side simulation and buffer preparation, not GPU time.
 To include a real renderer run it windowed:
 `godot --path . res://tests/benchmark/bullet_benchmark.tscn -- --bullets=5000,10000`.
