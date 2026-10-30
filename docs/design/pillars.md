@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **draft for review, revision 3 (owner decisions of 2026-10-30 folded in, incl. combat and writable player state).** Written when the repo contained only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`; no issues or PRs). Nothing below describes existing code. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4 and Q8 are resolved and absent from the open list).
+> Status: **draft for review, revision 4 (owner decisions of 2026-10-30 folded in, incl. combat and writable player state; QA & Build review changes B1–B8 and should-fix items applied).** Written when the repo contained only `README.md` and `LICENSE` (commits `e2ad1c3`, `e6f9c6a`; no issues or PRs). Nothing below describes existing code on `main`. Where this doc names code that exists on the open scaffold PR [#2](https://github.com/Karyu42/scriptshot/pull/2) (branch `feat/core-scaffold`, head `2026abe`: `ShotContext`, `ShotRequest`, `ShotPattern`, `BulletBehavior`, `BulletManager`, `BulletPool`, `HurtboxGrid`, `WallGrid`, `Hurtbox`, `Player`, `TrainingDummy`) or on the scripting draft (branch `scripting/api-draft`, `docs/scripting/api.md` v0.1), the names are the real ones from those branches; everything else is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4 and Q8 are resolved and absent from the open list).
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -63,11 +63,11 @@ Move (left stick / WASD), aim (right stick / mouse), hold fire. Firing triggers 
 Fragments (see §4) unlock new *inputs and ideas* for your scripts; further from the origin, enemies are stronger and bosses more demanding. This makes you rewrite your shot from scratch, not just grind numbers.
 
 ### First 5 minutes (target flow)
-1. Spawn at world origin with a default script visible on-screen (`shots/default.lua`), firing a single bullet.
+1. Spawn at world origin with a default script visible on-screen (`shots/default.lua`), firing a single bullet. A small **tutorial range** sits inside the 512 px safe zone (§6.1): three non-hostile targets built on `TrainingDummy` (`src/enemies/training_dummy.gd`, 40 HP, respawns), at about 300 px from the spawn.
 2. Prompt: *"Press E to edit"* (controller: a face button; touch: an edit button). Time slows to 15% and a small editor opens beside the arena (on small touch screens it opens full-screen with the arena frozen at 15% in a corner preview; see §10). The default script has two commented lines to tweak (`count`, `spread`).
 3. Edit → save → the shot changes **immediately, without leaving the world**.
-4. 3–4 weak enemies appear. One is a Shieldbearer (see §5): a straight shot bounces off, inviting a curved one.
-5. At ~4 min a faint **boss beacon** (§6) appears at the screen edge. The player has found their first goal without a tutorial.
+4. One of the three targets is a **shielded dummy** (a front arc that *absorbs* straight shots, like the Shieldbearer, but static and non-hostile). It is a scripted tutorial placement, **not a spawn**, so it doesn't break Tier gating: real Shieldbearers only spawn from Tier 1 (§5.2). A curved shot (`turn_rate`) gets around the shield. Once the dummies die (or after 60 s) the player leaves the safe zone; the first *real* enemies are Tier 0: Drifters and Swarmers only.
+5. The origin region always contains a **starter boss** 7–9 chunks away (§6.3). Its beacon (an edge-of-screen tick, §6.4) becomes visible when the player is within 5 chunks of it, i.e. after walking 2–4 chunks (about 14–27 s of straight walking at the player's 300 px/s). It is **not** visible at spawn. The player has found their first goal without a tutorial, typically 1–2 minutes after leaving the tutorial range.
 
 ---
 
@@ -124,14 +124,14 @@ return {
 
 | Always available (never gated) | Notes |
 |---|---|
-| Full Lua language and standard library (own scripts; `os`/`io` opt-in, see §3.2) | No design limits on loops, recursion, or state. Only the crash/hang guards of §3.2. |
+| Full Lua language and standard library (own scripts; `native`/`os`/`io`/`debug`/`package` are opt-in capabilities, see §3.2) | No design limits on loops, recursion, or state. Only the crash/hang guards of §3.2. |
 | `shoot{angle, speed, damage, life, radius, color?, update?, on_hit?, on_die?}` | `on_die` may call `shoot` → bullets spawning bullets. |
-| `ctx`: `aim`, `time`, `dt`, `shot_count`, `device` (`"kbm"`, `"pad"`, `"touch"`), plus per-call snapshots `pos`, `vel`, `hp` | `device` lets a script adapt (e.g., wider autoaim cone on touch) without the engine granting any input-based advantage. `ctx.pos/vel/hp` are convenience snapshots of `player` (below). |
-| **`player` (live, readable AND writable; decided, see §12)**: `player.hp` (0..`max_hp`, default 5), `player.max_hp`, `player.invulnerable` (bool script flag), `player.iframes` (seconds of engine i-frames left), `player.pos`, `player.vel`, `player.speed` (default 220 px/s), `player.dash_cd` (seconds left), `player.regen_delay`/`player.regen_rate` (defaults 5 s / 1 per 3 s) | Writes apply at the end of the current callback. `player.hp = 0` kills the player (respawn rules, §5.4). |
+| `ctx`: `aim`, `time`, `dt`, `shot_count`, `device` (`"kbm"`, `"pad"`, `"touch"`), plus `pos` (the **muzzle** position, `ShotContext.muzzle_position`), `vel` (`ShotContext.shooter_velocity`) and `hp` (snapshot of `player.hp`) | `device` lets a script adapt (e.g., wider autoaim cone on touch) without the engine granting any input-based advantage. For the player's own position use `player.pos` (below); `ctx.pos` is where bullets leave the barrel. |
+| **`player` (live, readable AND writable; decided, see §12)**: `player.hp` (0..`max_hp`, default 5), `player.max_hp`, `player.invulnerable` (bool script flag), `player.iframes` (seconds of engine i-frames left), `player.pos`, `player.vel`, `player.speed` (default 300 px/s, `Player.max_speed` on the scaffold), `player.dash_cd` (seconds left), `player.regen_delay`/`player.regen_rate` (defaults 5 s / 1 per 3 s) | Writes apply at the end of the current callback. `player.hp = 0` kills the player (respawn rules, §5.4). |
 | `player.dash(angle)` | The same action as the dash button (0.2 s i-frames, 1.5 s cooldown, §5.4); returns `false` while on cooldown. A script dashing is **not** a state write: it obeys the same rules as the button. |
 | `on_hurt = function(ctx, dmg, src) return dmg end` (optional script callback) | Called before damage is applied; the return value replaces the damage (`0` = ignore). Returning less than `dmg` is a tagged write (§12.1). |
 | `b.owner` on bullets (`"player"` / `"enemy"`) | Read-only; changes only through reflection (§5.1). |
-| Persistent per-script `state` table | Survives respawn; saved in the save file. (Not the same as `player` state.) |
+| Persistent per-script `state` table | **Always available from the start** (not a Sense, not an unlock). Survives respawn (Q4: death keeps everything) and is saved in the save file. Not the same as `player` state. Corresponds to `weapon.state` / `run.state` in the scripting draft (its [OI-7], decided here: persistent). |
 
 | Granted by Fragments (§4) | Examples |
 |---|---|
@@ -139,7 +139,24 @@ return {
 
 ### 3.2 Script environment and the only engine guard rails
 
-**The player's own scripts get full Lua**: the whole standard library including `os`, `io`, `debug`, `package`, `load`/`loadstring`/`dofile`, `require` of local files, and any other library the binding exposes. `os`/`io`/file access is **opt-in per script**: a script declares what it needs in its returned table, e.g. `needs = {"os", "io"}`, and the player confirms once per script in the editor (a clear one-line prompt, remembered per script).
+**Design intent.** Maximum freedom for the player's scripts, with **only** crash/hang guards as guard rails. The engine (through the `ScriptHost` facade proposed in the scripting branch's `docs/scripting/lua-binding.md`) runs **Lua 5.4** on every platform.
+
+**Always available, no capability needed:** base Lua (including `load`), `string`, `table`, `math`, `utf8`, `coroutine`, `os.time`, `os.clock`, and the **full game API**, including writing player state (§3.1, §12). Note: `loadstring` is Lua 5.1/LuaJIT-only and does **not** exist in 5.4; use `load`.
+
+**Capabilities (opt-in via `needs`).** *DRAFT, names and exact library lists to be finalised with and owned by the Scripting Engineer.* Listed in order of danger, with the player-facing label:
+
+| `needs` name | Covers | Player-facing label |
+|---|---|---|
+| `native` | `package.loadlib`, C modules | "Load native code. Can do anything to your computer." |
+| `os` | `os.execute`, `os.remove`, `os.rename`, `os.getenv`, … (`os.time` and `os.clock` stay always-on) | "Run programs and change your system." |
+| `io` | file read and write | "Read and write files." |
+| `debug` | the full `debug` library | "Inspect and change Lua internals." |
+| `package` | `require`/modules loaded from disk | "Load Lua modules from disk." |
+| `net` | **reserved for later**, not available | n/a |
+
+Engine rules for capabilities: **`os.exit` ends the script and never kills the game.** **The watchdog (instruction/time guard) can't be removed, replaced or bypassed by player scripts, even with `debug` granted**: crash and hang guards are **never** a capability (they are not on the list above on purpose). Design intent only; the mechanism (for example the engine re-arming its own count hook, or running the hook in a layer that Lua can't reach) is the Scripting Engineer's call. A grant never lifts a guard in the table below. (The scripting draft says `require` of the player's own script folder works by default; whether that stays always-on or moves under `package` is for the Scripting Engineer, see the unresolved list.)
+
+Platform availability: on **web** `native`, `os`, `io` and `package` are unavailable (§10); on mobile `native` is unavailable and `io`/`package` are limited to the app data folder.
 
 ```lua
 return {
@@ -151,21 +168,85 @@ return {
 }
 ```
 
+**Who gets prompted.** *Own* scripts see the same capability list as a plain opt-in (no scary warning): the editor header shows each requested capability with its label and a switch. *Imported* scripts get the full warning flow in §7.1. Grants are remembered **per script content hash**, so editing an imported script asks again (see §7.1 for own scripts). There is **no per-script profile field** for the Constrained mode; that mode clamps by **game mode**, not by script (§11).
+
 **The sole engine-level guards (they exist to prevent crashes and hangs, never to shape gameplay):**
 
 | Guard | Starting value | Behaviour |
 |---|---|---|
-| **Per-frame time budget** for all script callbacks | 4 ms on PC (tune per platform; see §10) | When exceeded the remaining callbacks are skipped for that frame, and a small `!` appears in the editor with the measured time. The game never drops below its frame floor because of a script. |
-| **Instruction budget per callback** (watchdog against infinite loops, e.g., Lua count hook) | 5,000,000 VM instructions per callback invocation | The callback is aborted with an error (`script timeout`) and the game keeps running. 3 consecutive timeouts suspend that script until it is saved again. |
-| **Memory cap** per script (separate Lua allocator accounting) | 128 MB on PC, lower on web/mobile | Allocation beyond the cap raises a Lua error inside the script; the script is suspended and the editor shows the usage. |
+| **Per-frame time budget** for all script callbacks | **3 ms on PC** (matches the scripting draft's default; 2 ms on web/mobile as a starting value, §10) | When exceeded, remaining script work for that frame is cut off as described in §3.3 (hooked bullets keep flying). A small `!` appears in the editor with the measured time. |
+| **Instruction budget per callback** (watchdog against infinite loops, e.g., Lua count hook) | **100,000 VM instructions per callback invocation** (the scripting draft's default; final value owned by the Scripting Engineer) | The callback is aborted with an error (`script timeout`) and the game keeps running. 3 consecutive timeouts suspend that script until it is saved again. |
+| **Memory cap** per script (separate Lua allocator accounting) | 64 MB on PC (the scripting draft's default), lower on web/mobile | Allocation beyond the cap raises a Lua error inside the script; the script is suspended and the editor shows the usage. |
 | **Error isolation** | always on | Every callback (`on_fire`, `update`, `on_hit`, `on_die`) runs in a protected call. A Lua error never crashes the game; it prints to the editor console with file/line and disables only that callback until the next save. The previous working version can be restored with one key. |
-| **Live-bullet entity cap** (to keep the physics/renderer alive) | 4,000 on PC (lower on web/mobile, §10) | New `shoot` calls beyond the cap are dropped, and the editor shows "bullet cap reached". This is a performance ceiling, not a design limit; we expect to raise it as the engine is optimized. |
+| **Live-bullet cap** (keeps the pool/renderer alive) | **PC: 10,000 live bullets in total**, with a **5,000 floor** (see §3.3). Web and mobile have their own starting values in §10 | New `shoot` calls beyond the player's share are dropped and the editor shows "bullet cap reached". This is a performance ceiling, not a design limit. |
 
-Everything else is *not* restricted: loops, recursion, coroutines, global state, bullet counts below the cap, file and OS access (with opt-in). If a guard is hit, the player is told exactly which one and why (P2 stays honest).
+Everything else is *not* restricted: loops, recursion, coroutines, global state, bullet counts below the cap, `debug`/`os`/`io`/`package`/`native` (with opt-in), and writing player state. If a guard is hit, the player is told exactly which one and why (P2 stays honest).
 
 **Provenance.** The game keeps a flag per script file: *own* (authored in the local editor or hand-placed in `shots/`) or *imported* (arrived through a share code, a download, or a link). Imported scripts are stored in `shots/imported/` with their metadata. Rules for them are in §7.
 
-**Platform notes.** OS/file capability depends on the platform: on **web** there is no real OS or file access (see §10), and mobile OSes sandbox file access to the app's data folder. A script that declares `needs` the platform cannot satisfy still loads, but those libraries are `nil` and the editor says why. The `needs` list travels with the script so other players can see portability before running it.
+**Platform notes.** A script that declares `needs` the platform cannot satisfy still loads, but those libraries are `nil` and the editor says why. The `needs` list travels with the script so other players can see portability before running it.
+
+### 3.3 Bullet budget, speed clamp, and what happens when budgets run out
+
+**Bullet cap (B1).** The **PC cap is one number: 10,000 live bullets in total** (the target of the scaffold's benchmark, `tests/benchmark/bullet_benchmark.gd`; `BulletManager.capacity` defaults to 16384, so the logical cap sits below the pool size). **5,000 is the floor**: on hardware where the 10k benchmark can't hold the frame budget (16.6 ms; the scaffold's PR reports 10k as borderline with p95 14.1 ms on a loaded 8-core box) the cap auto-lowers, but never below 5,000, and below 5,000 the game shows a "hardware below minimum" notice. Web and mobile caps are **separate starting values** (§10), not claims about the PC number.
+
+**Reserved capacity for enemies and bosses (B2).** Player scripts can't starve the world's bullets:
+
+| | Total cap | Reserved for enemy + boss bullets | Player scripts may use at most |
+|---|---|---|---|
+| PC (10k) | 10,000 | **3,000 (30%)** | **7,000** |
+| PC floor (5k) | 5,000 | **1,500 (30%)** | **3,500** |
+
+This reserve is a pool-protection rule in the same family as the cap (it keeps the world's bullets alive), not a gameplay limit on what scripts do. Rules: (1) player-owned bullets are hard-capped at the "at most" column; (2) enemy and boss bullets may use **the whole pool**, including unused player share (so a huge boss pattern is never cut by a player, and the player's own share shrinks instead if the pool fills); (3) the boss design budget is **≤ 2,500 live boss bullets** at once and **≤ 500** for all regular enemies together, which fits the reserve; (4) engine work: per-owner live counters in `BulletPool` (see §5.5).
+
+**Speed clamp (B3).** Until **swept collision** is on `main`, bullet speed is **clamped to 1,200 px/s** (about 20 px per 60 Hz tick, less than the 44 px diameter of a `TrainingDummy` hurtbox, so bullets can't tunnel). The clamp applies to `shoot{speed}` and to any velocity set from a hook. Swept collision is implemented on the scaffold PR #2 (`pool.prev_pos`, `HurtboxGrid.collide_bullets`, `WallGrid`; `docs/architecture.md`: "Collision is **swept**") but is **not on `main` yet**. **When PR #2 merges, the clamp lifts** (keep a sane engine ceiling, e.g. 4,000 px/s, as a crash guard) and the editor message about it is removed.
+
+**When the time budget (3 ms PC) runs out (should-fix).** Hooked bullets (`behavior_id != 0`, i.e. a Lua `update`) are the expensive path; plain bullets cost no script time. When the budget runs out mid-frame:
+- bullets whose `on_update` hook didn't run this tick **keep their last velocity and continue on native kinematics** (`acceleration`, `turn_rate`, lifetime, collision all still apply), they just skip the hook for this tick;
+- those bullets draw at ~70% alpha for that frame (a **visible indicator**), and the editor shows `!` with the count ("412 hooks skipped");
+- hooks are scheduled **round-robin** from where the previous frame stopped, so the same bullets aren't always the ones skipped;
+- event hooks (`on_hit`, `on_despawn`) are **never silently dropped**: they are queued and run next tick (the scripting draft's rule: "deferred, never dropped silently"); this needs an event queue because the bullet slot is gone by then (engine work, §5.5);
+- if over budget for 2 s, the editor shows a warning with the hottest script lines (no restriction is applied).
+
+### 3.4 Lua API names vs. the scaffold and the scripting draft
+
+The Lua names in this doc (`shoot`, `update`, `on_die`, `sense.*`, `player`) are **design placeholders**. The Scripting Engineer's draft (`docs/scripting/api.md` v0.1 on `scripting/api-draft`) currently uses `spawn{}`, `on_tick`, `on_death`, `world.*` and `b:` handles; the final player-facing names are owned by that draft. This table maps each concept to the **real** Godot-side names on `feat/core-scaffold` so engineers know where each one lands:
+
+| This doc | Scripting draft v0.1 | Godot side (real name) | Status |
+|---|---|---|---|
+| script table with `on_fire(ctx)` | weapon table, `on_fire(ctx)` | `ShotPattern.fire(context: ShotContext, emitter: ShotEmitter)` | exists |
+| `cooldown` | `cooldown` | `ShotPattern.fire_interval` | exists |
+| `ctx.aim` | `ctx.aim`, `ctx.aim_dir` | `ShotContext.aim_angle`, `ShotContext.aim_direction` | exists |
+| `ctx.pos` (muzzle) | `ctx.pos` | `ShotContext.muzzle_position` | exists |
+| `ctx.vel` | n/a | `ShotContext.shooter_velocity` | exists |
+| `ctx.time` | `world.time` | `ShotContext.time` | exists |
+| `ctx.shot_count` | `ctx.n` | `ShotContext.shot_index` | exists |
+| `ctx.dt` | `world.dt` | none (fixed 60 Hz tick, `physics_ticks_per_second=60`) | constant, expose |
+| `ctx.device` | n/a | `InputDevice` autoload (`src/core/input_device.gd`), not in `ShotContext` | new field |
+| `ctx.hp`, `player.hp` | `world.player.hp` | none: `Player` emits `damaged(amount)` but has no health (architecture open question 6) | new (§5.4) |
+| `player.pos`, `player.vel` | `world.player.pos/vel` | `Player` (`CharacterBody2D`) position/`velocity` | exists, writes need facade |
+| `player.speed` | n/a | `Player.max_speed` (300.0) | exists |
+| `player.invulnerable`, `iframes` | n/a | `Hurtbox.active` ("Turn off to make the owner temporarily untouchable (i-frames)") plus new timers | partly exists |
+| `shoot{}` | `spawn{}` | `ShotEmitter.request_shot(ShotRequest)`, `request_shots()` | exists |
+| `angle`, `speed` | `angle`, `speed` | `ShotRequest.polar(position, heading, speed)` → `ShotRequest.velocity` | exists |
+| `damage` | `damage` | `ShotRequest.damage` (default 1.0) | exists |
+| `life` | `lifetime` | `ShotRequest.lifetime` | exists |
+| `radius` | `radius` | `ShotRequest.radius` | exists |
+| `color` | `color` | `ShotRequest.color` | exists |
+| `accel`, `turn` (native motion) | `accel`, `spin` | `ShotRequest.acceleration`, `ShotRequest.turn_rate` | exists |
+| `pierce` | `pierce` | `ShotRequest.pierce` | exists |
+| `bounce` | `bounce` | none: `WallGrid` despawns with `DespawnReason.WALL` | new (§5.5) |
+| `collide_world` | n/a | `ShotRequest.collide_world` | exists |
+| `team`/`b.owner` | `team`, `b.owner` | none: ownership is implied by `ShotRequest.hit_mask`; `Layers.PLAYER_BULLET`/`ENEMY_BULLET` are reserved | new (§5.5) |
+| `update(b, dt)` | `on_tick(b, dt)` | `BulletBehavior.on_update(pool, index, delta)`, registered with `ShotEmitter.register_behavior()` → `ShotRequest.behavior_id` | exists |
+| `on_hit(b, hit)` | `on_hit(b, hit)` | `BulletBehavior.on_hit(pool, index, hurtbox)` | exists |
+| `on_die(b, why)` | `on_death(b, why)` | `BulletBehavior.on_despawn(pool, index, reason)` with `BulletPool.DespawnReason` (`LIFETIME`, `BOUNDS`, `HIT`, `MANUAL`, `CLEARED`, `WALL`) | exists |
+| `on_spawn` | `on_spawn(b)` | `BulletBehavior.on_spawn(pool, index)` | exists |
+| `b:kill()` | `b:kill(why)` | `BulletPool.mark_dead(index, reason)` | exists |
+| `b.pos`, `b.vel` | `b.pos`, `b.vel` | `pool.pos[index]`, `pool.vel[index]` | exists |
+| `sense.*` | `world.*` queries | none yet (`HurtboxGrid` is the spatial hash they would query) | new |
+| `state` | `weapon.state`, `run.state` | none (Lua side, `ScriptHost`) | new |
+
 
 ---
 
@@ -187,13 +268,13 @@ The language and the shot API are **never** locked. What grows over time is *wha
 ### Sense progression (starting list)
 | Tier | Sense | Unlocked by | What it enables |
 |---|---|---|---|
-| 0 | `ctx` (self), nothing else | Start | Fixed-pattern shots (spirals, fans, shotguns) |
+| 0 | `ctx` and `player` (self), persistent `state` (always on) | Start | Fixed-pattern shots (spirals, fans, shotguns), learning scripts that remember across deaths |
 | 0 | `sense.nearest_enemy` | **Free after first 3 kills** (teaches that senses exist) | Basic homing |
 | 1 | `sense.enemies_in(r)` | Boss #1 | Area logic, triage targeting |
 | 1 | `sense.enemy_bullets` | Boss #2 | Bullet-eating / deflect shots |
 | 2 | `sense.terrain` | Boss #3 | Ricochet, wall-hugging bullets |
 | 2 | `sense.boss` (phase, weak point, telegraphs) | Boss #4 | Precision boss-killing scripts |
-| 3 | `sense.world` / persistent `state` across deaths | Boss #6+ | Long-term learning scripts, "memory" |
+| 3 | `sense.world` (seed, chunk coords) | Boss #6+ | World-aware scripts, navigation |
 
 Every Sense has a **Level I** (earned on **any** boss kill) and a **Level II** (extended data, earned with a *clean kill*, §12.4). Example: `sense.enemies_in(r)` Level I returns positions within 600 px; Level II returns positions, velocities and HP within any radius.
 
@@ -223,16 +304,27 @@ Bosses are **not** a fixed list; each boss type has a *Fragment* it drops once p
 |---|---|---|---|---|
 | **Drifter** | 30 | 90 px/s toward player | none | Baseline: any shot works |
 | **Swarmer** (groups of 8–14) | 6 | 140 px/s, erratic | dies to anything; surrounds | Area coverage, spread |
-| **Shieldbearer** | 60 | 70 px/s | 120° front arc blocks bullets (visible arc) | Angles, curved or looping bullets, flanking |
+| **Shieldbearer** | 60 | 70 px/s | 120° front arc **absorbs** bullets (bullet consumed, no damage, no reflection; visible arc) | Angles, curved or looping bullets, flanking |
 | **Tank** | 400 | 50 px/s | **Armor 5**: each hit's damage is reduced by 5 (min 0) | Bullet damage per hit. 3-damage spam does **0**; big/slow bullets win |
-| **Sniper** | 20 | stationary, 600 px range | Draws a 0.8 s telegraph line, then one hit for 25 | Movement, bullet range |
+| **Sniper** | 20 | stationary, 600 px range | Draws a 0.8 s telegraph line, then fires one 600 px/s bullet for **1 damage** (1 of the player's 5 HP, §5.4) | Movement, bullet range |
 | **Phaser** | 80 | 100 px/s | Invulnerable except a 0.4 s pulse every 2.0 s | Timing, `sense.enemies_in`, burst scripts |
-| **Mirror** | 50 | 80 px/s | Reflects bullets that strike its front head-on. A reflected bullet **becomes enemy-owned** (see §5.4, friendly-fire rule) | Indirect shots, bullets that hit from the side |
+| **Mirror** | 50 | 80 px/s | Front arc **reflects** bullets (120° arc, same geometry as the Shieldbearer's). A reflected bullet **becomes enemy-owned** (see §5.4, friendly-fire rule) | Indirect shots, bullets that hit from the side |
+
+**Hit response, one per enemy type (no mixing):** *absorb* = bullet is consumed with no damage and no effect; *reflect* = bullet changes owner and flies back (§5.4); *armor* = bullet hits normally, damage is reduced.
+
+| Enemy | Response when a bullet hits the shielded/protected part |
+|---|---|
+| Shieldbearer (front arc) | **Absorb** |
+| Mirror (front arc) | **Reflect** |
+| Phaser (outside its 0.4 s pulse) | **Absorb** (the whole body) |
+| Tank | **Armor** (no shield) |
+| Boss, non-weak-point body parts | **Armor-like**: hit normally at ×0.1 damage (§5.3); a boss may also have a named *reflect phase* (reflect, for that phase only) |
+| Drifter, Swarmer, Sniper | none: hit normally |
 
 Armor is the key anti-spam rule: it makes damage **per bullet** matter, so one cannot win by multiplying trivial bullets, yet it doesn't cap bullet count.
 
 ### 5.2 Tier scaling
-Tier `T = floor(distance_from_origin / 12288 px)` (6 chunks per tier; this is a revision from the first draft's 4096 px so that the guaranteed first boss at 5–8 chunks sits in Tier 0–1). Per tier: HP ×(1 + 0.35·T), enemy count per encounter ×(1 + 0.15·T), new archetype pool opens at T1 (Shieldbearer, Sniper), T2 (Tank, Phaser), T3 (Mirror), and **combinations** appear from T2 (e.g., Shieldbearers escorting a Sniper).
+Tier `T = floor(distance_from_origin / 12288 px)` (6 chunks per tier, so the guaranteed starter boss at 7–9 chunks sits in Tier 1). Per tier: HP ×(1 + 0.35·T), enemy count per encounter ×(1 + 0.15·T), **Tier 0 spawns only Drifters and Swarmers**; new archetype pool opens at T1 (Shieldbearer, Sniper), T2 (Tank, Phaser), T3 (Mirror), and **combinations** appear from T2 (e.g., Shieldbearers escorting a Sniper).
 
 ### 5.3 Bosses (rules that matter for scripting)
 - **Phases (3–4)** keyed to HP thresholds; each changes the attack set and the weak point.
@@ -260,6 +352,22 @@ Tier `T = floor(distance_from_origin / 12288 px)` (6 chunks per tier; this is a 
 
 **Death (4A, same as Q4).** On death (HP 0, including `player.hp = 0`) the player respawns at the world origin and **keeps everything** (Fragments, Codex, scripts, `state`, the world). The cost of dying is time (the walk back) and the boss fight in progress: a living boss resets to full HP and its chunk reloads. No XP loss, no drop. Stakes come from difficulty, not from loss.
 
+### 5.5 Engine work needed for these combat rules
+
+What the scaffold on `feat/core-scaffold` already has versus what the rules above need (the Gameplay Engineer owns these; this is the list, not a schedule):
+
+| Rule | In the scaffold today | Needed |
+|---|---|---|
+| **Shields (absorb)** | `Hurtbox` is a circle (`radius`, `layer`, `active`); `HurtboxGrid` tests swept segments against circles; `Hurtbox.hit(damage, hit_position, bullet_velocity)` signal | A hit-response per `Hurtbox` (`HIT` / `ABSORB` / `REFLECT`) with a facing and arc, evaluated at the contact point by `BulletManager`; a new `BulletPool.DespawnReason` (e.g., `ABSORBED`) |
+| **Reflect + bullet owner** | Faction is implied by `ShotRequest.hit_mask` (`Layers.ENEMY` / `Layers.PLAYER`); `Layers.PLAYER_BULLET` and `ENEMY_BULLET` are reserved but unused | An explicit **owner** array in `BulletPool` (player / enemy), a `reflected` flag (max one reflection), reflection that rewrites `vel`, `hit_mask`, `color` and clears `behavior` (so Lua hooks stop, §5.4), and `b.owner` exposed read-only |
+| **Weak points** | Multiple `Hurtbox` children per enemy are possible (each a circle) | A damage multiplier per `Hurtbox` and a **priority rule** when hurtboxes overlap (weak point wins over body), plus `sense.boss` data |
+| **Bounces** | `WallGrid` clips bullets to the wall and despawns them with `DespawnReason.WALL`; "the grid only reports hit fractions" (no normal) | Hit **normal** from `WallGrid`, a `bounce` count in `ShotRequest`/`BulletPool`, reflection of `vel` about the normal; `collide_world = false` stays as is |
+| **Armor** | `Hurtbox.hit` carries `damage`; an enemy script can subtract (as `TrainingDummy` handles damage) | none in the engine (enemy-side rule) |
+| **Player health, i-frames, dash** | `Player` emits `damaged(amount)`; no health/death/i-frames (architecture open question 6); `Hurtbox.active = false` exists for i-frames | Health pips, regen timer, blink, dash (in `Player`/`MovementMath`), death and respawn |
+| **Per-owner bullet counters** | `BulletPool.count`, `dropped_total` | Live counters per owner and the reserve rules of §3.3 |
+| **Budget-aware hooks** | `BulletPool.hooked` / `hooked_count` list hooked bullets | Hook scheduler with round-robin, the "skipped" flag for rendering, and an event queue for deferred `on_hit`/`on_despawn` (§3.3) |
+| **Open-world bounds** | `BulletManager.world_bounds` defaults to a fixed `Rect2(-1312, -752, 2624, 1504)`; `HurtboxGrid` and `WallGrid` are constructed from it | See §6.1: follow the camera |
+
 ---
 
 ## 6. Open world and rare bosses
@@ -268,7 +376,10 @@ Tier `T = floor(distance_from_origin / 12288 px)` (6 chunks per tier; this is a 
 - **Infinite, chunked, seeded.** Chunk size **2048×2048 px**. Active ring: 3×3 chunks around the player; others are unloaded and regenerated deterministically from `(world_seed, chunk_x, chunk_y)`.
 - **Same seed = same world** (so seeds can be shared; see §7).
 - **No landmarks other than bosses** in this version: terrain is empty ground with sparse, minimal obstacles (a few static blocks per chunk, needed for later `sense.terrain`).
-- Origin is a safe zone: radius 512 px, no spawns.
+- Origin is a safe zone: radius 512 px, **no spawns** (regular or boss). The only things inside it are the non-hostile **tutorial targets** of §2, which are scripted placements, not spawns.
+- **Units.** The project's base viewport is **1280×720** (`project.godot`: `window/size/viewport_width=1280`, `viewport_height=720`, stretch `canvas_items`, aspect `keep`). **1 world unit = 1 px** at that base resolution, and every px value in this doc is in those units; other screens scale the whole view uniformly (letterboxed), so the visible world is always 1280×720 units. (This replaces the earlier "1080p" wording.)
+- **Player speed.** `Player.max_speed` = **300 px/s** (acceleration 2400 px/s², full speed in 0.125 s, friction 2000 px/s², from `MovementMath` and `docs/architecture.md`). Crossing one 2048 px chunk takes about **6.8 s**.
+- **Simulation window follows the camera.** The scaffold's `BulletManager.world_bounds` is a fixed `Rect2(-1312, -752, 2624, 1504)` (about 2× the viewport), and `HurtboxGrid`/`WallGrid` are built from that rectangle (`HurtboxGrid.new(world_bounds, cell_size)`, `cell_size` 64). In the open world that rectangle must **re-centre on the camera** (rebase the grids as the player crosses cell boundaries, stream walls in and out per chunk with `BulletManager.add_wall(Rect2)` / `clear_walls()`), and bullets that leave it despawn with `DespawnReason.BOUNDS`. Design consequence: a bullet's usable range is about ±1,300 px horizontally and ±750 px vertically from the camera; scripts with `life × speed` beyond that simply expire at the edge (documented in the editor).
 
 ### 6.2 Regular spawn rule
 When a chunk is first loaded, roll an **encounter budget** `B = 6 + 4·T` points. Spend points on archetypes allowed by tier: Drifter 1, Swarmer group 3, Shieldbearer 3, Sniper 3, Tank 5, Phaser 4, Mirror 4. Enemies start idle (wander) until the player is within 700 px. Cleared chunks respawn after 5 min of being out of the active ring (so the world feels alive but not farmed forever).
@@ -282,23 +393,23 @@ When a chunk is first loaded, roll an **encounter budget** `B = 6 + 4·T` points
 - **Per-region quota with distance pity.** For region *R*, let `d` = chunk distance from *R*'s centre to the nearest boss chunk already placed (capped at 80):
 
 ```
-p_first  = min(0.45 + 0.05 * floor(d / 10), 0.90)   # pity bump: +5 % per 10 chunks without a boss nearby
-p_second = 0.20                                      # independent roll, can add a second boss
+p_first  = min(0.15 + 0.05 * floor(d / 10), 0.80)  # pity bump: +5 % per 10 chunks without a boss nearby
+p_second = 0.05                                      # independent roll, can add a second boss
 roll  u1 = hash(seed, R, "boss1"),  u2 = hash(seed, R, "boss2")
 boss count = (u1 < p_first ? 1 : 0) + (u2 < p_second ? 1 : 0)
 chunk(s)   = hash(seed, R, i) picks a chunk in R that is
              >= 6 chunks from any other boss chunk and >= 4 chunks from the origin
              (if no valid chunk exists, that boss is skipped)
 ```
-- **Starter boss.** The origin region always gets exactly one boss at 5–8 chunks from the origin (Tier 0–1), so the first goal is never far. Its beacon range is extended to 6 chunks (§6.4).
-- **Expected density (starting values):** about **0.75 bosses per region ≈ one per ~85 chunks of area**, with the pity term making long boss-free stretches very unlikely. The earlier draft's path-based figure ("one per ~25 newly generated chunks") is superseded because it depended on travel order. The right rarity is a tuning question (Q9).
+- **Starter boss.** The origin region always gets exactly one boss at **7–9 chunks** from the origin (14,336–18,432 px, so **Tier 1**, which makes Tier 1 enemies appear on the way), so the first goal is never far. It uses the normal beacon rule (§6.4): visible from 5 chunks away, so **never at spawn** (the origin is at least 7 chunks away) and typically after 2–4 chunks of walking (about 14–27 s at 300 px/s).
+- **Expected density (starting values):** a simulation of this rule (30 random seeds, 12 rings of regions, the starter boss included) gives about **0.22 bosses per region, i.e. one per ~290 chunks of area**; the pity term keeps long boss-free stretches rare. The beacon is visible from 5 chunks, so a straight walk sweeps a ~10-chunk-wide strip: about **one beacon per ~29 chunks walked, roughly 3 minutes at 300 px/s** (6.8 s per chunk). Wandering and fighting lengthens that. The right rarity is a tuning question (Q9).
 - **Boss chunk persists** until the boss is killed; after that that boss never respawns in this save (the Fragment is already earned) and the chunk becomes ordinary.
 - **Boss types** are selected by tier: T0–1 boss pool A (3 bosses), T2–3 pool B, T4+ pool C. A launch target of **6 distinct handcrafted bosses**, with procedurally varied colors/parameters.
 
 ### 6.4 Finding bosses without markers (P3, P4)
 There is no map icon. Boss presence is **sensed**:
-- A low-frequency audio hum that rises with proximity (audible within 3 chunks; 6 for the starter boss).
-- A faint, slowly rotating **edge-of-screen tick mark** in the boss's color that points toward the nearest undefeated boss within 5 chunks (8 for the starter boss).
+- A low-frequency audio hum that rises with proximity (audible within 3 chunks).
+- A faint, slowly rotating **edge-of-screen tick mark** in the boss's color that points toward the nearest undefeated boss within **5 chunks** (10,240 px; the same for the starter boss, so a beacon never shows at spawn).
 - The ground grid **bends subtly** near a boss chunk (a post-process warp, ≤3 px displacement).
 
 ---
@@ -309,13 +420,14 @@ There is no map icon. Boss presence is **sensed**:
 - Later (not in scope now): in-repo `community-shots/` folder via PRs.
 
 ### 7.1 Running someone else's script (imported scripts)
-Loading another player's script runs arbitrary code. We do **not** restrict what it may do in-game, but we make the risk explicit:
+Loading another player's script runs arbitrary code. We do **not** restrict what it may do in-game, but we make the risk explicit. Capability names are the draft ones from §3.2 (final names owned by the Scripting Engineer).
 
-1. **Warning before first run, every time a new script is imported** (not dismissible with a "don't show again" for scripts that declare `needs`). Full-screen, plain language, e.g.: *"This script was made by another player. Scripts are programs and can contain malicious code. Only run scripts you trust. [View source] [Run without OS/file access] [Cancel]"*.
-2. **Source view is one click away** and syntax-highlighted; the `needs` list and author are shown at the top.
-3. **OS and file access are off by default for imported scripts** (`os`, `io`, `debug`, `package`, `load*`-from-file, `require` of non-shipped files are `nil`). The player may enable them explicitly with a second, separate confirmation naming each capability (*"Allow this script to read and write files on your device?"*). The choice is stored per script and revoked if the file's content hash changes.
-4. Everything else (full Lua, all `shoot` features, Senses the player has earned) runs normally. The §3.2 crash/hang guards apply to all scripts.
-5. Editing an imported script does **not** silently make it *own*. The editor offers **"Mark as mine"**, which asks for confirmation (Q12).
+1. **Warning before first run, every time a script is imported or its content changes.** Full-screen, plain language, e.g.: *"This script was made by another player. Scripts are programs and can contain malicious code. Only run scripts you trust."* with a **View source** button and a **Run** button. There is **no "allow all" on first run.**
+2. **Each requested capability has its own switch, all OFF by default, ordered by danger** (most dangerous first), each with its label from §3.2: `native` ("Load native code. Can do anything to your computer."), `os` ("Run programs and change your system."), `io` ("Read and write files."), `debug` ("Inspect and change Lua internals."), `package` ("Load Lua modules from disk."). The player turns on only what they accept; **Run** works with all switches off (the capabilities then are `nil` and the script may error).
+3. **Source view is one click away** and syntax-highlighted; the `needs` list, the author and a hash are shown at the top.
+4. **Grants are remembered per script content hash**, so any edit to the script (or a new version arriving through an update) asks again. Everything else (the full game API including player-state writes, base Lua, `string`, `table`, `math`, `utf8`, `coroutine`, `load`, `os.time`, `os.clock`) runs normally, and the §3.2 crash/hang guards apply to all scripts. A script that writes player state is shown as such (§12.3).
+5. **Own scripts** (authored in the local editor or hand-placed in `shots/`) see the same capability list as a plain opt-in without the warning text; see Q12 for how an edited imported script becomes "mine".
+6. **Platform:** switches for capabilities the platform doesn't provide (web: `native`, `os`, `io`, `package`) are shown disabled with the reason.
 
 > **Honest limit:** this is a warning and a default, not a sandbox guarantee. Players who enable OS/file access for an untrusted script accept the risk. The doc and the in-game text must say so.
 
@@ -329,7 +441,7 @@ Loading another player's script runs arbitrary code. We do **not** restrict what
 - **Readability rule (P3):** enemy bullets are always warmer and brighter than the background, player bullets cooler/white. Bullet count never hides the player: the player has a 12 px white core with a thin dark halo at all times.
 - **Juice, minimal:** 2-frame hit flash, tiny screen shake (≤3 px) only on boss phase changes, bullets leave a 6-frame fading trail so the *path of your script* is visible (this is the signature look).
 - **Editor UI:** monospace font, same palette, syntax highlighting in 4 colors; no chrome beyond a 1 px border. Must scale to phone screens: minimum 16 dp touch targets, adjustable font size (see §10).
-- **Camera:** fixed zoom (1 world unit = 1 px at 1080p), slight lead toward the aim direction (≤80 px). On phones the zoom is by *world extent*, not pixels: the visible area is at least 1280×720 world units, so that bullets stay visible and the game isn't easier or harder by screen size.
+- **Camera:** fixed zoom (1 world unit = 1 px at the **1280×720** base viewport; see §6.1), slight lead toward the aim direction (≤80 px), following the player with the scaffold's `FollowCamera` (frame-rate independent smoothing, aim lean, `add_trauma()` shake). On phones the same rule holds: the visible area is always 1280×720 world units (stretch `canvas_items`, aspect `keep`), so bullets stay visible and the game isn't easier or harder by screen size.
 
 ### 8.2 Audio
 - **Generative, tonal, sparse.** No samples needed at first: synthesized sine/triangle plucks.
@@ -362,9 +474,9 @@ Sequenced so that each step is playable. All of it targets **every platform in �
 
 | Platform | Play input | Script editing | Capability notes |
 |---|---|---|---|
-| **PC** (Win/Linux/macOS) | Mouse + keyboard (WASD + mouse aim) | Full in-game editor; also **external editor hot reload** (watch `shots/`) | Full Lua, opt-in `os`/`io` (§3.2) |
+| **PC** (Win/Linux/macOS) | Mouse + keyboard (WASD + mouse aim) | Full in-game editor; also **external editor hot reload** (watch `shots/`) | Full Lua, opt-in capabilities `native`/`os`/`io`/`debug`/`package` (§3.2). **10,000** live bullets (floor 5,000), 3 ms script budget (§3.3) |
 | **Controller** | Left stick move, right stick aim + auto-fire past deadzone (or trigger) | Controller-friendly editor (below) | Same as PC |
-| **Web** | Mouse + keyboard (touch/controller if present) | In-game editor; clipboard paste of share codes | **No OS or real file access** (browser sandbox): `os` is `nil`, `io` is absent or a virtual file system (Q14). Lower entity/time budgets. Needs a Lua binding that exports to Web (Q14). |
+| **Web** | Mouse + keyboard (touch/controller if present) | In-game editor; clipboard paste of share codes | **No OS or real file access** (browser sandbox): `native`, `os`, `io`, `package` unavailable (`io` may be a virtual file system, Q14). Lower bullet/time budgets (below). Needs a Lua binding that exports to Web (Q14). |
 | **Mobile** (Android, iOS) | Twin virtual sticks (left move, right aim + auto-fire) | Touch editor and/or companion editing (below) | File access limited to the app sandbox, no `os.execute`. Lower budgets. |
 
 ### 10.1 Design implications
@@ -377,8 +489,8 @@ Sequenced so that each step is playable. All of it targets **every platform in �
   - Pinch to resize text; landscape and portrait layouts.
 - **Companion editing.** Edit on a second device while playing: (a) **PC external-editor hot reload** (watch `shots/`), (b) **phone as editor for a PC session** or **PC browser as editor for a phone session** over LAN/QR pairing, with live reload within one frame. Starting scope: (a) in the first release; (b) as a stretch (Q13).
 - **Controller-friendly editor navigation.** D-pad / stick moves a *token cursor* (jumps by word, bracket, line); face buttons insert from a radial snippet menu; shoulder buttons change the number under the cursor ±step (tunable literals); the OS/Steam-style on-screen keyboard for free text; a **"quick tune" mode** that cycles through tunable numbers without text entry at all.
-- **Web build sandbox limits.** No OS or file access, so `needs = {"os"}`/`{"io"}` scripts print an explanation and run with those libraries `nil`. Saves and `shots/` live in browser storage (IndexedDB) with an **Export / Import** button for `.lua` files and saves. Lower budgets: entity cap 2,000 and 3 ms (starting values). Web builds must work without threads if the host (e.g., itch.io) can't provide cross-origin isolation.
-- **Mobile budgets.** Entity cap 1,500 and 3 ms per frame (starting values) with thermal-aware reduction; battery saver mode reduces trails and audio voices (§8).
+- **Web build sandbox limits.** No OS or file access, so scripts that declare `needs` such as `"os"`, `"io"`, `"package"` or `"native"` print an explanation and run with those libraries `nil`. Saves and `shots/` live in browser storage (IndexedDB) with an **Export / Import** button for `.lua` files and saves. **Starting values (not derived from the PC number; to be measured in the Q14 spike): total live-bullet cap 4,000 (2,800 player / 1,200 reserved for enemies and bosses, the same 30% rule), script time budget 2 ms.** Web builds must work without threads if the host (e.g., itch.io) can't provide cross-origin isolation.
+- **Mobile budgets.** **Starting values (separate from PC and web; to be measured): total live-bullet cap 2,500 (1,750 player / 750 reserved), script time budget 2 ms per frame**, with thermal-aware reduction; battery saver mode reduces trails and audio voices (§8).
 - **Saves.** One save format on all platforms; cloud/cross-device sync is a later option (Q15).
 - **Shared scripts across platforms** keep working: if a script exceeds a lower platform budget it is clamped by the §3.2 guards and the editor shows exactly which one.
 - **UI layout.** HUD is minimal already (P3); on touch the sticks are drawn as thin outlines at 40% opacity, position-adjustable, and never over the player's own bullets' path (sticks placed in the lower corners).
@@ -489,7 +601,7 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the 
 - **B. Full pause** (safer, kills tension and the live-edit thrill).
 - **C. Real-time, world keeps running** (maximum tension, hard on touch/laptops).
 - **D. Setting:** let the player choose.
-- **Recommendation: A as default, D as an accessibility setting.** On phones the editor is full-screen with the world at 15% in a preview (§10). The §3.2 guard values (4 ms, 5M instructions, 128 MB, 4,000 bullets) are starting values to benchmark on target devices.
+- **Recommendation: A as default, D as an accessibility setting.** On phones the editor is full-screen with the world at 15% in a preview (§10). The §3.2/§3.3 guard values (3 ms, 100,000 instructions, 64 MB, 10,000 bullets with a 5,000 floor on PC; separate web and mobile values in §10) are starting values to benchmark on target devices.
 
 ### Q6. Boss "Habituation" mechanic: is it too punishing or exploitable?
 - **A. Keep as specified** (§5.3), tune on playtests.
@@ -503,10 +615,10 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the 
 - **Recommendation: A for now**, designing the Fragment/Codex systems so B can be added later without redoing progression. Note: the planned Constrained mode (§11) may want hubs or NPCs; this question must be revisited when that mode is scoped.
 
 ### Q9. Boss rarity target (tuning of the decided hybrid spawn rule) **[Karyu]**
-- **A. A boss beacon every ~2–4 minutes of straight travel** (current starting values: ≈0.75 bosses per 8×8 region).
-- **B. Rarer: one per ~8–12 minutes of travel** (e.g., `p_first` base 0.25, `p_second` 0.05).
+- **A. A boss beacon about every ~3 minutes of straight walking at 300 px/s** (current starting values: `p_first` base 0.15, +5% per 10 chunks, cap 0.80, `p_second` 0.05; simulated ≈0.22 bosses per 8×8 region).
+- **B. Rarer: about one per ~6 minutes of straight walking** (e.g., `p_first` base 0.08, +3% per 10 chunks, cap 0.70, `p_second` 0.02; simulated ≈0.13 per region).
 - **C. Tier-dependent:** common near the origin (new players find bosses quickly), rarer further out.
-- **Recommendation: C**, starting from A near the origin and trending toward B beyond Tier 3. "Rarely" in the brief points to B at the far end; the first hour should still feel eventful.
+- **Recommendation: C**, starting from A near the origin (the starter boss is guaranteed either way) and trending toward B beyond Tier 3. "Rarely" in the brief points to B at the far end; the first hour should still feel eventful.
 
 ### Q10. What shape is the planned Constrained mode (§11)? **[Karyu]**
 - **A. S1 Budget:** compute/bullet budget raised by level.
@@ -519,7 +631,7 @@ Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8 and the 
 - **A. Fully separate:** own save, own world, own enemies; scripts are not shared between modes.
 - **B. Shared world generator and bestiary, separate save and progression;** scripts can be imported across modes, clamped by the mode's limits (with the editor showing exactly what was clamped).
 - **C. One game, one save, a "challenge ruleset" toggle per world.**
-- **Recommendation: B.** Keeps the open-source "shots are shareable" culture across both modes without mixing progression. Script `needs`/capability metadata (§3.2, §7) already carries what's required to check compatibility.
+- **Recommendation: B.** Keeps the open-source "shots are shareable" culture across both modes without mixing progression. Script `needs` metadata (§3.2, §7) tells which capabilities a script wants; the Constrained mode clamps by **game mode**, not by any per-script field.
 
 ### Q12. Script provenance: when does an edited imported script become "mine"?
 - **A. Never automatically; "Mark as mine" button with confirmation** (current text in §7.1).
