@@ -5,7 +5,13 @@ extends Camera2D
 ## renders it smoothly at any refresh rate (project setting
 ## physics/common/physics_interpolation).
 
-@export var target: Node2D
+## What to follow. Assigning a target snaps the camera onto it immediately (no
+## easing in from wherever the camera happened to be, e.g. the origin).
+@export var target: Node2D:
+	set(value):
+		target = value
+		if is_inside_tree():
+			snap_to_target()
 ## Smoothing speed (1/s). Higher = tighter. ~8 trails the player by ~1/8 s.
 @export var follow_rate := 8.0
 ## How far the camera leans toward the aim direction, in pixels.
@@ -26,9 +32,20 @@ func _ready() -> void:
 	process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
 	_noise.frequency = 1.0
 	_noise.seed = 1337
-	if target != null:
-		_focus = _target_position()
-		global_position = _focus
+	snap_to_target()
+
+
+## Puts the camera exactly on the follow position (target + look-ahead) with no
+## smoothing and no interpolation from its previous position. Call it after
+## teleporting the target (respawn, room change) too.
+func snap_to_target() -> void:
+	if target == null:
+		return
+	_focus = _target_position()
+	global_position = _focus
+	offset = Vector2.ZERO
+	reset_smoothing()
+	reset_physics_interpolation()
 
 
 ## Adds screen-shake trauma (0..1, clamped). Call from hit / explosion effects.
@@ -56,6 +73,7 @@ func _physics_process(delta: float) -> void:
 
 func _target_position() -> Vector2:
 	var pos := target.global_position
-	if "aim_direction" in target:
-		pos += (target.aim_direction as Vector2) * look_ahead
+	var player := target as Player
+	if player != null:
+		pos += player.aim_direction * look_ahead
 	return pos

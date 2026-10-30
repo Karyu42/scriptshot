@@ -17,7 +17,6 @@ signal damaged(amount: float)
 
 @export_group("Aiming")
 @export var muzzle_offset := 20.0
-@export var stick_deadzone := 0.25
 
 ## Injected by the scene (Main): where shots go, and what to fire.
 var emitter: ShotEmitter
@@ -28,7 +27,7 @@ var aim_direction := Vector2.RIGHT
 var aim_point := Vector2.ZERO
 
 var _prev_position := Vector2.ZERO
-var _cooldown := 0.0
+var _cooldown := FireCooldown.new()
 var _time := 0.0
 var _shot_index := 0
 var _flash := 0.0
@@ -53,8 +52,7 @@ func _physics_process(delta: float) -> void:
 	move_and_slide()
 
 	_update_aim()
-	_cooldown = maxf(_cooldown - delta, 0.0)
-	if Input.is_action_pressed("fire") and _cooldown <= 0.0:
+	if _cooldown.update(delta, Input.is_action_pressed("fire"), weapon.fire_interval if weapon != null else 0.0):
 		_fire()
 
 	_flash = maxf(_flash - delta * 6.0, 0.0)
@@ -83,17 +81,33 @@ func _fire() -> void:
 	_context.shot_index = _shot_index
 	_shot_index += 1
 	weapon.fire(_context, emitter)
-	_cooldown = weapon.fire_interval
 
 
 func _update_aim() -> void:
 	if InputDevice.is_gamepad():
+		# The deadzone is applied exactly once, by Input.get_vector() using the
+		# `aim_*` actions' deadzones from the input map (it also rescales the
+		# result so it starts at 0 outside the deadzone).
 		var stick := Input.get_vector("aim_left", "aim_right", "aim_up", "aim_down")
-		aim_direction = AimMath.direction_from_stick(stick, aim_direction, stick_deadzone)
+		aim_direction = AimMath.direction_from_stick(stick, aim_direction)
 		aim_point = global_position + aim_direction * 220.0
 	else:
-		aim_point = get_global_mouse_position()
-		aim_direction = AimMath.direction_to_point(global_position, aim_point, aim_direction)
+		var viewport := get_viewport()
+		update_mouse_aim(viewport.get_mouse_position(), viewport.get_canvas_transform() * get_render_position())
+
+
+## Mouse aiming from the cursor's offset to the ship *on screen*: both points are
+## in viewport pixels, `body_screen` being where the ship is currently drawn.
+## Using the screen-space offset keeps the camera out of the loop, so the camera's
+## aim look-ahead (which leans toward the aim direction) cannot feed back into
+## the aim, whatever the camera's position, smoothing lag or shake is.
+func update_mouse_aim(mouse_screen: Vector2, body_screen: Vector2) -> void:
+	var offset := mouse_screen - body_screen
+	# The canvas transform only translates and scales uniformly (no camera
+	# rotation), so this offset is the world offset up to the zoom factor.
+	var zoom := get_viewport().get_canvas_transform().get_scale().x
+	aim_direction = AimMath.direction_from_screen_offset(offset, aim_direction)
+	aim_point = global_position + offset / maxf(zoom, 0.0001)
 
 
 func _on_hit(damage: float, _hit_position: Vector2, _bullet_velocity: Vector2) -> void:

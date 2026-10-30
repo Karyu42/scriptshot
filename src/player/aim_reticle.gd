@@ -26,5 +26,5 @@ func _process(_delta: float) -> void:
 
 func _draw() -> void:
 	draw_arc(Vector2.ZERO, 9.0, 0.0, TAU, 24, _color, 2.0, true)
-	for dir in [Vector2.LEFT, Vector2.RIGHT, Vector2.UP, Vector2.DOWN]:
+	for dir: Vector2 in [Vector2.LEFT, Vector2.RIGHT, Vector2.UP, Vector2.DOWN]:
 		draw_line(dir * 13.0, dir * 19.0, _color, 2.0)

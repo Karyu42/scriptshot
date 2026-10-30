@@ -7,10 +7,27 @@ func test_stick_beyond_deadzone_gives_normalized_direction() -> void:
 	assert_eq(d, Vector2.UP)
 
 
-func test_stick_inside_deadzone_keeps_previous_aim() -> void:
+func test_released_stick_keeps_previous_aim() -> void:
 	var prev := Vector2(0, 1)
-	assert_eq(AimMath.direction_from_stick(Vector2(0.1, 0.05), prev), prev)
 	assert_eq(AimMath.direction_from_stick(Vector2.ZERO, prev), prev)
+
+
+func test_stick_input_is_not_run_through_a_second_deadzone() -> void:
+	# Input.get_vector() already removed the deadzone (and rescaled), so a small
+	# remaining deflection is real input and must steer the aim.
+	var d := AimMath.direction_from_stick(Vector2(0.05, 0.0), Vector2.UP)
+	assert_eq(d, Vector2.RIGHT)
+
+
+func test_explicit_deadzone_for_raw_stick_values_still_works() -> void:
+	var prev := Vector2(0, 1)
+	assert_eq(AimMath.direction_from_stick(Vector2(0.1, 0.05), prev, 0.25), prev)
+	assert_eq(AimMath.direction_from_stick(Vector2(0.3, 0.0), prev, 0.25), Vector2.RIGHT)
+
+
+func test_screen_offset_aim_normalises_and_keeps_previous_on_top_of_ship() -> void:
+	assert_eq(AimMath.direction_from_screen_offset(Vector2(0, 250), Vector2.RIGHT), Vector2.DOWN)
+	assert_eq(AimMath.direction_from_screen_offset(Vector2(0.2, 0.3), Vector2.LEFT), Vector2.LEFT)
 
 
 func test_stick_diagonal_is_unit_length() -> void:
