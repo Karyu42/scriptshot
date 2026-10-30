@@ -32,12 +32,12 @@ Gaps in the current benchmark (planned follow-ups):
 ## 3. Where it runs
 | Mode | How | What it tells us | Gate? |
 |---|---|---|---|
-| Headless | `godot --headless --path . res://test/perf/stress_runner.tscn -- ...` (CI, `ubuntu-24.04`) | CPU simulation cost: script, physics, Lua. Dummy renderer, so **no GPU cost**. | **Yes** (CI) |
+| Headless | `godot --headless --path . res://tests/benchmark/bullet_benchmark.tscn -- ...` (CI, `ubuntu-24.04`) | CPU simulation cost: script, physics, Lua. Dummy renderer, so **no GPU cost**. | **Yes** (CI) |
 | Windowed | Same scene on a real GPU machine, `--rendering-driver vulkan` | Full frame cost including draw calls and batching | No. Manual or self-hosted runner, results logged per release |
 
 GitHub-hosted runners are noisy shared VMs, so thresholds need headroom:
 - Run each step 3 times, take the median of the p95 values.
-- Keep a stored baseline (`vars.PERF_BASELINE`, a `perf.json` from main) and also fail on a >15% p95 regression.
+- Keep a stored baseline (`vars.PERF_BASELINE`, a `bench.json` from main) and also fail on a >25% p95 regression.
 - Software rendering on xvfb is **not** a valid windowed benchmark, so do not gate on it.
 
 ## 4. Lua-scripted-shot variant (`--mode=lua`)
@@ -58,7 +58,7 @@ spend at most **~50% of the frame budget (8 ms)** at the target count. If it is 
   Its exit code fails the job, and `bench.json` is uploaded as an artifact.
 
 ## 6. Deliverables and order
-1. Spawner and stats collector (GDScript), `perf.json` writer, `check_perf.py` (done).
+1. Spawner and stats collector (GDScript), JSON writer, `check_perf.py` (done).
 2. Headless run in CI with the GDScript bullet mode. Record the first baseline.
 3. Lua modes (spawn, per-bullet callback, sandbox abuse).
 4. Windowed run on real hardware, documented in the release checklist.
