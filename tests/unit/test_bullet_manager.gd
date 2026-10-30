@@ -29,6 +29,7 @@ class RecordingBehavior:
 
 func before_each() -> void:
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"  # these tests inspect the GDScript pool directly
 	manager.capacity = 256
 	manager.world_bounds = Rect2(-500, -500, 1000, 1000)
 	manager.render_enabled = false
@@ -450,9 +451,10 @@ class Probe:
 		process_physics_priority = 1000
 
 	func _physics_process(_delta: float) -> void:
-		if not seen and manager.pool.count > 0:
+		if not seen and manager.alive_count() > 0:
 			seen = true
-			age_seen = manager.pool.age[0]
+			var ages: PackedFloat32Array = manager.snapshot()["age"]
+			age_seen = ages[0]
 
 
 func _run_spawn_order_scenario(manager_priority: int) -> Probe:

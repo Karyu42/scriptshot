@@ -16,6 +16,7 @@ extends Node
 ##   --floor-bullets=5000   the minimum: HARD FAIL (exit 1) if this count misses the budget
 ##   --target-bullets=10000 the goal: only a WARN line (exit 0) if this count misses the budget
 ##   --target-ms=16.6       p95 frame-time budget for both counts
+##   --backend=native       bullet backend: auto (default), gdscript or native
 ##   --json=path            also write results as JSON
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
@@ -47,6 +48,8 @@ var floor_bullets := 5000
 var target_bullets := 10000
 var target_ms := 16.6
 var json_path := ""
+## "auto", "gdscript" or "native" (SCRIPTSHOT_BULLET_BACKEND overrides it).
+var backend_preference := "auto"
 
 var _manager: BulletManager
 var _rng := RandomNumberGenerator.new()
@@ -71,6 +74,7 @@ func _ready() -> void:
 	_manager.capacity = 32768
 	_manager.world_bounds = ARENA.grow(32.0)
 	_manager.auto_step = false
+	_manager.backend_preference = backend_preference
 	add_child(_manager)
 	_build_walls()
 	for i in TARGET_COUNT:
@@ -79,8 +83,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count"
-		% [Engine.get_version_info().string, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames])
+	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count"
+		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames])
 	_next_count()
 
 
@@ -91,7 +95,7 @@ func _process(_delta: float) -> void:
 
 	var t0 := Time.get_ticks_usec()
 	_top_up(_current_count)
-	var alive_before_step := _manager.pool.count
+	var alive_before_step := _manager.alive_count()
 	_manager.step(FIXED_DELTA)
 	var work := (Time.get_ticks_usec() - t0) / 1000.0
 
@@ -133,8 +137,7 @@ func _inside_wall(p: Vector2) -> bool:
 
 
 func _top_up(n: int) -> void:
-	var pool := _manager.pool
-	while pool.count < n:
+	while _manager.alive_count() < n:
 		_request.reset()
 		var spawn_at := Vector2.ZERO
 		for _attempt in 8:
@@ -170,7 +173,7 @@ func _finish_count() -> void:
 	var result := {
 		"bullets": _current_count,
 		"frames": _work_ms.size(),
-		"alive_at_end": _manager.pool.count,
+		"alive_at_end": _manager.alive_count(),
 		"min_alive_before_step": _min_alive,
 		"reached": _min_alive >= _current_count,
 		"wall_hits_last_step": _manager.last_wall_hit_count,
@@ -232,6 +235,7 @@ func _report() -> void:
 		if f != null:
 			f.store_string(JSON.stringify({
 				"godot": Engine.get_version_info().string,
+				"backend": _manager.backend,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
 				"target_ms": target_ms, "results": _results,
@@ -255,3 +259,4 @@ func _parse_args() -> void:
 			"target-bullets": target_bullets = int(kv[1])
 			"target-ms": target_ms = float(kv[1])
 			"json": json_path = kv[1]
+			"backend": backend_preference = kv[1]
