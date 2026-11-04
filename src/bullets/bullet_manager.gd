@@ -71,6 +71,12 @@ var saturation_warnings_emitted := 0
 
 var _renderer: BulletRenderer
 var _behaviors: Array[BulletBehavior] = [null]
+# Per behaviour id: the hooks its script overrides (BulletBehavior.HOOK_*) and the script that
+# answer was worked out for. A behaviour whose script changes is re-detected on its next
+# dispatch (see _hooks_of), so a cached mask cannot go stale.
+var _hook_cache := PackedInt32Array([0])
+var _hook_scripts: Array[Script] = [null]
+var _declared_checked := PackedInt32Array([-2])
 var _sim_time := 0.0
 var _dropped_reported := 0
 var _dropped_by_limit_reported := PackedInt32Array([0, 0])
@@ -153,7 +159,49 @@ func set_bullet_limits(cap: int, reserve: int = -1) -> void:
 func register_behavior(behavior: BulletBehavior) -> int:
 	behavior.emitter = emitter
 	_behaviors.append(behavior)
-	return _behaviors.size() - 1
+	_hook_cache.append(0)
+	_hook_scripts.append(null)
+	_declared_checked.append(-2)
+	var id := _behaviors.size() - 1
+	_refresh_hooks(id, behavior)
+	return id
+
+
+## Works out again which hooks behaviour `id` implements. Needed only after something
+## changed the behaviour's methods in place without changing its script object (a script
+## hot-reload); `set_script()` and a changed `hook_mask` are noticed on their own.
+func refresh_behavior(id: int) -> void:
+	var b := _get_behavior(id)
+	if b == null:
+		return
+	_refresh_hooks(id, b)
+	_declared_checked[id] = -2
+
+
+func _refresh_hooks(id: int, b: BulletBehavior) -> void:
+	_hook_scripts[id] = b.get_script()
+	_hook_cache[id] = BulletBehavior.detect_hooks(b)
+
+
+## The hooks of behaviour `id` that exist (BulletBehavior.HOOK_* bits). An explicit
+## `hook_mask` wins; otherwise the detected mask, redone when the object's script is not
+## the one it was detected for.
+func _hooks_of(id: int, b: BulletBehavior) -> int:
+	var declared := b.hook_mask
+	if declared >= 0:
+		declared &= BulletBehavior.HOOK_ALL
+		if _declared_checked[id] != declared:
+			_declared_checked[id] = declared
+			if OS.is_debug_build():
+				var found := BulletBehavior.detect_hooks(b)
+				assert(
+					found & declared == found,
+					"BulletBehavior.hook_mask %d leaves out an overridden hook (the script overrides %d)" % [declared, found]
+				)
+		return declared
+	if b.get_script() != _hook_scripts[id]:
+		_refresh_hooks(id, b)
+	return _hook_cache[id]
 
 
 ## Adds a static wall rectangle (world space) that bullets collide with unless
@@ -270,8 +318,9 @@ func _spawn_checked(request: ShotRequest) -> int:
 			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[i]
 			pool.hook_slot = i
-			b.on_spawn(pool, i)
-			pool.hook_ran = true
+			if _hooks_of(request.behavior_id, b) & BulletBehavior.HOOK_ON_SPAWN:
+				b.on_spawn(pool, i)
+				pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 			pool.sanitize(i)
@@ -373,8 +422,10 @@ func step(delta: float) -> void:
 			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[slot]
 			pool.hook_slot = slot
-			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
-			pool.hook_ran = true
+			var db := _get_behavior(id)
+			if db != null and _hooks_of(id, db) & BulletBehavior.HOOK_ON_DESPAWN:
+				db.on_despawn(pool, slot, pool.dead_reason[slot] - 1)
+				pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 	for k in last_wall_hit_count:
@@ -611,8 +662,11 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[bullet]
 			pool.hook_slot = bullet
-			var allowed := _get_behavior(veto_id).can_hit(pool, bullet, hurtbox)
-			pool.hook_ran = true
+			var allowed := true
+			var vb := _get_behavior(veto_id)
+			if vb != null and _hooks_of(veto_id, vb) & BulletBehavior.HOOK_CAN_HIT:
+				allowed = vb.can_hit(pool, bullet, hurtbox)
+				pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 			# can_hit has the pool in its hands too: hold the same guards as for the
@@ -645,8 +699,10 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		var outer_slot := pool.hook_slot
 		pool.hook_owner = pool.owner_layer[bullet]
 		pool.hook_slot = bullet
-		_get_behavior(id).on_hit(pool, bullet, hurtbox)
-		pool.hook_ran = true
+		var hb := _get_behavior(id)
+		if hb != null and _hooks_of(id, hb) & BulletBehavior.HOOK_ON_HIT:
+			hb.on_hit(pool, bullet, hurtbox)
+			pool.hook_ran = true
 		pool.hook_owner = outer
 		pool.hook_slot = outer_slot
 		pool.sanitize(bullet)
