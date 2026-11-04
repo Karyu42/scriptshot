@@ -280,6 +280,9 @@ note and ignores it (never an error), or emulates it where a built-in behaviour 
 (`player.invulnerable`, the separate source-tagged layer without a cap) but **still respects the engine's post-hit and dash
 i-frames**. It is not a new engine ask.
 
+The flip side: a bullet **without** `null_pierce` that reaches a script-invulnerable player is consumed and does nothing (it does
+not pass through); see the note under the `player` fields in *Writing player state*.
+
 Speed was clamped to 1,200 px/s until swept collision existed (PR #1 B3); PR #2 (on `main`) implements swept
 collision, so the clamp is expected to be lifted: confirm the final limit with the Gameplay Engineer.
 
@@ -638,6 +641,11 @@ player:dash(angle)               -- dash(angle): the dash button's action and ru
 | `player.dash_dir`, `player.aim_dir` r | `get_dash_direction()`, `get_aim_direction()` | unit `vec2` |
 | `player.dead`, `player.regenerating` r | `is_dead()`, `is_regenerating()` | |
 | `player.since_damage` r | `get_time_since_damage()` | seconds |
+
+**A script-invulnerable player consumes normal bullets.** While `player.invulnerable` is on, an ordinary bullet that reaches
+the player is *consumed*: it does no damage and is gone (`Health` reports `BLOCKED_SCRIPT`); it does not pass through. That is what
+lets a bullet with `null_pierce` (`pierces_script_invuln`) arrive at `damage()` and land while the others are absorbed. Only the
+engine layer (hit i-frames, the dash) lets bullets pass through unconsumed. The engine side is described in `docs/architecture.md` (player damage and invulnerability).
 
 - **Validation lives in the engine.** `PlayerState` ignores NaN (with a warning), clamps infinities and
   out-of-range values, and is a no-op on a freed player. **The engine applies every `PlayerState` setter immediately.** The Lua layer adds **no gameplay restriction**;
