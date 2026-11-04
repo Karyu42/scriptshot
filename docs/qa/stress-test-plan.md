@@ -59,6 +59,7 @@ spend at most **~50% of the frame budget (8 ms)** at the target count. If it is 
   On a shared, loaded box 5k measured p95 4.5-8.6 ms and 10k 7.7-13.7 ms, so 5k has about 2x headroom and 10k is close to the budget, which is why it only warns. Add a nightly schedule when the Lua modes exist.
 - `tools/ci/check_perf.py` enforces `--p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000` and the optional `--baseline` regression check
   (5k regression fails, 10k regression warns). It appends the full table to `$GITHUB_STEP_SUMMARY`, and `bench.json` is uploaded as an artifact.
+- **Hooked tier** (same `perf` job): a second run, `run_benchmark.sh --bullets=5000,10000 --hooked=1.0`, where every bullet carries a no-op `on_update` hook, so the per-bullet cost of `BulletPool.run_update_hooks` and its sanitize check is gated too (`reports/bench-hooked.json`, `check_perf.py --hooked-report`). Same budget: hooked 5k p95 <= 16.6 ms fails CI, hooked 10k only warns. The hooked check is strict: the report must have `hooked_fraction` 1.0, and a missing row or a missing / NaN / infinite / negative timing fails (5k) or warns (10k). `--hooked-floor-warn-only` demotes the hooked 5k gate to a warning if runners prove too noisy; the plain tiers are unaffected.
 
 ## 6. Deliverables and order
 1. Spawner and stats collector (GDScript), JSON writer, `check_perf.py` (done).

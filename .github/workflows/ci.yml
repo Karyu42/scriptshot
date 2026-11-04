@@ -175,13 +175,30 @@ jobs:
             echo "::error::benchmark run failed on import/script errors"; exit 1
           fi
           [ -s reports/bench.json ] || { echo "::error::benchmark produced no JSON (exit $rc)"; exit 1; }
-      - name: Enforce budget (5k hard fail, 10k warn-only)
+      - name: Run hooked benchmark (every bullet runs a no-op on_update hook; 5k floor + 10k target)
+        run: |
+          mkdir -p reports
+          # Same policy and error handling as the plain run above, with --hooked=1.0: all bullets carry a
+          # script hook, so this measures the per-bullet hook cost (BulletPool.run_update_hooks + its
+          # sanitize check). The plain tiers are untouched; check_perf.py judges both files below.
+          set +e
+          ./tools/run_benchmark.sh --bullets=5000,10000 --hooked=1.0 --floor-bullets=5000 --target-bullets=10000 \
+            --target-ms=16.6 \
+            --json="$PWD/reports/bench-hooked.json" 2>&1 | tee reports/bench-hooked.log
+          rc=${PIPESTATUS[0]}
+          set -e
+          if grep -q '^run_benchmark.sh:' reports/bench-hooked.log; then
+            echo "::error::hooked benchmark run failed on import/script errors"; exit 1
+          fi
+          [ -s reports/bench-hooked.json ] || { echo "::error::hooked benchmark produced no JSON (exit $rc)"; exit 1; }
+      - name: Enforce budget (5k hard fail, 10k warn-only; plain and hooked)
         run: |
           # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
           # appended to the job's step summary. PERF_BASELINE (repo variable) = path to a committed
           # bench.json from main (5k regression fails, 10k regression warns); unset = budget only.
           python3 tools/ci/check_perf.py reports/bench.json \
             --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25 \
+            --hooked-report reports/bench-hooked.json \
             --summary "$GITHUB_STEP_SUMMARY" \
             ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }}
       - uses: actions/upload-artifact@v4
