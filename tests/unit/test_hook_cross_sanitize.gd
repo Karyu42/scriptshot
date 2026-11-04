@@ -290,15 +290,6 @@ func test_the_full_sweep_kills_a_non_finite_clock_as_invalid() -> void:
 			assert_eq(pool.invalid_total, 1)
 
 
-func test_the_motion_sweep_leaves_the_clock_alone() -> void:
-	var pool := BulletPool.new(16)
-	pool.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
-	pool.lifetime[0] = INF
-	pool.sweep_motion_writes()
-	assert_eq(pool.dead_reason[0], 0, "only the full sweep looks at age and lifetime")
-	assert_eq(pool.lifetime[0], INF)
-
-
 func test_advance_still_ends_normal_lifetimes_and_bounds_with_the_old_reasons() -> void:
 	var pool := BulletPool.new(16)
 	var r := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))

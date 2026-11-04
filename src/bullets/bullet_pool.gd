@@ -520,10 +520,9 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 	hook_owner = outer
 	hook_slot = outer_slot
 	if ran:
-		# Position, velocity and rotation are checked now, before walls and hurtboxes use them;
-		# the clock waits for the full sweep (end of this step), hence the flag.
-		sweep_motion_writes()
-		hook_ran = true
+		# Position, velocity, rotation and the clock are checked now, before walls and
+		# hurtboxes use them. This clears `hook_ran`; any later hook sets it again.
+		sweep_cross_writes()
 
 
 ## Backstop for what a hook wrote into a bullet that is not its own. The per-bullet
@@ -533,40 +532,22 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 ## spawned (checked once, right after on_spawn, not after later writes).
 ##
 ## Dirty tracking cannot catch that (the writes go straight into the packed arrays), so
-## there are two passes over every alive slot, both only when a hook ran:
+## there is one pass over every alive slot, only when a hook ran: position, previous
+## position, rotation, velocity and the clock (age, lifetime). It clears `hook_ran`. It runs
+## right after the on_update hooks (before walls, hurtboxes and zones look at anything), at
+## the start of BulletManager.step() (a hook that ran between ticks, such as an on_spawn
+## from an emitter) and at the end of step() (on_spawn, can_hit, on_hit, on_despawn), before
+## the renderer reads the bullets.
 ##
-## * sweep_motion_writes(): position, previous position, rotation and velocity. Run right
-##   after the on_update hooks, before walls, hurtboxes and zones look at anything.
-## * sweep_cross_writes(): that and the clock (age, lifetime), then clears `hook_ran`. Run
-##   by BulletManager at the start of step() (a hook that ran between ticks, such as an
-##   on_spawn) and at the end of step() (on_update, on_spawn, can_hit, on_hit,
-##   on_despawn), before the renderer reads the bullets.
-##
-## Whoever writes a bad clock is a hook, every hook leaves `hook_ran` set, and a full sweep
-## runs between any hook and the next advance(): so advance() never meets a bad clock and
-## keeps its plain `age >= lifetime` test (plus `not a < life`, which also ends a NaN).
+## Whoever writes a bad clock is a hook, every hook leaves `hook_ran` set (or sweeps), and a
+## sweep runs between any hook and the next advance(): so advance() never meets a bad clock
+## and keeps its plain expiry test (`not a < life`, which also ends a NaN).
 ## A write by something that is not a hook (test code poking the arrays) is not covered.
 ##
 ## Anything out of order goes through sanitize() (motion) or _fix_clock() (clock). Fields
 ## left out: damage, radius and the rest, guarded when the bullet hits something
 ## (BulletManager._apply_hit sanitizes it before the damage is read). A bad radius of a
 ## bullet that never hits only reaches the renderer: an invisible or oversized quad.
-func sweep_motion_writes() -> void:
-	var p_arr := pos
-	var pp_arr := prev_pos
-	var v_arr := vel
-	var r_arr := rot
-	for i in count:
-		# Vector adds and one is_finite() call: NaN or inf in any component makes the
-		# sum non-finite (inf + -inf is NaN), and it is the cheapest finiteness test GDScript
-		# has (about 55 ns per bullet for all of this, the scalar version was 75).
-		# A sum that overflows float32 is only a false alarm: sanitize() looks at the
-		# real values and changes nothing.
-		if (p_arr[i] + pp_arr[i] + r_arr[i]).is_finite() and v_arr[i].length_squared() <= MAX_SPEED_SQ:
-			continue
-		sanitize(i)
-
-
 func sweep_cross_writes() -> void:
 	hook_ran = false
 	var p_arr := pos
