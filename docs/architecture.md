@@ -484,19 +484,19 @@ inf still kill the bullet). The ranges are listed for script authors in
 
 A hooked bullet pays, per tick, for the hook call itself, the owner context and the
 post-hook check of every numeric field (`sanitize`). With a hook that does nothing on
-every bullet (`--hooked=1.0`) the extra cost over plain bullets was 1.28 us per bullet
+every bullet (`--hooked=1.0`) the extra cost over plain bullets was 1.32 us per bullet
 per tick on the development box (QA measured about 0.65 us on a faster one) and is
-now **0.64 us**, half of it, from `BulletPool.run_update_hooks`. Work p50 per tick, median of
+now **0.65 us**, half of it, from `BulletPool.run_update_hooks`. Work p50 per tick, median of
 three interleaved runs of 1200 frames (the box is shared and noisy; p95 in the PR):
 
 | bullets | hooked | before | after |
 | ---: | ---: | ---: | ---: |
-| 5,000 | 0 | 6.51 ms | 6.53 ms |
-| 5,000 | 30% | 8.58 ms | 7.29 ms |
-| 5,000 | 100% | 12.89 ms | 9.71 ms |
-| 10,000 | 0 | 13.38 ms | 13.20 ms |
-| 10,000 | 30% | 17.15 ms | 15.37 ms |
-| 10,000 | 100% | 26.45 ms | 19.50 ms |
+| 5,000 | 0 | 6.33 ms | 6.37 ms |
+| 5,000 | 30% | 8.21 ms | 7.31 ms |
+| 5,000 | 100% | 12.96 ms | 9.62 ms |
+| 10,000 | 0 | 12.58 ms | 12.75 ms |
+| 10,000 | 30% | 16.52 ms | 14.65 ms |
+| 10,000 | 100% | 25.84 ms | 19.45 ms |
 
 Where the cost goes and what was done:
 
