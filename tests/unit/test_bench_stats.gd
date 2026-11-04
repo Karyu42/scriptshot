@@ -46,6 +46,17 @@ func test_parse_fraction_accepts_the_range() -> void:
 	assert_eq(value, 0.0)
 
 
+func test_parse_fraction_normalises_negative_zero() -> void:
+	for text: String in ["-0", "-0.0", "-0.00"]:
+		var r := BenchStats.parse_fraction(text)
+		var ok: bool = r.ok
+		var value: float = r.value
+		assert_true(ok, "'%s' is zero, not out of range" % text)
+		assert_eq(value, 0.0)
+		assert_eq("%.2f" % value, "0.00", "'%s' prints as 0.00, not -0.00" % text)
+		assert_eq(str(value), "0.0", "and as plain 0 in JSON/str")
+
+
 func test_parse_fraction_refuses_bad_values_with_a_message() -> void:
 	for text: String in ["", "abc", "nan", "inf", "-inf", "-0.1", "1.0001", "1.5", "30%", "0,3", "--"]:
 		var r := BenchStats.parse_fraction(text)

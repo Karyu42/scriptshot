@@ -240,13 +240,15 @@ func test_only_the_hooked_list_is_updated_and_a_plain_bullet_gets_the_cross_writ
 	pool.behavior[3] = 0
 	pool.advance(DT, BIG)
 	assert_eq(pool.hooked_count, 2)
-	pool.radius[1] = 1.0e9  # a direct write to a plain bullet is outside the per-hook check
+	pool.vel[1] = Vector2(1.0e9, 0.0)  # a direct write to a plain bullet is outside the per-hook check
 	pool.damage[3] = 1.0e9  # a field the sweep does not look at (it is checked when a hit lands)
+	pool.radius[3] = 1.0e9  # neither is radius
 	var w := Writer.new()
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(w.calls, 2, "only scripted bullets are updated")
-	assert_eq(pool.radius[1], BulletLimits.MAX_RADIUS, "but the sweep after the hooks clamps what reached the collision fields")
+	assert_almost_eq(pool.vel[1].length(), BulletLimits.MAX_SPEED, 0.01, "but the sweep after the hooks cuts it to the ceiling")
 	assert_eq(pool.damage[3], 1.0e9, "and leaves a bullet it finds clean alone, whatever else is in it")
+	assert_eq(pool.radius[3], 1.0e9)
 
 
 func test_a_write_into_a_later_hooked_bullet_is_caught_at_that_bullets_turn() -> void:
@@ -268,10 +270,10 @@ func test_a_bullet_killed_or_unscripted_by_an_earlier_hook_gets_no_update() -> v
 		if i == 0:
 			p.mark_dead(1)
 			p.behavior[2] = 0  # what reflect() does
-			p.radius[2] = 1.0e9  # outside the per-hook guard, caught by the sweep
+			p.vel[2] = Vector2(1.0e9, 0.0)  # outside the per-hook guard, caught by the sweep
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(w.calls, 2, "slots 0 and 3 only")
-	assert_eq(pool.radius[2], BulletLimits.MAX_RADIUS, "the un-scripted bullet got no update, only the sweep")
+	assert_almost_eq(pool.vel[2].length(), BulletLimits.MAX_SPEED, 0.01, "the un-scripted bullet got no update, only the sweep")
 
 
 func test_an_unknown_behavior_id_written_by_a_hook_makes_a_plain_bullet_and_the_loop_goes_on() -> void:

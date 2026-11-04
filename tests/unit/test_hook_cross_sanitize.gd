@@ -4,8 +4,8 @@ extends GutTest
 ## The first block (X1-X6) is QA's repro from the PR #11 review: cross-slot writes, a huge
 ## finite position, garbage behaviour ids, a child poked after spawn_child. The rest pins
 ## the design that closes the gap: BulletPool.sweep_cross_writes() after the hooks of a
-## tick (position, previous position, velocity, radius), the guards in advance()
-## (NaN age/lifetime/position) and the sanitize at hit time (damage and everything else).
+## tick (position, previous position, velocity), the guards in advance() (NaN
+## age/lifetime/position) and the sanitize at hit time (damage, radius and the rest).
 const DT := 1.0 / 60.0
 var m: BulletManager
 
@@ -186,8 +186,8 @@ func _poke(field: String, value: float) -> void:
 	m.emitter.request_shot_id(_req(Vector2(100, 0)))
 
 
-func test_every_non_finite_pos_prev_pos_vel_or_radius_is_gone_in_the_same_tick() -> void:
-	for field: String in ["pos", "prev_pos", "vel", "radius"]:
+func test_every_non_finite_pos_prev_pos_or_vel_is_gone_in_the_same_tick() -> void:
+	for field: String in ["pos", "prev_pos", "vel"]:
 		for v: float in [NAN, INF, -INF]:
 			m.clear_bullets()
 			ScriptWarnings.reset()
@@ -200,6 +200,8 @@ func test_every_non_finite_pos_prev_pos_vel_or_radius_is_gone_in_the_same_tick()
 			assert_eq(m.pool.invalid_total, before + 1, "%s=%s: counted once" % [field, v])
 			assert_eq(m.pool.dead_reason[0], 0, "the writer itself is untouched")
 			assert_true(m.pool.pos[0].is_finite() and m.pool.vel[0].is_finite())
+			if field != "vel":  # the velocity keeps its own older warning key
+				assert_string_contains(ScriptWarnings.last_message("BulletPool.hook_write"), "written to %s," % field, "the warning names the field")
 
 
 func test_a_cross_written_speed_over_the_ceiling_is_clamped_in_a_plain_bullet() -> void:
@@ -208,21 +210,6 @@ func test_a_cross_written_speed_over_the_ceiling_is_clamped_in_a_plain_bullet() 
 	assert_eq(m.pool.dead_reason[1], 0, "alive")
 	assert_almost_eq(m.pool.vel[1].length(), BulletLimits.MAX_SPEED, 0.01)
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.speed"), 1, "and said so")
-
-
-func test_a_cross_written_radius_out_of_range_is_clamped_and_widens_the_grid_margin() -> void:
-	_poke("radius", 200.0)
-	m.step(DT)
-	assert_eq(m.pool.radius[1], 200.0)
-	assert_gte(m.pool.max_radius, 200.0, "the grid margin follows a bigger radius")
-	m.clear_bullets()
-	_poke("radius", -4.0)
-	m.step(DT)
-	assert_eq(m.pool.radius[1], 0.0)
-	m.clear_bullets()
-	_poke("radius", 99999.0)
-	m.step(DT)
-	assert_eq(m.pool.radius[1], BulletLimits.MAX_RADIUS)
 
 
 func test_a_huge_finite_position_in_a_plain_bullet_is_culled_by_the_next_advance_without_a_hang() -> void:
@@ -395,3 +382,42 @@ func test_a_negative_behavior_id_straight_in_the_pool_loop() -> void:
 	assert_eq(pool.dead_reason[0], 0)
 	assert_eq(ScriptWarnings.count("BulletPool.behavior"), 1)
 	assert_string_contains(ScriptWarnings.last_message("BulletPool.behavior"), "-7")
+
+
+## Radius is checked when the bullet hits (the sweep leaves it alone: a bad radius only
+## matters for what the bullet touches).
+func _radius_hit_run(value: float) -> Array[float]:
+	var hb := Hurtbox.new()
+	hb.layer = Layers.ENEMY
+	hb.radius = 10.0
+	add_child_autofree(hb)
+	hb.global_position = Vector2(110, 0)
+	var seen: Array[float] = []
+	hb.hit.connect(func(d: float, _p: Vector2, _v: Vector2) -> void: seen.append(d))
+	_poke("radius", value)
+	m.pool.hit_mask[1] = Layers.ENEMY
+	m.pool.pos[1] = Vector2(100, 0)
+	m.pool.prev_pos[1] = Vector2(100, 0)
+	for k in 7:
+		m.step(DT)
+	return seen
+
+
+func test_a_non_finite_radius_in_a_plain_bullet_lands_no_hit() -> void:
+	for v: float in [NAN, INF, -INF]:
+		m.clear_bullets()
+		var before := m.pool.invalid_total
+		var seen := _radius_hit_run(v)
+		assert_eq(seen.size(), 0, "%s: no hit is delivered" % v)
+		if is_nan(v):
+			# A NaN radius never overlaps anything (every comparison is false): no hit to
+			# check, the bullet is inert until its lifetime ends.
+			assert_eq(m.pool.invalid_total, before, "nan: no hit, so nothing to remove it for")
+		else:
+			assert_eq(m.pool.invalid_total, before + 1, "%s: the bullet was removed as INVALID when it hit" % v)
+
+
+func test_an_out_of_range_radius_is_clamped_when_the_bullet_hits() -> void:
+	var seen := _radius_hit_run(99999.0)
+	assert_eq(seen.size(), 1, "the hit still lands")
+	assert_eq(m.pool.max_radius, maxf(m.pool.max_radius, BulletLimits.MAX_RADIUS), "and the grid margin was widened to the clamped radius")

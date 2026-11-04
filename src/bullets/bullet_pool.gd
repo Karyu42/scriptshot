@@ -518,41 +518,35 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 
 ## Backstop for what a hook wrote into a bullet that is not its own. The per-bullet
 ## check in run_update_hooks() only sees the bullet whose hook just returned, but the
-## arrays are public: a hook can poke `vel`, `pos`, `radius` ... of any other slot,
-## also of a plain bullet that has no hook (and so is never checked) or of a child it
-## just spawned (checked once, right after on_spawn, not after later writes).
+## arrays are public: a hook can poke `vel`, `pos` ... of any other slot, also of a
+## plain bullet that has no hook (and so is never checked) or of a child it just
+## spawned (checked once, right after on_spawn, not after later writes).
 ##
 ## Dirty tracking cannot catch that (the writes go straight into the packed arrays),
 ## so this walks every alive slot once, after the hooks of a tick and only if one ran
-## (a tick without hooked bullets pays nothing). It looks at the fields that would
-## otherwise reach the collision sweep and the integrator: position, previous
-## position, velocity and radius. Anything out of order goes through sanitize(), which
-## decides what is clamped and what is killed, so the two cannot disagree. The other
-## fields are guarded where they are used: advance() kills a bullet whose age,
-## lifetime, acceleration or turn rate made its position non-finite, and a hit
-## sanitizes the bullet before its damage is dealt (BulletManager._apply_hit).
+## (a tick without hooked bullets pays nothing). It looks at what would otherwise
+## reach the integrator and the collision sweeps: position, previous position and
+## velocity (a NaN or inf in any of them, or a speed over the ceiling). Anything out
+## of order goes through sanitize(), which decides what is clamped and what is
+## killed, so the two cannot disagree. The other fields are guarded where they are
+## used: advance() kills a bullet whose age, lifetime, acceleration or turn rate made
+## it non-finite, and a hit sanitizes the bullet before its damage is dealt
+## (BulletManager._apply_hit), which covers radius and damage.
+##
+## The loop is deliberately this small (about 75 ns per bullet in GDScript): the
+## velocity test is `length_squared()` because that is false for NaN and inf too, and a
+## method call there is cheaper than the same arithmetic written out. Dead slots are
+## not skipped before the test, one read less; sanitize() ignores them.
 func sweep_cross_writes() -> void:
 	var p_arr := pos
 	var pp_arr := prev_pos
 	var v_arr := vel
-	var r_arr := radius
-	var dead_arr := dead_reason
-	var max_r := max_radius
 	for i in count:
-		var d := dead_arr[i]
-		if d != 0 and d != DespawnReason.BOUNDS + 1:
-			continue
 		var p := p_arr[i]
 		var pp := pp_arr[i]
-		var v := v_arr[i]
-		var r := r_arr[i]
-		# `r >= 0 and r <= max_r` is false for NaN, so it also covers "not finite";
-		# a radius above every radius seen so far goes to sanitize() as well, which
-		# widens max_radius (the grid margin follows it).
-		if is_finite(p.x + p.y + pp.x + pp.y + v.x + v.y) and v.length_squared() <= MAX_SPEED_SQ and r >= 0.0 and r <= max_r:
+		if is_finite(p.x + p.y + pp.x + pp.y) and v_arr[i].length_squared() <= MAX_SPEED_SQ:
 			continue
 		sanitize(i)
-		max_r = max_radius
 
 
 ## The one way to write a bullet's velocity from outside the pool (hooks, the
