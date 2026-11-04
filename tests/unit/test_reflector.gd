@@ -1038,3 +1038,222 @@ func test_a_bullet_killed_after_its_reflection_does_not_fly_the_return_leg() -> 
 	assert_eq(recorder.calls, 1, "A was despawned (killed by B's hook)")
 	assert_almost_eq(recorder.at.x, 156.0, 0.01, "at the impact point: it never flew the return leg")
 	assert_eq(m.last_hit_count, 1, "only B's hit counts; the dead A sweeps nothing")
+
+
+# --- merge checklist: wall normals on a reflected bullet, the can_hit veto on the return leg ----
+
+## Records, for every hook call, the wall normal the manager reports for the bullet.
+class NormalRecorder:
+	extends BulletBehavior
+	var manager: BulletManager
+	var hit_normals: Array[Vector2] = []
+	var despawn_normals: Array[Vector2] = []
+	var despawn_reasons: Array[int] = []
+
+	func on_hit(_pool: BulletPool, index: int, _hurtbox: Hurtbox) -> void:
+		hit_normals.append(manager.wall_normal_of(index))
+
+	func on_despawn(_pool: BulletPool, index: int, reason: int) -> void:
+		despawn_normals.append(manager.wall_normal_of(index))
+		despawn_reasons.append(reason)
+
+
+## Refuses the hurtboxes whose instance ids are in `refuse`; records what it was asked
+## and the owner of the bullet at that moment.
+class Vetoer:
+	extends BulletBehavior
+	var refuse: Array[int] = []
+	var asked: Array[int] = []
+	var owners_seen: Array[int] = []
+	var hits := 0
+
+	func can_hit(pool: BulletPool, index: int, hurtbox: Hurtbox) -> bool:
+		asked.append(hurtbox.get_instance_id())
+		owners_seen.append(pool.owner_layer[index])
+		return not refuse.has(hurtbox.get_instance_id())
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		hits += 1
+
+
+## A scripted player bullet at the speed ceiling along +x (collides with walls if asked).
+func _scripted_fast_bullet(
+	behavior: BulletBehavior, from: Vector2, walls: bool = false, veto: bool = false, pierce: int = 0
+) -> int:
+	var r := ShotRequest.new()
+	r.position = from
+	r.velocity = Vector2(BulletLimits.MAX_SPEED, 0)
+	r.owner_layer = Layers.PLAYER
+	r.hit_mask = Layers.ENEMY
+	r.color = Layers.bullet_color(Layers.PLAYER)
+	r.lifetime = 10.0
+	r.collide_world = walls
+	r.pierce = pierce
+	r.can_hit_veto = veto
+	r.behavior_id = m.register_behavior(behavior)
+	return m.emitter.request_shot_id(r)
+
+
+func _keep_script_mirror(at: Vector2, radius: float = 40.0) -> Reflector:
+	var zone := _reflector(at, radius)
+	zone.mode = Reflector.Mode.REVERSE
+	zone.keep_script = true
+	return zone
+
+
+func test_a_wall_hit_the_mirror_cancelled_reports_no_normal_to_the_hooks() -> void:
+	# The wall is behind the mirror: the bullet never reaches it. A kept script must not be
+	# told it hit the wall's left face when it is hit on the return leg.
+	m.add_wall(Rect2(300, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	var player_box := _counter(Vector2(-150, 0), Layers.PLAYER, 8.0)
+	var zone := _keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(rec, Vector2(0, 0), true)
+	_run_wide()
+	assert_eq(zone.reflected_total, 1)
+	assert_eq(player_box.hits, 1, "hit on the return leg")
+	assert_eq(rec.hit_normals, [Vector2.ZERO] as Array[Vector2], "on_hit: no wall was hit")
+	assert_eq(rec.despawn_normals, [Vector2.ZERO] as Array[Vector2], "on_despawn (HIT): no wall was hit")
+	assert_eq(rec.despawn_reasons, [BulletPool.DespawnReason.HIT] as Array[int])
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_the_cancelled_wall_normal_does_not_linger_on_a_bullet_that_survives_the_tick() -> void:
+	m.add_wall(Rect2(300, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	var zone := _keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(rec, Vector2(0, 0), true)
+	_run_wide()
+	assert_eq(zone.reflected_total, 1)
+	assert_true(m.emitter.is_bullet_alive(id))
+	assert_eq(m.wall_normal_of(_slot(id)), Vector2.ZERO)
+	# And its next tick (it flies on, away from the wall, to the world edge) sees none either.
+	_run_wide()
+	assert_eq(m.wall_normal_of(_slot(id)), Vector2.ZERO)
+
+
+func test_a_wall_in_front_of_the_mirror_still_reports_its_normal() -> void:
+	# Control for the above: the wall is reached first, the mirror never is.
+	m.add_wall(Rect2(100, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	var zone := _keep_script_mirror(Vector2(300, 0))
+	var id := _scripted_fast_bullet(rec, Vector2(0, 0), true)
+	_run_wide()
+	assert_eq(zone.reflected_total, 0)
+	assert_false(m.emitter.is_bullet_alive(id))
+	assert_eq(rec.despawn_reasons, [BulletPool.DespawnReason.WALL] as Array[int])
+	assert_eq(rec.despawn_normals, [Vector2.LEFT] as Array[Vector2])
+
+
+func test_a_wall_death_on_the_return_leg_reports_the_real_normal() -> void:
+	# Turned around by the mirror at x = 296 + ..., then stopped by a wall on the way back:
+	# the wall is entered through its right face (normal +x), not "no normal".
+	m.add_wall(Rect2(100, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	var zone := _keep_script_mirror(Vector2(300, 0))
+	var id := _scripted_fast_bullet(rec, Vector2(130, 0), true)
+	_run_wide()
+	assert_eq(zone.reflected_total, 1)
+	assert_false(m.emitter.is_bullet_alive(id))
+	assert_eq(rec.despawn_reasons, [BulletPool.DespawnReason.WALL] as Array[int])
+	assert_eq(rec.despawn_normals, [Vector2.RIGHT] as Array[Vector2])
+
+
+func test_a_return_leg_wall_normal_is_also_reported_to_the_on_hit_of_that_leg() -> void:
+	# A hurtbox between the mirror and the wall is hit first, then the bullet dies at the wall
+	# (piercing): on_hit already knows the wall of this tick, like for any other bullet.
+	m.add_wall(Rect2(100, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	var box := _counter(Vector2(200, 0), Layers.PLAYER, 6.0)
+	var zone := _keep_script_mirror(Vector2(300, 0))
+	_scripted_fast_bullet(rec, Vector2(130, 0), true, false, 2)
+	_run_wide()
+	assert_eq(zone.reflected_total, 1)
+	assert_eq(box.hits, 1)
+	assert_eq(rec.hit_normals, [Vector2.RIGHT] as Array[Vector2])
+	assert_eq(rec.despawn_normals, [Vector2.RIGHT] as Array[Vector2])
+
+
+func test_the_return_leg_wall_normal_does_not_leak_into_the_next_tick() -> void:
+	m.add_wall(Rect2(100, -50, 20, 100))
+	var rec := NormalRecorder.new()
+	rec.manager = m
+	_keep_script_mirror(Vector2(300, 0))
+	_scripted_fast_bullet(rec, Vector2(130, 0), true)
+	_run_wide()
+	# A new bullet in (probably) the same slot, nowhere near a wall, dies of its lifetime.
+	var rec2 := NormalRecorder.new()
+	rec2.manager = m
+	var r := ShotRequest.with_velocity(Vector2(0, 300), Vector2(10, 0))
+	r.lifetime = 0.01
+	r.behavior_id = m.register_behavior(rec2)
+	m.emitter.request_shot_id(r)
+	_run(2)
+	assert_eq(rec2.despawn_normals, [Vector2.ZERO] as Array[Vector2])
+
+
+func test_the_return_leg_respects_the_can_hit_veto_so_a_vetoed_target_does_not_hide_the_next_one() -> void:
+	var near := _counter(Vector2(100, 0), Layers.PLAYER, 6.0)
+	var far := _counter(Vector2(-20, 0), Layers.PLAYER, 6.0)
+	var v := Vetoer.new()
+	v.refuse = [near.get_instance_id()]
+	var zone := _keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(v, Vector2(0, 0), false, true)
+	_run_wide()
+	assert_eq(zone.reflected_total, 1)
+	assert_eq(near.hits, 0, "vetoed")
+	assert_eq(far.hits, 1, "the vetoed target in front did not hide this one")
+	assert_eq(v.asked, [near.get_instance_id(), far.get_instance_id()] as Array[int])
+	assert_eq(v.owners_seen, [Layers.ENEMY, Layers.ENEMY] as Array[int], "asked in the post-reflection owner context")
+	assert_eq(v.hits, 1)
+	assert_eq(m.last_veto_count, 1)
+	assert_false(m.emitter.is_bullet_alive(id), "consumed by the far target")
+
+
+func test_a_return_leg_vetoed_by_everything_flies_on_to_its_end() -> void:
+	var near := _counter(Vector2(100, 0), Layers.PLAYER, 6.0)
+	var far := _counter(Vector2(-20, 0), Layers.PLAYER, 6.0)
+	var v := Vetoer.new()
+	v.refuse = [near.get_instance_id(), far.get_instance_id()]
+	_keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(v, Vector2(0, 0), false, true)
+	_run_wide()
+	assert_eq(near.hits + far.hits, 0)
+	assert_eq(m.last_veto_count, 2)
+	assert_true(m.emitter.is_bullet_alive(id))
+	assert_almost_eq(m.pool.pos[_slot(id)].x, -188.0, 0.1, "the whole return leg was flown")
+
+
+func test_a_vetoed_hit_does_not_spend_a_pierce_on_the_return_leg() -> void:
+	# pierce 1 = two hits. Three boxes on the way back, the nearest vetoed: the other two are
+	# hit, so the veto cost no pierce.
+	var a := _counter(Vector2(100, 0), Layers.PLAYER, 6.0)
+	var b := _counter(Vector2(40, 0), Layers.PLAYER, 6.0)
+	var c := _counter(Vector2(-20, 0), Layers.PLAYER, 6.0)
+	var v := Vetoer.new()
+	v.refuse = [a.get_instance_id()]
+	_keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(v, Vector2(0, 0), false, true, 1)
+	_run_wide()
+	assert_eq([a.hits, b.hits, c.hits], [0, 1, 1])
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_a_bullet_without_the_veto_flag_pays_nothing_extra_on_the_return_leg() -> void:
+	# The extra hit slots are for flagged bullets only: an unflagged, non-piercing bullet
+	# lists one hit on the return leg (this fails if every bullet got the veto budget).
+	var near := _counter(Vector2(100, 0), Layers.PLAYER, 6.0)
+	var far := _counter(Vector2(-20, 0), Layers.PLAYER, 6.0)
+	var v := Vetoer.new()
+	_keep_script_mirror(Vector2(200, 0))
+	_scripted_fast_bullet(v, Vector2(0, 0), false, false)
+	m.step(WIDE_DT)
+	assert_eq(near.hits, 1)
+	assert_eq(far.hits, 0)
+	assert_eq(m.last_hit_count, 1)
+	assert_eq(v.asked.size(), 0, "never asked: not flagged")
