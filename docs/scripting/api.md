@@ -307,6 +307,9 @@ field (for example `BulletPool.spawn.clamp.radius`, `BulletPool.hook_write.clamp
 it became and the `BulletLimits` constant. Warnings are rate-limited like every other script warning
 (`ScriptWarnings`: each kind is printed at most three times per 10 s window, the last one saying the rest are suppressed for now, and every one is still counted). A NaN or inf is
 different: a spawn is rejected, and a live bullet that gets one from a hook is killed (`DespawnReason.INVALID`).
+This holds for a write into *any* bullet, not only the one whose hook runs: a NaN or inf in the position or
+velocity of another bullet (or of a child you just spawned) is removed after the hooks of that tick, and a NaN
+`damage` or `radius` is removed when the bullet hits something. Prefer `set_velocity` / `teleport` anyway.
 
 Spawning from inside another shot: `b:spawn{...}` is the same as `spawn{...}` but with
 `pos`, `angle`, `damage` and `parent` defaulted from `b` and

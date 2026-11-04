@@ -233,8 +233,6 @@ func _finish_count() -> void:
 	_next_count()
 
 
-## Verdict for one bullet count: {"ok": bool, "text": String}. Not ok when the
-## count was not benchmarked, was not reached, or missed the p95 budget.
 ## Alive bullets that carry a behaviour (hooked), counted over the dense range.
 func _hooked_alive() -> int:
 	var n := 0
@@ -245,6 +243,8 @@ func _hooked_alive() -> int:
 	return n
 
 
+## Verdict for one bullet count: {"ok": bool, "text": String}. Not ok when the
+## count was not benchmarked, was not reached, or missed the p95 budget.
 func _judge(bullets: int) -> Dictionary:
 	for r in _results:
 		if r.bullets != bullets:

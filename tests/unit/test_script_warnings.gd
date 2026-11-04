@@ -64,6 +64,21 @@ func test_reset_clears_everything_including_the_clock() -> void:
 	assert_eq(ScriptWarnings.clock_override_msec, -1)
 
 
+func test_reset_clears_the_last_message_and_the_window_counters() -> void:
+	ScriptWarnings.warn(KEY, "first")
+	assert_eq(ScriptWarnings.last_message(KEY), "first")
+	ScriptWarnings.reset()
+	assert_eq(ScriptWarnings.last_message(KEY), "", "nothing is left of the old message")
+	# A fresh key state: the next warning starts a new window and is printed in full.
+	ScriptWarnings.warn(KEY, "second")
+	assert_eq(ScriptWarnings.last_message(KEY), "second")
+	assert_eq(ScriptWarnings.printed_count(KEY), 1)
+	# Reset on a key that never warned is fine too.
+	ScriptWarnings.reset()
+	assert_eq(ScriptWarnings.last_message("never.warned"), "")
+	assert_eq(ScriptWarnings.last_message(KEY), "")
+
+
 func test_real_clock_is_used_without_an_override() -> void:
 	ScriptWarnings.clock_override_msec = -1
 	for i in 6:

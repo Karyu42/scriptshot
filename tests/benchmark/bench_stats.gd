@@ -33,4 +33,6 @@ static func parse_fraction(text: String, option: String = "--hooked") -> Diction
 	var value := t.to_float()
 	if not (value >= 0.0 and value <= 1.0):  # also false for NaN
 		return {"ok": false, "value": 0.0, "error": "%s must be between 0 and 1 (0.3 = 30%% of the bullets), got '%s'" % [option, text]}
+	if value == 0.0:
+		value = 0.0  # "-0" parses to negative zero, which prints as "-0.00": normalise it
 	return {"ok": true, "value": value, "error": ""}

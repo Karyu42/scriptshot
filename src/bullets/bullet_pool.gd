@@ -52,6 +52,9 @@ const MAX_LIFETIME := BulletLimits.MAX_LIFETIME
 const MAX_ACCELERATION := BulletLimits.MAX_ACCELERATION
 const MAX_TURN_RATE := BulletLimits.MAX_TURN_RATE
 const MAX_DAMAGE := BulletLimits.MAX_DAMAGE
+## advance() accepts a bullet whose time left (lifetime - age) is in (0, MAX_LIFETIME):
+## the same 600 s that spawn clamps a lifetime to. LIFE_LEFT_HALF is the middle of that band.
+const LIFE_LEFT_HALF := MAX_LIFETIME * 0.5
 
 ## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
 ## does not hide the next target on the path (see can_hit_veto).
@@ -110,6 +113,10 @@ var hook_owner := -1
 ## together with `hook_owner`). A hook that reflects its own bullet hands the rest of
 ## the hook the new owner: see reflect().
 var hook_slot := -1
+## True once any hook (on_spawn, on_update, can_hit, on_hit, on_despawn) ran since the
+## last sweep_cross_writes(): BulletManager sets it at every hook call site and the sweeps
+## clear it. See sweep_cross_writes() for when the sweeps run.
+var hook_ran := false
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
@@ -399,9 +406,31 @@ func advance(delta: float, bounds: Rect2) -> void:
 		prev_pos[i] = pos[i]
 		var a := age[i] + delta
 		age[i] = a
-		if a >= lifetime[i]:
-			mark_dead(i, DespawnReason.LIFETIME)
-			continue
+		# One test for "still alive and its clock is sane": the time left, life - age, must
+		# lie in (0, MAX_LIFETIME). `absf(left - half) < half` is false for NaN (a hook
+		# wrote one into age or lifetime), for +/-inf, for a finished bullet (left <= 0)
+		# and for a clock no spawn can produce: a lifetime above MAX_LIFETIME or an age
+		# below zero by more than that leaves (an inf lifetime or a -inf age never ends by
+		# comparison alone). Only those rare cases take the branch below.
+		if not absf(lifetime[i] - a - LIFE_LEFT_HALF) < LIFE_LEFT_HALF:
+			var life := lifetime[i]
+			if not is_finite(a + life):
+				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to age or lifetime")
+				continue
+			if a >= life:
+				mark_dead(i, DespawnReason.LIFETIME)
+				continue
+			# Finite, but out of range: back into range (the bullet lives on).
+			if life > MAX_LIFETIME:
+				_note_clamp("BulletPool.hook_write", "lifetime", life, MAX_LIFETIME, "MAX_LIFETIME")
+				lifetime[i] = MAX_LIFETIME
+			if a < 0.0:
+				ScriptWarnings.warn(
+					"BulletPool.hook_write.clamp.age",
+					"BulletPool.hook_write: age %s is far below zero and was reset to 0" % _fmt_number(a)
+				)
+				a = 0.0
+				age[i] = 0.0
 		var v := vel[i]
 		var turn := turn_rate[i]
 		var acc := accel[i]
@@ -416,8 +445,13 @@ func advance(delta: float, bounds: Rect2) -> void:
 			vel[i] = v
 		var p := pos[i] + v * delta
 		pos[i] = p
-		if p.x < min_x or p.x > max_x or p.y < min_y or p.y > max_y:
-			mark_dead(i, DespawnReason.BOUNDS)
+		# Written so that a NaN position (from a NaN velocity, acceleration or turn rate
+		# a hook put into a bullet it does not own) fails the test too, no extra work.
+		if not (p.x >= min_x and p.x <= max_x and p.y >= min_y and p.y <= max_y):
+			if p.is_finite():
+				mark_dead(i, DespawnReason.BOUNDS)
+			else:
+				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
 			continue
 		if behavior[i] != 0:
 			hooked[hooked_count] = i
@@ -442,6 +476,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 	var outer := hook_owner
 	var outer_slot := hook_slot
 	var table_size := behaviors.size()
+	var ran := false
 	for k in hooked_count:
 		var i := hooked[k]
 		# A hook may have killed a later bullet in the list already, or reflected
@@ -462,6 +497,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
 		behaviors[id].on_update(self, i, delta)
+		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot
 		# wave through goes to sanitize(), the one place that decides what is repaired
@@ -471,6 +507,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 		if dead != 0 and dead != DespawnReason.BOUNDS + 1:
 			continue  # dead before the hook ended (sanitize() would only return false)
 		var p := pos[i]
+		var pp := prev_pos[i]
 		var v := vel[i]
 		var rt := rot[i]
 		var r := radius[i]
@@ -479,7 +516,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 		var turn := turn_rate[i]
 		var dmg := damage[i]
 		if (
-			is_finite(p.x + p.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i])
+			is_finite(p.x + p.y + pp.x + pp.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i])
 			and not (
 				v.length_squared() > MAX_SPEED_SQ
 				or r < 0.0
@@ -498,6 +535,48 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 			sanitize(i)
 	hook_owner = outer
 	hook_slot = outer_slot
+	if ran:
+		sweep_cross_writes()
+
+
+## Backstop for what a hook wrote into a bullet that is not its own. The per-bullet
+## check in run_update_hooks() only sees the bullet whose hook just returned, but the
+## arrays are public: a hook can poke `vel`, `pos` ... of any other slot, also of a
+## plain bullet that has no hook (and so is never checked) or of a child it just
+## spawned (checked once, right after on_spawn, not after later writes).
+##
+## Dirty tracking cannot catch that (the writes go straight into the packed arrays),
+## so this walks every alive slot once. BulletManager runs it right after the on_update
+## hooks (if one ran), and once more at the end of step() if any hook ran since
+## (`hook_ran`: on_spawn, can_hit, on_hit, on_despawn write too, and after the first
+## sweep); a tick without any hook pays nothing. It looks at what would otherwise
+## reach the integrator, the collision sweeps and the renderer's per-bullet matrix:
+## position, previous position, rotation and velocity (NaN or inf in any of them, or a
+## speed over the ceiling). Anything out of order goes through sanitize(), which
+## decides what is clamped and what is killed, so the two cannot disagree.
+##
+## Fields left out, and where they are guarded instead: age and lifetime by advance()
+## (it must test them every tick anyway, also for writes made after this sweep, and
+## the test is part of the one it already had); damage, radius and the rest when the
+## bullet hits something (BulletManager._apply_hit sanitizes it before the damage is
+## read). A bad radius of a bullet that never hits only reaches the renderer: an
+## invisible or oversized quad for that bullet, nothing else; it was left out because
+## the extra check costs about a quarter of the sweep.
+func sweep_cross_writes() -> void:
+	hook_ran = false
+	var p_arr := pos
+	var pp_arr := prev_pos
+	var v_arr := vel
+	var r_arr := rot
+	for i in count:
+		# Vector adds and one is_finite() call: NaN or inf in any component makes the
+		# sum non-finite (inf + -inf is NaN), and it is the cheapest finiteness test GDScript
+		# has (about 55 ns per bullet for all of this, the scalar version was 75).
+		# A sum that overflows float32 is only a false alarm: sanitize() looks at the
+		# real values and changes nothing.
+		if (p_arr[i] + pp_arr[i] + r_arr[i]).is_finite() and v_arr[i].length_squared() <= MAX_SPEED_SQ:
+			continue
+		sanitize(i)
 
 
 ## The one way to write a bullet's velocity from outside the pool (hooks, the
@@ -588,6 +667,7 @@ func sanitize(i: int) -> bool:
 	if dead != 0 and dead != DespawnReason.BOUNDS + 1:
 		return false
 	var p := pos[i]
+	var pp := prev_pos[i]
 	var v := vel[i]
 	var rt := rot[i]
 	var r := radius[i]
@@ -595,7 +675,7 @@ func sanitize(i: int) -> bool:
 	var acc := accel[i]
 	var turn := turn_rate[i]
 	var dmg := damage[i]
-	if not is_finite(p.x + p.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i]):
+	if not is_finite(p.x + p.y + pp.x + pp.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i]):
 		var field := _non_finite_field(i)
 		# The velocity keeps its own warning key (it predates the other fields).
 		if field == "vel":
@@ -718,6 +798,8 @@ func _warn_clamped_request(where: String, request: ShotRequest) -> void:
 func _non_finite_field(i: int) -> String:
 	if not pos[i].is_finite():
 		return "pos"
+	if not prev_pos[i].is_finite():
+		return "prev_pos"
 	if not vel[i].is_finite():
 		return "vel"
 	if not rot[i].is_finite():
