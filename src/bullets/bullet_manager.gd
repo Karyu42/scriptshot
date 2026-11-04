@@ -178,7 +178,7 @@ func collect_walls() -> int:
 ## spawn_child().
 func spawn(request: ShotRequest) -> int:
 	if pool.hook_owner >= 0:
-		return _spawn_inheriting(pool.hook_owner, request)
+		return _spawn_inheriting(pool.hook_owner, request, "BulletManager.spawn", "a hook")
 	return _spawn_checked(request)
 
 
@@ -197,7 +197,7 @@ func spawn_child(parent_id: int, request: ShotRequest) -> int:
 			"BulletManager.spawn_child.parent", "BulletManager.spawn_child: the parent bullet is gone, child not spawned"
 		)
 		return -1
-	return _spawn_inheriting(pool.owner_layer[parent], request)
+	return _spawn_inheriting(pool.owner_layer[parent], request, "BulletManager.spawn_child", "a child spawn")
 
 
 ## Spawn with `owner` forced onto the request. The ShotRequest is the caller's
@@ -206,7 +206,10 @@ func spawn_child(parent_id: int, request: ShotRequest) -> int:
 ## A request that still carries the default owner (Layers.PLAYER) cannot be told
 ## apart from "owner not set", so a mismatch there is corrected without a
 ## warning; any other differing owner is an explicit attempt and is warned.
-func _spawn_inheriting(owner: int, request: ShotRequest) -> int:
+## `where` and `who` only word the warning: a spawn from inside a hook says "a
+## hook"; spawn_child() (the batch/Lua commit, which runs after the parent's hook
+## returned) says "a child spawn" and names the parent, not a hook.
+func _spawn_inheriting(owner: int, request: ShotRequest, where: String = "BulletManager.spawn", who: String = "a hook") -> int:
 	var asked := request.owner_layer
 	if asked == owner:
 		return _spawn_checked(request)
@@ -214,9 +217,9 @@ func _spawn_inheriting(owner: int, request: ShotRequest) -> int:
 		ScriptWarnings.warn(
 			"BulletManager.spawn.owner",
 			(
-				"BulletManager: a hook asked for owner_layer %d but bullets spawned from a hook inherit their"
-				+ " parent's owner (%d); the request was ignored. Only reflect() changes an owner."
-			) % [asked, owner]
+				"%s: %s asked for owner_layer %d but a bullet spawned from another bullet inherits that"
+				+ " bullet's owner (%d); the request was ignored. Only reflect() changes an owner."
+			) % [where, who, asked, owner]
 		)
 	var asked_mask := request.hit_mask
 	request.owner_layer = owner
