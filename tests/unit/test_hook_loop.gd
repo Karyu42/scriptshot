@@ -262,8 +262,10 @@ func test_a_bullet_killed_or_unscripted_by_an_earlier_hook_gets_no_update() -> v
 		if i == 0:
 			p.mark_dead(1)
 			p.behavior[2] = 0  # what reflect() does
+			p.radius[2] = 1.0e9  # a plain bullet is outside the hook guard (documented)
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(w.calls, 2, "slots 0 and 3 only")
+	assert_eq(pool.radius[2], 1.0e9, "and the un-scripted bullet is not re-checked either")
 
 
 func test_an_unknown_behavior_id_written_by_a_hook_makes_a_plain_bullet_and_the_loop_goes_on() -> void:
