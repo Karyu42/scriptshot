@@ -507,6 +507,21 @@ anything:
   read at every dispatch; hooks left out of an explicit mask are not called, and in debug
   builds an explicit mask that omits a hook the script overrides is an assertion failure.
   `on_update` is not masked: a tick that has hooked bullets always sweeps once after it.
+  Details that matter for adapters: the debug check of an explicit mask is keyed on (mask,
+  script), so a `set_script()` with the same mask value is looked at again (`set_script()`
+  also resets `hook_mask` to `HOOK_AUTO`, so the new script is simply auto-detected until the
+  owner sets a mask again); `detect_script_hooks()` gives every bit to a script that is not a
+  GDScript (C#, GDExtension) because it relies on GDScript's per-class method listing.
+* **Adapter contract (Lua).** A Lua adapter must override all four hooks to forward them, so
+  auto-detection would see "all hooks" and every Lua tick would run the start and end sweeps.
+  The adapter instead sets `hook_mask = BulletBehavior.mask_from_names(<names of the callbacks
+  the script defines>)` (`on_spawn`, `on_hit`, `can_hit`, `on_death` / `on_expire` / `on_wall`
+  / `on_despawn`; other names are ignored) and `hook_mask_exact = true` (its overrides are
+  forwarders, so the debug "omitted an overridden hook" check does not apply). Whenever the
+  callback set changes (hot reload, script replaced) it sets the mask again and calls
+  `BulletManager.refresh_behavior(id)`. A hook missing from the mask is never called, which is
+  the whole point and the risk: a stale mask hides a callback; `HOOK_ALL` is always safe. See
+  "Which engine hooks a script gets" in `docs/scripting/api.md`.
 * **`advance()` keeps the plain clock test** (`not a < lifetime`, which ends a NaN age or
   lifetime instead of keeping it, at the cost of `age >= lifetime`). Why the clock checks
   can live in the sweep: only a hook writes a bad age or lifetime into a bullet; each hook
