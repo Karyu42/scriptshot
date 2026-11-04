@@ -31,6 +31,13 @@ const HOOK_AUTO := -1
 ## explicit mask that leaves out a hook the script does override is an assertion failure.
 var hook_mask: int = HOOK_AUTO
 
+## An adapter that forwards every hook to an interpreter overrides all four methods, whatever
+## the interpreted script defines, so an explicit mask narrower than its overrides is
+## intentional there. Set this to true next to `hook_mask` to say so: the debug check that
+## an explicit mask does not leave out an overridden hook is then skipped for this
+## behaviour. Leave it false for ordinary GDScript behaviours.
+var hook_mask_exact := false
+
 ## Set by the emitter on registration; use it to spawn child bullets. A child
 ## spawned from inside a hook takes the `owner_layer` of the bullet whose hook
 ## spawned it, whatever its ShotRequest says (a differing owner is ignored with a
@@ -72,13 +79,19 @@ func on_despawn(_pool: BulletPool, _index: int, _reason: int) -> void:
 	pass
 
 
-## The hooks `b`'s script overrides, as HOOK_* bits. A behaviour whose script cannot be
-## inspected gets every bit (calling and flagging a no-op is only slow, missing a hook
-## would be wrong). Inherited GDScript methods are listed once per class in the chain that
-## defines them, so a hook defined more than once is an override.
+## The hooks `b`'s script overrides, as HOOK_* bits. See detect_script_hooks().
 static func detect_hooks(b: BulletBehavior) -> int:
 	var s: Script = b.get_script()
-	if s == null:
+	return detect_script_hooks(s)
+
+
+## The hooks overridden by `s`, as HOOK_* bits. This relies on GDScript's per-class method
+## listing (an inherited method is listed once per class that defines it, so a hook listed
+## twice is an override). A script that cannot be inspected that way (null, C#, a GDExtension
+## language, anything that is not a GDScript) gets every bit: calling and flagging a no-op is
+## only slow, missing a hook would be wrong.
+static func detect_script_hooks(s: Script) -> int:
+	if s == null or not s is GDScript:
 		return HOOK_ALL
 	var names := ["on_spawn", "on_hit", "can_hit", "on_despawn"]
 	var counts := [0, 0, 0, 0]
@@ -90,4 +103,26 @@ static func detect_hooks(b: BulletBehavior) -> int:
 	for k in 4:
 		if counts[k] > 1:
 			mask |= 1 << k
+	return mask
+
+
+## HOOK_* bits for the callbacks a script defines, for an adapter that forwards the four
+## event hooks to an interpreter (Lua): pass the names of the functions the script has.
+## Engine names and the script-side spellings both count: `on_spawn`; `on_hit`; `can_hit`;
+## `on_despawn`, `on_death`, `on_expire`, `on_wall` (all end in on_despawn). Anything else
+## (`on_tick`, `on_batch`, `state`, ...) is not an event hook and is ignored. Typical use:
+## `behavior.hook_mask = BulletBehavior.mask_from_names(lua_function_names)`, again (and
+## `manager.refresh_behavior(id)`) after the script was reloaded.
+static func mask_from_names(names: PackedStringArray) -> int:
+	var mask := 0
+	for n in names:
+		match n:
+			"on_spawn":
+				mask |= HOOK_ON_SPAWN
+			"on_hit":
+				mask |= HOOK_ON_HIT
+			"can_hit":
+				mask |= HOOK_CAN_HIT
+			"on_despawn", "on_death", "on_expire", "on_wall":
+				mask |= HOOK_ON_DESPAWN
 	return mask

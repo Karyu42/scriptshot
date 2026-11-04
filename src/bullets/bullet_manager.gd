@@ -77,6 +77,9 @@ var _behaviors: Array[BulletBehavior] = [null]
 var _hook_cache := PackedInt32Array([0])
 var _hook_scripts: Array[Script] = [null]
 var _declared_checked := PackedInt32Array([-2])
+var _declared_scripts: Array[Script] = [null]
+## How many times an explicit hook_mask was looked at against its script (tests).
+var _declared_checks := 0
 var _sim_time := 0.0
 var _dropped_reported := 0
 var _dropped_by_limit_reported := PackedInt32Array([0, 0])
@@ -162,6 +165,7 @@ func register_behavior(behavior: BulletBehavior) -> int:
 	_hook_cache.append(0)
 	_hook_scripts.append(null)
 	_declared_checked.append(-2)
+	_declared_scripts.append(null)
 	var id := _behaviors.size() - 1
 	_refresh_hooks(id, behavior)
 	return id
@@ -176,6 +180,7 @@ func refresh_behavior(id: int) -> void:
 		return
 	_refresh_hooks(id, b)
 	_declared_checked[id] = -2
+	_declared_scripts[id] = null
 
 
 func _refresh_hooks(id: int, b: BulletBehavior) -> void:
@@ -190,9 +195,14 @@ func _hooks_of(id: int, b: BulletBehavior) -> int:
 	var declared := b.hook_mask
 	if declared >= 0:
 		declared &= BulletBehavior.HOOK_ALL
-		if _declared_checked[id] != declared:
+		# The debug check is keyed on the mask and the script: set_script() with the same
+		# explicit mask must look at the new script's overrides too.
+		var script: Script = b.get_script()
+		if _declared_checked[id] != declared or _declared_scripts[id] != script:
 			_declared_checked[id] = declared
-			if OS.is_debug_build():
+			_declared_scripts[id] = script
+			_declared_checks += 1
+			if OS.is_debug_build() and not b.hook_mask_exact:
 				var found := BulletBehavior.detect_hooks(b)
 				assert(
 					found & declared == found,
