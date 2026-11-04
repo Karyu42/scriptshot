@@ -594,7 +594,12 @@ func _site_run(site: String, value: float) -> SitePoker:
 	w.behavior_id = bid
 	w.lifetime = 0.01 if site == "on_despawn" else 5.0
 	w.can_hit_veto = site == "can_hit"
+	# The writer must outlive the hit, else its own on_despawn would raise the flag and
+	# hide a hook site that forgot to.
+	w.pierce = 5
 	m.emitter.request_shot_id(w)
+	if site != "on_spawn":
+		m.pool.hook_ran = false  # the spawns above flagged it; only the site under test may
 	m.step(DT)
 	return beh
 
@@ -625,3 +630,17 @@ func test_the_pool_is_flagged_by_every_hook_and_the_sweep_clears_it() -> void:
 	assert_true(m.pool.hook_ran, "on_spawn flagged it")
 	m.pool.sweep_cross_writes()
 	assert_false(m.pool.hook_ran, "the sweep cleared it")
+
+
+## A tick in which no hook of any kind ran sweeps nothing (so a plain-bullets game pays 0).
+func test_a_tick_without_any_hook_does_not_sweep() -> void:
+	m.emitter.request_shot_id(_req(Vector2(0, 0)))
+	m.step(DT)
+	m.pool.vel[0] = Vector2(5000.0, 0.0)  # over the 4,000 px/s ceiling, written by hand
+	m.step(DT)
+	assert_eq(m.pool.vel[0].x, 5000.0, "nothing ran, nothing swept: the ceiling is only applied on a hook tick")
+	var beh := SitePoker.new()
+	beh.site = "none"
+	m.spawn(_req(Vector2(500, 500), m.register_behavior(beh)))
+	m.step(DT)
+	assert_almost_eq(m.pool.vel[0].x, BulletLimits.MAX_SPEED, 0.01, "a hooked bullet is alive: swept")
