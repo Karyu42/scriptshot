@@ -191,7 +191,7 @@ jobs:
             echo "::error::hooked benchmark run failed on import/script errors"; exit 1
           fi
           [ -s reports/bench-hooked.json ] || { echo "::error::hooked benchmark produced no JSON (exit $rc)"; exit 1; }
-      - name: Enforce budget (plain: 5k hard fail, 10k warn-only; hooked: warn-only, see below)
+      - name: Enforce budget (plain 5k hard fail, 10k warn-only; hooked warn-only, see below)
         run: |
           # Hooked tier is warn-only (--hooked-floor-warn-only): on the GitHub runners hooked 5k measured
           # p95 ~18.5 ms (stable, p50 18.2), over the 16.6 ms budget that a ~2x faster dev box meets at ~10 ms.
