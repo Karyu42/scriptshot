@@ -542,6 +542,13 @@ Where the cost goes and what was done:
   goes to `sanitize()`, which still decides what is clamped or killed, so the two cannot
   disagree (a differential test in `tests/unit/test_hook_loop.gd` compares the loop with
   the old per-bullet one on random bad writes).
+* **The sweep for writes into other bullets** (see "Writes into other bullets") is on top
+  of that: about 75 ns per alive bullet per tick that has at least one hook, nothing
+  for a tick without one. Measured on the same box with the same interleaved A/B
+  (median p50 of three 600-frame runs, before = main at the PR #11 merge): 0% hooked
+  +0.13 ms at 5k and 10k (noise; the code path is the same), 30% +0.56 / +0.67 ms
+  (+7% / +4%), 100% +0.80 / +1.86 ms (+8% / +9%). p95 on this shared box moves by more
+  than that from run to run, see the PR for the raw numbers.
 * Measure with `./tools/run_benchmark.sh --hooked=0.3` (or 1.0). CI's default has no
   hooked bullets.
 
