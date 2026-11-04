@@ -191,17 +191,23 @@ jobs:
             echo "::error::hooked benchmark run failed on import/script errors"; exit 1
           fi
           [ -s reports/bench-hooked.json ] || { echo "::error::hooked benchmark produced no JSON (exit $rc)"; exit 1; }
-      - name: Enforce budget (plain 5k hard fail, 10k warn-only; hooked warn-only, see below)
+      - name: Enforce budget (plain 5k hard fail, 10k warn-only; hooked 5k hard fail at 22 ms, 10k warn-only)
         run: |
-          # Hooked tier is warn-only (--hooked-floor-warn-only): on the GitHub runners hooked 5k measured
-          # p95 ~18.5 ms (stable, p50 18.2), over the 16.6 ms budget that a ~2x faster dev box meets at ~10 ms.
-          # Drop the flag once the budget is recalibrated for the runner.
           # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
           # appended to the job's step summary. PERF_BASELINE (repo variable) = path to a committed
           # bench.json from main (5k regression fails, 10k regression warns); unset = budget only.
+          #
+          # HOOKED BUDGET (--hooked-target-ms 22.0) is calibrated to GitHub-hosted runners: observed hooked 5k
+          # p95 was 10.3-18.5 ms across runner instances (the same job differs ~1.8x between machines), so the
+          # real-device 16.6 ms would fail on hardware luck alone. 22 ms passes every observed runner and still
+          # catches the hook cost doubling (~0.65 -> ~1.3 us/bullet/tick, about +3.3 ms at 5k). 16.6 ms stays the
+          # real-device target (the plain tiers keep it). Revisit with a dedicated runner.
+          # The hooked/plain p95 ratio of this same run is logged (stdout, step summary, reports/hooked-ratio.json),
+          # never gated.
           python3 tools/ci/check_perf.py reports/bench.json \
             --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25 \
-            --hooked-report reports/bench-hooked.json --hooked-floor-warn-only \
+            --hooked-report reports/bench-hooked.json --hooked-target-ms 22.0 \
+            --ratio-json reports/hooked-ratio.json \
             --summary "$GITHUB_STEP_SUMMARY" \
             ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }}
       - uses: actions/upload-artifact@v4

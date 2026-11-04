@@ -247,16 +247,112 @@ class HookedTierTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("::error::[hooked] cannot read hooked benchmark results", out.getvalue())
 
-    def test_warn_only_option_demotes_the_hooked_floor_but_not_the_plain_one(self):
-        over = [row(5000, 9.0, 16.61, 20.0), row(10000, 12.0, 15.0, 17.0)]
-        code, out, _ = run_hooked(PLAIN_OK, over, "--hooked-floor-warn-only")
+    # --- runner-calibrated hooked budget (--hooked-target-ms) -------------------------------------------
+
+    def test_hooked_budget_defaults_to_the_plain_budget(self):
+        code, out, _ = run_hooked(PLAIN_OK, [row(5000, 9.0, 17.0, 20.0), row(10000, 12.0, 15.0, 17.0)])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 17.00 ms > budget 16.6 ms at 5000 bullets (hard floor)", out)
+
+    def test_hooked_5k_gate_at_22_ms_passes_at_21_9(self):
+        code, out, _ = run_hooked(PLAIN_OK, [row(5000, 9.0, 21.9, 23.0), row(10000, 12.0, 15.0, 17.0)],
+                                  "--hooked-target-ms", "22.0")
         self.assertEqual(code, 0)
-        self.assertIn("::warning::[hooked] p95 16.61 ms > budget 16.6 ms at 5000 bullets (hard floor)", out)
         self.assertNotIn("::error::", out)
-        code, out, _ = run_hooked([row(5000, 9.0, 17.0, 20.0), row(10000, 7.0, 8.0, 10.0)], over,
-                                  "--hooked-floor-warn-only")
+
+    def test_hooked_5k_gate_at_22_ms_passes_exactly_at_22(self):
+        code, _, _ = run_hooked(PLAIN_OK, [row(5000, 9.0, 22.0, 23.0), row(10000, 12.0, 15.0, 17.0)],
+                                "--hooked-target-ms", "22.0")
+        self.assertEqual(code, 0)
+
+    def test_hooked_5k_gate_at_22_ms_fails_at_22_1(self):
+        code, out, summ = run_hooked(PLAIN_OK, [row(5000, 9.0, 22.1, 23.0), row(10000, 12.0, 15.0, 17.0)],
+                                     "--hooked-target-ms", "22.0")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 22.10 ms > budget 22.0 ms at 5000 bullets (hard floor)", out)
+        self.assertIn("**FAIL**", summ)
+
+    def test_hooked_budget_does_not_loosen_the_plain_tiers(self):
+        code, out, _ = run_hooked([row(5000, 9.0, 17.0, 20.0), row(10000, 7.0, 8.0, 10.0)],
+                                  [row(5000, 9.0, 18.0, 20.0), row(10000, 12.0, 15.0, 17.0)],
+                                  "--hooked-target-ms", "22.0")
         self.assertEqual(code, 1)
         self.assertIn("::error::p95 17.00 ms > budget 16.6 ms at 5000 bullets (hard floor)", out)
+        self.assertNotIn("[hooked] p95", out)
+
+    def test_hooked_10k_stays_warn_only_at_the_hooked_budget(self):
+        code, out, _ = run_hooked(PLAIN_OK, [row(5000, 6.0, 9.0, 11.0), row(10000, 28.0, 30.0, 31.0)],
+                                  "--hooked-target-ms", "22.0")
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::[hooked] p95 30.00 ms > budget 22.0 ms at 10000 bullets (target)", out)
+        self.assertNotIn("::error::", out)
+
+    def test_nan_and_missing_still_fail_with_the_calibrated_budget(self):
+        code, out, _ = run_hooked(PLAIN_OK, [row(5000, 6.0, float("nan"), 11.0), row(10000, 12.0, 15.0, 17.0)],
+                                  "--hooked-target-ms", "22.0")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] invalid timing at 5000 bullets (hard floor): work_p95_ms", out)
+        code, out, _ = run_hooked(PLAIN_OK, [row(10000, 12.0, 15.0, 17.0)], "--hooked-target-ms", "22.0")
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] no result for hard floor count of 5000 bullets", out)
+
+    # --- hooked/plain ratio: logged, never gated ---------------------------------------------------------
+
+    def test_ratio_is_computed_and_logged_in_stdout_summary_and_json(self):
+        with tempfile.TemporaryDirectory() as d:
+            rj = os.path.join(d, "ratio.json")
+            code, out, summ = run_hooked([row(5000, 3.0, 8.0, 9.0), row(10000, 6.0, 12.0, 13.0)],
+                                         [row(5000, 6.0, 12.0, 13.0), row(10000, 12.0, 21.0, 22.0)],
+                                         "--hooked-target-ms", "22.0", "--ratio-json", rj)
+            with open(rj) as f:
+                rows = json.load(f)["hooked_over_plain_p95"]
+        self.assertEqual(code, 0)
+        for text in (out, summ):
+            self.assertIn("Hooked / plain p95 ratio", text)
+            self.assertIn("| 5000 | 8.00 | 12.00 | 1.50x |", text)
+            self.assertIn("| 10000 | 12.00 | 21.00 | 1.75x |", text)
+        self.assertEqual([r["bullets"] for r in rows], [5000, 10000])
+        self.assertAlmostEqual(rows[0]["ratio"], 1.5)
+        self.assertAlmostEqual(rows[1]["ratio"], 1.75)
+
+    def test_ratio_helper(self):
+        plain = {5000: row(5000, 1, 4.0, 5), 10000: row(10000, 1, 0.0, 5)}
+        hooked = {5000: row(5000, 1, 6.0, 7), 10000: row(10000, 1, 9.0, 7), 20000: row(20000, 1, 1.0, 1)}
+        r = check_perf.ratios(plain, hooked, [5000, 10000, 20000, 30000])
+        self.assertAlmostEqual(r[0]["ratio"], 1.5)
+        self.assertIsNone(r[1]["ratio"], "zero plain p95")
+        self.assertIsNone(r[2]["ratio"], "no plain row")
+        self.assertIsNone(r[3]["ratio"], "no rows at all")
+        self.assertEqual(r[1]["plain_p95_ms"], 0.0)
+
+    def test_ratio_is_n_a_for_zero_missing_and_nan_without_crashing_or_failing(self):
+        nan = float("nan")
+        # plain 5k is zero, plain 10k row is missing: both n/a, and the gate result is unchanged (pass).
+        code, out, summ = run_hooked([row(5000, 0.0, 0.0, 0.0)], HOOKED_OK)
+        self.assertIn("| 5000 | 0.00 | 9.00 | n/a |", summ)
+        self.assertIn("| 10000 | n/a | 15.00 | n/a |", summ)
+        self.assertEqual(code, 0, "a missing plain 10k is only a warning, a zero 5k p95 is within budget")
+        # NaN hooked 10k: ratio n/a, and only the existing 10k warning (not an error) results.
+        code, out, summ = run_hooked(PLAIN_OK, [row(5000, 6.0, 9.0, 11.0), row(10000, 12.0, nan, 17.0)])
+        self.assertEqual(code, 0)
+        self.assertIn("| 10000 | 8.00 | n/a | n/a |", summ)
+
+    def test_ratio_alone_never_fails_the_job(self):
+        # A huge ratio (hooked 50x plain) within both budgets passes.
+        code, out, summ = run_hooked([row(5000, 0.1, 0.2, 0.3), row(10000, 0.1, 0.2, 0.3)],
+                                     [row(5000, 6.0, 10.0, 11.0), row(10000, 12.0, 15.0, 17.0)])
+        self.assertEqual(code, 0)
+        self.assertNotIn("::error::", out)
+        self.assertIn("50.00x", summ)
+
+    def test_ratio_json_write_failure_does_not_fail_the_job(self):
+        code, out, _ = run_hooked(PLAIN_OK, HOOKED_OK, "--ratio-json", "/nonexistent-dir/ratio.json")
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::could not write /nonexistent-dir/ratio.json", out)
+
+    def test_no_ratio_section_without_a_hooked_report(self):
+        _, out, summ = run(PLAIN_OK)
+        self.assertNotIn("ratio", out + summ)
 
 
 if __name__ == "__main__":
