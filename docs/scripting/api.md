@@ -50,7 +50,7 @@ Fixed by the bullet system (PR #2 / #4, both on `main`), repeated here so script
   hurtbox applies the damage*.** Scripts never apply damage to enemies directly.
 - **Own bullets never hurt their owner.** `ShotRequest.owner_layer` (default `Layers.PLAYER`) is
   stripped from `hit_mask` at spawn, whatever a script asks for. Reflecting changes the owner.
-- **[PR #8]** **Spawned bullets inherit the owner of whoever spawned them.** (Implemented in PR #8, not on `main` until it merges: `BulletManager.spawn` / `spawn_child` and, as a backstop, `BulletPool.spawn` / `spawn_simple` while any hook runs, `can_hit` included.) A bullet spawned from a hook (`v:spawn`, `b:spawn`, `spawn`) **inherits `owner_layer` from the bullet or emitter whose hook spawned it. It is never taken from the behavior record or from a field the script passes.** Karyu's rule is that own bullets never hurt you, and the only way to change an owner is `reflect`, which is guarded by `max_reflections`. If a script (or a behavior record) could choose the owner of what it spawns, it could mint enemy-owned bullets that bypass that guard. **Lifetime and colour do come from the behavior record.**
+- **[PR #8]** **Spawned bullets inherit the owner of whoever spawned them.** (Implemented in PR #8, not on `main` until it merges: `BulletManager.spawn` / `spawn_child` and, as a backstop, `BulletPool.spawn` / `spawn_simple` while any hook runs, `can_hit` included.) A bullet spawned from a hook (`v:spawn`, `b:spawn`, `spawn`) **inherits `owner_layer` from the bullet or emitter whose hook spawned it. It is never taken from the behavior record or from a field the script passes.** Karyu's rule is that own bullets never hurt you, and the only way to change an owner is `reflect`, which is guarded by `max_reflections`. If a script (or a behavior record) could choose the owner of what it spawns, it could mint enemy-owned bullets that bypass that guard. A hook that reflects its own bullet and then spawns hands the new owner on: the child belongs to the post-reflect owner (enemy-owned if reflected to the enemy side). **Lifetime and colour do come from the behavior record.**
 - **Slots are not handles.** Despawning swap-removes: the last bullet moves into the freed slot, so a
   pool *index* is only valid inside one hook call (`BulletBehavior`: "only valid for the duration of the
   call"). Anything that outlives the call (timers, `b` handles stored in `state`, coroutines) uses the
@@ -279,6 +279,9 @@ note and ignores it (never an error), or emulates it where a built-in behaviour 
 (`player.invulnerable`, the separate source-tagged layer without a cap) but **still respects the engine's post-hit and dash
 i-frames**. It is not a new engine ask.
 
+The flip side: a bullet **without** `null_pierce` that reaches a script-invulnerable player is consumed and does nothing (it does
+not pass through); see the note under the `player` fields in *Writing player state*.
+
 ### Limits: what the engine clamps, and how you find out
 
 Every value a script gives a bullet is held inside a fixed range. These are the engine's guard values
@@ -302,12 +305,8 @@ collision landed (PR #2), and 4,000 is what replaced it. Collision is swept, so 
 A finite value outside its range is **clamped, not rejected**, and the engine now says so: one warning per path and
 field (for example `BulletPool.spawn.clamp.radius`, `BulletPool.hook_write.clamp.speed`), naming the value you asked for, what
 it became and the `BulletLimits` constant. Warnings are rate-limited like every other script warning
-(`ScriptWarnings`: each kind is printed three times, the last one saying the rest are suppressed, and is still counted). A NaN or inf is
+(`ScriptWarnings`: each kind is printed at most three times per 10 s window, the last one saying the rest are suppressed for now, and every one is still counted). A NaN or inf is
 different: a spawn is rejected, and a live bullet that gets one from a hook is killed (`DespawnReason.INVALID`).
-
-A hook that **reflects its own bullet and then spawns** in the same hook still spawns with the owner it had when the hook
-started (`BulletPool.hook_owner` is set once per hook): children of a bullet you just reflected belong to its old faction for
-the rest of that call.
 
 Spawning from inside another shot: `b:spawn{...}` is the same as `spawn{...}` but with
 `pos`, `angle`, `damage` and `parent` defaulted from `b` and
@@ -664,6 +663,11 @@ player:dash(angle)               -- dash(angle): the dash button's action and ru
 | `player.dash_dir`, `player.aim_dir` r | `get_dash_direction()`, `get_aim_direction()` | unit `vec2` |
 | `player.dead`, `player.regenerating` r | `is_dead()`, `is_regenerating()` | |
 | `player.since_damage` r | `get_time_since_damage()` | seconds |
+
+**A script-invulnerable player consumes normal bullets.** While `player.invulnerable` is on, an ordinary bullet that reaches
+the player is *consumed*: it does no damage and is gone (`Health` reports `BLOCKED_SCRIPT`); it does not pass through. That is what
+lets a bullet with `null_pierce` (`pierces_script_invuln`) arrive at `damage()` and land while the others are absorbed. Only the
+engine layer (hit i-frames, the dash) lets bullets pass through unconsumed. The engine side is described in `docs/architecture.md` (player damage and invulnerability).
 
 - **Validation lives in the engine.** `PlayerState` ignores NaN (with a warning), clamps infinities and
   out-of-range values, and is a no-op on a freed player. **The engine applies every `PlayerState` setter immediately.** The Lua layer adds **no gameplay restriction**;

@@ -83,9 +83,12 @@ func _reference_loop(pool: BulletPool, w: BulletBehavior) -> void:
 		var i := pool.hooked[k]
 		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
 			var outer := pool.hook_owner
+			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[i]
+			pool.hook_slot = i
 			w.on_update(pool, i, DT)
 			pool.hook_owner = outer
+			pool.hook_slot = outer_slot
 			pool.sanitize(i)
 
 
@@ -96,7 +99,7 @@ func _dump(pool: BulletPool) -> Array:
 		pool.damage, pool.param_a, pool.param_b, pool.hit_mask, pool.owner_layer, pool.behavior, pool.dead_reason
 	]:
 		out.append(str(arr))
-	out.append([pool.count, pool.invalid_total, pool.max_radius, pool.pending_count, pool.hook_owner])
+	out.append([pool.count, pool.invalid_total, pool.max_radius, pool.pending_count, pool.hook_owner, pool.hook_slot])
 	return out
 
 
@@ -297,9 +300,30 @@ func test_hook_owner_is_restored_to_its_value_on_entry() -> void:
 	assert_eq(pool.hook_owner, -1)
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(pool.hook_owner, -1, "outside any hook it is -1 again")
+	assert_eq(pool.hook_slot, -1, "and so is the running slot")
 	pool.hook_owner = Layers.PLAYER  # called from inside another bullet's hook (re-entrancy)
+	pool.hook_slot = 7
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(pool.hook_owner, Layers.PLAYER, "the outer hook's context comes back")
+	assert_eq(pool.hook_slot, 7, "with its slot")
+
+
+func test_every_hook_sees_its_own_slot_and_a_reflect_of_it_updates_the_context() -> void:
+	var owners: Array[int] = [Layers.PLAYER, Layers.PLAYER, Layers.ENEMY]
+	var pool := _pool(3, owners)
+	var w := Writer.new()
+	var slots: Array[int] = []
+	var owners_after_reflect: Array[int] = []
+	w.on_call = func(p: BulletPool, i: int) -> void:
+		slots.append(p.hook_slot)
+		if i == 0:
+			assert_true(p.reflect(0, Layers.ENEMY))
+			owners_after_reflect.append(p.hook_owner)
+	pool.run_update_hooks(_table(w), DT)
+	assert_eq(slots, [0, 1, 2], "hook_slot follows the bullet")
+	assert_eq(owners_after_reflect, [Layers.ENEMY], "a hook that reflects its own bullet hands the rest of the hook the new owner")
+	assert_eq(w.seen_owner, [Layers.PLAYER, Layers.PLAYER, Layers.ENEMY], "and the next bullet's hook is back on its own owner")
+	assert_eq(pool.hook_slot, -1)
 
 
 func test_a_hook_that_overwrites_hook_owner_does_not_leak_it_into_the_next_hook() -> void:
