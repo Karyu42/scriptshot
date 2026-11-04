@@ -69,3 +69,61 @@ func test_real_clock_is_used_without_an_override() -> void:
 	for i in 6:
 		ScriptWarnings.warn(KEY, "bad")
 	assert_eq(ScriptWarnings.printed_count(KEY), 3)
+
+
+# --- the text of the printed warnings (push_warning is tracked by GUT) -----------------------
+
+## The texts of the warnings pushed during this test, as tracked by GUT.
+func _printed_texts() -> Array[String]:
+	var tracker: Object = gut.error_tracker
+	var out: Array[String] = []
+	for e: Object in tracker.call("get_errors_for_test"):
+		out.append(str(e.get("code")))
+	return out
+
+
+func test_the_last_warning_of_a_window_says_the_rest_are_suppressed() -> void:
+	for i in 5:
+		ScriptWarnings.warn(KEY, "bad value")
+	assert_eq(_printed_texts(), [
+		"bad value",
+		"bad value",
+		"bad value (further warnings of this kind are suppressed for 10 s)",
+	] as Array[String], "only LIMIT are printed; the last one announces the silence")
+
+
+func test_the_first_warning_of_a_new_window_says_how_many_were_suppressed() -> void:
+	for i in 7:  # 3 printed, 4 suppressed
+		ScriptWarnings.warn(KEY, "bad value")
+	ScriptWarnings.clock_override_msec = 1000 + ScriptWarnings.WINDOW_MSEC
+	ScriptWarnings.warn(KEY, "bad value")
+	var texts := _printed_texts()
+	assert_eq(texts.size(), 4)
+	assert_eq(texts[3], "bad value (4 earlier warnings of this kind were suppressed)")
+
+
+func test_a_new_window_without_suppressed_warnings_has_no_earlier_notice() -> void:
+	for i in 2:  # nothing suppressed
+		ScriptWarnings.warn(KEY, "bad value")
+	ScriptWarnings.clock_override_msec = 1000 + ScriptWarnings.WINDOW_MSEC
+	ScriptWarnings.warn(KEY, "bad value")
+	assert_eq(_printed_texts(), ["bad value", "bad value", "bad value"] as Array[String])
+
+
+func test_the_suppressed_count_is_per_kind_and_restarts_in_every_window() -> void:
+	for i in 5:  # 2 suppressed
+		ScriptWarnings.warn(KEY, "bad value")
+	for i in 5:  # another kind: 2 suppressed, must not leak into KEY's count
+		ScriptWarnings.warn("other", "other value")
+	ScriptWarnings.clock_override_msec = 1000 + ScriptWarnings.WINDOW_MSEC
+	for i in 4:  # 3 printed (the first with the notice), 1 suppressed
+		ScriptWarnings.warn(KEY, "bad value")
+	ScriptWarnings.clock_override_msec = 1000 + 2 * ScriptWarnings.WINDOW_MSEC
+	ScriptWarnings.warn(KEY, "bad value")
+	var mine: Array[String] = []
+	for text in _printed_texts():
+		if text.begins_with("bad value"):
+			mine.append(text)
+	assert_eq(mine.size(), 7)
+	assert_eq(mine[3], "bad value (2 earlier warnings of this kind were suppressed)")
+	assert_eq(mine[6], "bad value (1 earlier warnings of this kind were suppressed)")
