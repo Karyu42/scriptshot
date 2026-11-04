@@ -286,7 +286,7 @@ not pass through); see the note under the `player` fields in *Writing player sta
 
 Every value a script gives a bullet is held inside a fixed range. These are the engine's guard values
 (`BulletLimits`, `src/core/bullet_limits.gd`; the guard table in `docs/design/pillars.md`, row "Bullet speed ceiling"), not per-script
-settings, and none of them is going to be lifted:
+settings. Scripts can't raise them; changing one is a design decision, not a script option:
 
 | Field | Allowed range | Applies to |
 | --- | --- | --- |
@@ -298,8 +298,8 @@ settings, and none of them is going to be lifted:
 | `damage` | 0 to **1,000** (a negative value would heal) | spawn, hook writes |
 | `param_a`, `param_b` | \|p\| up to **1e30** (keeps the value inside float32) | spawn only; a hook may write any *finite* value |
 
-The 4,000 px/s speed ceiling is a fixed engine limit (the pillars guard table lists it as a crash guard rather than a
-tuning value), not something waiting to be lifted: the 1,200 px/s clamp of the early prototype went away when swept
+The 4,000 px/s speed ceiling is an engine guard (the pillars guard table lists it as a crash guard rather than a
+tuning value), not a temporary clamp: the 1,200 px/s clamp of the early prototype went away when swept
 collision landed (PR #2), and 4,000 is what replaced it. Collision is swept, so a bullet at the ceiling cannot tunnel.
 
 A finite value outside its range is **clamped, not rejected**, and the engine now says so: one warning per path and
