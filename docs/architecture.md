@@ -371,6 +371,9 @@ through. `WallGrid.normal_of_hit(k, pool)` returns it for hit `k` (parallel to
 tick the bullet hit: `BulletManager.wall_normal_of(slot)` or
 `ShotEmitter.get_wall_normal(bullet_id)` inside `on_despawn` with reason `WALL`
 (`Vector2.ZERO` if the bullet did not hit a wall this tick, and after removal).
+A bullet that a Reflector zone turned around that tick never reached the wall of its
+old path, so that wall is not reported (`ZERO`); a wall that stops it on its return
+leg is reported with its real normal.
 It is computed on demand from the stored wall index and path (a bullet that hit
 a wall stores two values; the normal itself is only worked out when a script asks),
 so the sweep pays nothing for it.
