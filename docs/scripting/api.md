@@ -245,6 +245,38 @@ All optional. Unspecified fields take engine defaults.
 | `on_batch(bs, dt)` | whole-bucket update (hook option B), the recommended way to steer many bullets every tick; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
 
+#### Which engine hooks a script gets: the hook mask (adapter contract)
+
+The engine calls only the event hooks a behaviour *has* (`on_spawn`, `on_hit`, `can_hit`, `on_despawn`;
+`on_update` is not part of this), and only a hook that was called makes the engine run its extra
+safety sweep for that tick (`BulletPool.hook_ran`, see `docs/architecture.md`, "Hook mask"). For a GDScript
+behaviour the engine finds the overridden methods itself. **A Lua adapter overrides all four methods (it has
+to forward them), so detection would say "all four" for every Lua shot and every tick would pay the sweeps.**
+The adapter therefore sets the mask from the callbacks the *Lua script* defines:
+
+```gdscript
+# when a script is loaded for a behaviour (names = the callback names found in the script's table)
+behavior.hook_mask = BulletBehavior.mask_from_names(PackedStringArray(names))   # e.g. ["on_death", "on_tick"] -> HOOK_ON_DESPAWN
+behavior.hook_mask_exact = true       # the four overrides are forwarders: skip the debug "omitted override" check
+var id := manager.register_behavior(behavior)   # first time
+# ... script hot-reloaded or replaced at runtime, the set of callbacks may have changed:
+behavior.hook_mask = BulletBehavior.mask_from_names(PackedStringArray(new_names))
+manager.refresh_behavior(id)
+```
+
+- `mask_from_names` maps `on_spawn` -> `HOOK_ON_SPAWN`, `on_hit` -> `HOOK_ON_HIT`, `can_hit` -> `HOOK_CAN_HIT`, and
+  `on_death` / `on_expire` / `on_wall` (and `on_despawn`) -> `HOOK_ON_DESPAWN`. Everything else (`on_tick`,
+  `on_batch`, `on_near`, `state`, ...) is not an event hook and is ignored. Use the `HOOK_*` constants directly if the
+  adapter prefers to build the mask itself.
+- **A hook that is not in the mask is not called.** If the script gains `on_hit` later and the adapter does not update
+  the mask, that `on_hit` silently never runs. So: set the mask whenever the callback set changes, and call
+  `refresh_behavior(id)` after a reload (the mask is read on every dispatch, so the new value is used at once; the call
+  also re-runs the debug check). When in doubt use `BulletBehavior.HOOK_ALL`; it is always correct, only slower.
+- `set_script()` on a behaviour object resets its properties, `hook_mask` included, to their defaults (auto-detect), and the
+  engine notices the new script by itself; set the mask again after it.
+- A behaviour implemented in C# or a GDExtension language is detected as `HOOK_ALL` (the detection only understands
+  GDScript); give it an explicit mask the same way if it matters.
+
 #### Spawn fields -> engine mapping
 
 Where each field lands in `ShotRequest` (`main` 1f3be32, which includes PR #4). **Fields marked "none yet" have no engine
