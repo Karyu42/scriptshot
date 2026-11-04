@@ -36,7 +36,7 @@ func test_bare_pool_has_no_extra_limits() -> void:
 	assert_true(pool.is_full())
 
 
-func test_manager_defaults_are_10k_cap_and_20_percent_reserve() -> void:
+func test_manager_defaults_are_10k_cap_and_30_percent_reserve() -> void:
 	var m := BulletManager.new()
 	m.render_enabled = false
 	m.auto_step = false
@@ -419,3 +419,20 @@ func test_first_reason_wins_over_invalid() -> void:
 	pool.mark_dead(0, BulletPool.DespawnReason.HIT)
 	pool.mark_dead(0, BulletPool.DespawnReason.INVALID)
 	assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.HIT + 1)
+
+
+func test_the_stress_test_stays_inside_the_players_share_instead_of_hitting_the_cap() -> void:
+	var m := BulletManager.new()
+	m.render_enabled = false
+	m.auto_step = false
+	add_child_autofree(m)
+	var stress := BulletStressTest.new()
+	stress.emitter = m.emitter
+	stress.level = 2
+	stress.enabled = true
+	add_child_autofree(stress)
+	for i in 12:
+		stress._physics_process(1.0)
+	assert_eq(stress.get_target_count(), 10000)
+	assert_eq(m.pool.count, 7000, "the player's share: cap 10,000 minus the 3,000 reserve")
+	assert_eq(m.pool.dropped_total, 0, "it never asks for a shot the pool would refuse")

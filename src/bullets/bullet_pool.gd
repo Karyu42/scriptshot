@@ -45,6 +45,14 @@ const OWNER_PLAYER := 1
 const OWNER_ENEMY := 2
 const OWNER_SLOTS := 3
 
+# Local copies of the BulletLimits bounds (the hot paths below compare against them).
+const MAX_SPEED_SQ := BulletLimits.MAX_SPEED_SQ
+const MAX_RADIUS := BulletLimits.MAX_RADIUS
+const MAX_LIFETIME := BulletLimits.MAX_LIFETIME
+const MAX_ACCELERATION := BulletLimits.MAX_ACCELERATION
+const MAX_TURN_RATE := BulletLimits.MAX_TURN_RATE
+const MAX_DAMAGE := BulletLimits.MAX_DAMAGE
+
 ## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
 ## does not hide the next target on the path (see can_hit_veto).
 const VETO_MAX_HITS := 4
@@ -93,6 +101,11 @@ var dropped_by_limit := PackedInt32Array([0, 0])
 ## How many alive bullets carry the can_hit_veto flag (lets the collision loop
 ## skip the per-bullet check entirely while there are none).
 var veto_count := 0
+## owner_layer of the bullet whose hook is running right now, -1 outside any hook.
+## BulletManager sets it around every hook call. While it is set, every spawn
+## (spawn() and spawn_simple(), also when a hook calls the pool directly) takes
+## this owner, never the one the request names: only reflect() changes an owner.
+var hook_owner := -1
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
@@ -204,14 +217,27 @@ func _init(p_capacity: int = 16384) -> void:
 ## Spawns a bullet from a ShotRequest. Returns its slot, or -1 if the pool is
 ## full. The slot is only stable until the next despawn.
 func spawn(request: ShotRequest) -> int:
-	if not (request.velocity.is_finite() and request.position.is_finite()):
-		_reject_invalid("BulletPool.spawn", "a shot with a non-finite position or velocity")
+	var bad := _bad_request_field(request)
+	if bad != "":
+		_reject_invalid("BulletPool.spawn", "a shot with a non-finite %s" % bad)
 		return -1
-	var owner_slot_i := OWNER_NONE
-	if (request.owner_layer & Layers.PLAYER) != 0:
-		owner_slot_i = OWNER_PLAYER
-	elif (request.owner_layer & Layers.ENEMY) != 0:
-		owner_slot_i = OWNER_ENEMY
+	var shot_owner := request.owner_layer
+	var shot_mask := request.hit_mask
+	if hook_owner >= 0 and shot_owner != hook_owner:
+		# Backstop for a hook that calls the pool directly (BulletManager.spawn
+		# already corrects its requests before they get here).
+		if shot_owner != Layers.PLAYER:
+			ScriptWarnings.warn(
+				"BulletPool.spawn.owner",
+				(
+					"BulletPool.spawn: a hook asked for owner_layer %d but bullets spawned from a hook inherit"
+					+ " their parent's owner (%d); the request was ignored. Only reflect() changes an owner."
+				) % [shot_owner, hook_owner]
+			)
+		shot_owner = hook_owner
+		if shot_owner != 0:
+			shot_mask = Layers.hostile_to(shot_owner)
+	var owner_slot_i := owner_slot(shot_owner)
 	if count >= (logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit):
 		_record_drop(owner_slot_i)
 		return -1
@@ -230,16 +256,17 @@ func spawn(request: ShotRequest) -> int:
 		rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
 	else:
 		rot[i] = Vector2.from_angle(request.angle)
-	radius[i] = request.radius
+	var r := clampf(request.radius, 0.0, BulletLimits.MAX_RADIUS)
+	radius[i] = r
 	age[i] = 0.0
-	lifetime[i] = request.lifetime
-	accel[i] = request.acceleration
-	turn_rate[i] = request.turn_rate
-	damage[i] = request.damage
-	param_a[i] = request.param_a
-	param_b[i] = request.param_b
+	lifetime[i] = clampf(request.lifetime, 0.0, BulletLimits.MAX_LIFETIME)
+	accel[i] = clampf(request.acceleration, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
+	turn_rate[i] = clampf(request.turn_rate, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
+	damage[i] = clampf(request.damage, 0.0, BulletLimits.MAX_DAMAGE)
+	param_a[i] = clampf(request.param_a, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	param_b[i] = clampf(request.param_b, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
 	color[i] = request.color
-	owner_layer[i] = request.owner_layer
+	owner_layer[i] = shot_owner
 	reflect_count[i] = 0
 	pierces_script_invuln[i] = 1 if request.pierces_script_invuln else 0
 	if request.can_hit_veto:
@@ -247,14 +274,14 @@ func spawn(request: ShotRequest) -> int:
 		veto_count += 1
 	else:
 		can_hit_veto[i] = 0
-	hit_mask[i] = request.hit_mask & ~request.owner_layer
+	hit_mask[i] = shot_mask & ~shot_owner
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
 	collide_world[i] = 1 if request.collide_world else 0
 	last_hit[i] = 0
 	dead_reason[i] = 0
-	if request.radius > max_radius:
-		max_radius = request.radius
+	if r > max_radius:
+		max_radius = r
 	return i
 
 
@@ -267,14 +294,20 @@ func spawn_simple(
 	bullet_color: Color = Color(1.0, 0.82, 0.4),
 	mask: int = 0
 ) -> int:
-	if not (velocity.is_finite() and position.is_finite()):
-		_reject_invalid("BulletPool.spawn_simple", "a shot with a non-finite position or velocity")
+	if not (position.is_finite() and velocity.is_finite() and is_finite(life) and is_finite(bullet_radius)):
+		_reject_invalid("BulletPool.spawn_simple", "a shot with a non-finite position, velocity, life or radius")
 		return -1
+	life = clampf(life, 0.0, BulletLimits.MAX_LIFETIME)
+	bullet_radius = clampf(bullet_radius, 0.0, BulletLimits.MAX_RADIUS)
 	velocity = BulletLimits.clamp_velocity(velocity)
-	if count >= _other_limit:
-		_record_drop(OWNER_NONE)
+	# A plain bullet is unowned, except when a hook spawns it: then it belongs to
+	# the bullet whose hook runs, like every other bullet spawned from a hook.
+	var shot_owner := hook_owner if hook_owner > 0 else 0
+	var owner_slot_i := owner_slot(shot_owner)
+	if count >= (logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit):
+		_record_drop(owner_slot_i)
 		return -1
-	owner_counts[OWNER_NONE] += 1
+	owner_counts[owner_slot_i] += 1
 	var i := count
 	count += 1
 	spawned_total += 1
@@ -294,11 +327,11 @@ func spawn_simple(
 	param_a[i] = 0.0
 	param_b[i] = 0.0
 	color[i] = bullet_color
-	owner_layer[i] = 0
+	owner_layer[i] = shot_owner
 	reflect_count[i] = 0
 	pierces_script_invuln[i] = 0
 	can_hit_veto[i] = 0
-	hit_mask[i] = mask
+	hit_mask[i] = mask & ~shot_owner
 	behavior[i] = 0
 	pierce[i] = 0
 	collide_world[i] = 1
@@ -355,7 +388,8 @@ func advance(delta: float, bounds: Rect2) -> void:
 ## batch/Lua commit): a velocity above BulletLimits.MAX_SPEED keeps its direction
 ## and is cut to the ceiling. A NaN or inf kills the bullet with
 ## DespawnReason.INVALID (counted in `invalid_total`, reported through
-## ScriptWarnings), leaves the old velocity in place and returns false.
+## ScriptWarnings), its stored velocity is zeroed (no NaN is ever kept) and it
+## returns false.
 func set_velocity(i: int, v: Vector2) -> bool:
 	if i < 0 or i >= count or dead_reason[i] != 0:
 		return false
@@ -382,10 +416,145 @@ func sanitize_velocity(i: int) -> bool:
 	return true
 
 
+## Name of the first non-finite numeric field of `request` ("" if all are finite).
+## `angle` may be NaN (that means "face along velocity"), only inf is invalid there.
+## The fast path is one finite test over the sum of the fields; only when that
+## fails (a real NaN/inf, or a sum of absurd finite doubles overflowing) does it
+## look at the fields one by one.
+func _bad_request_field(r: ShotRequest) -> String:
+	var p := r.position
+	var v := r.velocity
+	if (
+		is_finite(
+			p.x + p.y + v.x + v.y + r.radius + r.lifetime + r.acceleration + r.turn_rate + r.damage + r.param_a + r.param_b
+		)
+		and not is_inf(r.angle)
+	):
+		return ""
+	if not p.is_finite():
+		return "position"
+	if not v.is_finite():
+		return "velocity"
+	if is_inf(r.angle):
+		return "angle"
+	if not is_finite(r.radius):
+		return "radius"
+	if not is_finite(r.lifetime):
+		return "lifetime"
+	if not is_finite(r.acceleration):
+		return "acceleration"
+	if not is_finite(r.turn_rate):
+		return "turn_rate"
+	if not is_finite(r.damage):
+		return "damage"
+	if not is_finite(r.param_a):
+		return "param_a"
+	if not is_finite(r.param_b):
+		return "param_b"
+	return ""
+
+
+## Everything a hook may have written into slot `i` is checked after the hook
+## returns (BulletManager calls this for hooked bullets only; plain bullets pay
+## nothing): a NaN or inf in any numeric field kills the bullet as INVALID (no
+## NaN is ever integrated or collided), a finite value outside the BulletLimits
+## range is clamped back into it, and a radius bigger than every radius seen so
+## far widens `max_radius` (the hurtbox grid margin follows it). A velocity over
+## the speed ceiling is cut to it. Returns false if the bullet was killed or was
+## already dead. (A bullet that only left the world bounds this tick is still
+## checked: it is still delivering its last segment's hits.)
+func sanitize(i: int) -> bool:
+	var dead := dead_reason[i]
+	if dead != 0 and dead != DespawnReason.BOUNDS + 1:
+		return false
+	var p := pos[i]
+	var v := vel[i]
+	var rt := rot[i]
+	var r := radius[i]
+	var life := lifetime[i]
+	var acc := accel[i]
+	var turn := turn_rate[i]
+	var dmg := damage[i]
+	if not is_finite(p.x + p.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i]):
+		var field := _non_finite_field(i)
+		# The velocity keeps its own warning key (it predates the other fields).
+		if field == "vel":
+			_kill_invalid(i, "BulletPool.velocity", "a non-finite velocity")
+		else:
+			_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to %s" % field)
+		return false
+	# Everything is finite: only out-of-range values need any more work. One
+	# combined test keeps the common case (nothing to fix) cheap.
+	if (
+		v.length_squared() > MAX_SPEED_SQ
+		or r < 0.0
+		or r > MAX_RADIUS
+		or life < 0.0
+		or life > MAX_LIFETIME
+		or absf(acc) > MAX_ACCELERATION
+		or absf(turn) > MAX_TURN_RATE
+		or dmg < 0.0
+		or dmg > MAX_DAMAGE
+	):
+		_clamp_into_range(i)
+	elif r > max_radius:
+		max_radius = r
+	return true
+
+
+## The slow half of sanitize(): puts every out-of-range (finite) value of slot `i`
+## back into its BulletLimits range.
+func _clamp_into_range(i: int) -> void:
+	if BulletLimits.exceeds(vel[i]):
+		vel[i] = BulletLimits.clamp_velocity(vel[i])
+	var r := clampf(radius[i], 0.0, MAX_RADIUS)
+	radius[i] = r
+	if r > max_radius:
+		max_radius = r
+	lifetime[i] = clampf(lifetime[i], 0.0, MAX_LIFETIME)
+	accel[i] = clampf(accel[i], -MAX_ACCELERATION, MAX_ACCELERATION)
+	turn_rate[i] = clampf(turn_rate[i], -MAX_TURN_RATE, MAX_TURN_RATE)
+	damage[i] = clampf(damage[i], 0.0, MAX_DAMAGE)
+
+
+func _non_finite_field(i: int) -> String:
+	if not pos[i].is_finite():
+		return "pos"
+	if not vel[i].is_finite():
+		return "vel"
+	if not rot[i].is_finite():
+		return "rot"
+	if not is_finite(radius[i]):
+		return "radius"
+	if not is_finite(age[i]):
+		return "age"
+	if not is_finite(lifetime[i]):
+		return "lifetime"
+	if not is_finite(accel[i]):
+		return "accel"
+	if not is_finite(turn_rate[i]):
+		return "turn_rate"
+	if not is_finite(damage[i]):
+		return "damage"
+	if not is_finite(param_a[i]):
+		return "param_a"
+	return "param_b"
+
+
 func _kill_invalid(i: int, key: String, what: String) -> void:
 	invalid_total += 1
 	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
 	vel[i] = Vector2.ZERO
+	# Nothing non-finite stays in a slot that is still readable this tick (the
+	# on_despawn hook, the renderer).
+	if not prev_pos[i].is_finite():
+		prev_pos[i] = Vector2.ZERO
+	if not pos[i].is_finite():
+		pos[i] = prev_pos[i]
+	if not rot[i].is_finite():
+		rot[i] = Vector2.RIGHT
+	if not is_finite(radius[i]):
+		radius[i] = 0.0
 	mark_dead(i, DespawnReason.INVALID)
 
 

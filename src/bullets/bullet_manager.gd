@@ -81,9 +81,9 @@ var _last_warning_time := -INF
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
 
-# owner_layer of the bullet whose hook is running, -1 outside any hook. A spawn made
-# while it is set is a child spawn and inherits it (see spawn()).
-var _hook_owner := -1
+# The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
+# outside any hook). A spawn made while it is set is a child spawn and inherits it
+# (see spawn()); the pool enforces the same rule for hooks that call it directly.
 
 
 func _init() -> void:
@@ -177,8 +177,8 @@ func collect_walls() -> int:
 ## and takes that bullet's `owner_layer`, whatever the request says: see
 ## spawn_child().
 func spawn(request: ShotRequest) -> int:
-	if _hook_owner >= 0:
-		return _spawn_inheriting(_hook_owner, request)
+	if pool.hook_owner >= 0:
+		return _spawn_inheriting(pool.hook_owner, request)
 	return _spawn_checked(request)
 
 
@@ -238,11 +238,11 @@ func _spawn_checked(request: ShotRequest) -> int:
 			push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % request.behavior_id)
 			pool.behavior[i] = 0
 		else:
-			var outer := _hook_owner
-			_hook_owner = pool.owner_layer[i]
+			var outer := pool.hook_owner
+			pool.hook_owner = pool.owner_layer[i]
 			b.on_spawn(pool, i)
-			_hook_owner = outer
-			pool.sanitize_velocity(i)
+			pool.hook_owner = outer
+			pool.sanitize(i)
 	return i
 
 
@@ -277,12 +277,13 @@ func step(delta: float) -> void:
 		var i := pool.hooked[k]
 		# A hook may have reflected (and so un-scripted) a later bullet in the list.
 		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
-			var outer := _hook_owner
-			_hook_owner = pool.owner_layer[i]
+			var outer := pool.hook_owner
+			pool.hook_owner = pool.owner_layer[i]
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
-			_hook_owner = outer
-			# Hooks write `vel` directly: hold the speed ceiling / reject NaN, inf.
-			pool.sanitize_velocity(i)
+			pool.hook_owner = outer
+			# Hooks write the pool arrays directly: reject NaN / inf, hold the
+			# speed ceiling and the BulletLimits ranges (see BulletPool.sanitize).
+			pool.sanitize(i)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -327,10 +328,10 @@ func step(delta: float) -> void:
 			continue
 		var id := pool.behavior[slot]
 		if id != 0:
-			var outer := _hook_owner
-			_hook_owner = pool.owner_layer[slot]
+			var outer := pool.hook_owner
+			pool.hook_owner = pool.owner_layer[slot]
 			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
-			_hook_owner = outer
+			pool.hook_owner = outer
 	for k in last_wall_hit_count:
 		_wall_hit_index[walls.hit_bullets[k]] = 0
 	pool.flush_dead()
@@ -449,9 +450,19 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	# bookkeeping. Unflagged bullets only pay for this one byte read per hit.
 	if pool.can_hit_veto[bullet] != 0:
 		var veto_id := pool.behavior[bullet]
-		if veto_id != 0 and not _get_behavior(veto_id).can_hit(pool, bullet, hurtbox):
-			last_veto_count += 1
-			return
+		if veto_id != 0:
+			# A hook like the others: whatever it spawns inherits this bullet's owner.
+			var outer := pool.hook_owner
+			pool.hook_owner = pool.owner_layer[bullet]
+			var allowed := _get_behavior(veto_id).can_hit(pool, bullet, hurtbox)
+			pool.hook_owner = outer
+			# can_hit has the pool in its hands too: hold the same guards as for the
+			# other hooks. A bullet it wrote a NaN into is gone, and lands no hit.
+			if not pool.sanitize(bullet):
+				return
+			if not allowed:
+				last_veto_count += 1
+				return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:
@@ -461,11 +472,11 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
 	if id != 0:
-		var outer := _hook_owner
-		_hook_owner = pool.owner_layer[bullet]
+		var outer := pool.hook_owner
+		pool.hook_owner = pool.owner_layer[bullet]
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)
-		_hook_owner = outer
-		pool.sanitize_velocity(bullet)
+		pool.hook_owner = outer
+		pool.sanitize(bullet)
 	if piercing:
 		pool.pierce[bullet] -= 1
 		pool.last_hit[bullet] = hurtbox.get_instance_id()

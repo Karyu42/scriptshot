@@ -266,3 +266,175 @@ func test_a_parent_killed_this_tick_can_still_have_its_children_spawned() -> voi
 	var slot := manager.spawn_child(parent, _child_request(Layers.ENEMY))
 	assert_true(slot >= 0, "marked dead is not yet removed: a commit after the hook still finds it")
 	assert_eq(manager.pool.owner_layer[slot], Layers.ENEMY)
+
+
+# --- can_hit and on_hit (the hit path) ---------------------------------------------
+# QA's B1: can_hit was the one hook that did not set the inheritance context, and no
+# test covered on_hit, so removing either wrap passed the whole suite.
+
+## Spawns one child from can_hit and/or on_hit with the request it is given.
+class HitSpawner:
+	extends BulletBehavior
+	var child_request: ShotRequest
+	var from_can_hit := false
+	var from_on_hit := false
+	var allow := true
+	var child_ids: Array[int] = []
+
+	func can_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> bool:
+		if from_can_hit:
+			child_ids.append(emitter.request_shot_id(child_request))
+		return allow
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		if from_on_hit:
+			child_ids.append(emitter.request_shot_id(child_request))
+
+
+## A target for `layer`-owned bullets to hit, and a bullet of `owner_layer` that
+## overlaps it on the first step.
+func _hit_scene(h: HitSpawner, owner_layer: int, veto: bool) -> int:
+	var hb := Hurtbox.new()
+	hb.radius = 20.0
+	hb.layer = Layers.hostile_to(owner_layer)
+	hb.position = Vector2(10, 0)
+	add_child_autofree(hb)
+	var r := ShotRequest.with_velocity(Vector2.ZERO, Vector2(60, 0))
+	r.lifetime = 5.0
+	r.owner_layer = owner_layer
+	r.hit_mask = Layers.hostile_to(owner_layer)
+	r.can_hit_veto = veto
+	r.behavior_id = manager.register_behavior(h)
+	return manager.emitter.request_shot_id(r)
+
+
+func test_can_hit_children_inherit_the_owner_of_a_player_bullet() -> void:
+	var h := HitSpawner.new()
+	h.from_can_hit = true
+	h.child_request = _child_request(Layers.ENEMY, Layers.PLAYER)
+	_hit_scene(h, Layers.PLAYER, true)
+	manager.step(DT)
+	assert_eq(h.child_ids.size(), 1, "can_hit ran and spawned")
+	assert_eq(_owner_of(h.child_ids[0]), Layers.PLAYER, "an enemy-owned bullet cannot be minted from can_hit")
+	assert_eq(_mask_of(h.child_ids[0]), Layers.ENEMY)
+	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_ENEMY], 0)
+	assert_eq(ScriptWarnings.count("BulletManager.spawn.owner"), 1, "and it is reported")
+
+
+func test_can_hit_children_of_an_enemy_bullet_stay_enemy_owned() -> void:
+	var h := HitSpawner.new()
+	h.from_can_hit = true
+	h.child_request = _child_request(Layers.ENEMY, Layers.PLAYER)
+	_hit_scene(h, Layers.ENEMY, true)
+	manager.step(DT)
+	assert_eq(h.child_ids.size(), 1)
+	assert_eq(_owner_of(h.child_ids[0]), Layers.ENEMY)
+	assert_eq(_mask_of(h.child_ids[0]), Layers.PLAYER)
+	assert_eq(ScriptWarnings.count("BulletManager.spawn.owner"), 0, "nothing differs")
+
+
+func test_can_hit_children_inherit_even_when_the_hit_is_vetoed() -> void:
+	var h := HitSpawner.new()
+	h.from_can_hit = true
+	h.allow = false
+	h.child_request = _child_request(Layers.ENEMY, Layers.PLAYER)
+	_hit_scene(h, Layers.PLAYER, true)
+	manager.step(DT)
+	assert_eq(manager.last_veto_count, 1)
+	assert_eq(_owner_of(h.child_ids[0]), Layers.PLAYER)
+
+
+func test_on_hit_children_inherit_the_owner_of_a_player_bullet() -> void:
+	var h := HitSpawner.new()
+	h.from_on_hit = true
+	h.child_request = _child_request(Layers.ENEMY, Layers.PLAYER)
+	_hit_scene(h, Layers.PLAYER, false)
+	manager.step(DT)
+	assert_eq(h.child_ids.size(), 1, "on_hit ran and spawned")
+	assert_eq(_owner_of(h.child_ids[0]), Layers.PLAYER)
+	assert_eq(_mask_of(h.child_ids[0]), Layers.ENEMY)
+	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_ENEMY], 0)
+	assert_eq(ScriptWarnings.count("BulletManager.spawn.owner"), 1)
+
+
+func test_on_hit_children_of_an_enemy_bullet_stay_enemy_owned() -> void:
+	var h := HitSpawner.new()
+	h.from_on_hit = true
+	h.child_request = _child_request(Layers.PLAYER, Layers.ENEMY)
+	_hit_scene(h, Layers.ENEMY, false)
+	manager.step(DT)
+	assert_eq(_owner_of(h.child_ids[0]), Layers.ENEMY)
+	assert_eq(_mask_of(h.child_ids[0]), Layers.PLAYER)
+
+
+func test_the_inheritance_context_is_gone_again_after_the_hit_hooks() -> void:
+	var h := HitSpawner.new()
+	h.from_can_hit = true
+	h.from_on_hit = true
+	h.child_request = _child_request(Layers.ENEMY)
+	_hit_scene(h, Layers.PLAYER, true)
+	manager.step(DT)
+	assert_eq(h.child_ids.size(), 2, "one from can_hit, one from on_hit")
+	assert_eq(manager.pool.hook_owner, -1)
+	var id := manager.emitter.request_shot_id(_child_request(Layers.ENEMY))
+	assert_eq(_owner_of(id), Layers.ENEMY, "a turret outside any hook still names its own team")
+
+
+# --- a hook that calls the pool directly (it is handed the pool) -------------------
+
+## Calls BulletPool.spawn / spawn_simple on the pool it is given, from on_update.
+class DirectSpawner:
+	extends BulletBehavior
+	var request: ShotRequest
+	var simple := false
+	var slots: Array[int] = []
+
+	func on_update(pool: BulletPool, _index: int, _delta: float) -> void:
+		if simple:
+			slots.append(pool.spawn_simple(Vector2(5, 5), Vector2(0, 50), 3.0, 4.0, Color.WHITE, Layers.PLAYER | Layers.ENEMY))
+		else:
+			slots.append(pool.spawn(request))
+
+
+func test_a_hook_calling_pool_spawn_directly_still_cannot_change_the_owner() -> void:
+	var d := DirectSpawner.new()
+	d.request = _child_request(Layers.ENEMY, Layers.PLAYER)
+	var parent := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
+	parent.lifetime = 5.0
+	parent.owner_layer = Layers.PLAYER
+	parent.hit_mask = Layers.ENEMY
+	parent.behavior_id = manager.register_behavior(d)
+	manager.emitter.request_shot_id(parent)
+	manager.step(DT)
+	assert_eq(d.slots.size(), 1)
+	var slot := d.slots[0]
+	assert_true(slot >= 0)
+	assert_eq(manager.pool.owner_layer[slot], Layers.PLAYER)
+	assert_eq(manager.pool.hit_mask[slot], Layers.ENEMY)
+	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_ENEMY], 0)
+	assert_eq(ScriptWarnings.count("BulletPool.spawn.owner"), 1)
+	assert_true(manager.pool.counters_consistent())
+
+
+func test_a_hook_calling_pool_spawn_simple_gets_an_owned_bullet_that_cannot_hit_its_owner() -> void:
+	var d := DirectSpawner.new()
+	d.simple = true
+	var parent := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
+	parent.lifetime = 5.0
+	parent.owner_layer = Layers.ENEMY
+	parent.hit_mask = Layers.PLAYER
+	parent.behavior_id = manager.register_behavior(d)
+	manager.emitter.request_shot_id(parent)
+	manager.step(DT)
+	var slot := d.slots[0]
+	assert_eq(manager.pool.owner_layer[slot], Layers.ENEMY, "not unowned")
+	assert_eq(manager.pool.hit_mask[slot], Layers.PLAYER, "the owner's own layer is stripped from the mask")
+	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_ENEMY], 2)
+	assert_true(manager.pool.counters_consistent())
+
+
+func test_pool_spawn_simple_outside_a_hook_is_still_unowned() -> void:
+	var slot := manager.pool.spawn_simple(Vector2.ZERO, Vector2(10, 0), 1.0, 4.0, Color.WHITE, Layers.ENEMY)
+	assert_eq(manager.pool.owner_layer[slot], 0)
+	assert_eq(manager.pool.hit_mask[slot], Layers.ENEMY)
+	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_NONE], 1)

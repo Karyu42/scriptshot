@@ -10,6 +10,26 @@ extends RefCounted
 const MAX_SPEED := 4000.0
 const MAX_SPEED_SQ := MAX_SPEED * MAX_SPEED
 
+# Range guards for the other numeric fields of a bullet (crash guards like the
+# speed ceiling, not design limits). A finite value outside its range is clamped
+# to it; a NaN or inf is invalid and the shot is rejected (a live bullet that
+# gets one from a hook is killed as DespawnReason.INVALID). The pool stores
+# these as float32, so a "finite" double beyond ~3.4e38 would silently become inf:
+# every bound here is far inside that.
+## Collision/draw radius, px. The hurtbox grid's cell margin follows the largest
+## live radius, so an unbounded radius would blind every other bullet.
+const MAX_RADIUS := 256.0
+## Seconds a bullet may live. Immortal bullets hold a slot of the cap forever.
+const MAX_LIFETIME := 600.0
+## |acceleration| in px/s^2 (the speed ceiling still applies on top).
+const MAX_ACCELERATION := 1000000.0
+## |turn_rate| in radians/s.
+const MAX_TURN_RATE := 1000.0
+## Damage per hit, 0..MAX_DAMAGE (a negative value would heal).
+const MAX_DAMAGE := 1000.0
+## |param_a|, |param_b|: script scratch values, only kept inside float32 range.
+const MAX_PARAM := 1.0e30
+
 
 ## `v` with its length limited to MAX_SPEED, direction kept. A vector already
 ## within the ceiling is returned unchanged. Non-finite input is the caller's
