@@ -279,8 +279,35 @@ note and ignores it (never an error), or emulates it where a built-in behaviour 
 (`player.invulnerable`, the separate source-tagged layer without a cap) but **still respects the engine's post-hit and dash
 i-frames**. It is not a new engine ask.
 
-Speed was clamped to 1,200 px/s until swept collision existed (PR #1 B3); PR #2 (on `main`) implements swept
-collision, so the clamp is expected to be lifted: confirm the final limit with the Gameplay Engineer.
+### Limits: what the engine clamps, and how you find out
+
+Every value a script gives a bullet is held inside a fixed range. These are the engine's guard values
+(`BulletLimits`, `src/core/bullet_limits.gd`; the guard table in `docs/design/pillars.md`, row "Bullet speed ceiling"), not per-script
+settings, and none of them is going to be lifted:
+
+| Field | Allowed range | Applies to |
+| --- | --- | --- |
+| speed (`vel`, `polar`, `with_velocity`) | length up to **4,000 px/s** (direction kept) | spawn, `set_velocity`, hook and batch writes |
+| `radius` | 0 to **256** px | spawn, hook writes |
+| `lifetime` | 0 to **600** s | spawn, hook writes |
+| `accel` (`acceleration`) | \|a\| up to **1,000,000** px/s^2 (the speed ceiling still applies on top) | spawn, hook writes |
+| `turn_rate` | \|w\| up to **1,000** rad/s | spawn, hook writes |
+| `damage` | 0 to **1,000** (a negative value would heal) | spawn, hook writes |
+| `param_a`, `param_b` | \|p\| up to **1e30** (keeps the value inside float32) | spawn only; a hook may write any *finite* value |
+
+The 4,000 px/s speed ceiling is a fixed engine limit (the pillars guard table lists it as a crash guard rather than a
+tuning value), not something waiting to be lifted: the 1,200 px/s clamp of the early prototype went away when swept
+collision landed (PR #2), and 4,000 is what replaced it. Collision is swept, so a bullet at the ceiling cannot tunnel.
+
+A finite value outside its range is **clamped, not rejected**, and the engine now says so: one warning per path and
+field (for example `BulletPool.spawn.clamp.radius`, `BulletPool.hook_write.clamp.speed`), naming the value you asked for, what
+it became and the `BulletLimits` constant. Warnings are rate-limited like every other script warning
+(`ScriptWarnings`: each kind is printed three times, the last one saying the rest are suppressed, and is still counted). A NaN or inf is
+different: a spawn is rejected, and a live bullet that gets one from a hook is killed (`DespawnReason.INVALID`).
+
+A hook that **reflects its own bullet and then spawns** in the same hook still spawns with the owner it had when the hook
+started (`BulletPool.hook_owner` is set once per hook): children of a bullet you just reflected belong to its old faction for
+the rest of that call.
 
 Spawning from inside another shot: `b:spawn{...}` is the same as `spawn{...}` but with
 `pos`, `angle`, `damage` and `parent` defaulted from `b` and

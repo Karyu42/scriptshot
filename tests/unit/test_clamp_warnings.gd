@@ -279,7 +279,9 @@ func test_the_pool_backstop_warning_is_neutral_about_who_asked() -> void:
 	manager.spawn(r)
 	manager.step(DT)
 	var msg := ScriptWarnings.last_message("BulletPool.spawn.owner")
+	assert_string_contains(msg, "a shot with owner_layer")
 	assert_string_contains(msg, "while the hook of a bullet owned by")
+	assert_false("a hook asked" in msg, "it was not necessarily a hook that asked")
 	assert_string_contains(msg, "spawn_child()")
 	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_ENEMY], 1, "only the original enemy parent")
 

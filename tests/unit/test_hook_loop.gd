@@ -199,6 +199,38 @@ func test_a_hook_that_kills_its_own_bullet_is_not_checked_or_double_counted() ->
 	assert_eq(w.calls, 2)
 
 
+func test_a_dead_bullets_leftovers_do_not_widen_max_radius() -> void:
+	var pool := _pool(1)
+	var before := pool.max_radius
+	var w := Writer.new()
+	w.on_call = func(p: BulletPool, i: int) -> void:
+		p.mark_dead(i, BulletPool.DespawnReason.MANUAL)
+		p.radius[i] = 200.0
+	pool.run_update_hooks(_table(w), DT)
+	assert_eq(pool.max_radius, before, "a bullet that is already gone does not resize the hurtbox grid margin")
+
+
+func test_a_bullet_a_hook_marked_out_of_bounds_is_still_checked() -> void:
+	# A bullet that only left the world this tick still delivers its last segment's hits
+	# (see sanitize()), so a NaN written by its hook must still be caught, not skipped.
+	var pool := _pool(1)
+	var w := Writer.new()
+	w.on_call = func(p: BulletPool, i: int) -> void:
+		p.mark_dead(i, BulletPool.DespawnReason.BOUNDS)
+		p.vel[i] = Vector2(NAN, 0.0)
+	pool.run_update_hooks(_table(w), DT)
+	assert_eq(pool.invalid_total, 1, "counted")
+	assert_true(pool.vel[0].is_finite(), "no NaN is left in the slot")
+	assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.BOUNDS + 1, "the first reason stays")
+	var clamped := _pool(1)
+	var w2 := Writer.new()
+	w2.on_call = func(p: BulletPool, i: int) -> void:
+		p.mark_dead(i, BulletPool.DespawnReason.BOUNDS)
+		p.radius[i] = 9999.0
+	clamped.run_update_hooks(_table(w2), DT)
+	assert_eq(clamped.radius[0], BulletLimits.MAX_RADIUS, "and an out-of-range value is clamped too")
+
+
 func test_only_the_hooked_list_is_checked_plain_bullets_pay_nothing() -> void:
 	var pool := _pool(3)
 	pool.behavior[1] = 0  # plain: not on the hooked list after the next advance
