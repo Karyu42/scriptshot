@@ -72,7 +72,14 @@ Two checks, with different consequences:
 ./tools/run_benchmark.sh --bullets=2000,5000,10000,20000 --frames=1200
 ./tools/run_benchmark.sh --floor-bullets=5000 --target-bullets=10000
 ./tools/run_benchmark.sh --json=/tmp/bench.json
+./tools/run_benchmark.sh --hooked=0.3                        # 30% of the bullets carry a no-op on_update hook
 ```
+
+`--hooked=F` (0 to 1, default 0 = plain bullets only, the original workload) gives that
+share of the bullets a do-nothing `on_update` hook, so the cost of the hook machinery (the call,
+the owner context, the post-hook check) shows up; a value outside 0..1 or not a number exits 2
+with a message. The same bullet trajectories are simulated at every fraction. The fraction is
+in the `--json` output (top level and per result).
 
 Exit code 1 means the floor was missed or never reached, or the project failed
 to compile; a missed 10k target alone exits 0 (with a WARN). Headless mode uses a dummy renderer, so
