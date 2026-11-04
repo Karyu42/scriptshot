@@ -546,8 +546,10 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 ## spawned (checked once, right after on_spawn, not after later writes).
 ##
 ## Dirty tracking cannot catch that (the writes go straight into the packed arrays),
-## so this walks every alive slot once, after the hooks of a tick and only if one ran
-## (a tick without hooked bullets pays nothing). It looks at what would otherwise
+## so this walks every alive slot once. BulletManager runs it right after the on_update
+## hooks (if one ran), and once more at the end of step() if any hook ran since
+## (`hook_ran`: on_spawn, can_hit, on_hit, on_despawn write too, and after the first
+## sweep); a tick without any hook pays nothing. It looks at what would otherwise
 ## reach the integrator, the collision sweeps and the renderer's per-bullet matrix:
 ## position, previous position, rotation and velocity (NaN or inf in any of them, or a
 ## speed over the ceiling). Anything out of order goes through sanitize(), which
