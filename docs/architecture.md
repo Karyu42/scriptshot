@@ -480,24 +480,35 @@ anything:
 
 * **Sweep after the hooks** (`BulletPool.sweep_cross_writes`, called from
   `run_update_hooks` only when at least one hook ran): one pass over every slot looking
-  at `pos`, `prev_pos` and `vel` (about 75 ns per bullet). A NaN or inf in any of them
-  or a speed over the ceiling goes to `sanitize()`, which kills (`INVALID`) or clamps
-  as for a bullet's own write, so a bad value is gone before walls, hurtboxes and
-  zones see it. A finite but absurd position (`1e30`) is a plain bounds cull on the
-  next `advance()`.
-* **`advance()`**: a NaN `age` / `lifetime` (the `a >= lifetime` test was false for
-  NaN, so the bullet never expired) or a NaN position, which a NaN `vel`, `accel` or
-  `turn_rate` turns into, kills the bullet as `INVALID`. This is the net for writes
-  after the sweep (`on_hit`, `on_despawn`, outside any hook) and costs nothing (the
-  comparisons were there already).
+  at `pos`, `prev_pos`, `rot` and `vel` (about 55 ns per bullet: three `Vector2` adds and
+  one `is_finite()` call, which GDScript runs much faster than the scalar sums it
+  replaced). A NaN or inf in any of them, or a speed over the ceiling, goes to
+  `sanitize()`, which kills (`INVALID`) or clamps as for a bullet's own write, so a bad
+  value is gone before walls, hurtboxes and zones see it. A finite but absurd position
+  (`1e30`) is a plain bounds cull on the next `advance()`.
+* **`advance()`**: one test per bullet and tick, `absf(lifetime - age - half) < half`
+  with `half = MAX_LIFETIME`, i.e. the time left must be in (0, 2 * MAX_LIFETIME). It is
+  false for NaN, for an `inf` lifetime or `-inf` age (which `age < lifetime` alone would
+  never end: an immortal bullet), for a finished bullet, and for a clock no spawn can
+  produce. Those take a slow branch: non-finite is killed `INVALID`, finished expires
+  as `LIFETIME`, and a finite lifetime over `MAX_LIFETIME` or an age far below zero is
+  clamped (with a warning) and the bullet lives on. The sweep does not look at age or
+  lifetime on purpose: advance() has to test them every tick anyway (a write after the
+  sweep, from `on_hit` / `on_despawn`, must be caught too), and the test replaced
+  the old `a >= lifetime` one at about 13 ns per bullet in a micro-benchmark. A NaN
+  position, which a NaN `vel`, `accel` or `turn_rate` turns into, also fails the bounds
+  test there and kills the bullet as `INVALID` at no cost.
 * **`_apply_hit`**: every bullet that lands a hit is `sanitize()`d before its damage
   is read, so a NaN or huge `damage` or `radius` written into a plain bullet never
   reaches `Health`. A NaN radius overlaps nothing, so it simply never hits.
+* **`Reflector.reflect_bullet`** sanitizes the bullet first: a bad `vel` poked by an
+  `on_hit` / `can_hit` hook after the sweep would otherwise reach `normalized()`.
 
-`prev_pos` is part of `sanitize()` now too (it was not before), so a hook writing its
-own `prev_pos` is covered as well. Not covered on purpose: a NaN in `rot`, `param_a` or
-`param_b` of a bullet the writing hook does not own (nothing in the engine integrates
-them; they only matter to scripts that read them). The batch API commits through the checked paths.
+`prev_pos` and `rot` are part of `sanitize()` and the sweep. Not covered, on purpose:
+`radius` of a bullet that never hits (the renderer reads it: an invisible or oversized
+quad for that bullet, nothing else; checking it in the sweep costs about a quarter of
+the sweep), and `param_a` / `param_b` (only scripts read them). The batch API commits
+through the checked paths.
 
 A clamp is no longer silent: every path that clamps a finite out-of-range value
 (`spawn`, `spawn_simple`, `set_velocity`, `sanitize_velocity`, a hook write) raises a
@@ -543,7 +554,7 @@ Where the cost goes and what was done:
   disagree (a differential test in `tests/unit/test_hook_loop.gd` compares the loop with
   the old per-bullet one on random bad writes).
 * **The sweep for writes into other bullets** (see "Writes into other bullets") is on top
-  of that: about 75 ns per alive bullet per tick that has at least one hook, nothing
+  of that: about 55 ns per alive bullet per tick that has at least one hook, nothing
   for a tick without one. Measured on the same box with the same interleaved A/B
   (median p50 of three 600-frame runs, before = main at the PR #11 merge): 0% hooked
   +0.13 ms at 5k and 10k (noise; the code path is the same), 30% +0.56 / +0.67 ms
