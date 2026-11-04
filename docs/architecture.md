@@ -421,15 +421,17 @@ direction and is cut to the ceiling at every write the engine can see:
 | `Reflector` (`speed_multiplier` up to 20x) | the new speed is capped, direction is the mirror's |
 | `BulletPool.reflect(..., reverse)` | only flips the sign, speed unchanged |
 | `acceleration` | speed stops growing at the ceiling |
-| a hook writing `pool.vel[index]` in `on_spawn` / `on_update` / `on_hit` | the manager re-checks that bullet right after the hook returns (hooked bullets only, so plain bullets pay nothing): clamped before the bullet moves |
+| a hook writing `pool.vel[index]` in `on_spawn` / `on_update` / `on_hit` | the manager re-checks that bullet right after the hook returns: clamped before the bullet moves |
+| a hook writing `pool.vel[other]` of a *different* bullet (plain, earlier in the list, or a child it spawned) | the sweep after the hooks of the tick (see "Writes into other bullets") |
 
 A non-finite value is not clamped, it is **invalid**: a shot with a NaN/inf
 position or velocity is rejected at spawn (returns -1, counted in
 `BulletPool.invalid_total`, not in the capacity drop counters); a live bullet
 whose velocity became NaN/inf is killed with `DespawnReason.INVALID`
 (its `on_despawn` runs, no damage) and counted too. Both raise a capped warning
-(`ScriptWarnings`). Direct writes to `pool.vel[]` of a bullet *without* a hook
-cannot be seen; scripts must use `set_velocity` (the batch API does). Swept
+(`ScriptWarnings`). A direct write to `pool.vel[]` of a bullet *without* a hook is
+caught by the sweep after the tick's hooks; `set_velocity` (what the batch API
+uses) checks at the write itself and is still the one to prefer. Swept
 collision means a bullet at the ceiling (66.7 px per tick) cannot tunnel.
 
 ### Numeric field validation
@@ -448,7 +450,8 @@ cap forever.
   its range is clamped into it (a typo like `radius = 1e9` is not worth dropping the
   shot for).
 * **After a hook** (`BulletPool.sanitize(i)`, called for hooked bullets only after
-  `on_spawn`, `on_update`, `can_hit` and `on_hit`; plain bullets pay nothing; after
+  `on_spawn`, `on_update`, `can_hit` and `on_hit`; plain bullets are covered by the
+  sweep below; after
   `on_update` the check is inlined in `BulletPool.run_update_hooks`, see "Cost of
   hooked bullets"): a NaN
   or inf in any of those fields, `age`, `pos` or `rot` kills the bullet as
@@ -466,10 +469,35 @@ cap forever.
 | `damage` | 0 to `MAX_DAMAGE` = 1,000 (a negative value would heal) |
 | `param_a`, `param_b` | \|p\| up to `MAX_PARAM` = 1e30 (keeps the double inside float32) |
 
-Like velocity, direct writes to the arrays of a bullet *without* a hook, or to
-*another* bullet from a hook, cannot be seen (a write into a *later hooked* bullet is
-caught when that bullet's own hook has run); the batch API commits through the
-checked paths.
+#### Writes into other bullets
+
+The arrays are public and GDScript cannot see a write into one, so a hook can also
+poke a bullet that is not its own: a plain bullet, an earlier bullet of the hooked
+list (already checked this tick), or a child it spawned (checked once, right after
+`on_spawn`, not after later writes). Dirty tracking through setters would not be sound,
+so these are caught three ways, none of which cost a tick without hooked bullets
+anything:
+
+* **Sweep after the hooks** (`BulletPool.sweep_cross_writes`, called from
+  `run_update_hooks` only when at least one hook ran): one pass over every slot looking
+  at `pos`, `prev_pos` and `vel` (about 75 ns per bullet). A NaN or inf in any of them
+  or a speed over the ceiling goes to `sanitize()`, which kills (`INVALID`) or clamps
+  as for a bullet's own write, so a bad value is gone before walls, hurtboxes and
+  zones see it. A finite but absurd position (`1e30`) is a plain bounds cull on the
+  next `advance()`.
+* **`advance()`**: a NaN `age` / `lifetime` (the `a >= lifetime` test was false for
+  NaN, so the bullet never expired) or a NaN position, which a NaN `vel`, `accel` or
+  `turn_rate` turns into, kills the bullet as `INVALID`. This is the net for writes
+  after the sweep (`on_hit`, `on_despawn`, outside any hook) and costs nothing (the
+  comparisons were there already).
+* **`_apply_hit`**: every bullet that lands a hit is `sanitize()`d before its damage
+  is read, so a NaN or huge `damage` or `radius` written into a plain bullet never
+  reaches `Health`. A NaN radius overlaps nothing, so it simply never hits.
+
+`prev_pos` is part of `sanitize()` now too (it was not before), so a hook writing its
+own `prev_pos` is covered as well. Not covered on purpose: a NaN in `rot`, `param_a` or
+`param_b` of a bullet the writing hook does not own (nothing in the engine integrates
+them; they only matter to scripts that read them). The batch API commits through the checked paths.
 
 A clamp is no longer silent: every path that clamps a finite out-of-range value
 (`spawn`, `spawn_simple`, `set_velocity`, `sanitize_velocity`, a hook write) raises a
