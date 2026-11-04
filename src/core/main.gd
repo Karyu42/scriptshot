@@ -45,10 +45,12 @@ func _process(delta: float) -> void:
 func _update_hud() -> void:
 	var device := "gamepad" if InputDevice.is_gamepad() else "mouse + keyboard"
 	var stress := "ON" if _stress.enabled else "off"
-	_hud.text = "%d fps   bullets %d / %d (dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]" % [
+	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]" % [
 		Engine.get_frames_per_second(),
 		_bullets.pool.count,
-		_bullets.pool.capacity,
+		_bullets.pool.logical_cap,
+		_bullets.pool.owner_counts[BulletPool.OWNER_PLAYER],
+		_bullets.pool.owner_counts[BulletPool.OWNER_ENEMY],
 		_bullets.pool.dropped_total,
 		_bullets.last_step_usec / 1000.0,
 		_player.health.hp,

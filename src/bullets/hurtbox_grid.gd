@@ -200,6 +200,11 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	var blast := pool.last_hit
 	var bpierce := pool.pierce
 	var bounds_dead := BulletPool.DespawnReason.BOUNDS + 1
+	# Bullets flagged can_hit_veto may have a hit vetoed, so they list a few extra
+	# hits along the path. `any_veto` keeps the per-bullet flag read off the hot
+	# path while no such bullet exists.
+	var any_veto := pool.veto_count > 0 and not match_owner
+	var bveto := pool.can_hit_veto
 	var ox := _origin.x
 	var oy := _origin.y
 	var inv := _inv_cell
@@ -224,9 +229,14 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 			# not hide the next one behind it.
 			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], mini(target_count, MAX_ZONE_HITS))
 			continue
-		if pierce > 0 or d.length_squared() > reach * reach:
+		if pierce > 0 or d.length_squared() > reach * reach or (any_veto and bveto[i] != 0):
 			# Piercing bullets always sweep: only the sweep can list several hits.
-			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], pierce + 1)
+			# A bullet whose hits can be vetoed lists up to VETO_MAX_HITS - 1
+			# spare hits, so a vetoed target does not hide the next one.
+			var max_hits := pierce + 1
+			if any_veto and bveto[i] != 0:
+				max_hits += BulletPool.VETO_MAX_HITS - 1
+			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], max_hits)
 			continue
 		var fx := (p.x - ox) * inv
 		var fy := (p.y - oy) * inv

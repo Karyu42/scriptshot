@@ -28,6 +28,7 @@ class RecordingBehavior:
 
 
 func before_each() -> void:
+	_tick = DT
 	manager = BulletManager.new()
 	manager.capacity = 256
 	manager.world_bounds = Rect2(-500, -500, 1000, 1000)
@@ -77,10 +78,10 @@ func test_step_moves_bullets_and_expires_them() -> void:
 	var req := ShotRequest.polar(Vector2.ZERO, 0.0, 60.0)
 	req.lifetime = 0.5
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_almost_eq(manager.pool.pos[0].x, 1.0, 0.001)
 	for i in 40:
-		manager.step(DT)
+		manager.step(_tick)
 	assert_eq(manager.pool.count, 0)
 
 
@@ -90,7 +91,7 @@ func test_bullet_hits_hurtbox_once_and_despawns() -> void:
 	var req := ShotRequest.polar(Vector2(90, 0), 0.0, 0.0)
 	req.damage = 3.0
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_emit_count(hb, "hit", 1)
 	assert_signal_emitted_with_parameters(hb, "hit", [3.0, Vector2(90, 0), Vector2.ZERO])
 	assert_eq(manager.pool.count, 0)
@@ -102,7 +103,7 @@ func test_bullet_ignores_hurtbox_on_other_layer() -> void:
 	var req := ShotRequest.polar(Vector2(100, 0), 0.0, 0.0)
 	req.hit_mask = Layers.ENEMY
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_not_emitted(hb, "hit")
 	assert_eq(manager.pool.count, 1)
 
@@ -112,7 +113,7 @@ func test_inactive_hurtbox_is_not_hit() -> void:
 	hb.active = false
 	watch_signals(hb)
 	manager.emitter.request_shot(ShotRequest.polar(Vector2.ZERO, 0.0, 0.0))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_not_emitted(hb, "hit")
 
 
@@ -123,7 +124,7 @@ func test_piercing_bullet_passes_through_and_hits_target_once() -> void:
 	req.pierce = 1
 	manager.emitter.request_shot(req)
 	for i in 20:
-		manager.step(DT)
+		manager.step(_tick)
 	assert_signal_emit_count(hb, "hit", 1, "one hit while overlapping for several ticks")
 	assert_eq(manager.pool.count, 1, "bullet survived (pierce)")
 	assert_eq(manager.pool.pierce[0], 0)
@@ -139,7 +140,7 @@ func test_hooks_run_in_order_and_receive_despawn_reason() -> void:
 	req.lifetime = 3.5 * DT
 	manager.emitter.request_shot(req)
 	for i in 4:
-		manager.step(DT)
+		manager.step(_tick)
 	assert_eq(b.log, ["spawn", "update", "update", "update", "despawn"])
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.LIFETIME])
 	assert_eq(manager.pool.count, 0)
@@ -151,7 +152,7 @@ func test_hit_hook_runs_before_despawn_hook_with_hit_reason() -> void:
 	var req := ShotRequest.polar(Vector2.ZERO, 0.0, 0.0)
 	req.behavior_id = manager.emitter.register_behavior(b)
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.log, ["spawn", "update", "hit", "despawn"])
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.HIT])
 
@@ -161,8 +162,8 @@ func test_behaviour_can_mutate_bullet_state() -> void:
 	var req := ShotRequest.polar(Vector2.ZERO, 0.0, 0.0)
 	req.behavior_id = manager.emitter.register_behavior(b)
 	manager.emitter.request_shot(req)
-	manager.step(DT)
-	manager.step(DT)
+	manager.step(_tick)
+	manager.step(_tick)
 	assert_eq(manager.pool.param_a[0], 2.0)
 
 
@@ -172,7 +173,7 @@ func test_behaviour_can_spawn_child_bullets_on_despawn() -> void:
 	req.lifetime = DT * 0.5
 	req.behavior_id = manager.emitter.register_behavior(splitter)
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(manager.pool.count, 3, "parent removed, three children spawned")
 	assert_eq(manager.pool.pos[0], Vector2(10, 10))
 
@@ -189,7 +190,7 @@ func test_unknown_behavior_id_falls_back_to_plain_bullet() -> void:
 	req.behavior_id = 42
 	manager.emitter.request_shot(req)
 	assert_eq(manager.pool.behavior[0], 0)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(manager.pool.count, 1)
 
 
@@ -217,8 +218,15 @@ class SnapshotBehavior:
 
 
 ## A bullet that moves `step_px` per tick along +x from `from`.
+## The bullet advances `step_px` in one `_tick`. Speeds are capped at
+## BulletLimits.MAX_SPEED (66.7 px per 1/60 s), so a longer step is a longer tick:
+## tests call manager.step(_tick), which is DT unless a shot needs more.
+var _tick := DT
+
+
 func _shot(from: Vector2, step_px: float, behavior_id: int = 0) -> ShotRequest:
-	var req := ShotRequest.polar(from, 0.0, step_px / DT)
+	_tick = maxf(_tick, step_px / BulletLimits.MAX_SPEED)
+	var req := ShotRequest.polar(from, 0.0, step_px / _tick)
 	req.radius = 4.0
 	req.behavior_id = behavior_id
 	return req
@@ -228,7 +236,7 @@ func test_bullet_despawns_at_a_wall_with_reason_wall_and_hooks_fire() -> void:
 	manager.add_wall(Rect2(100, -50, 20, 100))
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(90, 0), 14.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(manager.pool.count, 0)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
 	assert_almost_eq(b.despawn_positions[0].x, 96.0, 0.01, "on_despawn sees the impact point")
@@ -240,7 +248,7 @@ func test_wall_opt_out_flies_through() -> void:
 	var req := _shot(Vector2(90, 0), 14.0)
 	req.collide_world = false
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(manager.pool.count, 1)
 	assert_almost_eq(manager.pool.pos[0].x, 104.0, 0.01)
 
@@ -249,7 +257,7 @@ func test_fast_bullet_does_not_tunnel_through_a_thin_wall() -> void:
 	manager.add_wall(Rect2(0, -100, 2, 200))
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(-300, 0), 600.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
 	assert_almost_eq(b.despawn_positions[0].x, -4.0, 0.01)
 
@@ -258,7 +266,7 @@ func test_fast_bullet_does_not_tunnel_through_a_hurtbox() -> void:
 	var hb := _hurtbox(Vector2(0, 0), Layers.ENEMY, 12.0)
 	watch_signals(hb)
 	manager.emitter.request_shot(_shot(Vector2(-300, 0), 600.0))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_emit_count(hb, "hit", 1)
 	assert_eq(manager.pool.count, 0)
 	var args: Array = get_signal_parameters(hb, "hit")
@@ -272,7 +280,7 @@ func test_hurtbox_in_front_of_a_wall_is_hit_and_wall_is_not_reached() -> void:
 	watch_signals(hb)
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(0, 0), 300.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_emit_count(hb, "hit", 1)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.HIT], "first reason wins")
 
@@ -283,7 +291,7 @@ func test_wall_in_front_of_a_hurtbox_shields_it() -> void:
 	watch_signals(hb)
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(0, 0), 300.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_not_emitted(hb, "hit")
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
 
@@ -296,7 +304,7 @@ func test_piercing_bullet_still_stops_at_a_wall() -> void:
 	var req := _shot(Vector2(0, 0), 300.0, manager.emitter.register_behavior(b))
 	req.pierce = 1
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_emit_count(hb, "hit", 1)
 	assert_eq(b.hits, 1)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
@@ -324,7 +332,7 @@ func test_walls_are_collected_from_world_layer_bodies_in_the_group() -> void:
 	assert_eq(manager.walls.wall_count, 1)
 	assert_eq(manager.walls.walls[0], Rect2(190, 50, 20, 100))
 	manager.emitter.request_shot(_shot(Vector2(170, 100), 24.0))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(manager.pool.count, 0, "the collected wall stops bullets")
 
 
@@ -378,7 +386,7 @@ func test_a_bullet_killed_by_a_hook_gets_no_update_and_one_despawn_call() -> voi
 	var id := manager.emitter.register_behavior(b)
 	for k in 3:
 		manager.emitter.request_shot(_shot(Vector2(float(k) * 50.0, 0), 1.0, id))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.updates_of(0), 1)
 	assert_eq(b.updates_of(1), 0, "slot 1 died before its update ran")
 	assert_eq(b.updates_of(2), 1)
@@ -395,7 +403,7 @@ func test_hit_hook_killing_another_bullet_prevents_its_hit() -> void:
 	var id := manager.emitter.register_behavior(b)
 	manager.emitter.request_shot(_shot(Vector2(0, 0), 0.0, id))
 	manager.emitter.request_shot(_shot(Vector2(2, 0), 0.0, id))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.hit_calls, 1, "the bullet killed by the first hit's hook does not hit")
 	assert_signal_emit_count(hb, "hit", 1)
 	assert_eq(b.despawn_calls, 2, "both bullets despawn exactly once")
@@ -410,7 +418,7 @@ func test_despawn_hook_marking_another_bullet_announces_it_exactly_once() -> voi
 	manager.emitter.request_shot(first)
 	manager.emitter.request_shot(_shot(Vector2(50, 0), 0.0, id))
 	manager.emitter.request_shot(_shot(Vector2(100, 0), 0.0, id))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.despawn_calls, 2, "slot 0 expired; its hook killed slot 1, which is announced once")
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.LIFETIME, BulletPool.DespawnReason.MANUAL])
 	assert_eq(manager.pool.count, 1)
@@ -421,8 +429,8 @@ func test_bullets_marked_dead_before_step_are_not_announced_twice() -> void:
 	var id := manager.emitter.register_behavior(b)
 	manager.emitter.request_shot(_shot(Vector2(0, 0), 0.0, id))
 	manager.pool.mark_dead(0)
-	manager.step(DT)
-	manager.step(DT)
+	manager.step(_tick)
+	manager.step(_tick)
 	assert_eq(b.despawn_calls, 1)
 	assert_eq(manager.pool.count, 0)
 
@@ -508,7 +516,7 @@ func test_scratch_buffers_keep_their_size_across_busy_ticks() -> void:
 		req.behavior_id = id if (tick % 2) == 0 else 0
 		for k in 10:
 			manager.emitter.request_shot(req)
-		manager.step(DT)
+		manager.step(_tick)
 	var sizes: Array[int] = [manager.pool.pending.size(), manager.pool.hooked.size(), manager.grid.hit_bullets.size(),
 		manager.grid.target_pos.size(), manager.walls.hit_bullets.size()]
 	for tick in 60:
@@ -518,7 +526,7 @@ func test_scratch_buffers_keep_their_size_across_busy_ticks() -> void:
 		req.lifetime = 0.5
 		for k in 10:
 			manager.emitter.request_shot(req)
-		manager.step(DT)
+		manager.step(_tick)
 		var now: Array[int] = [manager.pool.pending.size(), manager.pool.hooked.size(), manager.grid.hit_bullets.size(),
 			manager.grid.target_pos.size(), manager.walls.hit_bullets.size()]
 		assert_eq(now, sizes, "tick %d" % tick)
@@ -561,7 +569,7 @@ func test_id_survives_other_bullets_despawning_and_dies_with_its_bullet() -> voi
 	manager.emitter.request_shot_id(short)
 	var keep_id := manager.emitter.request_shot_id(keeper)
 	var short_id := manager.emitter.request_shot_id(short)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_true(manager.emitter.is_bullet_alive(keep_id))
 	assert_false(manager.emitter.is_bullet_alive(short_id))
 	assert_eq(manager.pool.pos[manager.pool.slot_of(keep_id)].x, 7.0)
@@ -579,7 +587,7 @@ func test_user_state_is_visible_to_hooks_and_travels_with_the_bullet() -> void:
 	req.user = {"count": 0}
 	var id := manager.emitter.request_shot_id(req)
 	for i in 3:
-		manager.step(DT)
+		manager.step(_tick)
 	var slot := manager.pool.slot_of(id)
 	assert_eq(slot, 0, "survivor moved into the freed slot")
 	var state: Dictionary = manager.pool.user[slot]
@@ -609,7 +617,7 @@ func test_pierce_three_hits_three_targets_in_a_single_tick() -> void:
 	var req := _shot(Vector2(-200, 0), 400.0, manager.emitter.register_behavior(b))
 	req.pierce = 3
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	for c: Array[int] in counters:
 		assert_eq(c[0], 1, "every target hit exactly once")
 	assert_eq(b.hits, 3)
@@ -618,15 +626,16 @@ func test_pierce_three_hits_three_targets_in_a_single_tick() -> void:
 	assert_almost_eq(manager.pool.pos[0].x, 200.0, 0.01, "it flew on to the end of its path")
 
 
-func test_qa_repro_pierce_5_at_5000_px_s_past_three_targets_20_px_apart() -> void:
+func test_qa_repro_pierce_5_at_4000_px_s_past_three_targets_20_px_apart() -> void:
 	var counters: Array = []
 	for k in 3:
 		counters.append(_hit_counter(_hurtbox(Vector2(20.0 * float(k), 0), Layers.ENEMY, 4.0)))
-	var req := ShotRequest.polar(Vector2(-30, 0), 0.0, 5000.0)
+	_tick = DT * 1.25  # 83 px at the 4,000 px/s ceiling (the QA repro's 5,000 px/s step)
+	var req := ShotRequest.polar(Vector2(-30, 0), 0.0, BulletLimits.MAX_SPEED)
 	req.radius = 4.0
 	req.pierce = 5
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	for k in 3:
 		var c: Array[int] = counters[k]
 		assert_eq(c[0], 1, "target %d hit once (the old code hit only the 1st and 3rd)" % k)
@@ -645,7 +654,7 @@ func test_last_allowed_hit_stops_the_bullet_at_the_impact() -> void:
 	watch_signals(hbs[0])
 	watch_signals(hbs[1])
 	watch_signals(hbs[2])
-	manager.step(DT)
+	manager.step(_tick)
 	assert_signal_emit_count(hbs[0], "hit", 1)
 	assert_signal_emit_count(hbs[1], "hit", 1)
 	assert_signal_not_emitted(hbs[2], "hit")
@@ -660,7 +669,7 @@ func test_bullet_crossing_world_bounds_still_hits_a_target_on_its_last_segment()
 	var b := SnapshotBehavior.new()
 	# 450 -> 550: leaves the 500 px bounds this tick, but passes the target first.
 	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(counter[0], 1)
 	assert_eq(manager.pool.count, 0)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.HIT], "the hit, not the bounds, is why it ended")
@@ -670,7 +679,7 @@ func test_bullet_crossing_world_bounds_still_hits_a_target_on_its_last_segment()
 func test_bullet_leaving_world_bounds_without_a_target_despawns_as_bounds() -> void:
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.BOUNDS])
 
 
@@ -680,7 +689,7 @@ func test_bullet_leaving_bounds_through_a_wall_is_stopped_by_the_wall() -> void:
 	var counter := _hit_counter(hb)
 	var b := SnapshotBehavior.new()
 	manager.emitter.request_shot(_shot(Vector2(450, 0), 100.0, manager.emitter.register_behavior(b)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(counter[0], 0, "the wall shields the target")
 	assert_eq(b.despawn_reasons, [BulletPool.DespawnReason.WALL])
 
@@ -712,7 +721,7 @@ func test_bullet_spawned_by_a_hook_with_a_bigger_radius_than_any_so_far_still_hi
 	var seed_req := _shot(Vector2(-300, 300), 1.0, manager.emitter.register_behavior(spawner))
 	seed_req.hit_mask = 0
 	manager.emitter.request_shot(seed_req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(counter[0], 1, "the big late bullet is not missed")
 
 
@@ -724,7 +733,7 @@ func test_hook_writing_pos_directly_sweeps_from_the_old_position_but_teleport_do
 	tele.use_teleport = false
 	var req := _shot(Vector2(0, 0), 1.0, manager.emitter.register_behavior(tele))
 	manager.emitter.request_shot(req)
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(counter[0], 1, "a raw pos write is swept: phantom hit on the way")
 
 	manager.clear_bullets()
@@ -732,7 +741,7 @@ func test_hook_writing_pos_directly_sweeps_from_the_old_position_but_teleport_do
 	tele2.to = Vector2(200, 0)
 	tele2.use_teleport = true
 	manager.emitter.request_shot(_shot(Vector2(0, 0), 1.0, manager.emitter.register_behavior(tele2)))
-	manager.step(DT)
+	manager.step(_tick)
 	assert_eq(counter[0], 1, "teleport() is not swept: no new hit")
 	assert_eq(manager.pool.pos[0], Vector2(200, 0))
 	assert_eq(manager.pool.prev_pos[0], Vector2(200, 0))
