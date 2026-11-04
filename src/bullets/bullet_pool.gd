@@ -658,8 +658,16 @@ func _clamp_into_range(i: int) -> void:
 func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
 	ScriptWarnings.warn(
 		"%s.clamp.%s" % [where, field],
-		"%s: %s %s is outside its allowed range and was clamped to %s (BulletLimits.%s)" % [where, field, asked, kept, limit_name]
+		"%s: %s %s is outside its allowed range and was clamped to %s (BulletLimits.%s)" % [where, field, _fmt_number(asked), _fmt_number(kept), limit_name]
 	)
+
+
+## Number for a warning: plain up to 1e7, scientific beyond (1e30 would be 31 digits).
+static func _fmt_number(x: float) -> String:
+	if absf(x) < 1.0e7:
+		return String.num(x, 3)
+	var e := floori(log(absf(x)) / log(10.0))
+	return "%.3fe%d" % [x / pow(10.0, e), e]
 
 
 ## Speed over BulletLimits.MAX_SPEED. The length is taken in a way that cannot
