@@ -300,6 +300,11 @@ func step(delta: float) -> void:
 	var t0 := Time.get_ticks_usec()
 
 	_collect_targets()
+	# A hook that ran between two ticks (an on_spawn from the emitter) may have written into
+	# any bullet: sweep before advance() moves them, so a speed over the ceiling does not
+	# travel a tick first.
+	if pool.hook_ran:
+		pool.sweep_cross_writes()
 	pool.advance(delta, world_bounds)
 	var t1 := Time.get_ticks_usec()
 

@@ -114,8 +114,9 @@ var hook_owner := -1
 ## the hook the new owner: see reflect().
 var hook_slot := -1
 ## True once any hook (on_spawn, on_update, can_hit, on_hit, on_despawn) ran since the
-## last sweep_cross_writes(): BulletManager sets it at every hook call site and the sweeps
-## clear it. See sweep_cross_writes() for when the sweeps run.
+## last sweep_cross_writes(): BulletManager sets it at every hook call site (run_update_hooks()
+## does for on_update) and only sweep_cross_writes() clears it. See there for the soundness
+## argument that lets advance() skip the clock checks.
 var hook_ran := false
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
@@ -406,31 +407,14 @@ func advance(delta: float, bounds: Rect2) -> void:
 		prev_pos[i] = pos[i]
 		var a := age[i] + delta
 		age[i] = a
-		# One test for "still alive and its clock is sane": the time left, life - age, must
-		# lie in (0, MAX_LIFETIME). `absf(left - half) < half` is false for NaN (a hook
-		# wrote one into age or lifetime), for +/-inf, for a finished bullet (left <= 0)
-		# and for a clock no spawn can produce: a lifetime above MAX_LIFETIME or an age
-		# below zero by more than that leaves (an inf lifetime or a -inf age never ends by
-		# comparison alone). Only those rare cases take the branch below.
-		if not absf(lifetime[i] - a - LIFE_LEFT_HALF) < LIFE_LEFT_HALF:
-			var life := lifetime[i]
-			if not is_finite(a + life):
-				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to age or lifetime")
-				continue
-			if a >= life:
-				mark_dead(i, DespawnReason.LIFETIME)
-				continue
-			# Finite, but out of range: back into range (the bullet lives on).
-			if life > MAX_LIFETIME:
-				_note_clamp("BulletPool.hook_write", "lifetime", life, MAX_LIFETIME, "MAX_LIFETIME")
-				lifetime[i] = MAX_LIFETIME
-			if a < 0.0:
-				ScriptWarnings.warn(
-					"BulletPool.hook_write.clamp.age",
-					"BulletPool.hook_write: age %s is far below zero and was reset to 0" % _fmt_number(a)
-				)
-				a = 0.0
-				age[i] = 0.0
+		# `not a < life` rather than `a >= life`: the same cost, but a NaN age or lifetime
+		# (which a hook can only write between two sweeps, see sweep_cross_writes()) ends
+		# the bullet instead of keeping it for ever. The rest of the clock (+/-inf, a
+		# lifetime over MAX_LIFETIME, an age far below zero) is checked by the sweeps, not here:
+		# a plain bullet's tick pays nothing for it.
+		if not a < lifetime[i]:
+			mark_dead(i, DespawnReason.LIFETIME)
+			continue
 		var v := vel[i]
 		var turn := turn_rate[i]
 		var acc := accel[i]
@@ -536,34 +520,38 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 	hook_owner = outer
 	hook_slot = outer_slot
 	if ran:
-		sweep_cross_writes()
+		# Position, velocity and rotation are checked now, before walls and hurtboxes use them;
+		# the clock waits for the full sweep (end of this step), hence the flag.
+		sweep_motion_writes()
+		hook_ran = true
 
 
 ## Backstop for what a hook wrote into a bullet that is not its own. The per-bullet
 ## check in run_update_hooks() only sees the bullet whose hook just returned, but the
-## arrays are public: a hook can poke `vel`, `pos` ... of any other slot, also of a
+## arrays are public: a hook can poke `vel`, `pos`, `age` ... of any other slot, also of a
 ## plain bullet that has no hook (and so is never checked) or of a child it just
 ## spawned (checked once, right after on_spawn, not after later writes).
 ##
-## Dirty tracking cannot catch that (the writes go straight into the packed arrays),
-## so this walks every alive slot once. BulletManager runs it right after the on_update
-## hooks (if one ran), and once more at the end of step() if any hook ran since
-## (`hook_ran`: on_spawn, can_hit, on_hit, on_despawn write too, and after the first
-## sweep); a tick without any hook pays nothing. It looks at what would otherwise
-## reach the integrator, the collision sweeps and the renderer's per-bullet matrix:
-## position, previous position, rotation and velocity (NaN or inf in any of them, or a
-## speed over the ceiling). Anything out of order goes through sanitize(), which
-## decides what is clamped and what is killed, so the two cannot disagree.
+## Dirty tracking cannot catch that (the writes go straight into the packed arrays), so
+## there are two passes over every alive slot, both only when a hook ran:
 ##
-## Fields left out, and where they are guarded instead: age and lifetime by advance()
-## (it must test them every tick anyway, also for writes made after this sweep, and
-## the test is part of the one it already had); damage, radius and the rest when the
-## bullet hits something (BulletManager._apply_hit sanitizes it before the damage is
-## read). A bad radius of a bullet that never hits only reaches the renderer: an
-## invisible or oversized quad for that bullet, nothing else; it was left out because
-## the extra check costs about a quarter of the sweep.
-func sweep_cross_writes() -> void:
-	hook_ran = false
+## * sweep_motion_writes(): position, previous position, rotation and velocity. Run right
+##   after the on_update hooks, before walls, hurtboxes and zones look at anything.
+## * sweep_cross_writes(): that and the clock (age, lifetime), then clears `hook_ran`. Run
+##   by BulletManager at the start of step() (a hook that ran between ticks, such as an
+##   on_spawn) and at the end of step() (on_update, on_spawn, can_hit, on_hit,
+##   on_despawn), before the renderer reads the bullets.
+##
+## Whoever writes a bad clock is a hook, every hook leaves `hook_ran` set, and a full sweep
+## runs between any hook and the next advance(): so advance() never meets a bad clock and
+## keeps its plain `age >= lifetime` test (plus `not a < life`, which also ends a NaN).
+## A write by something that is not a hook (test code poking the arrays) is not covered.
+##
+## Anything out of order goes through sanitize() (motion) or _fix_clock() (clock). Fields
+## left out: damage, radius and the rest, guarded when the bullet hits something
+## (BulletManager._apply_hit sanitizes it before the damage is read). A bad radius of a
+## bullet that never hits only reaches the renderer: an invisible or oversized quad.
+func sweep_motion_writes() -> void:
 	var p_arr := pos
 	var pp_arr := prev_pos
 	var v_arr := vel
@@ -577,6 +565,47 @@ func sweep_cross_writes() -> void:
 		if (p_arr[i] + pp_arr[i] + r_arr[i]).is_finite() and v_arr[i].length_squared() <= MAX_SPEED_SQ:
 			continue
 		sanitize(i)
+
+
+func sweep_cross_writes() -> void:
+	hook_ran = false
+	var p_arr := pos
+	var pp_arr := prev_pos
+	var v_arr := vel
+	var r_arr := rot
+	var age_arr := age
+	var life_arr := lifetime
+	for i in count:
+		if not ((p_arr[i] + pp_arr[i] + r_arr[i]).is_finite() and v_arr[i].length_squared() <= MAX_SPEED_SQ):
+			sanitize(i)
+		# The time left, lifetime - age, must lie in (0, MAX_LIFETIME): `absf(left - half) <
+		# half` is false for NaN, +/-inf, a finished bullet (advance() ends it), a lifetime
+		# above MAX_LIFETIME and an age below zero by more than that leaves.
+		if not absf(life_arr[i] - age_arr[i] - LIFE_LEFT_HALF) < LIFE_LEFT_HALF:
+			_fix_clock(i)
+
+
+## The slow half of the clock test. Non-finite age or lifetime kills the bullet (INVALID);
+## a finite lifetime over MAX_LIFETIME is clamped to it, a negative age is reset to 0 (with a
+## warning each). A bullet that is merely finished (age >= lifetime) is left to advance().
+func _fix_clock(i: int) -> void:
+	var dead := dead_reason[i]
+	if dead != 0:
+		return
+	var a := age[i]
+	var life := lifetime[i]
+	if not is_finite(a + life):
+		_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to age or lifetime")
+		return
+	if life > MAX_LIFETIME:
+		_note_clamp("BulletPool.hook_write", "lifetime", life, MAX_LIFETIME, "MAX_LIFETIME")
+		lifetime[i] = MAX_LIFETIME
+	if a < 0.0:
+		ScriptWarnings.warn(
+			"BulletPool.hook_write.clamp.age",
+			"BulletPool.hook_write: age %s is far below zero and was reset to 0" % _fmt_number(a)
+		)
+		age[i] = 0.0
 
 
 ## The one way to write a bullet's velocity from outside the pool (hooks, the
