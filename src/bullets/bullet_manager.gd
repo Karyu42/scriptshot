@@ -88,6 +88,11 @@ var _reflected_count := 0
 ## _try_reflect() needs them as fractions of the whole tick. Only slots that hit a
 ## wall this tick are non-1.0, and they are put back at the end of step().
 var _wall_clip := PackedFloat32Array()
+## Wall normal of a wall that stopped a reflected bullet's *return leg* this tick
+## (see _continue_reflected()), per slot; Vector2.ZERO = none. wall_normal_of()
+## reports it, as it does for the walls of walls.hit_*. Reset after the despawn hooks.
+var _return_wall_normal := PackedVector2Array()
+var _return_wall_hit := PackedByteArray()
 
 ## Per-slot index+1 into walls.hit_wall for bullets that hit a wall this tick
 ## (0 = none). Set after the wall sweep and cleared before removal; see
@@ -110,6 +115,8 @@ func _ready() -> void:
 	_reflected_flag.resize(capacity)
 	_wall_clip.resize(capacity)
 	_wall_clip.fill(1.0)
+	_return_wall_normal.resize(capacity)
+	_return_wall_hit.resize(capacity)
 	_wall_hit_index.resize(capacity)
 	set_bullet_limits(logical_cap, enemy_reserve)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
@@ -257,9 +264,12 @@ func _spawn_checked(request: ShotRequest) -> int:
 			pool.behavior[i] = 0
 		else:
 			var outer := pool.hook_owner
+			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[i]
+			pool.hook_slot = i
 			b.on_spawn(pool, i)
 			pool.hook_owner = outer
+			pool.hook_slot = outer_slot
 			pool.sanitize(i)
 	return i
 
@@ -296,9 +306,12 @@ func step(delta: float) -> void:
 		# A hook may have reflected (and so un-scripted) a later bullet in the list.
 		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
 			var outer := pool.hook_owner
+			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[i]
+			pool.hook_slot = i
 			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
 			pool.hook_owner = outer
+			pool.hook_slot = outer_slot
 			# Hooks write the pool arrays directly: reject NaN / inf, hold the
 			# speed ceiling and the BulletLimits ranges (see BulletPool.sanitize).
 			pool.sanitize(i)
@@ -346,7 +359,6 @@ func step(delta: float) -> void:
 		_reflected_flag[_reflected_slots[r]] = 0
 	for k in last_wall_hit_count:
 		_wall_clip[walls.hit_bullets[k]] = 1.0
-	_reflected_count = 0
 
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -362,11 +374,20 @@ func step(delta: float) -> void:
 		var id := pool.behavior[slot]
 		if id != 0:
 			var outer := pool.hook_owner
+			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[slot]
+			pool.hook_slot = slot
 			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
 			pool.hook_owner = outer
+			pool.hook_slot = outer_slot
 	for k in last_wall_hit_count:
 		_wall_hit_index[walls.hit_bullets[k]] = 0
+	# The return-leg walls of this tick go with the despawn hooks (the reflected
+	# list is kept until here for that).
+	for r in _reflected_count:
+		_return_wall_hit[_reflected_slots[r]] = 0
+		_return_wall_normal[_reflected_slots[r]] = Vector2.ZERO
+	_reflected_count = 0
 	pool.flush_dead()
 	var t4 := Time.get_ticks_usec()
 
@@ -393,7 +414,9 @@ func wall_normal_of(slot: int) -> Vector2:
 	if slot < 0 or slot >= pool.count:
 		return Vector2.ZERO
 	var k := _wall_hit_index[slot]
-	return walls.normal_of_hit(k - 1, pool) if k > 0 else Vector2.ZERO
+	if k > 0:
+		return walls.normal_of_hit(k - 1, pool)
+	return _return_wall_normal[slot] if _return_wall_hit[slot] != 0 else Vector2.ZERO
 
 
 ## Removes all bullets (no hooks are called).
@@ -501,6 +524,10 @@ func _try_reflect(bullet: int, k: int) -> bool:
 	_reflected_t[_reflected_count] = t * _wall_clip[bullet]  # of the whole tick, not of the clipped path
 	_reflected_count += 1
 	_reflected_flag[bullet] = 1
+	# The wall hit of the old path is cancelled: the bullet never got there, so no
+	# hook may be told it hit that wall (wall_normal_of). A wall on the return leg
+	# is recorded by _continue_reflected().
+	_wall_hit_index[bullet] = 0
 	return true
 
 
@@ -522,11 +549,18 @@ func _continue_reflected(delta: float) -> void:
 			wall_t = walls.first_hit(start, d, pool.radius[slot])
 			if wall_t >= 0.0:
 				d *= wall_t
+				_return_wall_normal[slot] = walls.last_normal
+				_return_wall_hit[slot] = 1
 		pool.prev_pos[slot] = start
 		pool.pos[slot] = start + d
 		var first := grid.hit_count
+		# Like HurtboxGrid.collide_bullets(): a bullet whose hits can be vetoed lists
+		# spare hits, so a vetoed target does not hide the next one on the return leg.
+		var max_hits: int = pool.pierce[slot] + 1
+		if pool.can_hit_veto[slot] != 0:
+			max_hits += BulletPool.VETO_MAX_HITS - 1
 		var added := grid.sweep_segment(
-			slot, start, d, pool.radius[slot], pool.hit_mask[slot], pool.last_hit[slot], pool.pierce[slot] + 1
+			slot, start, d, pool.radius[slot], pool.hit_mask[slot], pool.last_hit[slot], max_hits
 		)
 		last_hit_count += added
 		for k in range(first, first + added):
@@ -565,9 +599,12 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		if veto_id != 0:
 			# A hook like the others: whatever it spawns inherits this bullet's owner.
 			var outer := pool.hook_owner
+			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[bullet]
+			pool.hook_slot = bullet
 			var allowed := _get_behavior(veto_id).can_hit(pool, bullet, hurtbox)
 			pool.hook_owner = outer
+			pool.hook_slot = outer_slot
 			# can_hit has the pool in its hands too: hold the same guards as for the
 			# other hooks. A bullet it wrote a NaN into is gone, and lands no hit.
 			if not pool.sanitize(bullet):
@@ -585,9 +622,12 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	var id := pool.behavior[bullet]
 	if id != 0:
 		var outer := pool.hook_owner
+		var outer_slot := pool.hook_slot
 		pool.hook_owner = pool.owner_layer[bullet]
+		pool.hook_slot = bullet
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)
 		pool.hook_owner = outer
+		pool.hook_slot = outer_slot
 		pool.sanitize(bullet)
 	if piercing:
 		pool.pierce[bullet] -= 1
