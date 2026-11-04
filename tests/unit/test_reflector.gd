@@ -1257,3 +1257,21 @@ func test_a_bullet_without_the_veto_flag_pays_nothing_extra_on_the_return_leg() 
 	assert_eq(far.hits, 0)
 	assert_eq(m.last_hit_count, 1)
 	assert_eq(v.asked.size(), 0, "never asked: not flagged")
+
+
+func test_the_return_leg_lists_up_to_veto_max_hits_targets_for_a_vetoed_bullet() -> void:
+	# Three vetoed targets in a row, then the one that is allowed: VETO_MAX_HITS (4) hits are
+	# listed, exactly like on the first leg, so the fourth is still reached.
+	var boxes: Array[Counter] = []
+	var v := Vetoer.new()
+	for x: float in [120.0, 80.0, 40.0, -20.0]:
+		var box := _counter(Vector2(x, 0), Layers.PLAYER, 6.0)
+		boxes.append(box)
+		if x > 0.0:
+			v.refuse.append(box.get_instance_id())
+	_keep_script_mirror(Vector2(200, 0))
+	var id := _scripted_fast_bullet(v, Vector2(0, 0), false, true)
+	_run_wide()
+	assert_eq([boxes[0].hits, boxes[1].hits, boxes[2].hits, boxes[3].hits], [0, 0, 0, 1])
+	assert_eq(m.last_veto_count, 3)
+	assert_false(m.emitter.is_bullet_alive(id))
