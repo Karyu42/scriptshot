@@ -116,6 +116,10 @@ func effective_limit(pool: BulletPool) -> int:
 func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 	if not is_active() or slot < 0 or slot >= pool.count or pool.dead_reason[slot] != 0:
 		return false
+	# A hook (on_hit / can_hit) may have written a bad velocity into this bullet after the
+	# post-hook sweep of the tick: NaN or inf would make normalized() below an engine error.
+	if not pool.sanitize(slot):
+		return false
 	var limit := effective_limit(pool)
 	if limit > 0 and pool.reflect_count[slot] >= limit:
 		return false

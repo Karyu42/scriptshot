@@ -52,6 +52,10 @@ const MAX_LIFETIME := BulletLimits.MAX_LIFETIME
 const MAX_ACCELERATION := BulletLimits.MAX_ACCELERATION
 const MAX_TURN_RATE := BulletLimits.MAX_TURN_RATE
 const MAX_DAMAGE := BulletLimits.MAX_DAMAGE
+## advance() accepts a bullet whose time left (lifetime - age) is in (0, 2 * MAX_LIFETIME):
+## up to MAX_LIFETIME is normal, the other half leaves room for a script that set a
+## small negative age to delay a bullet. LIFE_LEFT_HALF is the middle of that band.
+const LIFE_LEFT_HALF := MAX_LIFETIME
 
 ## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
 ## does not hide the next target on the path (see can_hit_veto).
@@ -399,15 +403,32 @@ func advance(delta: float, bounds: Rect2) -> void:
 		prev_pos[i] = pos[i]
 		var a := age[i] + delta
 		age[i] = a
-		# `not (a < life)` instead of `a >= life`: the two differ only for NaN, which
-		# a hook may have written into age or lifetime of a bullet it does not own. It
-		# lands here instead of making the bullet immortal.
-		if not a < lifetime[i]:
-			if not is_finite(a + lifetime[i]):
+		# One test for "still alive and its clock is sane": the time left, life - age, must
+		# lie in (0, 2 * MAX_LIFETIME). `absf(left - half) < half` is false for NaN (a hook
+		# wrote one into age or lifetime), for +/-inf, for a finished bullet (left <= 0)
+		# and for a clock no spawn can produce: a lifetime above MAX_LIFETIME or an age
+		# far below zero, both of which would keep the bullet alive for good (an inf
+		# lifetime or a -inf age never ends by comparison alone). Only those rare cases
+		# take the branch below.
+		if not absf(lifetime[i] - a - LIFE_LEFT_HALF) < LIFE_LEFT_HALF:
+			var life := lifetime[i]
+			if not is_finite(a + life):
 				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to age or lifetime")
-			else:
+				continue
+			if a >= life:
 				mark_dead(i, DespawnReason.LIFETIME)
-			continue
+				continue
+			# Finite, but out of range: back into range (the bullet lives on).
+			if life > MAX_LIFETIME:
+				_note_clamp("BulletPool.hook_write", "lifetime", life, MAX_LIFETIME, "MAX_LIFETIME")
+				lifetime[i] = MAX_LIFETIME
+			if a < 0.0:
+				ScriptWarnings.warn(
+					"BulletPool.hook_write.clamp.age",
+					"BulletPool.hook_write: age %s is far below zero and was reset to 0" % _fmt_number(a)
+				)
+				a = 0.0
+				age[i] = 0.0
 		var v := vel[i]
 		var turn := turn_rate[i]
 		var acc := accel[i]
@@ -525,26 +546,30 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 ## Dirty tracking cannot catch that (the writes go straight into the packed arrays),
 ## so this walks every alive slot once, after the hooks of a tick and only if one ran
 ## (a tick without hooked bullets pays nothing). It looks at what would otherwise
-## reach the integrator and the collision sweeps: position, previous position and
-## velocity (a NaN or inf in any of them, or a speed over the ceiling). Anything out
-## of order goes through sanitize(), which decides what is clamped and what is
-## killed, so the two cannot disagree. The other fields are guarded where they are
-## used: advance() kills a bullet whose age, lifetime, acceleration or turn rate made
-## it non-finite, and a hit sanitizes the bullet before its damage is dealt
-## (BulletManager._apply_hit), which covers radius and damage.
+## reach the integrator, the collision sweeps and the renderer's per-bullet matrix:
+## position, previous position, rotation and velocity (NaN or inf in any of them, or a
+## speed over the ceiling). Anything out of order goes through sanitize(), which
+## decides what is clamped and what is killed, so the two cannot disagree.
 ##
-## The loop is deliberately this small (about 75 ns per bullet in GDScript): the
-## velocity test is `length_squared()` because that is false for NaN and inf too, and a
-## method call there is cheaper than the same arithmetic written out. Dead slots are
-## not skipped before the test, one read less; sanitize() ignores them.
+## Fields left out, and where they are guarded instead: age and lifetime by advance()
+## (it must test them every tick anyway, also for writes made after this sweep, and
+## the test is part of the one it already had); damage, radius and the rest when the
+## bullet hits something (BulletManager._apply_hit sanitizes it before the damage is
+## read). A bad radius of a bullet that never hits only reaches the renderer: an
+## invisible or oversized quad for that bullet, nothing else; it was left out because
+## the extra check costs about a quarter of the sweep.
 func sweep_cross_writes() -> void:
 	var p_arr := pos
 	var pp_arr := prev_pos
 	var v_arr := vel
+	var r_arr := rot
 	for i in count:
-		var p := p_arr[i]
-		var pp := pp_arr[i]
-		if is_finite(p.x + p.y + pp.x + pp.y) and v_arr[i].length_squared() <= MAX_SPEED_SQ:
+		# Vector adds and one is_finite() call: NaN or inf in any component makes the
+		# sum non-finite (inf + -inf is NaN), and it is the cheapest finiteness test GDScript
+		# has (about 55 ns per bullet for all of this, the scalar version was 75).
+		# A sum that overflows float32 is only a false alarm: sanitize() looks at the
+		# real values and changes nothing.
+		if (p_arr[i] + pp_arr[i] + r_arr[i]).is_finite() and v_arr[i].length_squared() <= MAX_SPEED_SQ:
 			continue
 		sanitize(i)
 

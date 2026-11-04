@@ -4,7 +4,7 @@ extends GutTest
 ## The first block (X1-X6) is QA's repro from the PR #11 review: cross-slot writes, a huge
 ## finite position, garbage behaviour ids, a child poked after spawn_child. The rest pins
 ## the design that closes the gap: BulletPool.sweep_cross_writes() after the hooks of a
-## tick (position, previous position, velocity), the guards in advance() (NaN
+## tick (position, previous position, rotation, velocity), the guards in advance() (NaN
 ## age/lifetime/position) and the sanitize at hit time (damage, radius and the rest).
 const DT := 1.0 / 60.0
 var m: BulletManager
@@ -167,6 +167,7 @@ class Poker:
 		done = true
 		match field:
 			"vel": pool.vel[target] = Vector2(value, 0.0)
+			"rot": pool.rot[target] = Vector2(value, 0.0)
 			"pos": pool.pos[target] = Vector2(value, value)
 			"prev_pos": pool.prev_pos[target] = Vector2(value, value)
 			"radius": pool.radius[target] = value
@@ -186,8 +187,8 @@ func _poke(field: String, value: float) -> void:
 	m.emitter.request_shot_id(_req(Vector2(100, 0)))
 
 
-func test_every_non_finite_pos_prev_pos_or_vel_is_gone_in_the_same_tick() -> void:
-	for field: String in ["pos", "prev_pos", "vel"]:
+func test_every_non_finite_pos_prev_pos_vel_or_rot_is_gone_in_the_same_tick() -> void:
+	for field: String in ["pos", "prev_pos", "vel", "rot"]:
 		for v: float in [NAN, INF, -INF]:
 			m.clear_bullets()
 			ScriptWarnings.reset()
@@ -421,3 +422,122 @@ func test_an_out_of_range_radius_is_clamped_when_the_bullet_hits() -> void:
 	var seen := _radius_hit_run(99999.0)
 	assert_eq(seen.size(), 1, "the hit still lands")
 	assert_eq(m.pool.max_radius, maxf(m.pool.max_radius, BulletLimits.MAX_RADIUS), "and the grid margin was widened to the clamped radius")
+
+
+## A plain bullet in slot 0, the writer later: nothing may skip the first slot.
+func test_the_sweep_covers_slot_zero() -> void:
+	for field: String in ["vel", "pos", "prev_pos", "rot"]:
+		m.clear_bullets()
+		var before := m.pool.invalid_total
+		var w := Poker.new()
+		w.target = 0
+		w.field = field
+		w.value = NAN
+		var wid := m.register_behavior(w)
+		m.emitter.request_shot_id(_req(Vector2(100, 0)))  # slot 0, plain
+		m.emitter.request_shot_id(_req(Vector2(0, 0), wid))  # slot 1, the writer
+		m.step(DT)
+		assert_eq(m.pool.count, 1, "%s: the plain bullet in slot 0 is gone" % field)
+		assert_eq(m.pool.invalid_total, before + 1)
+
+
+## `if ran:` is what makes a tick without hooks free: a bad value written by hand into a
+## plain bullet of a pool whose hooks never ran is left for advance() / the hit test.
+func test_a_pool_without_a_hook_call_is_not_swept() -> void:
+	var pool := BulletPool.new(16)
+	pool.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
+	pool.advance(DT, Rect2(-1000, -1000, 2000, 2000))
+	pool.vel[0] = Vector2(1.0e9, 0.0)
+	pool.run_update_hooks([null] as Array[BulletBehavior], DT)
+	assert_eq(pool.vel[0].x, 1.0e9, "nothing ran, nothing swept")
+	var n := Noop.new()
+	var rq := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
+	rq.behavior_id = 1
+	rq.lifetime = 5.0
+	var pool2 := BulletPool.new(16)
+	pool2.spawn(rq)
+	pool2.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
+	pool2.advance(DT, Rect2(-1000, -1000, 2000, 2000))
+	pool2.vel[1] = Vector2(1.0e9, 0.0)
+	pool2.run_update_hooks([null, n] as Array[BulletBehavior], DT)
+	assert_almost_eq(pool2.vel[1].length(), BulletLimits.MAX_SPEED, 0.01, "a hook ran: swept")
+
+
+## _kill_invalid leaves nothing non-finite in a slot that stays readable this tick.
+func test_a_killed_bullet_keeps_no_non_finite_position_behind() -> void:
+	var pool := BulletPool.new(8)
+	for k in 3:
+		pool.spawn(ShotRequest.with_velocity(Vector2(5, 5), Vector2(10, 0)))
+	pool.pos[0] = Vector2(NAN, 1.0)
+	pool.prev_pos[0] = Vector2(INF, 1.0)
+	pool.rot[0] = Vector2(NAN, NAN)
+	pool.prev_pos[1] = Vector2(NAN, 0.0)  # only the previous position is bad
+	pool.vel[2] = Vector2(NAN, 0.0)
+	for k in 3:
+		assert_false(pool.sanitize(k))
+	assert_eq(pool.pos[0], Vector2.ZERO, "pos falls back to the cleaned prev_pos (zero)")
+	assert_eq(pool.prev_pos[0], Vector2.ZERO)
+	assert_eq(pool.rot[0], Vector2.RIGHT)
+	assert_eq(pool.prev_pos[1], Vector2.ZERO)
+	assert_true(pool.pos[1].is_finite())
+	assert_true(pool.pos[2].is_finite() and pool.prev_pos[2].is_finite())
+	assert_eq(pool.vel[2], Vector2.ZERO)
+
+
+## A bad velocity poked by an on_hit hook into a bullet a Reflector turns in the same
+## tick must not reach normalized() (an engine error): reflect_bullet sanitizes first.
+func test_reflect_bullet_with_a_poisoned_velocity_is_refused_without_engine_errors() -> void:
+	var z := Reflector.new()
+	z.radius = 30.0
+	z.mode = Reflector.Mode.MIRROR
+	add_child_autofree(z)
+	z.global_position = Vector2(110, 50)
+	for bad: float in [NAN, INF, -INF]:
+		var pool := BulletPool.new(8)
+		var rq := ShotRequest.with_velocity(Vector2(100, 50), Vector2(600, 0))
+		rq.lifetime = 5.0
+		pool.spawn(rq)
+		pool.vel[0] = Vector2(bad, 0.0)
+		assert_false(z.reflect_bullet(pool, 0, Vector2(100, 50)), "%s: refused" % bad)
+		assert_eq(pool.invalid_total, 1)
+		assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.INVALID + 1)
+		assert_eq(pool.owner_layer[0], Layers.PLAYER, "still the shooter's: never reflected")
+
+
+class HitPoker:
+	extends BulletBehavior
+	var victim := 1
+	var value := NAN
+	func on_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> void:
+		pool.vel[victim] = Vector2(value, 0.0)
+
+
+func test_an_on_hit_poke_into_a_bullet_the_reflector_turns_leaves_no_engine_error() -> void:
+	var hb := Hurtbox.new()
+	hb.layer = Layers.ENEMY
+	hb.radius = 14.0
+	add_child_autofree(hb)
+	hb.global_position = Vector2(70, 50)
+	var z := Reflector.new()
+	z.radius = 30.0
+	z.mode = Reflector.Mode.REVERSE
+	add_child_autofree(z)
+	z.global_position = Vector2(110, 50)
+	var hp := HitPoker.new()
+	var hid := m.register_behavior(hp)
+	var writer := ShotRequest.with_velocity(Vector2(50, 50), Vector2(600, 0))
+	writer.hit_mask = Layers.ENEMY
+	writer.lifetime = 5.0
+	writer.pierce = 5
+	writer.behavior_id = hid
+	var victim := ShotRequest.with_velocity(Vector2(52, 52), Vector2(2400, 0))
+	victim.hit_mask = 0
+	victim.lifetime = 5.0
+	m.emitter.request_shot_id(writer)
+	m.emitter.request_shot_id(victim)
+	m.step(0.05)
+	for t in 3:
+		m.step(DT)
+	for i in m.pool.count:
+		if m.pool.dead_reason[i] == 0:
+			assert_true(m.pool.pos[i].is_finite() and m.pool.vel[i].is_finite())
