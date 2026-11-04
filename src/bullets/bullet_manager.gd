@@ -273,17 +273,7 @@ func step(delta: float) -> void:
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
-	for k in pool.hooked_count:
-		var i := pool.hooked[k]
-		# A hook may have reflected (and so un-scripted) a later bullet in the list.
-		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
-			var outer := pool.hook_owner
-			pool.hook_owner = pool.owner_layer[i]
-			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
-			pool.hook_owner = outer
-			# Hooks write the pool arrays directly: reject NaN / inf, hold the
-			# speed ceiling and the BulletLimits ranges (see BulletPool.sanitize).
-			pool.sanitize(i)
+	pool.run_update_hooks(_behaviors, delta)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.

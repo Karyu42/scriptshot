@@ -384,6 +384,46 @@ func advance(delta: float, bounds: Rect2) -> void:
 			hooked_count += 1
 
 
+## Runs BulletBehavior.on_update for every bullet advance() put on the `hooked` list
+## (alive and still scripted when its turn comes), and re-checks each one right after
+## its hook returned (sanitize()). `behaviors` is BulletManager's behaviour table,
+## indexed by behavior id.
+##
+## This is the hot loop of every scripted bullet, so it lives in the pool: member
+## reads and the sanitize call are cheaper from inside the class than through
+## `pool.` from the manager, and `hook_owner` is only written when the owner
+## changes from one bullet to the next instead of being saved, set and restored
+## around every hook. The value on entry is restored on exit; during a hook it is
+## always the owner_layer of the bullet whose hook runs (a hook that overwrote
+## `hook_owner` itself is corrected before the next bullet's hook). Nested spawns
+## from a hook save and restore it around their own on_spawn, so nesting and
+## re-entrancy see exactly what they saw with a per-hook wrap.
+func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
+	var outer := hook_owner
+	var table_size := behaviors.size()
+	for k in hooked_count:
+		var i := hooked[k]
+		# A hook may have killed a later bullet in the list already, or reflected
+		# (and so un-scripted) it: neither gets an update.
+		if dead_reason[i] != 0:
+			continue
+		var id := behavior[i]
+		if id == 0:
+			continue
+		if id >= table_size or id < 0:
+			# Only a hook writing garbage into `behavior` gets here: spawning an unknown id
+			# already yields a plain bullet. Drop the script rather than index out of range.
+			behavior[i] = 0
+			ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
+			continue
+		var o := owner_layer[i]
+		if hook_owner != o:
+			hook_owner = o
+		behaviors[id].on_update(self, i, delta)
+		sanitize(i)
+	hook_owner = outer
+
+
 ## The one way to write a bullet's velocity from outside the pool (hooks, the
 ## batch/Lua commit): a velocity above BulletLimits.MAX_SPEED keeps its direction
 ## and is cut to the ceiling. A NaN or inf kills the bullet with
