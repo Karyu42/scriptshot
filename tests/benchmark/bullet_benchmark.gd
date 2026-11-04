@@ -16,7 +16,10 @@ extends Node
 ##   --floor-bullets=5000   the minimum: HARD FAIL (exit 1) if this count misses the budget
 ##   --target-bullets=10000 the goal: only a WARN line (exit 0) if this count misses the budget
 ##   --target-ms=16.6       p95 frame-time budget for both counts
-##   --json=path            also write results as JSON
+##   --hooked=0.3           share (0..1) of the bullets that carry a no-op on_update hook
+##                          (default 0 = no hooked bullets, the original workload; the same
+##                          bullet trajectories are simulated at every fraction)
+##   --json=path            also write results as JSON (includes the hooked fraction)
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
 ## BulletManager.step: kinematics, collision, hooks, despawn, MultiMesh buffer
@@ -47,9 +50,15 @@ var floor_bullets := 5000
 var target_bullets := 10000
 var target_ms := 16.6
 var json_path := ""
+## Share of the bullets spawned with a no-op on_update hook (see --hooked).
+var hooked_fraction := 0.0
 
 var _manager: BulletManager
 var _rng := RandomNumberGenerator.new()
+## Separate stream for the hooked/plain choice: drawing from _rng would change the
+## trajectories (and so the numbers) of the hooked = 0 baseline.
+var _hook_rng := RandomNumberGenerator.new()
+var _noop_behavior_id := 0
 var _request := ShotRequest.new()
 var _results: Array[Dictionary] = []
 var _walls: Array[Rect2] = []
@@ -64,9 +73,24 @@ var _last_frame_usec := 0
 var _current_count := 0
 
 
+## A hook that does nothing: what the benchmark pays for is the machinery around a
+## hooked bullet (the call, the owner context, the post-hook sanitize), not script work.
+class NoopHook:
+	extends BulletBehavior
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		pass
+
+
 func _ready() -> void:
-	_parse_args()
+	var arg_error := _parse_args()
+	if arg_error != "":
+		printerr("[bench] ERROR: %s" % arg_error)
+		get_tree().quit(2)
+		set_process(false)
+		return
 	_rng.seed = 20260101
+	_hook_rng.seed = 20260102
 	_manager = BulletManager.new()
 	_manager.capacity = 32768
 	# The benchmark measures raw simulation cost at any bullet count: lift the
@@ -76,6 +100,7 @@ func _ready() -> void:
 	_manager.world_bounds = ARENA.grow(32.0)
 	_manager.auto_step = false
 	add_child(_manager)
+	_noop_behavior_id = _manager.register_behavior(NoopHook.new())
 	_build_walls()
 	for i in TARGET_COUNT:
 		var hb := Hurtbox.new()
@@ -83,8 +108,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count"
-		% [Engine.get_version_info().string, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames])
+	print("[bench] Godot %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f"
+		% [Engine.get_version_info().string, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction])
 	_next_count()
 
 
@@ -151,6 +176,8 @@ func _top_up(n: int) -> void:
 		_request.lifetime = _rng.randf_range(2.0, 6.0)
 		_request.radius = 3.0
 		_request.hit_mask = Layers.ENEMY
+		if hooked_fraction > 0.0 and _hook_rng.randf() < hooked_fraction:
+			_request.behavior_id = _noop_behavior_id
 		if not _manager.emitter.request_shot(_request):
 			break
 
@@ -173,6 +200,8 @@ func _next_count() -> void:
 func _finish_count() -> void:
 	var result := {
 		"bullets": _current_count,
+		"hooked_fraction": hooked_fraction,
+		"hooked_alive_at_end": _hooked_alive(),
 		"frames": _work_ms.size(),
 		"alive_at_end": _manager.pool.count,
 		"min_alive_before_step": _min_alive,
@@ -206,6 +235,16 @@ func _finish_count() -> void:
 
 ## Verdict for one bullet count: {"ok": bool, "text": String}. Not ok when the
 ## count was not benchmarked, was not reached, or missed the p95 budget.
+## Alive bullets that carry a behaviour (hooked), counted over the dense range.
+func _hooked_alive() -> int:
+	var n := 0
+	var pool := _manager.pool
+	for i in pool.count:
+		if pool.behavior[i] != 0:
+			n += 1
+	return n
+
+
 func _judge(bullets: int) -> Dictionary:
 	for r in _results:
 		if r.bullets != bullets:
@@ -238,13 +277,16 @@ func _report() -> void:
 				"godot": Engine.get_version_info().string,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
-				"target_ms": target_ms, "results": _results,
+				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "results": _results,
 			}, "\t"))
 	get_tree().quit(exit_code)
 
 
-func _parse_args() -> void:
+## Returns "" or a message describing the first invalid option.
+func _parse_args() -> String:
 	for arg in OS.get_cmdline_user_args():
+		if arg == "--hooked" or arg.begins_with("--hooked") and not "=" in arg:
+			return "--hooked needs a value: --hooked=0.3 (a fraction between 0 and 1), got '%s'" % arg
 		if not arg.begins_with("--") or not "=" in arg:
 			continue
 		var kv := arg.trim_prefix("--").split("=", true, 1)
@@ -259,3 +301,9 @@ func _parse_args() -> void:
 			"target-bullets": target_bullets = int(kv[1])
 			"target-ms": target_ms = float(kv[1])
 			"json": json_path = kv[1]
+			"hooked":
+				var parsed := BenchStats.parse_fraction(kv[1])
+				if not parsed.ok:
+					return parsed.error
+				hooked_fraction = parsed.value
+	return ""

@@ -234,9 +234,11 @@ func spawn(request: ShotRequest) -> int:
 			ScriptWarnings.warn(
 				"BulletPool.spawn.owner",
 				(
-					"BulletPool.spawn: a hook asked for owner_layer %d but bullets spawned from a hook inherit"
-					+ " their parent's owner (%d); the request was ignored. Only reflect() changes an owner."
-				) % [shot_owner, hook_owner]
+					"BulletPool.spawn: a shot with owner_layer %d was spawned while the hook of a bullet owned by %d was"
+					+ " running (the request itself, or the parent named in spawn_child(), asked for %d); a bullet spawned"
+					+ " during a hook takes the owner of the bullet whose hook runs, so it was spawned as %d."
+					+ " Only reflect() changes an owner."
+				) % [shot_owner, hook_owner, shot_owner, hook_owner]
 			)
 		shot_owner = hook_owner
 		if shot_owner != 0:
@@ -253,22 +255,51 @@ func spawn(request: ShotRequest) -> int:
 	user[i] = request.user
 	pos[i] = request.position
 	prev_pos[i] = request.position
-	var velocity := BulletLimits.clamp_velocity(request.velocity)
+	# Every field is read from the request once: the clamped value is stored, and
+	# compared with what was asked to tell whether anything had to be clamped.
+	var asked_velocity := request.velocity
+	var velocity := BulletLimits.clamp_velocity(asked_velocity)
 	vel[i] = velocity
 	if is_nan(request.angle):
 		var speed := velocity.length()
 		rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
 	else:
 		rot[i] = Vector2.from_angle(request.angle)
-	var r := clampf(request.radius, 0.0, BulletLimits.MAX_RADIUS)
+	var asked_r := request.radius
+	var r := clampf(asked_r, 0.0, BulletLimits.MAX_RADIUS)
 	radius[i] = r
 	age[i] = 0.0
-	lifetime[i] = clampf(request.lifetime, 0.0, BulletLimits.MAX_LIFETIME)
-	accel[i] = clampf(request.acceleration, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
-	turn_rate[i] = clampf(request.turn_rate, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
-	damage[i] = clampf(request.damage, 0.0, BulletLimits.MAX_DAMAGE)
-	param_a[i] = clampf(request.param_a, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
-	param_b[i] = clampf(request.param_b, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	var asked_life := request.lifetime
+	var life := clampf(asked_life, 0.0, BulletLimits.MAX_LIFETIME)
+	lifetime[i] = life
+	var asked_acc := request.acceleration
+	var acc := clampf(asked_acc, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
+	accel[i] = acc
+	var asked_turn := request.turn_rate
+	var turn := clampf(asked_turn, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
+	turn_rate[i] = turn
+	var asked_dmg := request.damage
+	var dmg := clampf(asked_dmg, 0.0, BulletLimits.MAX_DAMAGE)
+	damage[i] = dmg
+	var asked_pa := request.param_a
+	var pa := clampf(asked_pa, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	param_a[i] = pa
+	var asked_pb := request.param_b
+	var pb := clampf(asked_pb, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	param_b[i] = pb
+	# Nothing clamped (the normal case) costs eight compares. Otherwise say so, once
+	# per field and rate-limited (a clamp used to be silent).
+	if (
+		velocity != asked_velocity
+		or r != asked_r
+		or life != asked_life
+		or acc != asked_acc
+		or turn != asked_turn
+		or dmg != asked_dmg
+		or pa != asked_pa
+		or pb != asked_pb
+	):
+		_warn_clamped_request("BulletPool.spawn", request)
 	color[i] = request.color
 	owner_layer[i] = shot_owner
 	reflect_count[i] = 0
@@ -301,9 +332,14 @@ func spawn_simple(
 	if not (position.is_finite() and velocity.is_finite() and is_finite(life) and is_finite(bullet_radius)):
 		_reject_invalid("BulletPool.spawn_simple", "a shot with a non-finite position, velocity, life or radius")
 		return -1
+	var asked_velocity := velocity
+	var asked_life := life
+	var asked_radius := bullet_radius
 	life = clampf(life, 0.0, BulletLimits.MAX_LIFETIME)
 	bullet_radius = clampf(bullet_radius, 0.0, BulletLimits.MAX_RADIUS)
 	velocity = BulletLimits.clamp_velocity(velocity)
+	if velocity != asked_velocity or life != asked_life or bullet_radius != asked_radius:
+		_warn_clamped_fields("BulletPool.spawn_simple", asked_velocity, asked_radius, asked_life)
 	# A plain bullet is unowned, except when a hook spawns it: then it belongs to
 	# the bullet whose hook runs, like every other bullet spawned from a hook.
 	var shot_owner := hook_owner if hook_owner > 0 else 0
@@ -388,6 +424,82 @@ func advance(delta: float, bounds: Rect2) -> void:
 			hooked_count += 1
 
 
+## Runs BulletBehavior.on_update for every bullet advance() put on the `hooked` list
+## (alive and still scripted when its turn comes), and re-checks each one right after
+## its hook returned (sanitize()). `behaviors` is BulletManager's behaviour table,
+## indexed by behavior id.
+##
+## This is the hot loop of every scripted bullet, so it lives in the pool: member
+## reads and the sanitize call are cheaper from inside the class than through
+## `pool.` from the manager, and `hook_owner` is only written when the owner
+## changes from one bullet to the next instead of being saved, set and restored
+## around every hook. The value on entry is restored on exit; during a hook it is
+## always the owner_layer of the bullet whose hook runs (a hook that overwrote
+## `hook_owner` itself is corrected before the next bullet's hook). Nested spawns
+## from a hook save and restore it around their own on_spawn, so nesting and
+## re-entrancy see exactly what they saw with a per-hook wrap.
+func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
+	var outer := hook_owner
+	var outer_slot := hook_slot
+	var table_size := behaviors.size()
+	for k in hooked_count:
+		var i := hooked[k]
+		# A hook may have killed a later bullet in the list already, or reflected
+		# (and so un-scripted) it: neither gets an update.
+		if dead_reason[i] != 0:
+			continue
+		var id := behavior[i]
+		if id == 0:
+			continue
+		if id >= table_size or id < 0:
+			# Only a hook writing garbage into `behavior` gets here: spawning an unknown id
+			# already yields a plain bullet. Drop the script rather than index out of range.
+			behavior[i] = 0
+			ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
+			continue
+		var o := owner_layer[i]
+		if hook_owner != o:
+			hook_owner = o
+		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
+		behaviors[id].on_update(self, i, delta)
+		# Same check as sanitize(), inlined for the common case that the hook wrote
+		# nothing wrong (a call costs more than the check itself). Anything it cannot
+		# wave through goes to sanitize(), the one place that decides what is repaired
+		# or killed, so the two cannot disagree: this accepts a bullet only if
+		# sanitize() would have changed nothing about it.
+		var dead := dead_reason[i]
+		if dead != 0 and dead != DespawnReason.BOUNDS + 1:
+			continue  # dead before the hook ended (sanitize() would only return false)
+		var p := pos[i]
+		var v := vel[i]
+		var rt := rot[i]
+		var r := radius[i]
+		var life := lifetime[i]
+		var acc := accel[i]
+		var turn := turn_rate[i]
+		var dmg := damage[i]
+		if (
+			is_finite(p.x + p.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i])
+			and not (
+				v.length_squared() > MAX_SPEED_SQ
+				or r < 0.0
+				or r > MAX_RADIUS
+				or life < 0.0
+				or life > MAX_LIFETIME
+				or absf(acc) > MAX_ACCELERATION
+				or absf(turn) > MAX_TURN_RATE
+				or dmg < 0.0
+				or dmg > MAX_DAMAGE
+			)
+		):
+			if r > max_radius:
+				max_radius = r
+		else:
+			sanitize(i)
+	hook_owner = outer
+	hook_slot = outer_slot
+
+
 ## The one way to write a bullet's velocity from outside the pool (hooks, the
 ## batch/Lua commit): a velocity above BulletLimits.MAX_SPEED keeps its direction
 ## and is cut to the ceiling. A NaN or inf kills the bullet with
@@ -400,7 +512,10 @@ func set_velocity(i: int, v: Vector2) -> bool:
 	if not v.is_finite():
 		_kill_invalid(i, "BulletPool.set_velocity", "a non-finite velocity")
 		return false
-	vel[i] = BulletLimits.clamp_velocity(v)
+	var clamped := BulletLimits.clamp_velocity(v)
+	if clamped != v:
+		_warn_speed_clamped("BulletPool.set_velocity", v)
+	vel[i] = clamped
 	return true
 
 
@@ -416,6 +531,7 @@ func sanitize_velocity(i: int) -> bool:
 		_kill_invalid(i, "BulletPool.velocity", "a non-finite velocity")
 		return false
 	if BulletLimits.exceeds(v):
+		_warn_speed_clamped("BulletPool.velocity", v)
 		vel[i] = BulletLimits.clamp_velocity(v)
 	return true
 
@@ -507,18 +623,96 @@ func sanitize(i: int) -> bool:
 
 
 ## The slow half of sanitize(): puts every out-of-range (finite) value of slot `i`
-## back into its BulletLimits range.
+## back into its BulletLimits range, and says so (rate-limited, see _note_clamp).
 func _clamp_into_range(i: int) -> void:
-	if BulletLimits.exceeds(vel[i]):
-		vel[i] = BulletLimits.clamp_velocity(vel[i])
-	var r := clampf(radius[i], 0.0, MAX_RADIUS)
-	radius[i] = r
-	if r > max_radius:
-		max_radius = r
-	lifetime[i] = clampf(lifetime[i], 0.0, MAX_LIFETIME)
-	accel[i] = clampf(accel[i], -MAX_ACCELERATION, MAX_ACCELERATION)
-	turn_rate[i] = clampf(turn_rate[i], -MAX_TURN_RATE, MAX_TURN_RATE)
-	damage[i] = clampf(damage[i], 0.0, MAX_DAMAGE)
+	var v := vel[i]
+	if BulletLimits.exceeds(v):
+		_warn_speed_clamped("BulletPool.hook_write", v)
+		vel[i] = BulletLimits.clamp_velocity(v)
+	var r := radius[i]
+	var clamped_r := clampf(r, 0.0, MAX_RADIUS)
+	if clamped_r != r:
+		_note_clamp("BulletPool.hook_write", "radius", r, clamped_r, "MAX_RADIUS")
+	radius[i] = clamped_r
+	if clamped_r > max_radius:
+		max_radius = clamped_r
+	var life := lifetime[i]
+	var clamped_life := clampf(life, 0.0, MAX_LIFETIME)
+	if clamped_life != life:
+		_note_clamp("BulletPool.hook_write", "lifetime", life, clamped_life, "MAX_LIFETIME")
+	lifetime[i] = clamped_life
+	var acc := accel[i]
+	var clamped_acc := clampf(acc, -MAX_ACCELERATION, MAX_ACCELERATION)
+	if clamped_acc != acc:
+		_note_clamp("BulletPool.hook_write", "acceleration", acc, clamped_acc, "MAX_ACCELERATION")
+	accel[i] = clamped_acc
+	var turn := turn_rate[i]
+	var clamped_turn := clampf(turn, -MAX_TURN_RATE, MAX_TURN_RATE)
+	if clamped_turn != turn:
+		_note_clamp("BulletPool.hook_write", "turn_rate", turn, clamped_turn, "MAX_TURN_RATE")
+	turn_rate[i] = clamped_turn
+	var dmg := damage[i]
+	var clamped_dmg := clampf(dmg, 0.0, MAX_DAMAGE)
+	if clamped_dmg != dmg:
+		_note_clamp("BulletPool.hook_write", "damage", dmg, clamped_dmg, "MAX_DAMAGE")
+	damage[i] = clamped_dmg
+
+
+## A finite value was outside its BulletLimits range and was clamped. One warning
+## key per field (`<where>.clamp.<field>`), so a script that clamps every tick cannot
+## flood the log: ScriptWarnings prints each key LIMIT times and then goes quiet.
+## `where` is the code path ("BulletPool.spawn", "BulletPool.hook_write", ...).
+func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
+	ScriptWarnings.warn(
+		"%s.clamp.%s" % [where, field],
+		"%s: %s %s is outside its allowed range and was clamped to %s (BulletLimits.%s)" % [where, field, _fmt_number(asked), _fmt_number(kept), limit_name]
+	)
+
+
+## Number for a warning: plain up to 1e7, scientific beyond (1e30 would be 31 digits).
+static func _fmt_number(x: float) -> String:
+	if absf(x) < 1.0e7:
+		return String.num(x, 3)
+	var e := floori(log(absf(x)) / log(10.0))
+	return "%.3fe%d" % [x / pow(10.0, e), e]
+
+
+## Speed over BulletLimits.MAX_SPEED. The length is taken in a way that cannot
+## overflow (a velocity component near 1e30 would square to inf).
+func _warn_speed_clamped(where: String, v: Vector2) -> void:
+	var m := maxf(absf(v.x), absf(v.y))
+	var speed := (v / m).length() * m if m > 0.0 else 0.0
+	_note_clamp(where, "speed", speed, BulletLimits.MAX_SPEED, "MAX_SPEED")
+
+
+## spawn_simple(): the clamped fields are velocity, lifetime and radius.
+func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> void:
+	if BulletLimits.exceeds(v):
+		_warn_speed_clamped(where, v)
+	if r < 0.0 or r > MAX_RADIUS:
+		_note_clamp(where, "radius", r, clampf(r, 0.0, MAX_RADIUS), "MAX_RADIUS")
+	if life < 0.0 or life > MAX_LIFETIME:
+		_note_clamp(where, "lifetime", life, clampf(life, 0.0, MAX_LIFETIME), "MAX_LIFETIME")
+
+
+## spawn(): names each field of `request` that had to be clamped.
+func _warn_clamped_request(where: String, request: ShotRequest) -> void:
+	_warn_clamped_fields(where, request.velocity, request.radius, request.lifetime)
+	var acc := request.acceleration
+	if absf(acc) > MAX_ACCELERATION:
+		_note_clamp(where, "acceleration", acc, clampf(acc, -MAX_ACCELERATION, MAX_ACCELERATION), "MAX_ACCELERATION")
+	var turn := request.turn_rate
+	if absf(turn) > MAX_TURN_RATE:
+		_note_clamp(where, "turn_rate", turn, clampf(turn, -MAX_TURN_RATE, MAX_TURN_RATE), "MAX_TURN_RATE")
+	var dmg := request.damage
+	if dmg < 0.0 or dmg > MAX_DAMAGE:
+		_note_clamp(where, "damage", dmg, clampf(dmg, 0.0, MAX_DAMAGE), "MAX_DAMAGE")
+	var pa := request.param_a
+	if absf(pa) > BulletLimits.MAX_PARAM:
+		_note_clamp(where, "param_a", pa, clampf(pa, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM), "MAX_PARAM")
+	var pb := request.param_b
+	if absf(pb) > BulletLimits.MAX_PARAM:
+		_note_clamp(where, "param_b", pb, clampf(pb, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM), "MAX_PARAM")
 
 
 func _non_finite_field(i: int) -> String:

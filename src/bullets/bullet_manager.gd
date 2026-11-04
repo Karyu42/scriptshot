@@ -203,7 +203,7 @@ func collect_walls() -> int:
 ## spawn_child().
 func spawn(request: ShotRequest) -> int:
 	if pool.hook_owner >= 0:
-		return _spawn_inheriting(pool.hook_owner, request)
+		return _spawn_inheriting(pool.hook_owner, request, "BulletManager.spawn", "a hook")
 	return _spawn_checked(request)
 
 
@@ -222,7 +222,7 @@ func spawn_child(parent_id: int, request: ShotRequest) -> int:
 			"BulletManager.spawn_child.parent", "BulletManager.spawn_child: the parent bullet is gone, child not spawned"
 		)
 		return -1
-	return _spawn_inheriting(pool.owner_layer[parent], request)
+	return _spawn_inheriting(pool.owner_layer[parent], request, "BulletManager.spawn_child", "a child spawn")
 
 
 ## Spawn with `owner` forced onto the request. The ShotRequest is the caller's
@@ -231,7 +231,10 @@ func spawn_child(parent_id: int, request: ShotRequest) -> int:
 ## A request that still carries the default owner (Layers.PLAYER) cannot be told
 ## apart from "owner not set", so a mismatch there is corrected without a
 ## warning; any other differing owner is an explicit attempt and is warned.
-func _spawn_inheriting(owner: int, request: ShotRequest) -> int:
+## `where` and `who` only word the warning: a spawn from inside a hook says "a
+## hook"; spawn_child() (the batch/Lua commit, which runs after the parent's hook
+## returned) says "a child spawn" and names the parent, not a hook.
+func _spawn_inheriting(owner: int, request: ShotRequest, where: String = "BulletManager.spawn", who: String = "a hook") -> int:
 	var asked := request.owner_layer
 	if asked == owner:
 		return _spawn_checked(request)
@@ -239,9 +242,9 @@ func _spawn_inheriting(owner: int, request: ShotRequest) -> int:
 		ScriptWarnings.warn(
 			"BulletManager.spawn.owner",
 			(
-				"BulletManager: a hook asked for owner_layer %d but bullets spawned from a hook inherit their"
-				+ " parent's owner (%d); the request was ignored. Only reflect() changes an owner."
-			) % [asked, owner]
+				"%s: %s asked for owner_layer %d but a bullet spawned from another bullet inherits that"
+				+ " bullet's owner (%d); the request was ignored. Only reflect() changes an owner."
+			) % [where, who, asked, owner]
 		)
 	var asked_mask := request.hit_mask
 	request.owner_layer = owner
@@ -301,20 +304,7 @@ func step(delta: float) -> void:
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
-	for k in pool.hooked_count:
-		var i := pool.hooked[k]
-		# A hook may have reflected (and so un-scripted) a later bullet in the list.
-		if pool.dead_reason[i] == 0 and pool.behavior[i] != 0:
-			var outer := pool.hook_owner
-			var outer_slot := pool.hook_slot
-			pool.hook_owner = pool.owner_layer[i]
-			pool.hook_slot = i
-			_get_behavior(pool.behavior[i]).on_update(pool, i, delta)
-			pool.hook_owner = outer
-			pool.hook_slot = outer_slot
-			# Hooks write the pool arrays directly: reject NaN / inf, hold the
-			# speed ceiling and the BulletLimits ranges (see BulletPool.sanitize).
-			pool.sanitize(i)
+	pool.run_update_hooks(_behaviors, delta)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -566,7 +556,13 @@ func _continue_reflected(delta: float) -> void:
 		for k in range(first, first + added):
 			_apply_hit(slot, grid.hit_targets[k], grid.hit_t[k])
 		if wall_t >= 0.0:
-			pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
+			if pool.dead_reason[slot] != 0:
+				# A hurtbox (or a guard) ended the bullet before the wall: it never got
+				# there, so no hook is told it hit that wall.
+				_return_wall_hit[slot] = 0
+				_return_wall_normal[slot] = Vector2.ZERO
+			else:
+				pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
 
 
 func _collect_targets() -> void:
@@ -617,6 +613,9 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	if not piercing:
 		# The bullet stops where it touched the target.
 		pool.pos[bullet] = impact
+		# A reflected bullet that this hit consumes does not reach the wall at the end
+		# of its return leg (on_hit already must not report it).
+		_return_wall_hit[bullet] = 0
 	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
 	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]

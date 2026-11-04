@@ -15,6 +15,8 @@ const WINDOW_MSEC := 10000
 
 ## Total reports per key (printed or suppressed), over the whole session.
 static var _counts: Dictionary[String, int] = {}
+## Most recent message per key (printed or suppressed), for last_message().
+static var _last: Dictionary[String, String] = {}
 ## Warnings actually printed per key, over the whole session.
 static var _printed: Dictionary[String, int] = {}
 ## Per key: start of the current window and how many were printed / suppressed in it.
@@ -29,6 +31,7 @@ static var clock_override_msec := -1
 static func warn(key: String, message: String) -> void:
 	var now := _now_msec()
 	_counts[key] = _counts.get(key, 0) + 1
+	_last[key] = message
 	var carried := 0
 	if not _window_start.has(key) or now - _window_start[key] >= WINDOW_MSEC:
 		carried = _window_suppressed.get(key, 0)
@@ -54,6 +57,12 @@ static func count(key: String) -> int:
 	return _counts.get(key, 0)
 
 
+## The text of the most recent warning of this kind (printed or suppressed), "" if
+## there was none. For tests: push_warning() output cannot be read back.
+static func last_message(key: String) -> String:
+	return _last.get(key, "")
+
+
 ## How many warnings of this kind were actually printed.
 static func printed_count(key: String) -> int:
 	return _printed.get(key, 0)
@@ -61,6 +70,7 @@ static func printed_count(key: String) -> int:
 
 static func reset() -> void:
 	_counts.clear()
+	_last.clear()
 	_printed.clear()
 	_window_start.clear()
 	_window_printed.clear()

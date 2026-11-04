@@ -289,8 +289,8 @@ inheritance". To remove a bullet from a hook call `pool.mark_dead(index)`.
   difference that is hard to see.
 * Hook calls are the expensive path: every hooked bullet costs at least one
   script call per tick (plus whatever the hook does), whereas bullets with
-  `behavior_id == 0` never call script code. The 5k/10k benchmark numbers are
-  for plain bullets.
+  `behavior_id == 0` never call script code. See "Cost of hooked bullets" below
+  for the numbers; `./tools/run_benchmark.sh --hooked=F` measures them.
 * Nothing is allocated in the per-tick hot path (scratch arrays are preallocated
   and grow only when capacity does; hurtboxes register in `Hurtbox.registry`
   instead of a group query), and a hook may spawn/kill bullets freely.
@@ -373,7 +373,8 @@ tick the bullet hit: `BulletManager.wall_normal_of(slot)` or
 (`Vector2.ZERO` if the bullet did not hit a wall this tick, and after removal).
 A bullet that a Reflector zone turned around that tick never reached the wall of its
 old path, so that wall is not reported (`ZERO`); a wall that stops it on its return
-leg is reported with its real normal.
+leg is reported with its real normal, unless a hurtbox consumed the bullet on that leg
+first (then it never reached the wall: `ZERO`, also in its `on_hit`).
 It is computed on demand from the stored wall index and path (a bullet that hit
 a wall stores two values; the normal itself is only worked out when a script asks),
 so the sweep pays nothing for it.
@@ -447,7 +448,9 @@ cap forever.
   its range is clamped into it (a typo like `radius = 1e9` is not worth dropping the
   shot for).
 * **After a hook** (`BulletPool.sanitize(i)`, called for hooked bullets only after
-  `on_spawn`, `on_update`, `can_hit` and `on_hit`; plain bullets pay nothing): a NaN
+  `on_spawn`, `on_update`, `can_hit` and `on_hit`; plain bullets pay nothing; after
+  `on_update` the check is inlined in `BulletPool.run_update_hooks`, see "Cost of
+  hooked bullets"): a NaN
   or inf in any of those fields, `age`, `pos` or `rot` kills the bullet as
   `DespawnReason.INVALID` (counted, `BulletPool.hook_write` warning naming the
   field; the velocity keeps its older `BulletPool.velocity` key), out-of-range
@@ -464,8 +467,55 @@ cap forever.
 | `param_a`, `param_b` | \|p\| up to `MAX_PARAM` = 1e30 (keeps the double inside float32) |
 
 Like velocity, direct writes to the arrays of a bullet *without* a hook, or to
-*another* bullet from a hook, cannot be seen; the batch API commits through the
+*another* bullet from a hook, cannot be seen (a write into a *later hooked* bullet is
+caught when that bullet's own hook has run); the batch API commits through the
 checked paths.
+
+A clamp is no longer silent: every path that clamps a finite out-of-range value
+(`spawn`, `spawn_simple`, `set_velocity`, `sanitize_velocity`, a hook write) raises a
+rate-limited `ScriptWarnings` warning with one key per path and field
+(`BulletPool.spawn.clamp.radius`, `BulletPool.hook_write.clamp.speed`, ...) that names
+the value asked for, the value kept and the `BulletLimits` constant. `param_a` / `param_b`
+are range-checked at spawn only; a hook may write any finite value to them (NaN and
+inf still kill the bullet). The ranges are listed for script authors in
+`docs/scripting/api.md`, "Limits".
+
+### Cost of hooked bullets
+
+A hooked bullet pays, per tick, for the hook call itself, the owner context and the
+post-hook check of every numeric field (`sanitize`). With a hook that does nothing on
+every bullet (`--hooked=1.0`) the extra cost over plain bullets was 1.32 us per bullet
+per tick on the development box (QA measured about 0.65 us on a faster one) and is
+now **0.65 us**, half of it, from `BulletPool.run_update_hooks`. Work p50 per tick, median of
+three interleaved runs of 1200 frames (the box is shared and noisy; p95 in the PR):
+
+| bullets | hooked | before | after |
+| ---: | ---: | ---: | ---: |
+| 5,000 | 0 | 6.33 ms | 6.37 ms |
+| 5,000 | 30% | 8.21 ms | 7.31 ms |
+| 5,000 | 100% | 12.96 ms | 9.62 ms |
+| 10,000 | 0 | 12.58 ms | 12.75 ms |
+| 10,000 | 30% | 16.52 ms | 14.65 ms |
+| 10,000 | 100% | 25.84 ms | 19.45 ms |
+
+Where the cost goes and what was done:
+
+* **The check cannot be narrowed to "the fields the hook touched".** Hooks write the
+  public packed arrays directly (`pool.vel[i] = ...`, documented API), and GDScript
+  offers no way to see such a write, so dirty tracking through the setters would let
+  a direct NaN write through. The check therefore stays what it was, scoped to the
+  slots on this tick's `hooked` list (never plain bullets) and run right after that
+  bullet's own hook, so every bad write is caught before the bullet moves or collides.
+* **What got cheaper**: the whole `on_update` loop moved into the pool (member reads
+  are faster there than `pool.x[i]` from the manager, and the behaviour lookup is a
+  plain array index), `hook_owner` is written only when the owner changes, and the
+  common outcome, "the hook wrote nothing wrong", is accepted by an inlined copy of
+  the check instead of a `sanitize()` call. Anything that copy cannot wave through
+  goes to `sanitize()`, which still decides what is clamped or killed, so the two cannot
+  disagree (a differential test in `tests/unit/test_hook_loop.gd` compares the loop with
+  the old per-bullet one on random bad writes).
+* Measure with `./tools/run_benchmark.sh --hooked=0.3` (or 1.0). CI's default has no
+  hooked bullets.
 
 ### Owner inheritance for hook-spawned bullets
 
@@ -488,8 +538,12 @@ spawns it could mint enemy-owned bullets around that guard.
   spawn into the enemy reserve.
 * Spawns outside any hook (a turret, a boss emitter, the player's weapon) are
   unchanged: the request's owner is used.
-* The context is `BulletPool.hook_owner`, set by `BulletManager` around **every**
-  hook call (`on_spawn`, `on_update`, `can_hit`, `on_hit`, `on_despawn`). The pool
+* The context is `BulletPool.hook_owner`, set around **every** hook call
+  (`on_spawn`, `on_update`, `can_hit`, `on_hit`, `on_despawn`): by `BulletManager`
+  for all of them except `on_update`, which `BulletPool.run_update_hooks` runs (it
+  writes `hook_owner` only when the owner changes from one bullet to the next and
+  restores the entry value at the end; each hook still sees exactly its own
+  bullet's owner, a hook that overwrote it is corrected before the next one). The pool
   also enforces it for a hook that calls `pool.spawn()` / `pool.spawn_simple()`
   directly (hooks are handed the pool): the request's owner is replaced (a capped
   `BulletPool.spawn.owner` warning when it was not the default), and a
