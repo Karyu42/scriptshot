@@ -247,21 +247,59 @@ func test_the_sweep_only_runs_after_a_hook_ran() -> void:
 	assert_eq(quiet.radius[0], 1.0e9, "no hook ran, so no sweep: a tick without hooked bullets pays nothing")
 
 
-func test_advance_kills_a_bullet_whose_state_a_hook_poisoned_after_the_sweep() -> void:
-	# on_hit / on_despawn hooks run after the sweep: advance() is the net for those.
-	for field: String in ["vel", "accel", "turn_rate", "age", "lifetime"]:
+func test_the_sweep_after_the_update_hooks_consumes_the_flag() -> void:
+	var pool := BulletPool.new(16)
+	var rq := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
+	rq.behavior_id = 1
+	pool.spawn(rq)
+	pool.advance(DT, Rect2(-1000, -1000, 2000, 2000))
+	var table: Array[BulletBehavior] = [null, BulletBehavior.new()]
+	pool.hook_ran = false
+	pool.run_update_hooks(table, DT)
+	assert_false(pool.hook_ran, "on_update ran, the sweep ran right after it and cleared the flag")
+
+
+func test_advance_kills_a_bullet_whose_motion_a_hook_poisoned_after_the_sweep() -> void:
+	# A NaN velocity, acceleration or turn rate makes a NaN position: advance() is the net.
+	for field: String in ["vel", "accel", "turn_rate"]:
 		var pool := BulletPool.new(16)
 		pool.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
 		match field:
 			"vel": pool.vel[0] = Vector2(NAN, 0.0)
 			"accel": pool.accel[0] = NAN
 			"turn_rate": pool.turn_rate[0] = NAN
-			"age": pool.age[0] = NAN
-			"lifetime": pool.lifetime[0] = NAN
 		pool.advance(DT, Rect2(-1000, -1000, 2000, 2000))
 		assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.INVALID + 1, "%s=NaN is killed by advance()" % field)
 		assert_eq(pool.invalid_total, 1)
 		assert_true(pool.pos[0].is_finite(), "%s: and leaves a finite position behind" % field)
+
+
+## The clock is checked by the sweeps, not by advance(); `not a < life` is only the cheap
+## NaN-safe net: a NaN age or lifetime that was never swept ends the bullet, it does not keep it.
+func test_advance_ends_a_bullet_with_a_nan_clock_instead_of_keeping_it() -> void:
+	for field: String in ["age", "lifetime"]:
+		var pool := BulletPool.new(16)
+		pool.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
+		if field == "age":
+			pool.age[0] = NAN
+		else:
+			pool.lifetime[0] = NAN
+		pool.advance(DT, Rect2(-1000, -1000, 2000, 2000))
+		assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.LIFETIME + 1, "%s=NaN: expired" % field)
+
+
+func test_the_full_sweep_kills_a_non_finite_clock_as_invalid() -> void:
+	for field: String in ["age", "lifetime"]:
+		for v: float in [NAN, INF, -INF]:
+			var pool := BulletPool.new(16)
+			pool.spawn(ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0)))
+			if field == "age":
+				pool.age[0] = v
+			else:
+				pool.lifetime[0] = v
+			pool.sweep_cross_writes()
+			assert_eq(pool.dead_reason[0], BulletPool.DespawnReason.INVALID + 1, "%s=%s" % [field, v])
+			assert_eq(pool.invalid_total, 1)
 
 
 func test_advance_still_ends_normal_lifetimes_and_bounds_with_the_old_reasons() -> void:
@@ -551,15 +589,23 @@ class SitePoker:
 	var site := ""
 	var victim := 0
 	var value := NAN
+	var field := "rot"
 	var fired := false
 
 	func _poke(pool: BulletPool, where: String) -> void:
 		if where == site and not fired:
 			fired = true
-			pool.rot[victim] = Vector2(value, 0.0)
+			match field:
+				"lifetime": pool.lifetime[victim] = value
+				"age": pool.age[victim] = value
+				"vel": pool.vel[victim] = Vector2(value, 0.0)
+				_: pool.rot[victim] = Vector2(value, 0.0)
 
 	func on_spawn(pool: BulletPool, _i: int) -> void:
 		_poke(pool, "on_spawn")
+
+	func on_update(pool: BulletPool, _i: int, _d: float) -> void:
+		_poke(pool, "on_update")
 
 	func can_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> bool:
 		_poke(pool, "can_hit")
@@ -573,7 +619,7 @@ class SitePoker:
 		_poke(pool, "on_despawn")
 
 
-func _site_run(site: String, value: float) -> SitePoker:
+func _site_run(site: String, value: float, field := "rot") -> SitePoker:
 	m.clear_bullets()
 	ScriptWarnings.reset()
 	var hb := Hurtbox.new()
@@ -584,6 +630,7 @@ func _site_run(site: String, value: float) -> SitePoker:
 	var beh := SitePoker.new()
 	beh.site = site
 	beh.value = value
+	beh.field = field
 	var bid := m.register_behavior(beh)
 	# slot 0: the plain victim, far from everything and never hit.
 	var victim := ShotRequest.with_velocity(Vector2(-800, -800), Vector2.ZERO)
@@ -645,3 +692,42 @@ func test_a_tick_without_any_hook_does_not_sweep() -> void:
 	m.spawn(_req(Vector2(500, 500), m.register_behavior(beh)))
 	m.step(DT)
 	assert_almost_eq(m.pool.vel[0].x, BulletLimits.MAX_SPEED, 0.01, "a hooked bullet is alive: swept")
+
+
+## The clock moved out of advance(): every hook site must still get a bad age/lifetime of a
+## plain bullet cleaned before the bullet could outlive the next advance().
+func test_a_bad_clock_poked_from_any_hook_site_never_makes_a_plain_bullet_immortal() -> void:
+	for site: String in ["on_spawn", "on_update", "on_hit", "can_hit", "on_despawn"]:
+		for fv: Array in [["lifetime", INF], ["lifetime", 1.0e39], ["lifetime", NAN], ["age", -INF], ["age", NAN]]:
+			var field: String = fv[0]
+			var v: float = fv[1]
+			var before := m.pool.invalid_total
+			var beh := _site_run(site, v, field)
+			assert_true(beh.fired, "%s: hook ran" % site)
+			for t in 3:
+				m.step(DT)
+			var alive_victim := false
+			for i in m.pool.count:
+				if m.pool.dead_reason[i] == 0 and m.pool.pos[i].is_equal_approx(Vector2(-800, -800)):
+					alive_victim = true
+			assert_false(alive_victim, "%s %s=%s: the victim is gone after 3 ticks" % [site, field, v])
+			assert_eq(m.pool.invalid_total, before + 1, "%s %s=%s: removed as INVALID" % [site, field, v])
+
+
+## An on_spawn between two ticks that writes a finite, over-the-ceiling speed into a plain bullet:
+## the start-of-step sweep clamps it before advance() moves anything.
+func test_a_speed_written_by_an_on_spawn_between_ticks_does_not_travel_a_tick_first() -> void:
+	var beh := SitePoker.new()
+	beh.site = "on_spawn"
+	beh.field = "vel"
+	beh.value = 1.0e5
+	var bid := m.register_behavior(beh)
+	var victim := ShotRequest.with_velocity(Vector2(0, 0), Vector2.ZERO)
+	victim.lifetime = 5.0
+	m.emitter.request_shot_id(victim)
+	m.emitter.request_shot_id(_req(Vector2(500, 500), bid))
+	assert_true(m.pool.hook_ran, "the spawn flagged the pool")
+	m.step(DT)
+	assert_true(beh.fired)
+	assert_lte(m.pool.vel[0].length(), BulletLimits.MAX_SPEED + 0.01, "clamped")
+	assert_lte(m.pool.pos[0].length(), BulletLimits.MAX_SPEED * DT + 0.01, "and it moved at most one tick at the ceiling, not at 1e5 px/s")

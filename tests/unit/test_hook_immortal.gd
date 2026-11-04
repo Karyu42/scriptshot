@@ -72,6 +72,7 @@ func _one_bullet(life: float, age: float) -> BulletPool:
 	pool.spawn(rq)
 	pool.lifetime[0] = life
 	pool.age[0] = age
+	pool.sweep_cross_writes()  # the clock is the sweeps' business (a hook wrote it), then the tick
 	pool.advance(DT, Rect2(-100, -100, 200, 200))
 	return pool
 
@@ -86,7 +87,7 @@ func test_a_finite_lifetime_over_the_limit_is_clamped_and_the_bullet_lives_on() 
 func test_an_age_far_below_zero_is_reset_and_a_small_negative_age_is_left_alone() -> void:
 	var far := _one_bullet(5.0, -1.0e9)
 	assert_eq(far.dead_reason[0], 0)
-	assert_eq(far.age[0], 0.0, "reset to 0")
+	assert_almost_eq(far.age[0], DT, 0.0001, "reset to 0, then this tick's delta")
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 1)
 	ScriptWarnings.reset()
 	var small := _one_bullet(5.0, -3.0)
@@ -120,7 +121,7 @@ func test_the_edges_of_the_clock_window() -> void:
 	# time left over the limit through a negative age: age is reset, the lifetime is not changed.
 	var over := _one_bullet(m, -10.0)
 	assert_eq(over.lifetime[0], m)
-	assert_eq(over.age[0], 0.0)
+	assert_almost_eq(over.age[0], DT, 0.0001)
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 1)
 	ScriptWarnings.reset()
 	# bottom edge: a bullet whose age reaches its lifetime exactly expires on that tick (as
@@ -147,3 +148,22 @@ func test_normal_clocks_end_where_they_used_to() -> void:
 	var neg_life := _one_bullet(-1.0, 0.0)
 	assert_eq(neg_life.dead_reason[0], BulletPool.DespawnReason.LIFETIME + 1, "a negative lifetime is simply over")
 	assert_eq(done.invalid_total + alive.invalid_total + neg_life.invalid_total, 0)
+
+
+## The window is (0, MAX_LIFETIME) of time left, but a bullet inside the *limits* must never
+## be touched: lifetime 400 with age -1 (time left 401) lives, silently. (A window that
+## were only 300 s wide would send it down the slow path, which resets a negative age.)
+func test_a_lifetime_of_400_with_age_minus_1_is_left_alone() -> void:
+	var pool := _one_bullet(400.0, -1.0)
+	assert_eq(pool.dead_reason[0], 0)
+	assert_eq(pool.lifetime[0], 400.0)
+	assert_almost_eq(pool.age[0], -1.0 + DT, 0.0001, "age untouched, only this tick's delta added")
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 0, "no warning")
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.lifetime"), 0)
+	var pool2 := _one_bullet(598.0, -1.0)  # time left 599: still inside, still silent
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 0)
+	assert_eq(pool2.dead_reason[0], 0)
+	# The window is open at both ends: a time left of exactly MAX_LIFETIME (599 + 1) is out.
+	var pool3 := _one_bullet(599.0, -1.0)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 1, "time left == MAX_LIFETIME: reset, warned")
+	assert_almost_eq(pool3.age[0], DT, 0.0001, "reset to 0, then this tick's delta")

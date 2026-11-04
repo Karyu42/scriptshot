@@ -478,38 +478,45 @@ list (already checked this tick), or a child it spawned (checked once, right aft
 so these are caught three ways, none of which cost a tick without hooked bullets
 anything:
 
-* **Sweep** (`BulletPool.sweep_cross_writes`): one pass over every slot looking at
-  `pos`, `prev_pos`, `rot` and `vel` (about 55 ns per bullet: three `Vector2` adds and
-  one `is_finite()` call, which GDScript runs much faster than the scalar sums it
-  replaced). A NaN or inf in any of them, or a speed over the ceiling, goes to
-  `sanitize()`, which kills (`INVALID`) or clamps as for a bullet's own write. A finite
-  but absurd position (`1e30`) is a plain bounds cull on the next `advance()`. When it
-  runs:
-  * **right after the `on_update` hooks of the tick** (only if one ran), before walls,
-    hurtboxes and zones look at anything;
-  * **at the end of `step()`**, after the despawn hooks and `flush_dead()` and before the
-    renderer reads the bullets, **if any hook ran since the last sweep**
-    (`BulletPool.hook_ran`, which `BulletManager` sets after every `on_spawn`,
-    `can_hit`, `on_hit` and `on_despawn` call; an `on_spawn` between ticks is swept at
-    the end of the next step). This is the one that catches a poke from a hook that runs
-    after the first sweep, such as an `on_despawn` writing a NaN `rot`, before it can
-    reach the instance buffer; the next `advance()` would be a tick too late for the
-    renderer. A tick in which no hook of any kind ran sweeps nothing.
-* **`advance()`**: one test per bullet and tick, `absf(lifetime - age - half) < half`
-  with `half = MAX_LIFETIME / 2`, i.e. the time left must be in (0, MAX_LIFETIME): the same
-  600 s a spawn clamps to. It is
-  false for NaN, for an `inf` lifetime or `-inf` age (which `age < lifetime` alone would
-  never end: an immortal bullet), for a finished bullet, and for a clock no spawn can
-  produce. Those take a slow branch: non-finite is killed `INVALID`, finished expires
-  as `LIFETIME` (`age >= lifetime`, as before), and a finite lifetime over `MAX_LIFETIME`
-  is clamped to it, an age that leaves more than `MAX_LIFETIME` to live is reset to 0
-  (both with a warning) and the bullet lives on. A small negative age as a start delay
-  still works while `lifetime - age` stays within 600 s. The sweep does not look at age or
-  lifetime on purpose: advance() has to test them every tick anyway (a write after the
-  sweep, from `on_hit` / `on_despawn`, must be caught too), and the test replaced
-  the old `a >= lifetime` one at about 13 ns per bullet in a micro-benchmark. A NaN
-  position, which a NaN `vel`, `accel` or `turn_rate` turns into, also fails the bounds
-  test there and kills the bullet as `INVALID` at no cost.
+* **Sweep** (`BulletPool.sweep_cross_writes()`) over every alive slot, only when a hook
+  ran. It checks `pos`, `prev_pos`, `rot` and `vel` (three `Vector2` adds and one
+  `is_finite()` call, which GDScript runs much faster than scalar sums; a speed over the
+  ceiling too) and the **clock**: the time left, `lifetime - age`, must be in
+  (0, `MAX_LIFETIME`) (`absf(left - half) < half`, false for NaN, +/-inf, a finished
+  bullet, a lifetime over the limit and an age more than the limit below zero). A bad
+  motion value goes to `sanitize()`; a bad clock to `_fix_clock()`: non-finite is killed
+  `INVALID`, a finite lifetime over `MAX_LIFETIME` is clamped to it and a negative age reset
+  to 0 (a warning each). A bullet that is merely finished is left to `advance()`. The sweep
+  clears `BulletPool.hook_ran`. It runs **right after the `on_update` hooks** (before walls
+  and hurtboxes look at anything), **at the start of `step()`** (a hook that ran between
+  ticks, an `on_spawn` from the emitter: a speed over the ceiling must not travel a tick
+  first) and **at the end of `step()`**, after the despawn hooks and `flush_dead()` and
+  before the renderer reads the bullets, the last two if `hook_ran`. `hook_ran` is set after
+  every `on_spawn`, `can_hit`, `on_hit` and `on_despawn` call that was made. A tick in which no
+  hook of any kind ran sweeps nothing.
+* **Hook mask** (`BulletBehavior.HOOK_*`, `BulletManager._hooks_of()`): only the event hooks a
+  behaviour really overrides are called, and only those set `hook_ran`; an inherited no-op
+  (the base `on_spawn` / `on_despawn` of a behaviour that only has an `on_update`) can write
+  nothing, so it is skipped and does not make every tick run the start and end sweeps. The
+  mask is detected from the script (`BulletBehavior.detect_hooks`) at `register_behavior()`
+  and **cannot go stale**: the manager remembers which script the answer was worked out for
+  and re-detects on the next dispatch if `set_script()` gave the object another one;
+  `refresh_behavior(id)` redoes it after an in-place script reload. A behaviour whose hooks
+  are not plain method overrides (an adapter that forwards to a Callable assigned later, an
+  interpreter) sets `hook_mask = BulletBehavior.HOOK_ALL` (or the bits it needs), which is
+  read at every dispatch; hooks left out of an explicit mask are not called, and in debug
+  builds an explicit mask that omits a hook the script overrides is an assertion failure.
+  `on_update` is not masked: a tick that has hooked bullets always sweeps once after it.
+* **`advance()` keeps the plain clock test** (`not a < lifetime`, which ends a NaN age or
+  lifetime instead of keeping it, at the cost of `age >= lifetime`). Why the clock checks
+  can live in the sweep: only a hook writes a bad age or lifetime into a bullet; each hook
+  leaves `hook_ran` set (or sweeps); and a sweep runs between any hook and the next
+  `advance()` (an `on_update` write: right after the hooks; `on_hit` / `can_hit` /
+  `on_despawn`: end of the same step; an `on_spawn` between ticks: start of the next step,
+  before `advance()`). So `advance()` never meets an `inf` lifetime or `-inf` age. A write
+  by something that is not a hook (test code poking the arrays) is not covered. A NaN
+  position, which a NaN `vel`, `accel` or `turn_rate` turns into, still fails the bounds
+  test in `advance()` and kills the bullet as `INVALID` at no cost.
 * **`_apply_hit`**: every bullet that lands a hit is `sanitize()`d before its damage
   is read, so a NaN or huge `damage` or `radius` written into a plain bullet never
   reaches `Health`. A NaN radius overlaps nothing, so it simply never hits.
@@ -566,12 +573,15 @@ Where the cost goes and what was done:
   disagree (a differential test in `tests/unit/test_hook_loop.gd` compares the loop with
   the old per-bullet one on random bad writes).
 * **The sweep for writes into other bullets** (see "Writes into other bullets") is on top
-  of that: about 55 ns per alive bullet per tick that has at least one hook, nothing
-  for a tick without one. Measured on the same box with the same interleaved A/B
-  (median p50 of three 600-frame runs, before = main at the PR #11 merge): 0% hooked
-  +0.13 ms at 5k and 10k (noise; the code path is the same), 30% +0.56 / +0.67 ms
-  (+7% / +4%), 100% +0.80 / +1.86 ms (+8% / +9%). p95 on this shared box moves by more
-  than that from run to run, see the PR for the raw numbers.
+  of that: motion and clock together cost about 80 ns per alive bullet per sweep, and a
+  tick with hooked bullets runs one right after the `on_update` hooks and, if any other hook
+  ran, one more at the end of the step. A tick without a hook sweeps nothing, and
+  `advance()` no longer carries the clock window (about 18 ns per bullet cheaper than at
+  the PR #13 merge: plain bullets are back at their pre-#13 cost). Measured with the same
+  interleaved A/B (median p50 of three runs): 0% hooked -1.5% / -2.5% vs main at 5k / 10k,
+  100% hooked about +6% vs main (the clock is now checked in the sweeps of the hooked tick).
+  p95 on this shared box moves by more than that from run to run, see PR #14 for the raw
+  numbers.
 * Measure with `./tools/run_benchmark.sh --hooked=0.3` (or 1.0). CI's default has no
   hooked bullets.
 

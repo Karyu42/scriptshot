@@ -123,6 +123,9 @@ func test_differential_against_the_per_bullet_sanitize_loop() -> void:
 				wb.plan[slot] = step
 		a.run_update_hooks(_table(wa), DT)
 		_reference_loop(b, wb)
+		# run_update_hooks() ends with the sweep (which also fixes a far-negative age, a
+		# thing the per-bullet check never looked at), so the reference does the same.
+		b.sweep_cross_writes()
 		assert_eq(_dump(a), _dump(b), "seed %d: same state as the per-bullet sanitize() loop" % seed_value)
 		assert_eq(wa.calls, wb.calls, "seed %d: same hooks ran" % seed_value)
 		assert_eq(wa.seen_owner, wb.seen_owner, "seed %d: every hook saw the same owner context" % seed_value)
