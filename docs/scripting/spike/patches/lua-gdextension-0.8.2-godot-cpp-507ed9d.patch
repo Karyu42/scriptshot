@@ -1,0 +1,144 @@
+diff --git a/src/LuaAST.hpp b/src/LuaAST.hpp
+index f1b63fe..eddcd09 100644
+--- a/src/LuaAST.hpp
++++ b/src/LuaAST.hpp
+@@ -23,6 +23,7 @@
+ #define __LUA_AST_HPP__
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ 
+ typedef struct TSTree TSTree;
+ 
+diff --git a/src/LuaASTNode.hpp b/src/LuaASTNode.hpp
+index a3af76f..b88a706 100644
+--- a/src/LuaASTNode.hpp
++++ b/src/LuaASTNode.hpp
+@@ -23,6 +23,7 @@
+ #define __LUA_AST_NODE_HPP__
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ #include <tree_sitter/api.h>
+ 
+ using namespace godot;
+diff --git a/src/LuaASTQuery.hpp b/src/LuaASTQuery.hpp
+index 4ed34d2..4ec7f0e 100644
+--- a/src/LuaASTQuery.hpp
++++ b/src/LuaASTQuery.hpp
+@@ -23,6 +23,7 @@
+ #define __LUA_AST_QUERY_HPP__
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ #include <godot_cpp/variant/typed_array.hpp>
+ #include <tree_sitter/api.h>
+ 
+diff --git a/src/LuaDebug.hpp b/src/LuaDebug.hpp
+index 65a7b5f..f29734d 100644
+--- a/src/LuaDebug.hpp
++++ b/src/LuaDebug.hpp
+@@ -23,6 +23,7 @@
+ #define __LUA_DEBUG_HPP__
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ #include <sol/sol.hpp>
+ 
+ #include "LuaThread.hpp"
+diff --git a/src/LuaError.hpp b/src/LuaError.hpp
+index 1291965..e120998 100644
+--- a/src/LuaError.hpp
++++ b/src/LuaError.hpp
+@@ -25,6 +25,7 @@
+ #include "utils/custom_sol.hpp"
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ 
+ using namespace godot;
+ 
+diff --git a/src/LuaObject.hpp b/src/LuaObject.hpp
+index e552ba5..f97bba9 100644
+--- a/src/LuaObject.hpp
++++ b/src/LuaObject.hpp
+@@ -25,6 +25,7 @@
+ #include "LuaState.hpp"
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ #include <sol/sol.hpp>
+ 
+ using namespace godot;
+diff --git a/src/LuaParser.hpp b/src/LuaParser.hpp
+index e7c727c..392b139 100644
+--- a/src/LuaParser.hpp
++++ b/src/LuaParser.hpp
+@@ -23,6 +23,7 @@
+ #define __LUA_PARSER_HPP__
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ 
+ using namespace godot;
+ 
+diff --git a/src/LuaState.hpp b/src/LuaState.hpp
+index 61a4680..f07be7a 100644
+--- a/src/LuaState.hpp
++++ b/src/LuaState.hpp
+@@ -25,6 +25,7 @@
+ #include "utils/custom_sol.hpp"
+ 
+ #include <godot_cpp/classes/ref_counted.hpp>
++#include <godot_cpp/classes/ref.hpp>
+ #include <godot_cpp/templates/hash_map.hpp>
+ 
+ using namespace godot;
+diff --git a/tools/code_generation/generate_cpp_code.py b/tools/code_generation/generate_cpp_code.py
+index 5162806..cbb3126 100644
+--- a/tools/code_generation/generate_cpp_code.py
++++ b/tools/code_generation/generate_cpp_code.py
+@@ -5,7 +5,7 @@ import re
+ 
+ SRC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "src")
+ DEST_DIR = os.path.join(SRC_DIR, "generated")
+-API_JSON_PATH = os.path.join(SRC_DIR, "..", "lib", "godot-cpp", "gdextension", "extension_api.json")
++API_JSON_PATH = os.path.join(SRC_DIR, "..", "lib", "godot-cpp", "gdextension", "extension_api-4-6.json")
+ PACKAGE_SEARCHER_SRC = os.path.join(SRC_DIR, "luaopen", "package_searcher.lua")
+ LUA_SCRIPT_GLOBALS_SRC = os.path.join(SRC_DIR, "script-language", "globals.lua")
+ PRIMITIVE_VARIANTS = [
+diff --git a/tools/code_generation/generate_lua_godot_api.py b/tools/code_generation/generate_lua_godot_api.py
+index b6cbc7b..ad1f3c9 100644
+--- a/tools/code_generation/generate_lua_godot_api.py
++++ b/tools/code_generation/generate_lua_godot_api.py
+@@ -11,7 +11,7 @@ from json_types import *
+ 
+ SRC_DIR = os.path.dirname(__file__)
+ DEST_DIR = os.path.join(SRC_DIR, "..", "..", "addons", "lua-gdextension", "lua_api_definitions")
+-API_JSON_PATH = os.path.join(SRC_DIR, "..", "..", "lib", "godot-cpp", "gdextension", "extension_api.json")
++API_JSON_PATH = os.path.join(SRC_DIR, "..", "..", "lib", "godot-cpp", "gdextension", "extension_api-4-6.json")
+ 
+ OPERATOR_MAP = {
+     ## LLS doesn't really support equality operators: https://github.com/LuaLS/lua-language-server/issues/1882
+diff --git a/tools/code_generator.py b/tools/code_generator.py
+index 5271885..5827214 100644
+--- a/tools/code_generator.py
++++ b/tools/code_generator.py
+@@ -20,7 +20,7 @@ def generate(env):
+             "tools/code_generation/generate_cpp_code.py",
+             "src/luaopen/package_searcher.lua",
+             "src/script-language/globals.lua",
+-            "lib/godot-cpp/gdextension/extension_api.json",
++            "lib/godot-cpp/gdextension/extension_api-4-6.json",
+             "lib/godot-cpp/gen/include/godot_cpp/variant/utility_functions.hpp",
+         ],
+         action=python_bin + " $SOURCE",
+@@ -35,7 +35,7 @@ def generate(env):
+         ],
+         [
+             "tools/code_generation/generate_lua_godot_api.py",
+-            "lib/godot-cpp/gdextension/extension_api.json",
++            "lib/godot-cpp/gdextension/extension_api-4-6.json",
+         ],
+         action=python_bin + " $SOURCE",
+     )

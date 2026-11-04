@@ -1,0 +1,23 @@
+extends SceneTree
+func _init():
+	var s := LuaState.new()
+	s.open_libraries(LuaState.LUA_BASE | LuaState.LUA_MATH | LuaState.LUA_STRING | LuaState.LUA_TABLE | LuaState.LUA_COROUTINE | LuaState.GODOT_VARIANT | LuaState.GODOT_UTILITY_FUNCTIONS | LuaState.GODOT_CLASSES)
+	var f = s.do_string("""
+	return function(name, x) 
+	  local ok, e = pcall(function() return tostring(x) end)
+	  print(name, 'type=', type(x), ok, e)
+	  print('  index[0]', pcall(function() return x[0] end))
+	  print('  index[1]', pcall(function() return x[1] end))
+	  print('  size()', pcall(function() return x:size() end))
+	  print('  length', pcall(function() return x.size end))
+	  print('  #', pcall(function() return #x end))
+	  print('  .x', pcall(function() return x.x end))
+	  print('  .a', pcall(function() return x.a end))
+	  print('  [a]', pcall(function() return x['a'] end))
+	end""")
+	f.invoke("packed", PackedFloat32Array([1.5,2.5,3.5]))
+	f.invoke("array", [10,20,30])
+	f.invoke("dict", {"a": 5})
+	f.invoke("vec2", Vector2(3,4))
+	f.invoke("vec2arr", PackedVector2Array([Vector2(1,2)]))
+	quit()

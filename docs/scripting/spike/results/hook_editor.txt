@@ -1,0 +1,118 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+Godot 4.7.2-stable (official) Lua Lua 5.4
+
+### (c1) Count-hook overhead on a pure Lua arithmetic loop (5000000 iterations, ~20000000 VM instructions)
+| hook | median ms | p95 ms |
+| off | 25.14 | 34.90 |
+| on, Lua-function hook, count=100 | 265.96 | 498.78 |
+| on, Lua-function hook, count=1000 | 84.55 | 104.70 |
+| on, Lua-function hook, count=10000 | 64.57 | 89.75 |
+| on, Lua-function hook, count=100000 | 63.27 | 63.52 |
+| on, GDScript Callable hook, count=1000 | 87.89 | 199.18 |
+| on, GDScript Callable hook, count=10000 | 76.55 | 94.44 |
+(hook calls for Lua hook count=1000 over this loop: ~20000)
+
+### (c2) Hook overhead on realistic bullet callbacks (4000 per-bullet tick_cmd-style calls / frame)
+| hook | median ms/frame | p95 ms/frame |
+| off | 5.76 | 7.98 |
+| on, Lua-function hook, count=100 | 7.29 | 7.49 |
+| on, Lua-function hook, count=1000 | 5.89 | 6.74 |
+| on, Lua-function hook, count=10000 | 5.63 | 6.09 |
+
+### (c3) Does the hook interrupt runaway code? (state stays usable afterwards)
+  while true do end  (budget 2M instr)           -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:8: in hook '?'
+	[string "..."]:11: in function <[string "..."]:11>) status=2
+    aborted after 9.9 ms; hook-counted instructions: 2001000
+  next call L.ok() on same state                 -> ok
+  for 2000: pcall(function() while true do end end)  [raw pcall] -> swallowed 2000 budget errors, script kept running
+    took 274.3 ms: a raw pcall SWALLOWS the budget error (an unbounded `while true do pcall(...) end` never terminates; observed hang in a first run)
+  same, with sandbox pcall that re-raises the budget sentinel -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:17: in function 'base.pcall'
+	[string "..."]:12: in function <[string "..."]:12>) status=2
+    aborted after 243.8 ms
+  unbounded table growth (budget 2M instr)       -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:8: in hook '?'
+	[string "..."]:26: in function <[string "..."]:26>) status=2
+    Lua memory after abort: 122.6 MB
+    Lua memory after collect_garbage: 46.3 MB
+  pathological ('a'):rep(2000):match('.-b') -> <null> after 15.8 ms (budget NOT triggered: only a few VM instructions)
+  pathological ('a'):rep(8000):match('.-b') -> <null> after 219.9 ms (budget NOT triggered: only a few VM instructions)
+  pathological ('a'):rep(16000):match('.-b') -> <null> after 903.1 ms (budget NOT triggered: only a few VM instructions)
+  ('x'):rep(2^27) -> 134217728, took 636.1 ms, Lua mem now 128.7 MB (no memory cap in binding)
+
+### (c4) Hook inheritance for coroutines (finite loops, 30M iterations; budget 2M instr)
+  Lua-created coroutine.wrap loop (hook set on main thread) -> 30000000
+    took 218.9 ms (an aborted run would be ~ms; a full run ~hundreds of ms)
+  LuaCoroutine + HOOK_YIELD every 100k instr: finished after 90 yields (status=-1, result=9000003000000)
+  infinite loop in LuaCoroutine: host stopped resuming after 21 slices; status=1 (yield-based budget; discarding the coroutine kills it)
+
+### (d1) Error isolation: errors must come back as values, never crash
+  err_plain                                      -> LuaError([string "..."]:28: boom
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:28: in function <[string "..."]:28>) status=2
+  err_table                                      -> LuaError(An unknown error has triggered the default error handler
+stack traceback:
+	[C]: in function 'base.error'
+	[string "..."]:29: in function <[string "..."]:29>) status=2
+  err_nil                                        -> LuaError([string "..."]:30: attempt to index a nil value (local 'x')
+stack traceback:
+	[string "..."]:30: in function <[string "..."]:30>) status=2
+  err_in_pcall                                   -> false:inner
+  err_in_coro                                    -> false:[string "..."]:32: in coro
+  call_bad_godot                                 -> LuaError([string "..."]:33: attempt to call a nil value (method 'no_such_method')
+stack traceback:
+	[string "..."]:33: in function <[string "..."]:33>) status=2
+  call_bad_args                                  -> <null>
+  stack_overflow                                 -> LuaError([string "..."]:35: stack overflow
+stack traceback:
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	...	(skipping 999970 levels)
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in upvalue 'f'
+	[string "..."]:35: in function <[string "..."]:35>
+	(...tail calls...)) status=2
+  L.ok() still works afterwards                  -> ok
+  syntax error load_string                       -> LuaError([string "bad"]:1: <name> expected near '(') status=3
+  do_string runtime error                        -> LuaError([string "error('x')"]:1: x
+stack traceback:
+	[C]: in function 'base.error'
+	[string "error('x')"]:1: in main chunk) status=2
+  calling Callable of freed RefCounted           -> <null>
+  method on freed Node object from Lua           -> LuaError([string "return nd:get_name()"]:1: attempt to call a nil value (method 'get_name')
+stack traceback:
+	[string "return nd:get_name()"]:1: in main chunk) status=2
+  engine main loop still ticking after errors: yes (2 frames processed)
+
+### (d2) Coroutine churn (issue #240 style: create/finish/drop many coroutines)
+  Lua-side: 200k coroutine.create (half finished, half dropped suspended): 548.5 ms; mem 0.2 MB
+  after collect_garbage: 0.1 MB
+  GDScript-side: 100k LuaCoroutine.create/drop (1/3 run, 1/3 hooked, 1/3 untouched): 160.4 ms; created=100000; mem 0.2 MB
+  3000 per-frame hooked coroutines (half finished, half dropped suspended) across frames: no crash; mem 0.3 MB
+  state freed / recreated x200 ...
+DONE (process still alive)

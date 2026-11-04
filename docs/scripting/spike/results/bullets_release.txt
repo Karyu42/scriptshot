@@ -1,0 +1,61 @@
+WARNING: Property not found: 'lua_gdextension/lua_script_language/script_import_map'.
+     at: get_setting_with_override (core/config/project_settings.cpp:435)
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+Godot 4.7.2-stable (official) Lua Lua 5.4
+frames per config: 500 (5 repeats x 100, 30 warmup each)
+### on_tick (ms per frame spent in Lua phase incl. GDScript-side command handling)
+| N | % ticking | mode | callbacks/frame | median ms | p95 ms | max ms |
+| 1000 | 1% | gd_native_tick | 10 | 0.001 | 0.001 | 0.013 |
+| 1000 | 1% | tick_empty | 10 | 0.002 | 0.002 | 0.009 |
+| 1000 | 1% | tick_cmd | 10 | 0.007 | 0.009 | 0.016 |
+| 1000 | 1% | tick_batch | 10 | 0.008 | 0.008 | 0.015 |
+| 1000 | 10% | gd_native_tick | 100 | 0.008 | 0.012 | 0.019 |
+| 1000 | 10% | tick_empty | 100 | 0.015 | 0.022 | 0.047 |
+| 1000 | 10% | tick_cmd | 100 | 0.076 | 0.122 | 0.172 |
+| 1000 | 10% | tick_batch | 100 | 0.067 | 0.095 | 0.113 |
+| 1000 | 100% | gd_native_tick | 1000 | 0.088 | 0.100 | 0.125 |
+| 1000 | 100% | tick_empty | 1000 | 0.145 | 0.184 | 0.273 |
+| 1000 | 100% | tick_cmd | 1000 | 0.778 | 1.003 | 1.848 |
+| 1000 | 100% | tick_batch | 1000 | 0.613 | 0.721 | 0.944 |
+| 4000 | 1% | gd_native_tick | 40 | 0.003 | 0.004 | 0.005 |
+| 4000 | 1% | tick_empty | 40 | 0.006 | 0.006 | 0.011 |
+| 4000 | 1% | tick_cmd | 40 | 0.032 | 0.036 | 0.052 |
+| 4000 | 1% | tick_batch | 40 | 0.027 | 0.035 | 0.040 |
+| 4000 | 10% | gd_native_tick | 400 | 0.032 | 0.038 | 0.048 |
+| 4000 | 10% | tick_empty | 400 | 0.055 | 0.061 | 0.092 |
+| 4000 | 10% | tick_cmd | 400 | 0.327 | 0.499 | 4.090 |
+| 4000 | 10% | tick_batch | 400 | 0.244 | 0.282 | 0.389 |
+| 4000 | 100% | gd_native_tick | 4000 | 0.335 | 0.455 | 0.541 |
+| 4000 | 100% | tick_empty | 4000 | 0.532 | 0.636 | 3.568 |
+| 4000 | 100% | tick_cmd | 4000 | 3.076 | 3.314 | 6.646 |
+| 4000 | 100% | tick_batch | 4000 | 2.397 | 2.624 | 5.338 |
+| 10000 | 1% | gd_native_tick | 100 | 0.008 | 0.010 | 0.021 |
+| 10000 | 1% | tick_empty | 100 | 0.015 | 0.017 | 0.051 |
+| 10000 | 1% | tick_cmd | 100 | 0.085 | 0.097 | 0.140 |
+| 10000 | 1% | tick_batch | 100 | 0.066 | 0.077 | 0.105 |
+| 10000 | 10% | gd_native_tick | 1000 | 0.086 | 0.095 | 3.537 |
+| 10000 | 10% | tick_empty | 1000 | 0.138 | 0.160 | 0.219 |
+| 10000 | 10% | tick_cmd | 1000 | 0.807 | 0.897 | 1.198 |
+| 10000 | 10% | tick_batch | 1000 | 0.600 | 0.671 | 4.574 |
+| 10000 | 100% | gd_native_tick | 10000 | 0.830 | 0.929 | 1.104 |
+| 10000 | 100% | tick_empty | 10000 | 1.353 | 1.524 | 4.756 |
+| 10000 | 100% | tick_cmd | 10000 | 7.885 | 8.406 | 15.247 |
+| 10000 | 100% | tick_batch | 10000 | 5.957 | 6.360 | 7.075 |
+### on_hit events
+| N | hits/frame | mode | median ms | p95 ms | max ms |
+| 4000 | 50 | hit_cmd | 0.096 | 0.108 | 0.145 |
+| 4000 | 50 | hit_batch | 0.071 | 0.079 | 0.093 |
+| 4000 | 200 | hit_cmd | 0.373 | 0.422 | 1.066 |
+| 4000 | 200 | hit_batch | 0.276 | 0.302 | 0.339 |
+| 4000 | 1000 | hit_cmd | 1.776 | 1.942 | 2.220 |
+| 4000 | 1000 | hit_batch | 1.324 | 1.507 | 2.562 |
+| 10000 | 50 | hit_cmd | 0.102 | 0.115 | 0.149 |
+| 10000 | 50 | hit_batch | 0.071 | 0.078 | 0.114 |
+| 10000 | 200 | hit_cmd | 0.358 | 0.403 | 0.458 |
+| 10000 | 200 | hit_batch | 0.264 | 0.298 | 0.345 |
+| 10000 | 1000 | hit_cmd | 1.868 | 2.120 | 2.328 |
+| 10000 | 1000 | hit_batch | 1.286 | 1.421 | 1.526 |
+### combined frame (N=4000): 10% ticking + 200 hits
+| combined tick_cmd+hit_cmd | median 0.673 | p95 0.725 | max 0.911 |
+| combined tick_batch+hit_batch | median 0.529 | p95 0.564 | max 0.722 |
+lua memory (N=4000 state tables) bytes: 881031
