@@ -330,8 +330,14 @@ a bullet owned by both bits counts as the player's, like `Layers.hostile_to()`.
 
 Lowering the cap at runtime (`set_bullet_limits`) never removes bullets; it only
 refuses new ones until enough have despawned. A reflected bullet keeps its slot,
-so a reflection is never refused. The benchmark lifts both limits
-(`logical_cap = capacity`, `enemy_reserve = 0`) so it can measure any count.
+so a reflection is never refused. That includes an enemy bullet reflected *into*
+the player's ownership: it does not check the player's limit, so the pillars rule
+"player-owned bullets are hard-capped" holds for spawns, not for reflections (the
+count can exceed `logical_cap - enemy_reserve` by the number of reflected
+bullets, and never exceeds the physical `capacity`). The benchmark lifts both
+limits (`logical_cap = capacity`, `enemy_reserve = 0`) so it can measure any
+count: it times the raw simulation cost, **not** the shipped 10,000 / 30%
+configuration, which the CI gate therefore does not exercise.
 
 **Per-owner live counters.** `pool.owner_counts[]` (indexed `OWNER_NONE` /
 `OWNER_PLAYER` / `OWNER_ENEMY`) is updated in O(1) by spawn, removal (swap-remove
@@ -422,10 +428,46 @@ whose velocity became NaN/inf is killed with `DespawnReason.INVALID`
 cannot be seen; scripts must use `set_velocity` (the batch API does). Swept
 collision means a bullet at the ceiling (66.7 px per tick) cannot tunnel.
 
+### Numeric field validation
+
+The same rule covers every other numeric field of a bullet, because one NaN or inf
+spreads: an `INF` radius made `max_radius` (the hurtbox grid margin) infinite and no
+bullet hit anything any more, a NaN `acceleration` / `turn_rate` turned `pos` and
+`vel` into NaN, a NaN `lifetime` made an immortal bullet that held a slot of the
+cap forever.
+
+* **At spawn** (`BulletPool.spawn`, `spawn_simple`): a NaN or inf in `position`,
+  `velocity`, `radius`, `lifetime`, `acceleration`, `turn_rate`, `damage`,
+  `param_a`, `param_b` (or an infinite `angle`; a NaN angle still means "face along
+  velocity") rejects the shot: -1, `invalid_total` +1, one capped warning that names
+  the field (`BulletPool.spawn`), `on_spawn` never runs. A *finite* value outside
+  its range is clamped into it (a typo like `radius = 1e9` is not worth dropping the
+  shot for).
+* **After a hook** (`BulletPool.sanitize(i)`, called for hooked bullets only after
+  `on_spawn`, `on_update`, `can_hit` and `on_hit`; plain bullets pay nothing): a NaN
+  or inf in any of those fields, `age`, `pos` or `rot` kills the bullet as
+  `DespawnReason.INVALID` (counted, `BulletPool.hook_write` warning naming the
+  field; the velocity keeps its older `BulletPool.velocity` key), out-of-range
+  finite values are clamped, a speed over the ceiling is cut, and a hook-grown
+  radius widens `max_radius`. A bullet killed this way lands no hit.
+
+| Field | Range (`BulletLimits`, provisional crash guards, not design limits) |
+| --- | --- |
+| `radius` | 0 to `MAX_RADIUS` = 256 px |
+| `lifetime` | 0 to `MAX_LIFETIME` = 600 s |
+| `acceleration` | \|a\| up to `MAX_ACCELERATION` = 1,000,000 px/s^2 (the speed ceiling still applies) |
+| `turn_rate` | \|w\| up to `MAX_TURN_RATE` = 1,000 rad/s |
+| `damage` | 0 to `MAX_DAMAGE` = 1,000 (a negative value would heal) |
+| `param_a`, `param_b` | \|p\| up to `MAX_PARAM` = 1e30 (keeps the double inside float32) |
+
+Like velocity, direct writes to the arrays of a bullet *without* a hook, or to
+*another* bullet from a hook, cannot be seen; the batch API commits through the
+checked paths.
+
 ### Owner inheritance for hook-spawned bullets
 
-A bullet spawned from a hook (`on_spawn`, `on_update`, `on_hit`, `on_despawn` of a
-`BulletBehavior`, through `emitter.request_shot_id()`) takes `owner_layer` from the
+A bullet spawned from a hook (`on_spawn`, `on_update`, `can_hit`, `on_hit`,
+`on_despawn` of a `BulletBehavior`, through `emitter.request_shot_id()`) takes `owner_layer` from the
 **bullet whose hook spawned it**. It never comes from the behavior record or from
 a field the script passes: the only way to change an owner is `reflect`, which is
 guarded by `max_reflections`; if a script could choose the owner of what it
@@ -443,6 +485,15 @@ spawns it could mint enemy-owned bullets around that guard.
   spawn into the enemy reserve.
 * Spawns outside any hook (a turret, a boss emitter, the player's weapon) are
   unchanged: the request's owner is used.
+* The context is `BulletPool.hook_owner`, set by `BulletManager` around **every**
+  hook call (`on_spawn`, `on_update`, `can_hit`, `on_hit`, `on_despawn`). The pool
+  also enforces it for a hook that calls `pool.spawn()` / `pool.spawn_simple()`
+  directly (hooks are handed the pool): the request's owner is replaced (a capped
+  `BulletPool.spawn.owner` warning when it was not the default), and a
+  `spawn_simple` bullet from a hook belongs to the hook's owner instead of being
+  unowned. Not covered: a handler of a *signal* (`Hurtbox.hit`, `Health`,
+  `Reflector.bullet_reflected`) is game code, not a bullet hook, and spawns as
+  whatever it asks for.
 * `ShotEmitter.request_child_shot_id(parent_id, request)` /
   `BulletManager.spawn_child()` is the path for spawns that run **after** the hook
   returned (the batch/Lua commit resolves its `row` to the parent's stable id and
