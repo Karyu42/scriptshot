@@ -563,7 +563,8 @@ class SitePoker:
 
 	func can_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> bool:
 		_poke(pool, "can_hit")
-		return true
+		# Veto when this is the site under test: no hit, so no on_hit that would flag the pool too.
+		return site != "can_hit"
 
 	func on_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> void:
 		_poke(pool, "on_hit")
