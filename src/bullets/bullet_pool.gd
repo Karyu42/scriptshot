@@ -113,9 +113,13 @@ var hook_owner := -1
 ## together with `hook_owner`). A hook that reflects its own bullet hands the rest of
 ## the hook the new owner: see reflect().
 var hook_slot := -1
+## How many times sweep_cross_writes() has run (diagnostics and tests: a tick in which
+## nothing flagged the pool must not add to it).
+var sweeps_run := 0
 ## True once any hook (on_spawn, on_update, can_hit, on_hit, on_despawn) ran since the
-## last sweep_cross_writes(): BulletManager sets it at every hook call site (run_update_hooks()
-## does for on_update) and only sweep_cross_writes() clears it. See there for the soundness
+## last sweep_cross_writes(): BulletManager sets it after every hook it calls (a hook the
+## behaviour does not override is not called, see BulletBehavior.hook_mask; run_update_hooks()
+## does it for on_update) and only sweep_cross_writes() clears it. See there for the soundness
 ## argument that lets advance() skip the clock checks.
 var hook_ran := false
 
@@ -550,6 +554,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 ## bullet that never hits only reaches the renderer: an invisible or oversized quad.
 func sweep_cross_writes() -> void:
 	hook_ran = false
+	sweeps_run += 1
 	var p_arr := pos
 	var pp_arr := prev_pos
 	var v_arr := vel

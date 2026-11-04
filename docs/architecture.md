@@ -492,8 +492,21 @@ anything:
   ticks, an `on_spawn` from the emitter: a speed over the ceiling must not travel a tick
   first) and **at the end of `step()`**, after the despawn hooks and `flush_dead()` and
   before the renderer reads the bullets, the last two if `hook_ran`. `hook_ran` is set after
-  every `on_spawn`, `can_hit`, `on_hit` and `on_despawn` call. A tick in which no hook of any
-  kind ran sweeps nothing.
+  every `on_spawn`, `can_hit`, `on_hit` and `on_despawn` call that was made. A tick in which no
+  hook of any kind ran sweeps nothing.
+* **Hook mask** (`BulletBehavior.HOOK_*`, `BulletManager._hooks_of()`): only the event hooks a
+  behaviour really overrides are called, and only those set `hook_ran`; an inherited no-op
+  (the base `on_spawn` / `on_despawn` of a behaviour that only has an `on_update`) can write
+  nothing, so it is skipped and does not make every tick run the start and end sweeps. The
+  mask is detected from the script (`BulletBehavior.detect_hooks`) at `register_behavior()`
+  and **cannot go stale**: the manager remembers which script the answer was worked out for
+  and re-detects on the next dispatch if `set_script()` gave the object another one;
+  `refresh_behavior(id)` redoes it after an in-place script reload. A behaviour whose hooks
+  are not plain method overrides (an adapter that forwards to a Callable assigned later, an
+  interpreter) sets `hook_mask = BulletBehavior.HOOK_ALL` (or the bits it needs), which is
+  read at every dispatch; hooks left out of an explicit mask are not called, and in debug
+  builds an explicit mask that omits a hook the script overrides is an assertion failure.
+  `on_update` is not masked: a tick that has hooked bullets always sweeps once after it.
 * **`advance()` keeps the plain clock test** (`not a < lifetime`, which ends a NaN age or
   lifetime instead of keeping it, at the cost of `age >= lifetime`). Why the clock checks
   can live in the sweep: only a hook writes a bad age or lifetime into a bullet; each hook
