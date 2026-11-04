@@ -251,6 +251,23 @@ func test_only_the_hooked_list_is_updated_and_a_plain_bullet_gets_the_cross_writ
 	assert_eq(pool.radius[3], 1.0e9)
 
 
+func test_a_bullet_hook_writing_its_own_prev_pos_is_caught_before_the_next_hook_runs() -> void:
+	# Right after its own hook, not only by the sweep at the end of the loop: the next
+	# bullet's hook must not see the poisoned slot as alive.
+	var pool := _pool(3)
+	var seen_dead: Array[int] = [-1]
+	var w := Writer.new()
+	w.on_call = func(p: BulletPool, i: int) -> void:
+		if i == 0:
+			p.prev_pos[0] = Vector2(NAN, 0.0)
+		elif i == 1:
+			seen_dead[0] = p.dead_reason[0]
+	pool.run_update_hooks(_table(w), DT)
+	var dead_seen: int = seen_dead[0]
+	assert_eq(dead_seen, BulletPool.DespawnReason.INVALID + 1, "dead before bullet 1's hook ran")
+	assert_eq(pool.invalid_total, 1)
+
+
 func test_a_write_into_a_later_hooked_bullet_is_caught_at_that_bullets_turn() -> void:
 	var pool := _pool(3)
 	var w := Writer.new()
