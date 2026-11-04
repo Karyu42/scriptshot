@@ -74,3 +74,24 @@ func test_project_imports_etc2_astc_for_universal_macos_export() -> void:
 	var enabled: bool = str(cfg.get_value("rendering", "textures/vram_compression/import_etc2_astc", false)) == "true"
 	assert_true(enabled,
 		"macOS universal export needs ETC2/ASTC VRAM compression enabled")
+
+
+## A `.gd.uid` file without its script is a leftover of a deleted or renamed script
+## (one sat at the repo root for a while). Godot never reads it again.
+func _orphan_script_uids(dir_path: String, out: Array[String]) -> void:
+	var dir := DirAccess.open(dir_path)
+	if dir == null:
+		return
+	for sub in dir.get_directories():
+		if sub.begins_with(".") or sub == "addons" or sub == "build":
+			continue
+		_orphan_script_uids(dir_path.path_join(sub), out)
+	for f in dir.get_files():
+		if f.ends_with(".gd.uid") and not FileAccess.file_exists(dir_path.path_join(f.trim_suffix(".uid"))):
+			out.append(dir_path.path_join(f))
+
+
+func test_no_script_uid_file_is_left_without_its_script() -> void:
+	var orphans: Array[String] = []
+	_orphan_script_uids("res://", orphans)
+	assert_eq(orphans, [] as Array[String], "orphaned .gd.uid files: delete them")

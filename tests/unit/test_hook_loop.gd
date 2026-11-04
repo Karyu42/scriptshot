@@ -234,16 +234,19 @@ func test_a_bullet_a_hook_marked_out_of_bounds_is_still_checked() -> void:
 	assert_eq(clamped.radius[0], BulletLimits.MAX_RADIUS, "and an out-of-range value is clamped too")
 
 
-func test_only_the_hooked_list_is_checked_plain_bullets_pay_nothing() -> void:
-	var pool := _pool(3)
+func test_only_the_hooked_list_is_updated_and_a_plain_bullet_gets_the_cross_write_sweep() -> void:
+	var pool := _pool(4)
 	pool.behavior[1] = 0  # plain: not on the hooked list after the next advance
+	pool.behavior[3] = 0
 	pool.advance(DT, BIG)
 	assert_eq(pool.hooked_count, 2)
-	pool.radius[1] = 1.0e9  # a direct write to a plain bullet is outside the hook guard
+	pool.radius[1] = 1.0e9  # a direct write to a plain bullet is outside the per-hook check
+	pool.damage[3] = 1.0e9  # a field the sweep does not look at (it is checked when a hit lands)
 	var w := Writer.new()
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(w.calls, 2, "only scripted bullets are updated")
-	assert_eq(pool.radius[1], 1.0e9, "and only they are re-checked")
+	assert_eq(pool.radius[1], BulletLimits.MAX_RADIUS, "but the sweep after the hooks clamps what reached the collision fields")
+	assert_eq(pool.damage[3], 1.0e9, "and leaves a bullet it finds clean alone, whatever else is in it")
 
 
 func test_a_write_into_a_later_hooked_bullet_is_caught_at_that_bullets_turn() -> void:
@@ -265,10 +268,10 @@ func test_a_bullet_killed_or_unscripted_by_an_earlier_hook_gets_no_update() -> v
 		if i == 0:
 			p.mark_dead(1)
 			p.behavior[2] = 0  # what reflect() does
-			p.radius[2] = 1.0e9  # a plain bullet is outside the hook guard (documented)
+			p.radius[2] = 1.0e9  # outside the per-hook guard, caught by the sweep
 	pool.run_update_hooks(_table(w), DT)
 	assert_eq(w.calls, 2, "slots 0 and 3 only")
-	assert_eq(pool.radius[2], 1.0e9, "and the un-scripted bullet is not re-checked either")
+	assert_eq(pool.radius[2], BulletLimits.MAX_RADIUS, "the un-scripted bullet got no update, only the sweep")
 
 
 func test_an_unknown_behavior_id_written_by_a_hook_makes_a_plain_bullet_and_the_loop_goes_on() -> void:

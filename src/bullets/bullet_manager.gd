@@ -590,6 +590,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		return
 	# Opt-in veto (ShotRequest.can_hit_veto): asked before any damage or pierce
 	# bookkeeping. Unflagged bullets only pay for this one byte read per hit.
+	var checked := false
 	if pool.can_hit_veto[bullet] != 0:
 		var veto_id := pool.behavior[bullet]
 		if veto_id != 0:
@@ -605,9 +606,16 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 			# other hooks. A bullet it wrote a NaN into is gone, and lands no hit.
 			if not pool.sanitize(bullet):
 				return
+			checked = true
 			if not allowed:
 				last_veto_count += 1
 				return
+	# Every other bullet is checked once here, before its damage or velocity is read:
+	# a hook may have written into this bullet's fields from another bullet's hook
+	# (see BulletPool.sweep_cross_writes, which only covers position, velocity and
+	# radius), and a NaN damage would reach Health.
+	if not checked and not pool.sanitize(bullet):
+		return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:
