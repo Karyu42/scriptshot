@@ -823,3 +823,78 @@ func test_pool_cap_zero_is_the_explicit_global_unlimited_switch() -> void:
 	m.pool.max_reflections = 0
 	var r := _reflector(Vector2(200, 0))
 	assert_eq(r.effective_limit(m.pool), 0)
+
+
+# --- the return leg when a wall clipped the old path (QA's B1) -------------------------------
+
+## A bullet of `owner_layer` at `from`, flying at `speed` along +x. The velocity is written
+## into the pool after the spawn, so the fixture does not depend on the spawn speed ceiling.
+func _fast_bullet(from: Vector2, speed: float, walls: bool = false, owner_layer: int = Layers.PLAYER) -> int:
+	var r := ShotRequest.new()
+	r.position = from
+	r.velocity = Vector2(300, 0)
+	r.owner_layer = owner_layer
+	r.hit_mask = Layers.hostile_to(owner_layer)
+	r.color = Layers.bullet_color(owner_layer)
+	r.lifetime = 10.0
+	r.collide_world = walls
+	var id := m.emitter.request_shot_id(r)
+	m.pool.vel[_slot(id)] = Vector2(speed, 0)
+	return id
+
+
+## Runs one 1/60 s tick of a 30000 px/s bullet (500 px) through a REVERSE zone at
+## (200, 0) r 40 and returns [impact x (prev_pos), end x of the return leg].
+func _one_tick_through_the_zone(with_wall_behind: bool) -> Vector2:
+	if with_wall_behind:
+		m.add_wall(Rect2(300, -50, 20, 100))  # 100 px behind the zone's centre
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _fast_bullet(Vector2(0, 0), 30000.0, with_wall_behind)
+	_run(1)
+	assert_true(m.emitter.is_bullet_alive(id), "turned around before the wall")
+	assert_eq(zone.reflected_total, 1)
+	var s := _slot(id)
+	return Vector2(m.pool.prev_pos[s].x, m.pool.pos[s].x)
+
+
+func test_a_wall_behind_the_mirror_does_not_shorten_the_return_leg() -> void:
+	# QA's repro. Impact at 156 (0.312 of the 500 px tick), so 344 px of the tick are left:
+	# the leg ends at x = -188 with or without the wall. The reflection point used to be
+	# taken as a fraction of the wall-clipped path (156 / 296) but spent as a fraction of
+	# the whole tick, which left only 0.474 * 500 = 237 px (end at -81).
+	var clear := _one_tick_through_the_zone(false)
+	m.free()
+	before_each()
+	var walled := _one_tick_through_the_zone(true)
+	assert_almost_eq(clear.x, 156.0, 0.01, "impact point, no wall")
+	assert_almost_eq(clear.y, -188.0, 0.1, "end of the return leg, no wall")
+	assert_almost_eq(walled.x, 156.0, 0.01, "impact point does not move")
+	assert_almost_eq(walled.y, clear.y, 0.1, "a wall behind the mirror is irrelevant to the return leg")
+
+
+func test_the_return_leg_reaches_a_hurtbox_even_with_a_wall_behind_the_mirror() -> void:
+	m.add_wall(Rect2(300, -50, 20, 100))
+	var player_box := _counter(Vector2(-150, 0), Layers.PLAYER, 8.0)  # 306 px behind the impact
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _fast_bullet(Vector2(0, 0), 30000.0, true)
+	_run(1)
+	assert_eq(zone.reflected_total, 1)
+	assert_eq(player_box.hits, 1, "the unwalled flight reaches x = -188, so it hits the box at -150")
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+func test_a_wall_clip_does_not_leak_into_a_later_tick_of_another_bullet() -> void:
+	# Bullet A dies on a wall in tick 1 (its slot is then reused by B). B is reflected
+	# in tick 2 on a path no wall touches and must get the full return leg.
+	m.add_wall(Rect2(100, 200, 20, 100))
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var a := _fast_bullet(Vector2(0, 250), 30000.0, true)
+	_run(1)
+	assert_false(m.emitter.is_bullet_alive(a), "A hit the wall")
+	var b := _fast_bullet(Vector2(0, 0), 30000.0, true)
+	_run(1)
+	assert_eq(zone.reflected_total, 1)
+	assert_almost_eq(m.pool.pos[_slot(b)].x, -188.0, 0.1)

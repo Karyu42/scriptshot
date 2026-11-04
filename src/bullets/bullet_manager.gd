@@ -60,13 +60,18 @@ var _behaviors: Array[BulletBehavior] = [null]
 var _sim_time := 0.0
 var _dropped_reported := 0
 var _last_warning_time := -INF
-## Bullets reflected by a zone this tick (slots, and the path fraction of the
-## reflection), plus a per-slot flag. They fly on after the mirror, see
+## Bullets reflected by a zone this tick (slots, and the fraction of the *whole
+## tick* at which the reflection happened), plus a per-slot flag. They fly on after the mirror, see
 ## _continue_reflected(), and the wall hit of their old path no longer counts.
 var _reflected_slots := PackedInt32Array()
 var _reflected_t := PackedFloat32Array()
 var _reflected_flag := PackedByteArray()
 var _reflected_count := 0
+## Per slot: the fraction of the tick's path a wall left to the bullet (1.0 = not
+## clipped). Zone and hurtbox hit times are fractions of this clipped path;
+## _try_reflect() needs them as fractions of the whole tick. Only slots that hit a
+## wall this tick are non-1.0, and they are put back at the end of step().
+var _wall_clip := PackedFloat32Array()
 
 
 func _init() -> void:
@@ -78,6 +83,8 @@ func _ready() -> void:
 	_reflected_slots.resize(capacity)
 	_reflected_t.resize(capacity)
 	_reflected_flag.resize(capacity)
+	_wall_clip.resize(capacity)
+	_wall_clip.fill(1.0)
 	grid = HurtboxGrid.new(world_bounds, cell_size)
 	reflector_grid = HurtboxGrid.new(world_bounds, cell_size)
 	walls = WallGrid.new(world_bounds, cell_size)
@@ -199,6 +206,7 @@ func step(delta: float) -> void:
 	for k in last_wall_hit_count:
 		var i := walls.hit_bullets[k]
 		pool.pos[i] = pool.prev_pos[i].lerp(pool.pos[i], walls.hit_t[k])
+		_wall_clip[i] = walls.hit_t[k]
 
 	var t2 := Time.get_ticks_usec()
 	# Zones and hurtboxes are swept on the same (wall-clipped) path, then their hits
@@ -226,6 +234,8 @@ func step(delta: float) -> void:
 		pool.claim_from_bounds(wall_bullet, BulletPool.DespawnReason.WALL)
 	for r in _reflected_count:
 		_reflected_flag[_reflected_slots[r]] = 0
+	for k in last_wall_hit_count:
+		_wall_clip[walls.hit_bullets[k]] = 1.0
 	_reflected_count = 0
 
 	var t3 := Time.get_ticks_usec()
@@ -353,7 +363,7 @@ func _try_reflect(bullet: int, k: int) -> bool:
 		return false
 	last_reflect_count += 1
 	_reflected_slots[_reflected_count] = bullet
-	_reflected_t[_reflected_count] = t
+	_reflected_t[_reflected_count] = t * _wall_clip[bullet]  # of the whole tick, not of the clipped path
 	_reflected_count += 1
 	_reflected_flag[bullet] = 1
 	return true
