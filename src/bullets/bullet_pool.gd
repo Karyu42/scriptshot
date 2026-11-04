@@ -420,7 +420,40 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 		if hook_owner != o:
 			hook_owner = o
 		behaviors[id].on_update(self, i, delta)
-		sanitize(i)
+		# Same check as sanitize(), inlined for the common case that the hook wrote
+		# nothing wrong (a call costs more than the check itself). Anything it cannot
+		# wave through goes to sanitize(), the one place that decides what is repaired
+		# or killed, so the two cannot disagree: this accepts a bullet only if
+		# sanitize() would have changed nothing about it.
+		var dead := dead_reason[i]
+		if dead != 0 and dead != DespawnReason.BOUNDS + 1:
+			continue  # dead before the hook ended (sanitize() would only return false)
+		var p := pos[i]
+		var v := vel[i]
+		var rt := rot[i]
+		var r := radius[i]
+		var life := lifetime[i]
+		var acc := accel[i]
+		var turn := turn_rate[i]
+		var dmg := damage[i]
+		if (
+			is_finite(p.x + p.y + v.x + v.y + rt.x + rt.y + r + age[i] + life + acc + turn + dmg + param_a[i] + param_b[i])
+			and not (
+				v.length_squared() > MAX_SPEED_SQ
+				or r < 0.0
+				or r > MAX_RADIUS
+				or life < 0.0
+				or life > MAX_LIFETIME
+				or absf(acc) > MAX_ACCELERATION
+				or absf(turn) > MAX_TURN_RATE
+				or dmg < 0.0
+				or dmg > MAX_DAMAGE
+			)
+		):
+			if r > max_radius:
+				max_radius = r
+		else:
+			sanitize(i)
 	hook_owner = outer
 
 
