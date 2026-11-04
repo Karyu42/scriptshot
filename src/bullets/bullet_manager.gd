@@ -180,7 +180,6 @@ func refresh_behavior(id: int) -> void:
 		return
 	_refresh_hooks(id, b)
 	_declared_checked[id] = -2
-	_declared_scripts[id] = null
 
 
 func _refresh_hooks(id: int, b: BulletBehavior) -> void:
