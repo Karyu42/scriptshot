@@ -479,9 +479,22 @@ inf still kill the bullet). The ranges are listed for script authors in
 ### Cost of hooked bullets
 
 A hooked bullet pays, per tick, for the hook call itself, the owner context and the
-post-hook check of every numeric field (`sanitize`): about 0.65 us per bullet on QA's
-box before this change, 1.3 us on the development box (`--hooked=1.0`, a hook that
-does nothing). Where it goes and what was done (`BulletPool.run_update_hooks`):
+post-hook check of every numeric field (`sanitize`). With a hook that does nothing on
+every bullet (`--hooked=1.0`) the extra cost over plain bullets was 1.28 us per bullet
+per tick on the development box (QA measured about 0.65 us on a faster one) and is
+now **0.64 us**, half of it, from `BulletPool.run_update_hooks`. Work p50 per tick, median of
+three interleaved runs of 1200 frames (the box is shared and noisy; p95 in the PR):
+
+| bullets | hooked | before | after |
+| ---: | ---: | ---: | ---: |
+| 5,000 | 0 | 6.51 ms | 6.53 ms |
+| 5,000 | 30% | 8.58 ms | 7.29 ms |
+| 5,000 | 100% | 12.89 ms | 9.71 ms |
+| 10,000 | 0 | 13.38 ms | 13.20 ms |
+| 10,000 | 30% | 17.15 ms | 15.37 ms |
+| 10,000 | 100% | 26.45 ms | 19.50 ms |
+
+Where the cost goes and what was done:
 
 * **The check cannot be narrowed to "the fields the hook touched".** Hooks write the
   public packed arrays directly (`pool.vel[i] = ...`, documented API), and GDScript
