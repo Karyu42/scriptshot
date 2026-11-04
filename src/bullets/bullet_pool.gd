@@ -251,39 +251,49 @@ func spawn(request: ShotRequest) -> int:
 	user[i] = request.user
 	pos[i] = request.position
 	prev_pos[i] = request.position
-	var velocity := BulletLimits.clamp_velocity(request.velocity)
+	# Every field is read from the request once: the clamped value is stored, and
+	# compared with what was asked to tell whether anything had to be clamped.
+	var asked_velocity := request.velocity
+	var velocity := BulletLimits.clamp_velocity(asked_velocity)
 	vel[i] = velocity
 	if is_nan(request.angle):
 		var speed := velocity.length()
 		rot[i] = velocity / speed if speed > 0.0 else Vector2.RIGHT
 	else:
 		rot[i] = Vector2.from_angle(request.angle)
-	var r := clampf(request.radius, 0.0, BulletLimits.MAX_RADIUS)
+	var asked_r := request.radius
+	var r := clampf(asked_r, 0.0, BulletLimits.MAX_RADIUS)
 	radius[i] = r
 	age[i] = 0.0
-	var life := clampf(request.lifetime, 0.0, BulletLimits.MAX_LIFETIME)
+	var asked_life := request.lifetime
+	var life := clampf(asked_life, 0.0, BulletLimits.MAX_LIFETIME)
 	lifetime[i] = life
-	var acc := clampf(request.acceleration, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
+	var asked_acc := request.acceleration
+	var acc := clampf(asked_acc, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
 	accel[i] = acc
-	var turn := clampf(request.turn_rate, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
+	var asked_turn := request.turn_rate
+	var turn := clampf(asked_turn, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
 	turn_rate[i] = turn
-	var dmg := clampf(request.damage, 0.0, BulletLimits.MAX_DAMAGE)
+	var asked_dmg := request.damage
+	var dmg := clampf(asked_dmg, 0.0, BulletLimits.MAX_DAMAGE)
 	damage[i] = dmg
-	var pa := clampf(request.param_a, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	var asked_pa := request.param_a
+	var pa := clampf(asked_pa, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
 	param_a[i] = pa
-	var pb := clampf(request.param_b, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	var asked_pb := request.param_b
+	var pb := clampf(asked_pb, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
 	param_b[i] = pb
-	# Nothing was clamped (the normal case): eight compares. Otherwise say so, once
+	# Nothing clamped (the normal case) costs eight compares. Otherwise say so, once
 	# per field and rate-limited (a clamp used to be silent).
 	if (
-		velocity != request.velocity
-		or r != request.radius
-		or life != request.lifetime
-		or acc != request.acceleration
-		or turn != request.turn_rate
-		or dmg != request.damage
-		or pa != request.param_a
-		or pb != request.param_b
+		velocity != asked_velocity
+		or r != asked_r
+		or life != asked_life
+		or acc != asked_acc
+		or turn != asked_turn
+		or dmg != asked_dmg
+		or pa != asked_pa
+		or pb != asked_pb
 	):
 		_warn_clamped_request("BulletPool.spawn", request)
 	color[i] = request.color
