@@ -55,7 +55,7 @@ func _child_request(owner_layer: int, mask: int = -1) -> ShotRequest:
 
 
 ## A parent bullet of `owner_layer` whose hooks run `spawner`.
-func _parent(spawner: Spawner, owner_layer: int) -> int:
+func _parent(spawner: BulletBehavior, owner_layer: int) -> int:
 	var r := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
 	r.lifetime = 5.0
 	r.owner_layer = owner_layer
@@ -438,3 +438,130 @@ func test_pool_spawn_simple_outside_a_hook_is_still_unowned() -> void:
 	assert_eq(manager.pool.owner_layer[slot], 0)
 	assert_eq(manager.pool.hit_mask[slot], Layers.ENEMY)
 	assert_eq(manager.pool.owner_counts[BulletPool.OWNER_NONE], 1)
+
+
+# --- a hook that reflects its own bullet and then spawns ------------------------------
+
+## on_update: reflects a bullet (its own, or `other_id`) and then spawns one child with
+## `child_request`. `via_pool` reflects through the pool and spawns through
+## pool.spawn() instead of the emitter / manager.
+class ReflectThenSpawn:
+	extends BulletBehavior
+	var manager: BulletManager
+	var child_request: ShotRequest
+	var new_owner := Layers.ENEMY
+	var keep_script := true
+	var other_id := -1  # reflect this bullet instead of the running one
+	var via_pool := false
+	var done := false
+	var reflected_ok := false
+	var child_slot := -1
+
+	func on_update(pool: BulletPool, index: int, _delta: float) -> void:
+		if done:
+			return
+		done = true
+		var target := other_id if other_id >= 0 else pool.id_of(index)
+		if via_pool:
+			reflected_ok = pool.reflect(pool.slot_of(target), new_owner, false, 1.0, keep_script)
+			child_slot = pool.spawn(child_request)
+		else:
+			reflected_ok = emitter.reflect_bullet(target, new_owner, false, 1.0, keep_script)
+			child_slot = manager.spawn(child_request)
+
+
+func _reflect_then_spawn(owner_layer: int, new_owner: int) -> ReflectThenSpawn:
+	var s := ReflectThenSpawn.new()
+	s.manager = manager
+	s.new_owner = new_owner
+	# The request asks for the default (player) owner, as a script that knows nothing of
+	# the reflection would.
+	s.child_request = _child_request(Layers.PLAYER)
+	return s
+
+
+func test_a_hook_that_reflects_its_own_bullet_then_spawns_gives_the_child_the_new_owner() -> void:
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	var id := _parent(s, Layers.PLAYER)
+	manager.step(DT)
+	assert_true(s.reflected_ok)
+	assert_eq(_owner_of(id), Layers.ENEMY, "the parent was handed over")
+	assert_true(s.child_slot >= 0)
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.ENEMY, "the child follows the post-reflect owner")
+	assert_eq(manager.pool.hit_mask[s.child_slot], Layers.PLAYER, "and is hostile to the player, not to the enemy")
+	assert_true(manager.pool.counters_consistent())
+
+
+func test_a_hook_that_reflects_its_own_bullet_back_to_the_player_spawns_player_children() -> void:
+	var s := _reflect_then_spawn(Layers.ENEMY, Layers.PLAYER)
+	s.child_request = _child_request(Layers.ENEMY)
+	var id := _parent(s, Layers.ENEMY)
+	manager.step(DT)
+	assert_true(s.reflected_ok)
+	assert_eq(_owner_of(id), Layers.PLAYER)
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.PLAYER)
+	assert_eq(manager.pool.hit_mask[s.child_slot], Layers.ENEMY)
+
+
+func test_the_same_holds_when_the_hook_goes_through_the_pool_directly() -> void:
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	s.via_pool = true
+	_parent(s, Layers.PLAYER)
+	manager.step(DT)
+	assert_true(s.reflected_ok)
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.ENEMY)
+	assert_true(manager.pool.counters_consistent())
+
+
+func test_a_reflect_that_drops_the_script_still_hands_the_rest_of_that_hook_the_new_owner() -> void:
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	s.keep_script = false
+	var id := _parent(s, Layers.PLAYER)
+	manager.step(DT)
+	assert_true(s.reflected_ok)
+	assert_eq(manager.pool.behavior[_slot_of(id)], 0, "the script is gone")
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.ENEMY)
+
+
+func test_a_refused_reflect_leaves_the_owner_context_alone() -> void:
+	# The bullet has used up its reflections: reflect() returns false, the owner stays.
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	var id := _parent(s, Layers.PLAYER)
+	manager.pool.reflect_count[_slot_of(id)] = 1  # the default cap is 1
+	manager.step(DT)
+	assert_false(s.reflected_ok)
+	assert_eq(_owner_of(id), Layers.PLAYER)
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.PLAYER)
+
+
+func test_reflecting_another_bullet_does_not_change_the_owner_of_this_hooks_children() -> void:
+	var victim := _plain_bullet(Layers.PLAYER)
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	s.other_id = victim
+	var id := _parent(s, Layers.PLAYER)
+	manager.step(DT)
+	assert_true(s.reflected_ok)
+	assert_eq(_owner_of(victim), Layers.ENEMY)
+	assert_eq(_owner_of(id), Layers.PLAYER)
+	assert_eq(manager.pool.owner_layer[s.child_slot], Layers.PLAYER, "the running bullet is still the player's")
+
+
+func test_the_owner_context_is_back_to_none_after_a_hook_that_reflected_its_own_bullet() -> void:
+	var s := _reflect_then_spawn(Layers.PLAYER, Layers.ENEMY)
+	_parent(s, Layers.PLAYER)
+	manager.step(DT)
+	assert_eq(manager.pool.hook_owner, -1)
+	var slot := manager.spawn(_child_request(Layers.PLAYER))
+	assert_eq(manager.pool.owner_layer[slot], Layers.PLAYER, "outside a hook the request's owner stands")
+
+
+func _slot_of(id: int) -> int:
+	return manager.pool.slot_of(id)
+
+
+func _plain_bullet(owner_layer: int) -> int:
+	var r := ShotRequest.with_velocity(Vector2(200, 200), Vector2(10, 0))
+	r.lifetime = 5.0
+	r.owner_layer = owner_layer
+	r.hit_mask = Layers.hostile_to(owner_layer)
+	return manager.emitter.request_shot_id(r)

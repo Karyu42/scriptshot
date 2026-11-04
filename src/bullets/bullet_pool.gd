@@ -106,6 +106,10 @@ var veto_count := 0
 ## (spawn() and spawn_simple(), also when a hook calls the pool directly) takes
 ## this owner, never the one the request names: only reflect() changes an owner.
 var hook_owner := -1
+## Slot of the bullet whose hook is running right now, -1 outside any hook (set
+## together with `hook_owner`). A hook that reflects its own bullet hands the rest of
+## the hook the new owner: see reflect().
+var hook_slot := -1
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
@@ -823,6 +827,10 @@ func reflect(
 		owner_counts[old_slot] -= 1
 		owner_counts[new_slot] += 1
 	owner_layer[slot] = new_owner_layer
+	if slot == hook_slot and hook_owner >= 0:
+		# The hook of this very bullet is running: what it spawns from here on
+		# belongs to the new owner (a reflected bullet's children are the new side's).
+		hook_owner = new_owner_layer
 	if reflect_count[slot] < 255:
 		reflect_count[slot] += 1
 	hit_mask[slot] = Layers.hostile_to(new_owner_layer)

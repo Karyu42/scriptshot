@@ -21,8 +21,9 @@ signal died
 @export var reverse_boost := 1.6
 
 @export_group("Dash")
-## Distance covered by one dash, in pixels (must be at least max_speed *
-## dash_duration, see DashMath).
+## Distance covered by one dash, in pixels. A dash is never slower than running:
+## if max_speed * dash_duration is larger (max_speed above 800 px/s with the
+## defaults) the dash covers that distance instead, see DashMath.
 @export var dash_distance := 160.0
 ## Burst length in seconds.
 @export var dash_duration := 0.2

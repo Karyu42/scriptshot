@@ -88,6 +88,34 @@ func test_dash_moves_the_tuned_distance_along_the_given_direction() -> void:
 	assert_false(player.is_dashing())
 
 
+func test_a_script_raising_the_running_speed_cannot_break_the_dash() -> void:
+	# PlayerState.set_speed above distance / duration (800 px/s) used to make the
+	# curve dip below running speed, and above 1200 px/s collapse to a standstill.
+	player.state.set_speed(1000.0)
+	var start := player.global_position
+	assert_true(player.try_dash(Vector2.RIGHT))
+	await _finish_dash()
+	assert_almost_eq((_end_position - start).x, 1000.0 * player.dash_duration, 0.5, "never less than running for the burst")
+	player.state.set_speed(3000.0)
+	start = player.global_position
+	player._dash.cooldown_left = 0.0
+	assert_true(player.try_dash(Vector2.LEFT))
+	await _finish_dash()
+	assert_almost_eq((_end_position - start).x, -3000.0 * player.dash_duration, 0.5)
+
+
+func test_after_the_burst_the_player_coasts_a_short_way_on_friction() -> void:
+	# Documented: 160 px of burst, then roughly 20 px more (momentum at running
+	# speed against friction) when no key is held.
+	var start := player.global_position
+	assert_true(player.try_dash(Vector2.RIGHT))
+	await _finish_dash()
+	assert_almost_eq((_end_position - start).x, 160.0, 0.5)
+	await _step(1.0)
+	var coast := (player.global_position - _end_position).x
+	assert_between(coast, 10.0, 35.0, "about 20 px of coasting")
+
+
 func test_standing_still_dashes_toward_the_aim_direction() -> void:
 	player.aim_direction = Vector2.LEFT
 	var start := player.global_position
