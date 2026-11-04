@@ -373,7 +373,8 @@ tick the bullet hit: `BulletManager.wall_normal_of(slot)` or
 (`Vector2.ZERO` if the bullet did not hit a wall this tick, and after removal).
 A bullet that a Reflector zone turned around that tick never reached the wall of its
 old path, so that wall is not reported (`ZERO`); a wall that stops it on its return
-leg is reported with its real normal.
+leg is reported with its real normal, unless a hurtbox consumed the bullet on that leg
+first (then it never reached the wall: `ZERO`, also in its `on_hit`).
 It is computed on demand from the stored wall index and path (a bullet that hit
 a wall stores two values; the normal itself is only worked out when a script asks),
 so the sweep pays nothing for it.

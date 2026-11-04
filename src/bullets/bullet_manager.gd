@@ -556,7 +556,13 @@ func _continue_reflected(delta: float) -> void:
 		for k in range(first, first + added):
 			_apply_hit(slot, grid.hit_targets[k], grid.hit_t[k])
 		if wall_t >= 0.0:
-			pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
+			if pool.dead_reason[slot] != 0:
+				# A hurtbox (or a guard) ended the bullet before the wall: it never got
+				# there, so no hook is told it hit that wall.
+				_return_wall_hit[slot] = 0
+				_return_wall_normal[slot] = Vector2.ZERO
+			else:
+				pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
 
 
 func _collect_targets() -> void:
@@ -607,6 +613,9 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	if not piercing:
 		# The bullet stops where it touched the target.
 		pool.pos[bullet] = impact
+		# A reflected bullet that this hit consumes does not reach the wall at the end
+		# of its return leg (on_hit already must not report it).
+		_return_wall_hit[bullet] = 0
 	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
 	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
