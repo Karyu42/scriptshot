@@ -3,6 +3,12 @@ extends Node
 ## Debug emitter that keeps roughly `target_count` bullets alive using rotating
 ## spiral emitters, all through the public ShotEmitter interface. Toggle with
 ## the `toggle_stress` action, cycle the target count with `cycle_stress`.
+##
+## It fires as the default (player) owner, so it can only reach the player's share
+## of the saturation limits (`logical_cap - enemy_reserve`, 7,000 of the shipped
+## 10,000): the 10,000 level keeps that many alive instead of asking for shots the
+## pool would refuse every tick. Raise `BulletManager.logical_cap` or lower the
+## reserve to measure more.
 
 signal state_changed(enabled: bool, target_count: int)
 
@@ -45,8 +51,9 @@ func _physics_process(delta: float) -> void:
 	if not enabled or emitter == null:
 		return
 	# Steady-state: spawn rate = alive count / lifetime. Top up if below target.
-	var deficit := get_target_count() - emitter.get_bullet_count()
-	var want := float(get_target_count()) / bullet_lifetime * delta + _carry
+	var target := mini(get_target_count(), emitter.get_logical_cap() - emitter.get_enemy_reserve())
+	var deficit := target - emitter.get_bullet_count()
+	var want := float(target) / bullet_lifetime * delta + _carry
 	var spawn_count := mini(int(want), maxi(deficit, 0))
 	_carry = want - int(want)
 	_request.reset()

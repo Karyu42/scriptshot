@@ -31,6 +31,11 @@ var owner_layer := Layers.PLAYER
 ## invulnerability (Health.SOURCE_PIERCES_SCRIPT_INVULN). Engine i-frames (a hit's
 ## i-frames, the dash) still block it. Off by default.
 var pierces_script_invuln := false
+## Opt-in hit veto: before each hit lands, the bullet's behaviour is asked
+## BulletBehavior.can_hit(); returning false makes the bullet ignore that target
+## (no damage, no on_hit, no pierce use, the bullet flies on). Needs behavior_id
+## != 0 to have any effect. Bullets without the flag never pay for the check.
+var can_hit_veto := false
 ## Flat draw colour.
 var color := Color(1.0, 0.82, 0.4)
 ## Id returned by ShotEmitter.register_behavior(); 0 = plain bullet, no hooks.
@@ -84,6 +89,7 @@ func reset() -> void:
 	hit_mask = Layers.ENEMY
 	owner_layer = Layers.PLAYER
 	pierces_script_invuln = false
+	can_hit_veto = false
 	color = Color(1.0, 0.82, 0.4)
 	behavior_id = 0
 	acceleration = 0.0

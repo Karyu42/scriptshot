@@ -9,7 +9,12 @@ extends RefCounted
 ## the call (slots are reused when other bullets despawn). Read and write the
 ## pool's arrays directly, e.g. pool.vel[index] = ..., pool.param_a[index].
 
-## Set by the emitter on registration; use it to spawn child bullets.
+## Set by the emitter on registration; use it to spawn child bullets. A child
+## spawned from inside a hook takes the `owner_layer` of the bullet whose hook
+## spawned it, whatever its ShotRequest says (a differing owner is ignored with a
+## capped warning); only reflect() changes an owner. Velocities written to
+## pool.vel[index] in a hook are held to BulletLimits.MAX_SPEED (4,000 px/s), a
+## NaN or inf kills the bullet as DespawnReason.INVALID.
 var emitter: ShotEmitter
 
 
@@ -22,6 +27,16 @@ func on_spawn(_pool: BulletPool, _index: int) -> void:
 ## Changes to velocity / heading take effect on the next tick.
 func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
 	pass
+
+
+## Veto for a hit that is about to land; only asked for bullets spawned with
+## ShotRequest.can_hit_veto. Return false to let the bullet ignore `hurtbox`:
+## no damage, no on_hit, no pierce used, the bullet is not consumed and flies on
+## (it is asked again next tick while it still overlaps the target). Runs before
+## any damage or pierce bookkeeping; keep it cheap and do not despawn or spawn
+## from it (use on_hit / on_update for that).
+func can_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> bool:
+	return true
 
 
 ## When the bullet overlaps a hurtbox, before the bullet is despawned
