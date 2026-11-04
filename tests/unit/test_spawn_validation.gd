@@ -65,6 +65,7 @@ class Writer:
 
 func before_each() -> void:
 	ScriptWarnings.reset()
+	_target_hits = 0
 	pool = BulletPool.new(64)
 	manager = BulletManager.new()
 	manager.capacity = 64
@@ -355,9 +356,19 @@ func _spawn_hooked(w: Writer) -> int:
 	return manager.spawn(r)
 
 
+var _target: Hurtbox
+var _target_hits := 0
+
+
+func _on_target_hit(_damage: float, _position: Vector2, _velocity: Vector2) -> void:
+	_target_hits += 1
+
+
 func _hit_target() -> Hurtbox:
 	var hb := Hurtbox.new()
 	hb.radius = 30.0
+	_target = hb
+	hb.hit.connect(_on_target_hit)
 	hb.position = Vector2(20, 10)
 	add_child_autofree(hb)
 	return hb
@@ -383,6 +394,8 @@ func _assert_hook_write_kills(hook: String, field: String, value: float) -> void
 	assert_eq(manager.pool.count, 0, "%s: the bullet is gone" % label)
 	assert_true(w.reasons.has(BulletPool.DespawnReason.INVALID), "%s reaches on_despawn as INVALID" % label)
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write"), 1, "%s warns once" % label)
+	if hook == "can_hit":
+		assert_eq(_target_hits, 0, "%s: the hit does not land (no damage, no signal)" % label)
 
 
 func test_on_update_writing_nan_radius_kills_the_bullet() -> void:
@@ -427,6 +440,14 @@ func test_on_update_writing_nan_param_kills_the_bullet() -> void:
 	assert_eq(manager.pool.invalid_total, 1)
 
 
+func test_on_update_writing_nan_param_b_kills_the_bullet() -> void:
+	_assert_hook_write_kills("update", "param_b", NAN)
+
+
+func test_on_update_writing_inf_param_a_kills_the_bullet() -> void:
+	_assert_hook_write_kills("update", "param_a", INF)
+
+
 func test_on_spawn_writing_nan_turn_rate_kills_the_bullet() -> void:
 	_assert_hook_write_kills("spawn", "turn_rate", NAN)
 
@@ -462,6 +483,15 @@ func test_hook_writes_outside_the_range_are_clamped_not_killed() -> void:
 	assert_eq(manager.pool.max_radius, BulletLimits.MAX_RADIUS, "a hook-grown radius widens the grid margin")
 	assert_eq(manager.pool.invalid_total, 0)
 	assert_eq(manager.pool.count, 1)
+
+
+func test_an_in_range_hook_grown_radius_widens_max_radius() -> void:
+	var w := _hooked("update", "radius", 120.0)
+	var slot := _spawn_hooked(w)
+	manager.step(DT)
+	assert_eq(manager.pool.radius[slot], 120.0, "inside the range: kept as written")
+	assert_eq(manager.pool.max_radius, 120.0, "the hurtbox grid margin follows it")
+	assert_eq(manager.pool.invalid_total, 0)
 
 
 func test_hook_written_lifetime_accel_turn_rate_damage_are_clamped() -> void:
