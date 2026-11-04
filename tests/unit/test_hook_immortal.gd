@@ -95,6 +95,50 @@ func test_an_age_far_below_zero_is_reset_and_a_small_negative_age_is_left_alone(
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 0)
 
 
+func test_a_lifetime_between_the_limit_and_twice_the_limit_is_clamped_like_a_spawn() -> void:
+	for life: float in [601.0, 700.0, 1199.0, 1200.0, 1201.0]:
+		ScriptWarnings.reset()
+		var pool := _one_bullet(life, 0.0)
+		assert_eq(pool.dead_reason[0], 0, "%s: alive" % life)
+		assert_eq(pool.lifetime[0], BulletLimits.MAX_LIFETIME, "%s: clamped to the same 600 s as a spawn" % life)
+		assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.lifetime"), 1)
+
+
+## The fast-path window is (0, MAX_LIFETIME) of time left; its edges.
+func test_the_edges_of_the_clock_window() -> void:
+	var m := BulletLimits.MAX_LIFETIME
+	# just inside the top edge (left just under 600 s after this tick): untouched, silent.
+	var inside := _one_bullet(m - 1.0, 0.0)
+	assert_eq(inside.lifetime[0], m - 1.0)
+	assert_eq(inside.dead_reason[0], 0)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.lifetime") + ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 0)
+	# exactly the maximum lifetime at age 0: fine, nothing to say.
+	var top := _one_bullet(m, 0.0)
+	assert_eq(top.dead_reason[0], 0)
+	assert_eq(top.lifetime[0], m)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.lifetime"), 0)
+	# time left over the limit through a negative age: age is reset, the lifetime is not changed.
+	var over := _one_bullet(m, -10.0)
+	assert_eq(over.lifetime[0], m)
+	assert_eq(over.age[0], 0.0)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 1)
+	ScriptWarnings.reset()
+	# bottom edge: a bullet whose age reaches its lifetime exactly expires on that tick (as
+	# `age >= lifetime` did), one a hair short of it does not.
+	for life: float in [0.25, 1.0, 100.0]:
+		var done := BulletPool.new(2)
+		var rq := ShotRequest.with_velocity(Vector2.ZERO, Vector2.ZERO)
+		rq.lifetime = life
+		done.spawn(rq)
+		done.advance(life, Rect2(-10, -10, 20, 20))
+		assert_eq(done.dead_reason[0], BulletPool.DespawnReason.LIFETIME + 1, "age == lifetime (%s) expires this tick" % life)
+		assert_eq(done.invalid_total, 0)
+		var short := BulletPool.new(2)
+		short.spawn(rq)
+		short.advance(life * 0.999, Rect2(-10, -10, 20, 20))
+		assert_eq(short.dead_reason[0], 0, "a hair short of %s lives" % life)
+
+
 func test_normal_clocks_end_where_they_used_to() -> void:
 	var done := _one_bullet(DT * 0.5, 0.0)
 	assert_eq(done.dead_reason[0], BulletPool.DespawnReason.LIFETIME + 1)

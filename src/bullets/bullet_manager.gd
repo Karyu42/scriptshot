@@ -271,6 +271,7 @@ func _spawn_checked(request: ShotRequest) -> int:
 			pool.hook_owner = pool.owner_layer[i]
 			pool.hook_slot = i
 			b.on_spawn(pool, i)
+			pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 			pool.sanitize(i)
@@ -368,6 +369,7 @@ func step(delta: float) -> void:
 			pool.hook_owner = pool.owner_layer[slot]
 			pool.hook_slot = slot
 			_get_behavior(id).on_despawn(pool, slot, pool.dead_reason[slot] - 1)
+			pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 	for k in last_wall_hit_count:
@@ -379,6 +381,11 @@ func step(delta: float) -> void:
 		_return_wall_normal[_reflected_slots[r]] = Vector2.ZERO
 	_reflected_count = 0
 	pool.flush_dead()
+	# Hooks that ran after the sweep of this tick (on_spawn, can_hit, on_hit, on_despawn,
+	# or an on_spawn between ticks) may have written into any bullet: sweep once more, now,
+	# so nothing bad reaches the renderer below or the next tick. Skipped if nothing ran.
+	if pool.hook_ran:
+		pool.sweep_cross_writes()
 	var t4 := Time.get_ticks_usec()
 
 	_sim_time += delta
@@ -600,6 +607,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 			pool.hook_owner = pool.owner_layer[bullet]
 			pool.hook_slot = bullet
 			var allowed := _get_behavior(veto_id).can_hit(pool, bullet, hurtbox)
+			pool.hook_ran = true
 			pool.hook_owner = outer
 			pool.hook_slot = outer_slot
 			# can_hit has the pool in its hands too: hold the same guards as for the
@@ -612,8 +620,8 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 				return
 	# Every other bullet is checked once here, before its damage or velocity is read:
 	# a hook may have written into this bullet's fields from another bullet's hook
-	# (see BulletPool.sweep_cross_writes, which only covers position, velocity and
-	# radius), and a NaN damage would reach Health.
+	# (BulletPool.sweep_cross_writes covers position, previous position, velocity and
+	# rotation, not radius or damage), and a NaN damage would reach Health.
 	if not checked and not pool.sanitize(bullet):
 		return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
@@ -633,6 +641,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		pool.hook_owner = pool.owner_layer[bullet]
 		pool.hook_slot = bullet
 		_get_behavior(id).on_hit(pool, bullet, hurtbox)
+		pool.hook_ran = true
 		pool.hook_owner = outer
 		pool.hook_slot = outer_slot
 		pool.sanitize(bullet)

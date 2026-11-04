@@ -52,10 +52,9 @@ const MAX_LIFETIME := BulletLimits.MAX_LIFETIME
 const MAX_ACCELERATION := BulletLimits.MAX_ACCELERATION
 const MAX_TURN_RATE := BulletLimits.MAX_TURN_RATE
 const MAX_DAMAGE := BulletLimits.MAX_DAMAGE
-## advance() accepts a bullet whose time left (lifetime - age) is in (0, 2 * MAX_LIFETIME):
-## up to MAX_LIFETIME is normal, the other half leaves room for a script that set a
-## small negative age to delay a bullet. LIFE_LEFT_HALF is the middle of that band.
-const LIFE_LEFT_HALF := MAX_LIFETIME
+## advance() accepts a bullet whose time left (lifetime - age) is in (0, MAX_LIFETIME):
+## the same 600 s that spawn clamps a lifetime to. LIFE_LEFT_HALF is the middle of that band.
+const LIFE_LEFT_HALF := MAX_LIFETIME * 0.5
 
 ## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
 ## does not hide the next target on the path (see can_hit_veto).
@@ -114,6 +113,10 @@ var hook_owner := -1
 ## together with `hook_owner`). A hook that reflects its own bullet hands the rest of
 ## the hook the new owner: see reflect().
 var hook_slot := -1
+## True once any hook (on_spawn, on_update, can_hit, on_hit, on_despawn) ran since the
+## last sweep_cross_writes(): BulletManager sets it at every hook call site and the sweeps
+## clear it. See sweep_cross_writes() for when the sweeps run.
+var hook_ran := false
 
 # --- struct-of-arrays bullet data (all sized to capacity) -------------------
 var pos := PackedVector2Array()
@@ -404,12 +407,11 @@ func advance(delta: float, bounds: Rect2) -> void:
 		var a := age[i] + delta
 		age[i] = a
 		# One test for "still alive and its clock is sane": the time left, life - age, must
-		# lie in (0, 2 * MAX_LIFETIME). `absf(left - half) < half` is false for NaN (a hook
+		# lie in (0, MAX_LIFETIME). `absf(left - half) < half` is false for NaN (a hook
 		# wrote one into age or lifetime), for +/-inf, for a finished bullet (left <= 0)
 		# and for a clock no spawn can produce: a lifetime above MAX_LIFETIME or an age
-		# far below zero, both of which would keep the bullet alive for good (an inf
-		# lifetime or a -inf age never ends by comparison alone). Only those rare cases
-		# take the branch below.
+		# below zero by more than that leaves (an inf lifetime or a -inf age never ends by
+		# comparison alone). Only those rare cases take the branch below.
 		if not absf(lifetime[i] - a - LIFE_LEFT_HALF) < LIFE_LEFT_HALF:
 			var life := lifetime[i]
 			if not is_finite(a + life):
@@ -559,6 +561,7 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 ## invisible or oversized quad for that bullet, nothing else; it was left out because
 ## the extra check costs about a quarter of the sweep.
 func sweep_cross_writes() -> void:
+	hook_ran = false
 	var p_arr := pos
 	var pp_arr := prev_pos
 	var v_arr := vel

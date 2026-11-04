@@ -541,3 +541,87 @@ func test_an_on_hit_poke_into_a_bullet_the_reflector_turns_leaves_no_engine_erro
 	for i in m.pool.count:
 		if m.pool.dead_reason[i] == 0:
 			assert_true(m.pool.pos[i].is_finite() and m.pool.vel[i].is_finite())
+
+
+# --- every hook site, not only on_update (what the sweep after the hooks cannot see) ----------
+
+## Pokes `rot` of slot `victim` (a plain bullet) once, from the hook named by `site`.
+class SitePoker:
+	extends BulletBehavior
+	var site := ""
+	var victim := 0
+	var value := NAN
+	var fired := false
+
+	func _poke(pool: BulletPool, where: String) -> void:
+		if where == site and not fired:
+			fired = true
+			pool.rot[victim] = Vector2(value, 0.0)
+
+	func on_spawn(pool: BulletPool, _i: int) -> void:
+		_poke(pool, "on_spawn")
+
+	func can_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> bool:
+		_poke(pool, "can_hit")
+		return true
+
+	func on_hit(pool: BulletPool, _i: int, _t: Hurtbox) -> void:
+		_poke(pool, "on_hit")
+
+	func on_despawn(pool: BulletPool, _i: int, _reason: int) -> void:
+		_poke(pool, "on_despawn")
+
+
+func _site_run(site: String, value: float) -> SitePoker:
+	m.clear_bullets()
+	ScriptWarnings.reset()
+	var hb := Hurtbox.new()
+	hb.layer = Layers.ENEMY
+	hb.radius = 12.0
+	add_child_autofree(hb)
+	hb.global_position = Vector2(300, 0)
+	var beh := SitePoker.new()
+	beh.site = site
+	beh.value = value
+	var bid := m.register_behavior(beh)
+	# slot 0: the plain victim, far from everything and never hit.
+	var victim := ShotRequest.with_velocity(Vector2(-800, -800), Vector2.ZERO)
+	victim.lifetime = 5.0
+	victim.hit_mask = 0
+	m.emitter.request_shot_id(victim)
+	var w := ShotRequest.with_velocity(Vector2(300, 0), Vector2(10, 0))
+	w.hit_mask = Layers.ENEMY
+	w.behavior_id = bid
+	w.lifetime = 0.01 if site == "on_despawn" else 5.0
+	w.can_hit_veto = site == "can_hit"
+	m.emitter.request_shot_id(w)
+	m.step(DT)
+	return beh
+
+
+func test_rot_poked_from_any_hook_site_is_cleaned_before_the_tick_ends() -> void:
+	for site: String in ["on_spawn", "on_hit", "can_hit", "on_despawn"]:
+		for v: float in [NAN, INF, -INF, 1.0e39]:
+			var before := m.pool.invalid_total
+			var beh := _site_run(site, v)
+			assert_true(beh.fired, "%s: the hook ran" % site)
+			for i in m.pool.count:
+				if m.pool.dead_reason[i] == 0:
+					assert_true(m.pool.rot[i].is_finite(), "%s=%s: rot of slot %d is finite after the step" % [site, v, i])
+			assert_eq(m.pool.invalid_total, before + 1, "%s=%s: the victim was removed as INVALID" % [site, v])
+			assert_false(m.pool.hook_ran, "%s=%s: and the flag was consumed" % [site, v])
+
+
+## The hook sites flag the pool, the sweep clears it, a tick without hooks leaves it alone.
+func test_the_pool_is_flagged_by_every_hook_and_the_sweep_clears_it() -> void:
+	assert_false(m.pool.hook_ran)
+	m.emitter.request_shot_id(_req(Vector2(0, 0)))
+	m.step(DT)
+	assert_false(m.pool.hook_ran, "plain bullets never flag it")
+	var beh := SitePoker.new()
+	beh.site = "none"
+	var bid := m.register_behavior(beh)
+	m.spawn(_req(Vector2(50, 0), bid))
+	assert_true(m.pool.hook_ran, "on_spawn flagged it")
+	m.pool.sweep_cross_writes()
+	assert_false(m.pool.hook_ran, "the sweep cleared it")

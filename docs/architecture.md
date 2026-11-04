@@ -478,21 +478,33 @@ list (already checked this tick), or a child it spawned (checked once, right aft
 so these are caught three ways, none of which cost a tick without hooked bullets
 anything:
 
-* **Sweep after the hooks** (`BulletPool.sweep_cross_writes`, called from
-  `run_update_hooks` only when at least one hook ran): one pass over every slot looking
-  at `pos`, `prev_pos`, `rot` and `vel` (about 55 ns per bullet: three `Vector2` adds and
+* **Sweep** (`BulletPool.sweep_cross_writes`): one pass over every slot looking at
+  `pos`, `prev_pos`, `rot` and `vel` (about 55 ns per bullet: three `Vector2` adds and
   one `is_finite()` call, which GDScript runs much faster than the scalar sums it
   replaced). A NaN or inf in any of them, or a speed over the ceiling, goes to
-  `sanitize()`, which kills (`INVALID`) or clamps as for a bullet's own write, so a bad
-  value is gone before walls, hurtboxes and zones see it. A finite but absurd position
-  (`1e30`) is a plain bounds cull on the next `advance()`.
+  `sanitize()`, which kills (`INVALID`) or clamps as for a bullet's own write. A finite
+  but absurd position (`1e30`) is a plain bounds cull on the next `advance()`. When it
+  runs:
+  * **right after the `on_update` hooks of the tick** (only if one ran), before walls,
+    hurtboxes and zones look at anything;
+  * **at the end of `step()`**, after the despawn hooks and `flush_dead()` and before the
+    renderer reads the bullets, **if any hook ran since the last sweep**
+    (`BulletPool.hook_ran`, which `BulletManager` sets after every `on_spawn`,
+    `can_hit`, `on_hit` and `on_despawn` call; an `on_spawn` between ticks is swept at
+    the end of the next step). This is the one that catches a poke from a hook that runs
+    after the first sweep, such as an `on_despawn` writing a NaN `rot`, before it can
+    reach the instance buffer; the next `advance()` would be a tick too late for the
+    renderer. A tick in which no hook of any kind ran sweeps nothing.
 * **`advance()`**: one test per bullet and tick, `absf(lifetime - age - half) < half`
-  with `half = MAX_LIFETIME`, i.e. the time left must be in (0, 2 * MAX_LIFETIME). It is
+  with `half = MAX_LIFETIME / 2`, i.e. the time left must be in (0, MAX_LIFETIME): the same
+  600 s a spawn clamps to. It is
   false for NaN, for an `inf` lifetime or `-inf` age (which `age < lifetime` alone would
   never end: an immortal bullet), for a finished bullet, and for a clock no spawn can
   produce. Those take a slow branch: non-finite is killed `INVALID`, finished expires
-  as `LIFETIME`, and a finite lifetime over `MAX_LIFETIME` or an age far below zero is
-  clamped (with a warning) and the bullet lives on. The sweep does not look at age or
+  as `LIFETIME` (`age >= lifetime`, as before), and a finite lifetime over `MAX_LIFETIME`
+  is clamped to it, an age that leaves more than `MAX_LIFETIME` to live is reset to 0
+  (both with a warning) and the bullet lives on. A small negative age as a start delay
+  still works while `lifetime - age` stays within 600 s. The sweep does not look at age or
   lifetime on purpose: advance() has to test them every tick anyway (a write after the
   sweep, from `on_hit` / `on_despawn`, must be caught too), and the test replaced
   the old `a >= lifetime` one at about 13 ns per bullet in a micro-benchmark. A NaN
