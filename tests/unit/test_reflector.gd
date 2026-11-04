@@ -829,13 +829,16 @@ func test_pool_cap_zero_is_the_explicit_global_unlimited_switch() -> void:
 
 ## A bullet of `owner_layer` at `from`, flying at `speed` along +x. The velocity is written
 ## into the pool after the spawn, so the fixture does not depend on the spawn speed ceiling.
-func _fast_bullet(from: Vector2, speed: float, walls: bool = false, owner_layer: int = Layers.PLAYER) -> int:
+func _fast_bullet(
+	from: Vector2, speed: float, walls: bool = false, owner_layer: int = Layers.PLAYER, pierce: int = 0
+) -> int:
 	var r := ShotRequest.new()
 	r.position = from
 	r.velocity = Vector2(300, 0)
 	r.owner_layer = owner_layer
 	r.hit_mask = Layers.hostile_to(owner_layer)
 	r.color = Layers.bullet_color(owner_layer)
+	r.pierce = pierce
 	r.lifetime = 10.0
 	r.collide_world = walls
 	var id := m.emitter.request_shot_id(r)
@@ -898,3 +901,129 @@ func test_a_wall_clip_does_not_leak_into_a_later_tick_of_another_bullet() -> voi
 	_run(1)
 	assert_eq(zone.reflected_total, 1)
 	assert_almost_eq(m.pool.pos[_slot(b)].x, -188.0, 0.1)
+
+
+# --- zone -> zone on one fast path, a tie, the return leg's pierce count, a bullet killed meanwhile ---
+
+func test_stale_zone_hits_are_dropped_when_the_first_zone_sends_the_bullet_on_toward_the_next() -> void:
+	# QA's replacement for the REVERSE-only multi-zone test: after a REVERSE zone the
+	# bullet flies away from the next zone, which would decline it anyway, so only a
+	# zone that sends the bullet *on* can show that the second zone's crossing (computed
+	# for the old path) is dropped. Zone a aims at a far target straight ahead.
+	m.pool.max_reflections = 0  # the pool's own guard must not be what stops a second reflection
+	var far := Node2D.new()
+	add_child_autofree(far)
+	far.global_position = Vector2(5000, 0)
+	var a := _reflector(Vector2(150, 0), 30.0)
+	a.mode = Reflector.Mode.AIM_AT_TARGET
+	a.target = far
+	var b := _reflector(Vector2(300, 0), 30.0)
+	b.mode = Reflector.Mode.REVERSE
+	for zone: Reflector in [a, b]:
+		zone.reflects_owners = Layers.PLAYER | Layers.ENEMY
+	var id := _fast_bullet(Vector2(0, 0), 30000.0)
+	_run(1)
+	var s := _slot(id)
+	assert_eq(a.reflected_total, 1)
+	assert_eq(b.reflected_total, 0, "b's crossing was computed for the old path: dropped")
+	assert_eq(m.pool.reflect_count[s], 1)
+	assert_eq(m.last_reflect_count, 1)
+	assert_gt(m.pool.vel[s].x, 0.0, "still flying on toward b")
+
+
+func test_a_zone_wins_a_tie_with_a_hurtbox_at_the_same_point_of_the_path() -> void:
+	# An enemy hurtbox with the very shape of the zone: both are reached at the same
+	# instant. The mirror turns the bullet around, the enemy is not hit.
+	var enemy := _counter(Vector2(200, 0), Layers.ENEMY, 40.0)
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _fast_bullet(Vector2(0, 0), 30000.0)
+	_run(1)
+	assert_eq(zone.reflected_total, 1)
+	assert_eq(enemy.hits, 0, "the zone acts first on a tie")
+	assert_true(m.emitter.is_bullet_alive(id))
+	assert_eq(m.pool.owner_layer[_slot(id)], Layers.ENEMY)
+
+
+func test_the_return_leg_honours_the_bullets_remaining_pierce() -> void:
+	# pierce 2 = three hits. Four player hurtboxes on the way back (impact at 156, leg
+	# ends at -188): the first three are hit, the bullet dies on the third, the fourth
+	# is not reached.
+	var boxes: Array[Counter] = []
+	for x: float in [100.0, 40.0, -20.0, -80.0]:
+		boxes.append(_counter(Vector2(x, 0), Layers.PLAYER, 6.0))
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _fast_bullet(Vector2(0, 0), 30000.0, false, Layers.PLAYER, 2)
+	_run(1)
+	assert_eq(zone.reflected_total, 1)
+	assert_eq([boxes[0].hits, boxes[1].hits, boxes[2].hits, boxes[3].hits], [1, 1, 1, 0])
+	assert_false(m.emitter.is_bullet_alive(id), "the third hit used up the pierce")
+
+
+func test_a_non_piercing_bullet_stops_at_the_first_target_on_the_return_leg() -> void:
+	var near := _counter(Vector2(100, 0), Layers.PLAYER, 6.0)
+	var far := _counter(Vector2(-20, 0), Layers.PLAYER, 6.0)
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	var id := _fast_bullet(Vector2(0, 0), 30000.0)
+	_run(1)
+	assert_eq(near.hits, 1)
+	assert_eq(far.hits, 0)
+	assert_false(m.emitter.is_bullet_alive(id))
+
+
+## Records where a bullet was when it despawned.
+class DespawnRecorder:
+	extends BulletBehavior
+	var calls := 0
+	var at := Vector2(INF, INF)
+
+	func on_despawn(pool: BulletPool, index: int, _reason: int) -> void:
+		calls += 1
+		at = pool.pos[index]
+
+
+## Kills the bullet in slot `victim` when it hits something.
+class Assassin:
+	extends BulletBehavior
+	var victim := -1
+
+	func on_hit(pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		pool.mark_dead(victim, BulletPool.DespawnReason.MANUAL)
+
+
+func test_a_bullet_killed_after_its_reflection_does_not_fly_the_return_leg() -> void:
+	# Bullet A is reflected (it keeps its script), then bullet B's hit hook kills it
+	# within the same tick. A must stay at the impact point instead of being moved
+	# along its return leg.
+	var recorder := DespawnRecorder.new()
+	var assassin := Assassin.new()
+	var recorder_id := m.register_behavior(recorder)
+	var assassin_id := m.register_behavior(assassin)
+	var zone := _reflector(Vector2(200, 0), 40.0)
+	zone.mode = Reflector.Mode.REVERSE
+	zone.keep_script = true
+	_counter(Vector2(100, 300), Layers.ENEMY, 10.0)
+	var req := ShotRequest.new()
+	req.position = Vector2(0, 0)
+	req.velocity = Vector2(300, 0)
+	req.owner_layer = Layers.PLAYER
+	req.hit_mask = Layers.ENEMY
+	req.lifetime = 10.0
+	req.collide_world = false
+	req.behavior_id = recorder_id
+	var a := m.emitter.request_shot_id(req)  # slot 0: processed first
+	req.position = Vector2(0, 300)
+	req.behavior_id = assassin_id
+	var b := m.emitter.request_shot_id(req)  # slot 1
+	m.pool.vel[_slot(a)] = Vector2(30000, 0)
+	m.pool.vel[_slot(b)] = Vector2(30000, 0)
+	assassin.victim = _slot(a)
+	assert_eq(_slot(a), 0)
+	assert_eq(_slot(b), 1)
+	_run(1)
+	assert_eq(zone.reflected_total, 1, "A was reflected before B's hit")
+	assert_eq(recorder.calls, 1, "A was despawned (killed by B's hook)")
+	assert_almost_eq(recorder.at.x, 156.0, 0.01, "at the impact point: it never flew the return leg")
+	assert_eq(m.last_hit_count, 1, "only B's hit counts; the dead A sweeps nothing")
