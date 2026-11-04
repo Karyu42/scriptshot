@@ -163,3 +163,7 @@ func test_a_lifetime_of_400_with_age_minus_1_is_left_alone() -> void:
 	var pool2 := _one_bullet(598.0, -1.0)  # time left 599: still inside, still silent
 	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 0)
 	assert_eq(pool2.dead_reason[0], 0)
+	# The window is open at both ends: a time left of exactly MAX_LIFETIME (599 + 1) is out.
+	var pool3 := _one_bullet(599.0, -1.0)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write.clamp.age"), 1, "time left == MAX_LIFETIME: reset, warned")
+	assert_almost_eq(pool3.age[0], DT, 0.0001, "reset to 0, then this tick's delta")

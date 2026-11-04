@@ -247,6 +247,18 @@ func test_the_sweep_only_runs_after_a_hook_ran() -> void:
 	assert_eq(quiet.radius[0], 1.0e9, "no hook ran, so no sweep: a tick without hooked bullets pays nothing")
 
 
+func test_the_sweep_after_the_update_hooks_consumes_the_flag() -> void:
+	var pool := BulletPool.new(16)
+	var rq := ShotRequest.with_velocity(Vector2.ZERO, Vector2(10, 0))
+	rq.behavior_id = 1
+	pool.spawn(rq)
+	pool.advance(DT, Rect2(-1000, -1000, 2000, 2000))
+	var table: Array[BulletBehavior] = [null, BulletBehavior.new()]
+	pool.hook_ran = false
+	pool.run_update_hooks(table, DT)
+	assert_false(pool.hook_ran, "on_update ran, the sweep ran right after it and cleared the flag")
+
+
 func test_advance_kills_a_bullet_whose_motion_a_hook_poisoned_after_the_sweep() -> void:
 	# A NaN velocity, acceleration or turn rate makes a NaN position: advance() is the net.
 	for field: String in ["vel", "accel", "turn_rate"]:
