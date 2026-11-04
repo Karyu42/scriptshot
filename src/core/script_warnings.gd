@@ -8,11 +8,13 @@ extends RefCounted
 const LIMIT := 3
 
 static var _counts: Dictionary[String, int] = {}
+static var _last: Dictionary[String, String] = {}
 
 
 static func warn(key: String, message: String) -> void:
 	var seen: int = _counts.get(key, 0)
 	_counts[key] = seen + 1
+	_last[key] = message
 	if seen < LIMIT - 1:
 		push_warning(message)
 	elif seen == LIMIT - 1:
@@ -29,5 +31,12 @@ static func printed_count(key: String) -> int:
 	return mini(count(key), LIMIT)
 
 
+## The text of the most recent warning of this kind (printed or suppressed), "" if
+## there was none. For tests: push_warning() output cannot be read back.
+static func last_message(key: String) -> String:
+	return _last.get(key, "")
+
+
 static func reset() -> void:
 	_counts.clear()
+	_last.clear()
