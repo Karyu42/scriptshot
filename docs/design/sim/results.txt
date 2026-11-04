@@ -1,0 +1,39 @@
+seeds 40 walks/seed 20
+
+== bosses by tier of the boss chunk: counts (common, rare, legendary), share %, chunks^2 per boss ==
+0 [34, 0, 0] [100.0, 0.0, 0.0] chunks2/boss 301
+1 [154, 26, 0] [85.6, 14.4, 0.0] chunks2/boss 171
+2 [103, 51, 3] [65.6, 32.5, 1.9] chunks2/boss 326
+3 [71, 78, 28] [40.1, 44.1, 15.8] chunks2/boss 405
+4 [8671, 12063, 5752] [32.7, 45.5, 21.7] chunks2/boss 454
+
+== elites by tier: counts, share %, elites per chunk ==
+0 [817, 0, 0] [100.0, 0.0, 0.0] per chunk 0.080
+1 [2517, 505, 0] [83.29, 16.71, 0.0] per chunk 0.098
+2 [5636, 2057, 73] [72.57, 26.49, 0.94] per chunk 0.152
+3 [7936, 4814, 312] [60.76, 36.85, 2.39] per chunk 0.182
+4 [1167054, 907335, 86465] [54.01, 41.99, 4.0] per chunk 0.180
+
+== model straight (seconds from tutorial exit; found%% within 30 min) ==
+elite                    {'found_%': 100.0, 'median_of_found': 75.5, 'p90_of_found': 186.0, 'expected_s(MLE)': 88.0}
+first_elite_with_herald  {'found_%': 100.0, 'median_of_found': 64.0, 'p90_of_found': 75.0, 'expected_s(MLE)': 51.0}
+rare_elite               {'found_%': 100.0, 'median_of_found': 231.0, 'p90_of_found': 413.0, 'expected_s(MLE)': 249.0}
+legendary_elite          {'found_%': 66.4, 'median_of_found': 762.0, 'p90_of_found': 1518.0, 'expected_s(MLE)': 1747.1}
+boss_sight               {'found_%': 99.9, 'median_of_found': 52.0, 'p90_of_found': 361.0, 'expected_s(MLE)': 130.5}
+boss_arrive              {'found_%': 99.9, 'median_of_found': 82.8, 'p90_of_found': 391.8, 'expected_s(MLE)': 160.8}
+rare_boss_sight          {'found_%': 98.0, 'median_of_found': 350.0, 'p90_of_found': 1005.0, 'expected_s(MLE)': 502.0}
+rare_boss_arrive         {'found_%': 98.0, 'median_of_found': 380.6, 'p90_of_found': 1035.3, 'expected_s(MLE)': 532.4}
+legendary_boss_sight     {'found_%': 69.6, 'median_of_found': 768.0, 'p90_of_found': 1491.0, 'expected_s(MLE)': 1601.4}
+legendary_boss_arrive    {'found_%': 69.6, 'median_of_found': 798.6, 'p90_of_found': 1521.4, 'expected_s(MLE)': 1631.8}
+
+== model wander (seconds from tutorial exit; found%% within 30 min) ==
+elite                    {'found_%': 100.0, 'median_of_found': 80.5, 'p90_of_found': 252.0, 'expected_s(MLE)': 108.5}
+first_elite_with_herald  {'found_%': 100.0, 'median_of_found': 63.0, 'p90_of_found': 75.0, 'expected_s(MLE)': 50.2}
+rare_elite               {'found_%': 97.5, 'median_of_found': 547.0, 'p90_of_found': 1179.0, 'expected_s(MLE)': 668.8}
+legendary_elite          {'found_%': 19.8, 'median_of_found': 1195.5, 'p90_of_found': 1651.0, 'expected_s(MLE)': 8481.6}
+boss_sight               {'found_%': 99.5, 'median_of_found': 73.0, 'p90_of_found': 364.0, 'expected_s(MLE)': 152.8}
+boss_arrive              {'found_%': 99.5, 'median_of_found': 103.3, 'p90_of_found': 394.0, 'expected_s(MLE)': 183.1}
+rare_boss_sight          {'found_%': 67.4, 'median_of_found': 635.0, 'p90_of_found': 1496.0, 'expected_s(MLE)': 1594.1}
+rare_boss_arrive         {'found_%': 67.4, 'median_of_found': 665.0, 'p90_of_found': 1526.2, 'expected_s(MLE)': 1624.6}
+legendary_boss_sight     {'found_%': 16.2, 'median_of_found': 1179.0, 'p90_of_found': 1733.0, 'expected_s(MLE)': 10415.7}
+legendary_boss_arrive    {'found_%': 16.2, 'median_of_found': 1209.4, 'p90_of_found': 1763.5, 'expected_s(MLE)': 10446.0}

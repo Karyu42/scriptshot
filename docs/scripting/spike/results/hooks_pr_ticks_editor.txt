@@ -1,0 +1,50 @@
+Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
+
+Godot 4.7.2-stable (official) | Lua Lua 5.4 | PR #2 pool/manager copied from feat/core-scaffold
+per config: 3 x 150 frames after 40 warmup; render off, 32 hurtboxes, steady-state respawn churn (as tests/benchmark)
+
+### Tick hooks: hook-phase ms per tick (median / p95); `step` = whole BulletManager.step; copy/lua/apply = breakdown medians for option B
+| N | scripted | option | hook med | hook p95 | step med | step p95 | copy in | Lua call | apply | hooked bullets |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1000 | 100% | C declarative (no hooks) | 0.001 | 0.001 | 0.478 | 0.568 | 0.000 | 0.000 | 0.000 | 0 |
+| 1000 | 100% | A per-bullet every tick | 1.802 | 2.017 | 2.266 | 2.520 | 0.000 | 0.000 | 0.000 | 972 |
+| 1000 | 100% | A throttled 1/4 ticks | 0.884 | 1.183 | 1.337 | 1.794 | 0.000 | 0.000 | 0.000 | 994 |
+| 1000 | 100% | A throttled 1/8 ticks | 0.750 | 1.035 | 1.243 | 1.619 | 0.000 | 0.000 | 0.000 | 988 |
+| 1000 | 100% | B batch, gathered inputs | 1.377 | 1.587 | 1.828 | 2.097 | 0.273 | 1.034 | 0.067 | 972 |
+| 1000 | 100% | B batch, bulk-slice inputs | 1.106 | 1.291 | 1.558 | 1.808 | 0.013 | 1.024 | 0.065 | 979 |
+| 1000 | 100% | B batch bulk-slice, 1/4 of bullets per tick | 0.290 | 0.334 | 0.730 | 0.831 | 0.006 | 0.267 | 0.017 | 990 |
+| 1000 | 10% | C declarative (no hooks) | 0.001 | 0.001 | 0.491 | 0.830 | 0.000 | 0.000 | 0.000 | 0 |
+| 1000 | 10% | A per-bullet every tick | 0.178 | 0.210 | 0.607 | 0.696 | 0.000 | 0.000 | 0.000 | 102 |
+| 1000 | 10% | A throttled 1/4 ticks | 0.088 | 0.107 | 0.528 | 0.599 | 0.000 | 0.000 | 0.000 | 100 |
+| 1000 | 10% | A throttled 1/8 ticks | 0.070 | 0.092 | 0.498 | 0.583 | 0.000 | 0.000 | 0.000 | 98 |
+| 1000 | 10% | B batch, gathered inputs | 0.142 | 0.173 | 0.565 | 0.658 | 0.028 | 0.105 | 0.007 | 102 |
+| 1000 | 10% | B batch, bulk-slice inputs | 0.119 | 0.142 | 0.557 | 0.659 | 0.004 | 0.107 | 0.007 | 98 |
+| 1000 | 10% | B batch bulk-slice, 1/4 of bullets per tick | 0.036 | 0.042 | 0.463 | 0.522 | 0.003 | 0.029 | 0.002 | 98 |
+| 4000 | 100% | C declarative (no hooks) | 0.001 | 0.001 | 1.747 | 1.945 | 0.000 | 0.000 | 0.000 | 0 |
+| 4000 | 100% | A per-bullet every tick | 7.046 | 8.507 | 8.649 | 10.273 | 0.000 | 0.000 | 0.000 | 3873 |
+| 4000 | 100% | A throttled 1/4 ticks | 3.453 | 3.805 | 5.074 | 5.576 | 0.000 | 0.000 | 0.000 | 3960 |
+| 4000 | 100% | A throttled 1/8 ticks | 2.833 | 3.138 | 4.470 | 4.909 | 0.000 | 0.000 | 0.000 | 3972 |
+| 4000 | 100% | B batch, gathered inputs | 5.643 | 8.596 | 7.315 | 11.502 | 1.137 | 4.226 | 0.271 | 3873 |
+| 4000 | 100% | B batch, bulk-slice inputs | 4.599 | 6.713 | 6.298 | 9.108 | 0.036 | 4.281 | 0.268 | 3879 |
+| 4000 | 100% | B batch bulk-slice, 1/4 of bullets per tick | 1.180 | 1.321 | 2.874 | 3.196 | 0.014 | 1.098 | 0.069 | 3956 |
+| 4000 | 10% | C declarative (no hooks) | 0.001 | 0.001 | 1.847 | 2.038 | 0.000 | 0.000 | 0.000 | 0 |
+| 4000 | 10% | A per-bullet every tick | 0.770 | 0.851 | 2.449 | 2.701 | 0.000 | 0.000 | 0.000 | 394 |
+| 4000 | 10% | A throttled 1/4 ticks | 0.363 | 0.419 | 2.013 | 2.230 | 0.000 | 0.000 | 0.000 | 397 |
+| 4000 | 10% | A throttled 1/8 ticks | 0.286 | 0.435 | 1.919 | 2.883 | 0.000 | 0.000 | 0.000 | 398 |
+| 4000 | 10% | B batch, gathered inputs | 0.553 | 0.634 | 2.138 | 2.431 | 0.108 | 0.413 | 0.027 | 394 |
+| 4000 | 10% | B batch, bulk-slice inputs | 0.461 | 0.525 | 2.071 | 2.308 | 0.009 | 0.423 | 0.027 | 400 |
+| 4000 | 10% | B batch bulk-slice, 1/4 of bullets per tick | 0.125 | 0.168 | 1.757 | 2.301 | 0.005 | 0.111 | 0.008 | 397 |
+| 10000 | 100% | C declarative (no hooks) | 0.001 | 0.001 | 4.442 | 4.753 | 0.000 | 0.000 | 0.000 | 0 |
+| 10000 | 100% | A per-bullet every tick | 17.874 | 20.021 | 21.864 | 24.618 | 0.000 | 0.000 | 0.000 | 9713 |
+| 10000 | 100% | A throttled 1/4 ticks | 8.697 | 9.478 | 12.624 | 14.000 | 0.000 | 0.000 | 0.000 | 9883 |
+| 10000 | 100% | A throttled 1/8 ticks | 7.340 | 11.759 | 11.466 | 18.034 | 0.000 | 0.000 | 0.000 | 9919 |
+| 10000 | 100% | B batch, gathered inputs | 13.741 | 15.042 | 17.816 | 19.528 | 2.767 | 10.300 | 0.661 | 9713 |
+| 10000 | 100% | B batch, bulk-slice inputs | 11.476 | 12.790 | 15.726 | 17.475 | 0.067 | 10.716 | 0.670 | 9711 |
+| 10000 | 100% | B batch bulk-slice, 1/4 of bullets per tick | 2.947 | 3.191 | 7.075 | 7.585 | 0.023 | 2.750 | 0.171 | 9877 |
+| 10000 | 10% | C declarative (no hooks) | 0.001 | 0.001 | 4.617 | 4.868 | 0.000 | 0.000 | 0.000 | 0 |
+| 10000 | 10% | A per-bullet every tick | 1.898 | 2.198 | 5.872 | 6.716 | 0.000 | 0.000 | 0.000 | 1000 |
+| 10000 | 10% | A throttled 1/4 ticks | 0.899 | 1.024 | 4.822 | 5.324 | 0.000 | 0.000 | 0.000 | 984 |
+| 10000 | 10% | A throttled 1/8 ticks | 0.712 | 0.804 | 4.527 | 4.826 | 0.000 | 0.000 | 0.000 | 983 |
+| 10000 | 10% | B batch, gathered inputs | 1.500 | 2.190 | 5.649 | 7.204 | 0.291 | 1.125 | 0.072 | 1000 |
+| 10000 | 10% | B batch, bulk-slice inputs | 1.174 | 1.546 | 5.227 | 6.285 | 0.015 | 1.090 | 0.068 | 979 |
+| 10000 | 10% | B batch bulk-slice, 1/4 of bullets per tick | 0.306 | 0.476 | 4.296 | 5.402 | 0.009 | 0.277 | 0.018 | 982 |
