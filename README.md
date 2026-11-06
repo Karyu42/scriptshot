@@ -96,6 +96,18 @@ exporting into the git-ignored `build/` directory, e.g.
 `godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64`.
 macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses the no-threads template; Android is arm64 only and CI builds a debug-signed APK. See `docs/qa/release-builds.md`.
 
+## Android emulator smoke (manual CI)
+
+A separate workflow (`.github/workflows/android-emulator-smoke.yml`) boots an **x86_64** Android
+emulator on GitHub Actions, installs the **Lua spike** debug APK (`docs/scripting/spike`, dual ABI
+arm64-v8a + x86_64), and gates on `SPIKE_RESULT` / `SPIKE_DONE` from the ~1000-bullet export bench (FPS / frame-time percentiles are in the JSON lines, not an on-screen overlay).
+It is **`workflow_dispatch` only** — it never runs on pull requests, so PR CI does not pay the
+emulator cost.
+
+* Actions → **Android emulator smoke** → **Run workflow** (optional `api_level`, default 30).
+* Design notes: `docs/scripting/testing.md` section 2.4. The main-game Android preset stays
+  arm64-only for phones; the GH-hosted runner cannot usefully accelerate an arm64 AVD.
+
 ## Project layout
 
 ```

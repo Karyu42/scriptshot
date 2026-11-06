@@ -24,6 +24,11 @@ The macOS and Android exports need **Import ETC2 ASTC** enabled in `project.godo
 (`rendering/textures/vram_compression/import_etc2_astc=true`; already on `main`). Without it Godot refuses to export,
 with the message "ETC2/ASTC texture compression is required".
 
+
+### Android emulator smoke (not the release APK)
+
+The release Android artifact above is **arm64-v8a only** (phones). GitHub-hosted runners are x86_64, so CI emulator smoke uses the **Lua spike** dual-ABI APK instead — see `.github/workflows/android-emulator-smoke.yml` and `docs/scripting/testing.md` §2.4. Dispatch it from Actions; it does not run on PRs.
+
 `tools/ci/check_export_preset.py` runs in the `test` job on every pull request and push, once per preset
 (Windows Desktop, macOS, Linux, Web, Android), and again before each manual export. It fails on: any password
 in the committed `export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only

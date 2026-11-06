@@ -152,7 +152,7 @@ if [ "$import_status" -eq 134 ] && grep -q '\[ DONE \] reimport' "$LOG_DIR/impor
 
 ### 2.4 Android headless run (APK with both ABIs, x86_64 emulator)
 
-**Preset and project.** `spike/export_presets.cfg` has a preset named `Android`: non-gradle export, `architectures/arm64-v8a=true` and `architectures/x86_64=true`, package `org.scriptshot.spike`,
+**Preset and project.** The spike `project.godot` sets both `renderer/rendering_method` and `renderer/rendering_method.mobile` to `gl_compatibility` (Android defaults to Forward Mobile / Vulkan without the `.mobile` override; GH emulator SwiftShader then hangs on Vulkan present). The Android export also passes `--rendering-method gl_compatibility --rendering-driver opengl3`. `spike/export_presets.cfg` has a preset named `Android`: non-gradle export, `architectures/arm64-v8a=true` and `architectures/x86_64=true`, package `org.scriptshot.spike`,
 `variant/extensions_support`, signing with the **debug keystore** (set in Godot's editor settings, nothing secret in the file). The spike project is self-contained (`spike/project.godot`, `spike/main.tscn`,
 `spike/runner.gd`, `spike/bench/`, `spike/scripts/`, `spike/sandbox/`); on mobile it starts `res://bench/export_bench.gd` automatically (`runner.gd`). The addon is fetched with `tools/ci/fetch_native_libs.sh`
 (the **0.8.2 zip ships an Android x86_64 `.so`**, so no NDK build; zip SHA256 `51f012dd...2443`), and is git-ignored. **The APK is never committed.**
@@ -170,7 +170,7 @@ unzip -l out_android/spike.apk | grep -E 'lib/(arm64-v8a|x86_64)/libluagdextensi
 aapt2 dump badging out_android/spike.apk | grep native-code      # native-code: 'arm64-v8a' 'x86_64'
 ```
 
-**Emulator run (QA, GitHub Actions with KVM; not run by the Scripting Engineer: no KVM on the authoring box).**
+**Emulator run (QA, GitHub Actions with KVM; not run by the Scripting Engineer: no KVM on the authoring box).** Automated by `.github/workflows/android-emulator-smoke.yml` (`workflow_dispatch` → *Android emulator smoke*; scripts in `tools/ci/export_spike_android.sh`, `tools/ci/android_spike_emulator_run.sh`, `tools/ci/check_spike_result.py`). Manual steps below match that job.
 
 ```bash
 adb install -r out_android/spike.apk
