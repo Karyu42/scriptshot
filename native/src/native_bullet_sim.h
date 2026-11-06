@@ -52,7 +52,8 @@ public:
 	NativeBulletSim();
 
 	// --- setup -----------------------------------------------------------
-	void configure(int p_capacity, const godot::Rect2 &p_bounds, float p_cell_size);
+	// p_max_speed is BulletLimits.MAX_SPEED, passed in so the ceiling lives in one place.
+	void configure(int p_capacity, const godot::Rect2 &p_bounds, float p_cell_size, float p_max_speed);
 	void add_wall(const godot::Rect2 &p_rect);
 	void clear_walls();
 	int get_wall_count() const { return (int)wall_lo_x.size(); }
@@ -61,6 +62,10 @@ public:
 	void set_targets(const godot::PackedVector2Array &p_pos, const godot::PackedFloat32Array &p_radius,
 			const godot::PackedInt32Array &p_layer, const godot::PackedInt64Array &p_ids, int p_count);
 	int step(double p_delta);
+	// Sends the hits queued by the last step() to Hurtbox.receive_hit. Separate from
+	// step() so BulletManager can deliver them after the GDScript collision pass:
+	// a callback that spawns is not swept until the next tick, same as on_hit.
+	void deliver_hits();
 	// Writes the live bullets into the MultiMesh buffers and uploads them.
 	// Returns the live count (use it as visible_instance_count).
 	int upload(const godot::RID &p_multimesh, int p_allocated, bool p_interpolate, float p_stretch);
@@ -128,6 +133,8 @@ private:
 	// ---- world ----
 	godot::Rect2 bounds;
 	float cell_size = 64.0f;
+	// Speed ceiling from BulletLimits.MAX_SPEED (0 = not configured, no accel clamp).
+	float max_speed = 0.0f;
 	float inv_cell = 1.0f / 64.0f;
 	int cols = 1, rows = 1;
 

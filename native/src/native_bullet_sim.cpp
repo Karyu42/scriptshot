@@ -19,12 +19,13 @@ NativeBulletSim::NativeBulletSim() {
 }
 
 void NativeBulletSim::_bind_methods() {
-	ClassDB::bind_method(D_METHOD("configure", "capacity", "bounds", "cell_size"), &NativeBulletSim::configure);
+	ClassDB::bind_method(D_METHOD("configure", "capacity", "bounds", "cell_size", "max_speed"), &NativeBulletSim::configure);
 	ClassDB::bind_method(D_METHOD("add_wall", "rect"), &NativeBulletSim::add_wall);
 	ClassDB::bind_method(D_METHOD("clear_walls"), &NativeBulletSim::clear_walls);
 	ClassDB::bind_method(D_METHOD("get_wall_count"), &NativeBulletSim::get_wall_count);
 	ClassDB::bind_method(D_METHOD("set_targets", "pos", "radius", "layer", "ids", "count"), &NativeBulletSim::set_targets);
 	ClassDB::bind_method(D_METHOD("step", "delta"), &NativeBulletSim::step);
+	ClassDB::bind_method(D_METHOD("deliver_hits"), &NativeBulletSim::deliver_hits);
 	ClassDB::bind_method(D_METHOD("upload", "multimesh", "allocated", "interpolate", "stretch"), &NativeBulletSim::upload);
 	ClassDB::bind_method(D_METHOD("spawn", "position", "velocity", "angle", "lifetime", "radius", "damage", "hit_mask", "color",
 								"acceleration", "turn_rate", "pierce", "collide_world"),
@@ -58,13 +59,14 @@ void NativeBulletSim::_bind_methods() {
 // setup
 // ---------------------------------------------------------------------------
 
-void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_cell_size) {
+void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_cell_size, float p_max_speed) {
 	ERR_FAIL_COND(p_capacity <= 0);
 	ERR_FAIL_COND(p_cell_size <= 0.0f);
 	capacity = p_capacity;
 	count = 0;
 	bounds = p_bounds;
 	cell_size = p_cell_size;
+	max_speed = (p_max_speed > 0.0f && std::isfinite(p_max_speed)) ? p_max_speed : 0.0f;
 	inv_cell = 1.0f / cell_size;
 	cols = std::max(1, (int)std::ceil(bounds.size.x * inv_cell));
 	rows = std::max(1, (int)std::ceil(bounds.size.y * inv_cell));
@@ -404,6 +406,14 @@ double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double d
 int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_velocity, float p_angle, float p_lifetime,
 		float p_radius, float p_damage, int p_hit_mask, const Color &p_color, float p_acceleration, float p_turn_rate,
 		int p_pierce, bool p_collide_world) {
+	const bool finite = std::isfinite(p_position.x) && std::isfinite(p_position.y) && std::isfinite(p_velocity.x)
+			&& std::isfinite(p_velocity.y) && std::isfinite(p_radius) && std::isfinite(p_lifetime)
+			&& std::isfinite(p_damage) && std::isfinite(p_acceleration) && std::isfinite(p_turn_rate)
+			&& !std::isinf(p_angle);
+	if (!finite) {
+		// Same rule as BulletPool.spawn: a non-finite shot is refused. Not a capacity drop.
+		return -1;
+	}
 	if (count >= capacity) {
 		dropped_total++;
 		return -1;
@@ -619,7 +629,12 @@ int NativeBulletSim::step(double delta) {
 			if (ac != 0.0f) {
 				const float speed = std::sqrt(vxi * vxi + vyi * vyi);
 				if (speed > 0.0f) {
-					const float k = (float)(std::max((double)speed + (double)ac * delta, 0.0) / (double)speed);
+					// Same as BulletPool.advance: acceleration cannot push past the ceiling.
+					double grown = std::max((double)speed + (double)ac * delta, 0.0);
+					if (max_speed > 0.0f) {
+						grown = std::min(grown, (double)max_speed);
+					}
+					const float k = (float)(grown / (double)speed);
 					vxi *= k;
 					vyi *= k;
 				}
@@ -689,18 +704,21 @@ int NativeBulletSim::step(double delta) {
 		last_hit_count = (int)hit_events.size();
 	}
 	compact();
-
-	// Deliver hits after the loop: a handler may spawn bullets or free the target.
-	for (const HitEvent &h : hit_events) {
-		if (record_events) {
-			hit_log.push_back(h);
-		}
-		Object *target = ObjectDB::get_instance(h.target_id);
-		if (target != nullptr) {
-			target->call("receive_hit", h.damage, Vector2(h.x, h.y), Vector2(h.vx, h.vy));
-		}
+	if (record_events) {
+		hit_log = hit_events;
 	}
 	return last_hit_count;
+}
+
+void NativeBulletSim::deliver_hits() {
+	// After compaction, so a handler may spawn bullets or free the target
+	// without mutating the store mid-loop. bullet_id was captured before compact.
+	for (const HitEvent &h : hit_events) {
+		Object *target = ObjectDB::get_instance(h.target_id);
+		if (target != nullptr) {
+			target->call("receive_hit", h.damage, Vector2(h.x, h.y), Vector2(h.vx, h.vy), h.bullet_id);
+		}
+	}
 }
 
 // ---------------------------------------------------------------------------

@@ -52,14 +52,17 @@ var grid: HurtboxGrid
 var reflector_grid: HurtboxGrid
 var walls: WallGrid
 var emitter: ShotEmitter
-## "native" when the C++ NativeBulletSim simulates the plain bullets, otherwise
+## "native" when the C++ NativeBulletSim simulates plain bullets, otherwise
 ## "gdscript" (everything in `pool`). Chosen in _ready(); see backend_preference.
 var backend := "gdscript"
-## Which backend to use: "auto" (native if the extension is loaded), "gdscript"
-## or "native" (error and fall back if the extension is missing). With "auto" the
-## environment variable SCRIPTSHOT_BULLET_BACKEND (gdscript|native) picks the
-## backend. Set before adding to the tree.
-@export_enum("auto", "gdscript", "native") var backend_preference := "auto"
+## Which backend to use. "gdscript" (the default) keeps every bullet in the pool,
+## including when SCRIPTSHOT_BULLET_BACKEND is set: tests and the game do not
+## change because the prototype library loaded. "native" sends plain bullets to
+## NativeBulletSim when the extension is loaded, and falls back to GDScript
+## (with an error) when it is not. "auto" follows SCRIPTSHOT_BULLET_BACKEND
+## (`gdscript` or `native`); with the variable unset it stays on GDScript.
+## Set before _ready. The benchmark uses "auto".
+@export_enum("auto", "gdscript", "native") var backend_preference := "gdscript"
 var native: NativeBackend
 
 ## Duration of the last step() call in microseconds.
@@ -272,7 +275,7 @@ func collect_walls() -> int:
 			var rect_shape := shape_node.shape as RectangleShape2D
 			if rect_shape == null:
 				continue
-			walls.add_wall(shape_node.global_transform * Rect2(-rect_shape.size * 0.5, rect_shape.size))
+			add_wall(shape_node.global_transform * Rect2(-rect_shape.size * 0.5, rect_shape.size))
 			added += 1
 	return added
 
@@ -397,13 +400,6 @@ func step(delta: float) -> void:
 	# travel a tick first.
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
-	var native_hits := 0
-	var native_wall_hits := 0
-	if native != null:
-		# Plain bullets: integrate, sweep walls + hurtboxes, despawn, deliver hits.
-		# Hooked bullets stay in the pool below and keep the GDScript safety path.
-		native_hits = native.step(delta)
-		native_wall_hits = native.last_wall_hit_count()
 	pool.advance(delta, world_bounds)
 	var t1 := Time.get_ticks_usec()
 
@@ -455,6 +451,16 @@ func step(delta: float) -> void:
 	for k in last_wall_hit_count:
 		_wall_clip[walls.hit_bullets[k]] = 1.0
 
+	# Plain bullets, after the pool's own collision. They use the same target
+	# snapshot (hooks already ran; a radius growth re-collected above). Hits are
+	# delivered now, before despawn hooks, so a callback spawn is not swept
+	# until next tick — the same timing as a spawn from on_hit.
+	var native_hits := 0
+	var native_wall_hits := 0
+	if native != null:
+		native_hits = native.step(delta)
+		native.deliver_hits()
+		native_wall_hits = native.last_wall_hit_count()
 	last_hit_count += native_hits
 	last_wall_hit_count += native_wall_hits
 	var t3 := Time.get_ticks_usec()
@@ -593,13 +599,19 @@ func _select_backend() -> void:
 	var wanted := backend_preference
 	if wanted == "auto":
 		wanted = NativeBackend.requested_backend()
-	if wanted == "gdscript" or (wanted == "auto" and not NativeBackend.is_available()):
+	# Unset env comes back as "auto": that is the GDScript fallback, not "use native".
+	if wanted != "native":
 		return
 	if not NativeBackend.is_available():
 		push_error("BulletManager: native backend requested but the NativeBulletSim extension is not loaded (build it with scons in native/); using the GDScript backend")
 		return
 	native = NativeBackend.new(capacity, world_bounds, cell_size)
 	backend = "native"
+
+
+## True for an id minted by NativeBulletSim (not a pool slot or pool id).
+func is_native_id(id: int) -> bool:
+	return native != null and id > 0 and (id & NativeBackend.ID_FLAG) != 0
 
 
 ## Emits ShotEmitter.pool_saturated if shots were dropped since the last tick,
@@ -752,30 +764,27 @@ func _continue_reflected(delta: float) -> void:
 
 
 func _collect_targets() -> void:
-	var need_grid := native == null or pool.count > 0
-	if need_grid:
-		grid.begin(pool.max_radius)
+	grid.begin(pool.max_radius)
 	var targets := Hurtbox.registry
+	var use_native := native != null
 	var n := 0
-	if native != null:
-		if _nt_pos.size() < targets.size():
-			_nt_pos.resize(targets.size())
-			_nt_radius.resize(targets.size())
-			_nt_layer.resize(targets.size())
-			_nt_ids.resize(targets.size())
+	if use_native and _nt_pos.size() < targets.size():
+		_nt_pos.resize(targets.size())
+		_nt_radius.resize(targets.size())
+		_nt_layer.resize(targets.size())
+		_nt_ids.resize(targets.size())
 	for k in targets.size():
 		var hb := targets[k]
 		if hb.active and hb.is_visible_in_tree():
 			var center := hb.global_position
-			if need_grid:
-				grid.add_circle(center, hb.radius, hb.layer, hb)
-			if native != null:
+			grid.add_circle(center, hb.radius, hb.layer, hb)
+			if use_native:
 				_nt_pos[n] = center
 				_nt_radius[n] = hb.radius
 				_nt_layer[n] = hb.layer
 				_nt_ids[n] = hb.get_instance_id()
 				n += 1
-	if native != null:
+	if use_native:
 		native.set_targets(_nt_pos, _nt_radius, _nt_layer, _nt_ids, n)
 
 

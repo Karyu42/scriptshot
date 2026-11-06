@@ -1,8 +1,9 @@
 class_name BulletLimits
 extends RefCounted
-## Engine-wide guard values for bullets, in one place so the GDScript pool and
-## the native backend share a single definition (the native side mirrors
-## MAX_SPEED from here; there is no second number to keep in sync by hand).
+## Engine-wide guard values for bullets. The pool clamps and rejects against
+## these directly. NativeBackend passes MAX_SPEED into NativeBulletSim and
+## applies the same clamps before a plain bullet is handed to C++. Do not copy
+## the numbers into the extension.
 
 ## Bullet speed ceiling in px/s. A crash guard for absurd values (1e9, huge
 ## script writes), not a design limit: collision is swept, so even a bullet at

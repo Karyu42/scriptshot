@@ -122,8 +122,9 @@ func test_hit_stops_bullet_at_the_contact_point_and_signals_the_hurtbox() -> voi
 	if not _need_native():
 		return
 	var hits: Array[int] = [0]
-	_hurtbox(Vector2(100, 0), 20.0, hits)
-	manager.spawn(_shot(Vector2(0, 0), Vector2(6000, 0), 4.0))  # 100 px per tick: swept
+	# 4000 px/s is the ceiling (~66.7 px/tick). Contact is at x = 40 - 8 - 4 = 28.
+	_hurtbox(Vector2(40, 0), 8.0, hits)
+	manager.spawn(_shot(Vector2(0, 0), Vector2(BulletLimits.MAX_SPEED, 0), 4.0))
 	manager.step(DT)
 	assert_eq(hits[0], 1)
 	assert_eq(manager.alive_count(), 0)
@@ -132,14 +133,15 @@ func test_hit_stops_bullet_at_the_contact_point_and_signals_the_hurtbox() -> voi
 
 
 func test_nearest_target_wins_even_when_a_bigger_one_is_scanned_first() -> void:
-	# B1: A (100,0) r40 vs B (75,32) r4, bullet along y=32. B is hit first.
+	# B1, scaled so one tick at the speed ceiling still reaches B and would reach A.
+	# A (40, 0) r16 vs B (30, 12.8) r1.6, bullet along y=12.8. B's entry is nearer.
 	if not _need_native():
 		return
 	var a_hits: Array[int] = [0]
 	var b_hits: Array[int] = [0]
-	_hurtbox(Vector2(100, 0), 40.0, a_hits)
-	_hurtbox(Vector2(75, 32), 4.0, b_hits)
-	manager.spawn(_shot(Vector2(0, 32), Vector2(9000, 0), 2.0))
+	_hurtbox(Vector2(40, 0), 16.0, a_hits)
+	_hurtbox(Vector2(30, 12.8), 1.6, b_hits)
+	manager.spawn(_shot(Vector2(0, 12.8), Vector2(3600, 0), 0.8))
 	manager.step(DT)
 	assert_eq(b_hits[0], 1, "B is nearer along the path")
 	assert_eq(a_hits[0], 0, "the bullet died on B")
@@ -150,13 +152,14 @@ func test_piercing_bullet_hits_several_targets_in_one_tick() -> void:
 	if not _need_native():
 		return
 	var per_target: Array[Array] = [[], [], []]
-	var t1 := _hurtbox(Vector2(50, 0), 10.0)
-	var t2 := _hurtbox(Vector2(100, 0), 10.0)
-	var t3 := _hurtbox(Vector2(150, 0), 10.0)
+	# Packed so pierce 2 still reaches the third target in one tick under MAX_SPEED.
+	var t1 := _hurtbox(Vector2(15, 0), 3.0)
+	var t2 := _hurtbox(Vector2(30, 0), 3.0)
+	var t3 := _hurtbox(Vector2(45, 0), 3.0)
 	t1.hit.connect(func(_d: float, p: Vector2, _v: Vector2) -> void: per_target[0].append(p.x))
 	t2.hit.connect(func(_d: float, p: Vector2, _v: Vector2) -> void: per_target[1].append(p.x))
 	t3.hit.connect(func(_d: float, p: Vector2, _v: Vector2) -> void: per_target[2].append(p.x))
-	var req := _shot(Vector2(0, 0), Vector2(12000, 0), 2.0)  # 200 px per tick
+	var req := _shot(Vector2(0, 0), Vector2(3600, 0), 0.6)  # 60 px per tick
 	req.pierce = 2
 	manager.spawn(req)
 	manager.step(DT)
@@ -173,9 +176,11 @@ func test_piercing_bullet_hits_several_targets_in_one_tick() -> void:
 func test_walls_stop_bullets_unless_opted_out() -> void:
 	if not _need_native():
 		return
-	manager.add_wall(Rect2(200, -50, 20, 100))
-	manager.spawn(_shot(Vector2(0, 0), Vector2(6000, 0), 3.0))
-	var ghost := _shot(Vector2(0, 10), Vector2(6000, 0), 3.0)
+	# Contact at x = 90 - 3 = 87. One tick at the ceiling covers ~66.7 px, so the
+	# wall is the second tick, not the first.
+	manager.add_wall(Rect2(90, -50, 20, 100))
+	manager.spawn(_shot(Vector2(0, 0), Vector2(BulletLimits.MAX_SPEED, 0), 3.0))
+	var ghost := _shot(Vector2(0, 10), Vector2(BulletLimits.MAX_SPEED, 0), 3.0)
 	ghost.collide_world = false
 	manager.spawn(ghost)
 	manager.step(DT)
@@ -190,10 +195,78 @@ func test_bullet_crossing_the_world_edge_still_hits_on_its_last_segment() -> voi
 		return
 	var hits: Array[int] = [0]
 	_hurtbox(Vector2(490, 0), 10.0, hits)
-	manager.spawn(_shot(Vector2(470, 0), Vector2(6000, 0), 2.0))  # ends at x = 570, outside
+	# Ceiling speed from x=470 ends near 536.7, past the world edge at 500, and
+	# the hurtbox (contact near 478) is still on that last segment.
+	manager.spawn(_shot(Vector2(470, 0), Vector2(BulletLimits.MAX_SPEED, 0), 2.0))
 	manager.step(DT)
 	assert_eq(hits[0], 1)
 	assert_eq(manager.native.despawn_counts()[BulletPool.DespawnReason.HIT], 1)
+
+
+func test_over_speed_spawn_is_clamped_to_bullet_limits() -> void:
+	if not _need_native():
+		return
+	manager.spawn(_shot(Vector2.ZERO, Vector2(8000, 0)))
+	manager.step(DT)
+	var vel: Vector2 = manager.snapshot()["vel"][0]
+	assert_almost_eq(vel.length(), BulletLimits.MAX_SPEED, 0.05)
+	var pos: Vector2 = manager.snapshot()["pos"][0]
+	assert_almost_eq(pos.x, BulletLimits.MAX_SPEED * DT, 0.05)
+
+
+func test_non_finite_spawn_is_refused() -> void:
+	if not _need_native():
+		return
+	var req := _shot(Vector2.ZERO, Vector2(10, 0))
+	req.velocity = Vector2(NAN, 0)
+	assert_eq(manager.spawn(req), -1)
+	assert_eq(manager.alive_count(), 0)
+	assert_eq(manager.native.dropped_total(), 0, "a bad shot is not a capacity drop")
+
+
+func test_unset_auto_stays_on_gdscript_and_gdscript_cannot_be_overridden() -> void:
+	var auto := BulletManager.new()
+	auto.backend_preference = "auto"
+	auto.render_enabled = false
+	auto.auto_step = false
+	add_child_autofree(auto)
+	if NativeBackend.requested_backend() == "native" and NativeBackend.is_available():
+		assert_eq(auto.backend, "native")
+	else:
+		assert_eq(auto.backend, "gdscript")
+	var forced := BulletManager.new()
+	forced.backend_preference = "gdscript"
+	forced.render_enabled = false
+	forced.auto_step = false
+	add_child_autofree(forced)
+	assert_eq(forced.backend, "gdscript")
+
+
+func test_emitter_id_tracks_a_plain_native_bullet_and_hook_spawns_stay_in_the_pool() -> void:
+	if not _need_native():
+		return
+	var id := manager.emitter.request_shot_id(_shot(Vector2.ZERO, Vector2(60, 0)))
+	assert_true(manager.is_native_id(id))
+	assert_true(manager.emitter.is_bullet_alive(id))
+	assert_eq(manager.pool.count, 0)
+	var behavior := _SpawnPlain.new()
+	var behavior_id := manager.register_behavior(behavior)
+	var parent := _shot(Vector2(0, 20), Vector2.ZERO)
+	parent.behavior_id = behavior_id
+	assert_gte(manager.spawn(parent), 0)
+	# The hooked parent and the plain bullet its on_spawn fired both stay in the pool.
+	assert_eq(manager.pool.count, 2)
+	assert_eq(manager.alive_count(), 3)
+	assert_true(manager.emitter.is_bullet_alive(id))
+
+
+class _SpawnPlain:
+	extends BulletBehavior
+
+	func on_spawn(_pool: BulletPool, _index: int) -> void:
+		var req := ShotRequest.with_velocity(Vector2(4, 0), Vector2.ZERO)
+		req.lifetime = 5.0
+		emitter.request_shot(req)
 
 
 func test_upload_fills_current_and_previous_buffers() -> void:
