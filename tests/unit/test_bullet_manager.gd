@@ -130,6 +130,45 @@ func test_piercing_bullet_passes_through_and_hits_target_once() -> void:
 	assert_eq(manager.pool.pierce[0], 0)
 
 
+func test_slow_piercing_bullet_hits_one_overlapping_target_once() -> void:
+	var hb := _hurtbox(Vector2(0, 0), Layers.ENEMY, 30.0)
+	var hits := _hit_counter(hb)
+	var req := ShotRequest.polar(Vector2(0, 0), 0.0, 120.0)  # 2 px per tick
+	req.pierce = 9
+	req.radius = 4.0
+	manager.emitter.request_shot(req)
+	for _i in 20:
+		manager.step(_tick)
+	assert_eq(hits[0], 1)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.pool.pierce[0], 8)
+
+
+func test_slow_piercing_bullet_hits_each_overlapping_target_once() -> void:
+	# Issue #5. A pierce-9 bullet crawling at 2 px/tick through two r=30 hurtboxes
+	# used to hit both again every tick (last_hit kept only the latest), spending
+	# all 10 hits in a handful of ticks. Each target is hit once; a third target
+	# further along is still hit.
+	var a := _hurtbox(Vector2(0, 0), Layers.ENEMY, 30.0)
+	var b := _hurtbox(Vector2(20, 0), Layers.ENEMY, 30.0)
+	var c := _hurtbox(Vector2(120, 0), Layers.ENEMY, 10.0)
+	var hits_a := _hit_counter(a)
+	var hits_b := _hit_counter(b)
+	var hits_c := _hit_counter(c)
+	var req := ShotRequest.polar(Vector2(10, 0), 0.0, 120.0)  # 2 px per tick
+	req.pierce = 9
+	req.radius = 4.0
+	req.lifetime = 2.0
+	manager.emitter.request_shot(req)
+	for _i in 50:
+		manager.step(_tick)
+	assert_eq(hits_a[0], 1)
+	assert_eq(hits_b[0], 1)
+	assert_eq(hits_c[0], 1, "a new target is not blocked by the two already pierced")
+	assert_eq(manager.pool.count, 1, "three hits do not exhaust pierce 9")
+	assert_eq(manager.pool.pierce[0], 6)
+
+
 func test_hooks_run_in_order_and_receive_despawn_reason() -> void:
 	var b := RecordingBehavior.new()
 	var id := manager.emitter.register_behavior(b)

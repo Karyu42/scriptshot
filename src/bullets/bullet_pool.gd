@@ -59,6 +59,10 @@ const LIFE_LEFT_HALF := MAX_LIFETIME * 0.5
 ## Flagged-bullet sweeps list up to this many hits per tick so that a vetoed hit
 ## does not hide the next target on the path (see can_hit_veto).
 const VETO_MAX_HITS := 4
+## How many recent hurtboxes a piercing bullet remembers so it does not hit them
+## again on later ticks (see hit_mem). 8 covers a clump of overlapping targets;
+## an older one can be hit again once it falls out of the ring.
+const HIT_MEMORY := 8
 
 # --- saturation model ---------------------------------------------------------
 # PROVISIONAL (not decided by Karyu): the pool refuses a shot when
@@ -160,9 +164,20 @@ var behavior := PackedInt32Array()
 var pierce := PackedInt32Array()
 ## 1 = collides with the `world` layer (walls), 0 = flies through walls.
 var collide_world := PackedByteArray()
-## Instance id of the last hurtbox a piercing bullet hit (avoids re-hitting
-## the same target every tick while overlapping).
-var last_hit := PackedInt64Array()
+## Recent hurtbox instance ids a bullet has actually pierced, HIT_MEMORY per
+## slot laid out flat (`slot * HIT_MEMORY + 0 .. hit_mem_count[slot] - 1`, and
+## the whole window once the ring is full). Replaces the old one-slot last_hit:
+## a bullet overlapping several targets must not spend a pierce on each of them
+## every tick. Count 0 means "nothing remembered" — plain bullets stay there and
+## the collision loop does not read the window. Written only when a pierce hit
+## lands (`pierce` was still > 0): a veto, an inactive target, or the hit that
+## despawns a bullet with no pierce left does not record anything.
+var hit_mem := PackedInt64Array()
+## How many entries in this slot's window are live (0 .. HIT_MEMORY).
+var hit_mem_count := PackedByteArray()
+## Next slot to overwrite once the ring is full. Unused while count < HIT_MEMORY
+## (those entries are the packed prefix [0, count)).
+var hit_mem_head := PackedByteArray()
 ## 0 = alive; otherwise DespawnReason + 1 (pending removal in flush_dead()).
 var dead_reason := PackedByteArray()
 ## Free-form per-bullet script state (ShotRequest.user), parallel to the other
@@ -218,7 +233,9 @@ func _init(p_capacity: int = 16384) -> void:
 	behavior.resize(capacity)
 	pierce.resize(capacity)
 	collide_world.resize(capacity)
-	last_hit.resize(capacity)
+	hit_mem.resize(capacity * HIT_MEMORY)
+	hit_mem_count.resize(capacity)
+	hit_mem_head.resize(capacity)
 	dead_reason.resize(capacity)
 	pending.resize(capacity)
 	hooked.resize(capacity)
@@ -325,7 +342,7 @@ func spawn(request: ShotRequest) -> int:
 	behavior[i] = request.behavior_id
 	pierce[i] = request.pierce
 	collide_world[i] = 1 if request.collide_world else 0
-	last_hit[i] = 0
+	clear_hit_memory(i)
 	dead_reason[i] = 0
 	if r > max_radius:
 		max_radius = r
@@ -387,7 +404,7 @@ func spawn_simple(
 	behavior[i] = 0
 	pierce[i] = 0
 	collide_world[i] = 1
-	last_hit[i] = 0
+	clear_hit_memory(i)
 	dead_reason[i] = 0
 	if bullet_radius > max_radius:
 		max_radius = bullet_radius
@@ -1068,6 +1085,47 @@ func _rebuild_free_list() -> void:
 	_free_count = capacity
 
 
+## Forgets every target `slot` has pierced. Spawn and reflect() both start a
+## bullet with a clean ring; count 0 is the whole reset (the window is not read
+## while the count is 0, so plain bullets never pay to wipe it).
+func clear_hit_memory(slot: int) -> void:
+	hit_mem_count[slot] = 0
+	hit_mem_head[slot] = 0
+
+
+## Records that a piercing bullet in `slot` just hit the hurtbox `target_id`
+## (an instance id). A repeat of an id already in the ring does not move the
+## others along. Once HIT_MEMORY distinct targets are remembered, the oldest is
+## dropped.
+func remember_target(slot: int, target_id: int) -> void:
+	var n := int(hit_mem_count[slot])
+	var base := slot * HIT_MEMORY
+	for k in n:
+		if hit_mem[base + k] == target_id:
+			return
+	if n < HIT_MEMORY:
+		hit_mem[base + n] = target_id
+		hit_mem_count[slot] = n + 1
+		return
+	var head := int(hit_mem_head[slot])
+	hit_mem[base + head] = target_id
+	hit_mem_head[slot] = (head + 1) % HIT_MEMORY
+
+
+## Moves slot `src`'s ring onto `dst`. A bullet that never pierced (count 0)
+## only copies the count and head, not the window.
+func _copy_hit_memory(src: int, dst: int) -> void:
+	var n := hit_mem_count[src]
+	hit_mem_count[dst] = n
+	hit_mem_head[dst] = hit_mem_head[src]
+	if n == 0:
+		return
+	var from := src * HIT_MEMORY
+	var to := dst * HIT_MEMORY
+	for k in HIT_MEMORY:
+		hit_mem[to + k] = hit_mem[from + k]
+
+
 ## Damage a reflected bullet deals unless told otherwise: **1**, whatever the
 ## script gave the bullet (design pillars 5.4: "its script `damage` value is
 ## ignored when hitting you"). Provisional until balance says otherwise.
@@ -1091,7 +1149,7 @@ var max_reflections := 1
 ##     including on_despawn), `user` and `param_a/b` are cleared and it stops
 ##     piercing script invulnerability. `keep_script` opts out of all of that for
 ##     the rare reflection that should stay scripted;
-##   - has its piercing memory (`last_hit`) cleared and `reflect_count` raised;
+##   - has its piercing hit memory cleared and `reflect_count` raised;
 ##   - with `reverse`, flies back (velocity and heading flipped).
 ## Refuses, changing nothing and returning false, for a dead or invalid slot, an
 ## owner that is not PLAYER or ENEMY, or a bullet that was already reflected
@@ -1126,7 +1184,7 @@ func reflect(
 		reflect_count[slot] += 1
 	hit_mask[slot] = Layers.hostile_to(new_owner_layer)
 	color[slot] = Layers.bullet_color(new_owner_layer)
-	last_hit[slot] = 0
+	clear_hit_memory(slot)
 	if new_damage >= 0.0:
 		damage[slot] = new_damage
 	if not keep_script:
@@ -1176,7 +1234,7 @@ func _remove_at(i: int) -> void:
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]
-		last_hit[i] = last_hit[last]
+		_copy_hit_memory(last, i)
 	dead_reason[i] = dead_reason[last] if i != last else 0
 	dead_reason[last] = 0
 	user[last] = null

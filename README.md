@@ -59,6 +59,7 @@ Headless bullet benchmark: keeps N bullets alive, runs the full simulation tick
 (kinematics, swept collision against 32 hurtboxes and 28 walls, despawn/respawn
 churn, interpolated render buffer fill) and reports p50/p95/p99/max per-frame
 cost at 5000 and 10000 bullets against a budget of **p95 <= 16.6 ms** (60 fps).
+A tenth of the bullets pierce (`pierce = 3`), so that path is part of the number.
 Two checks, with different consequences:
 
 * **Floor, 5,000 bullets** (`--floor-bullets`): a hard gate. A miss, or a run that

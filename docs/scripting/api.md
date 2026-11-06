@@ -453,7 +453,7 @@ if t then b:steer_toward(t, 6) end
 
 Order inside `BulletManager.step` for each swept hit (PR #2): **`hurtbox.receive_hit(damage, pos, vel)`
 fires first (the owner applies the damage)** -> **`on_hit(pool, index, hurtbox)`** -> if the bullet
-was piercing, `pierce -= 1` and the last-hit memory is set, otherwise `mark_dead(HIT)`. Consequences:
+was piercing, `pierce -= 1` and that target is recorded in the pierce-hit ring, otherwise `mark_dead(HIT)`. Consequences:
 
 - **`on_hit` is a notification, not a veto.** It runs *after* the damage was dealt, so its return value
   (the draft's old `return false`) is **ignored**; it cannot cancel the hit or consume less.

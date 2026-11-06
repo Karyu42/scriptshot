@@ -15,9 +15,13 @@ extends RefCounted
 ##
 ## A bullet can hit several targets in one tick: a piercing bullet (pierce = n)
 ## is re-swept from each impact point for the rest of its path, skipping the
-## targets it already hit, up to n + 1 hits per tick. Bullets that were
-## flagged as leaving the world bounds this tick (BulletPool.DespawnReason.BOUNDS)
-## still test their final segment, clipped to the grid.
+## targets it already hit, up to n + 1 hits per tick. Targets it pierced on
+## earlier ticks are skipped too: the pool keeps a ring of the last
+## BulletPool.HIT_MEMORY hurtbox instance ids (BulletPool.hit_mem), and a sweep
+## seeds _excl from that ring. Bullets with an empty ring do not pay for it.
+## Bullets that were flagged as leaving the world bounds this tick
+## (BulletPool.DespawnReason.BOUNDS) still test their final segment, clipped to
+## the grid.
 ##
 ## Everything is stored in preallocated arrays that only ever grow (by doubling),
 ## so a steady-state tick allocates nothing.
@@ -179,8 +183,8 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 ## per call, except a piercing bullet (pierce = n), which can have up to n + 1,
 ## listed in the order along its path (increasing hit_t, each target once).
 ## Bullets that are already marked dead (other than for leaving the world bounds,
-## which still test their last segment), have hit_mask 0, or are piercing through
-## the target they hit last are skipped.
+## which still test their last segment), have hit_mask 0, or still overlap a
+## hurtbox they recently pierced (BulletPool.hit_mem) are skipped for that target.
 ##
 ## With `match_owner` the target layer is matched against each bullet's
 ## `owner_layer` instead of its `hit_mask`: the same swept test answers "which
@@ -197,8 +201,11 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 	var brad := pool.radius
 	var bmask := pool.owner_layer if match_owner else pool.hit_mask
 	var bdead := pool.dead_reason
-	var blast := pool.last_hit
 	var bpierce := pool.pierce
+	# Read-only alias for this call. Do not write pool.hit_mem while it is held:
+	# a write through another reference copies the whole array (see BulletPool).
+	var bmem := pool.hit_mem
+	var bmemcount := pool.hit_mem_count
 	var bounds_dead := BulletPool.DespawnReason.BOUNDS + 1
 	# Bullets flagged can_hit_veto may have a hit vetoed, so they list a few extra
 	# hits along the path. `any_veto` keeps the per-bullet flag read off the hot
@@ -226,9 +233,13 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 		if match_owner:
 			# Reflector zones: always sweep, and list every zone on the path (up to
 			# MAX_ZONE_HITS), so a zone that declines the bullet (arc, guard) does
-			# not hide the next one behind it.
-			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], mini(target_count, MAX_ZONE_HITS))
+			# not hide the next one behind it. Hit memory is hurtbox instance ids;
+			# zones are not hurtboxes, so this sweep does not consult it.
+			_sweep_bullet(i, bprev[i], d, br, mask, mini(target_count, MAX_ZONE_HITS), bmem, 0, 0)
 			continue
+		# Empty for every bullet that has not landed a pierce hit. The byte read is
+		# the whole cost for those; the window itself is touched only when count > 0.
+		var remembered := int(bmemcount[i])
 		if pierce > 0 or d.length_squared() > reach * reach or (any_veto and bveto[i] != 0):
 			# Piercing bullets always sweep: only the sweep can list several hits.
 			# A bullet whose hits can be vetoed lists up to VETO_MAX_HITS - 1
@@ -236,7 +247,7 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 			var max_hits := pierce + 1
 			if any_veto and bveto[i] != 0:
 				max_hits += BulletPool.VETO_MAX_HITS - 1
-			_sweep_bullet(i, bprev[i], d, br, mask, blast[i], max_hits)
+			_sweep_bullet(i, bprev[i], d, br, mask, max_hits, bmem, i * BulletPool.HIT_MEMORY, remembered)
 			continue
 		var fx := (p.x - ox) * inv
 		var fy := (p.y - oy) * inv
@@ -250,11 +261,14 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 		if _occupied[cell] == 0:
 			continue
 		var e := _heads[cell]
+		var mem_base := i * BulletPool.HIT_MEMORY
 		while e != -1:
 			var t := _entry_target[e]
 			if (target_layer[t] & mask) != 0:
 				var rr := target_radius[t] + br
-				if (target_pos[t] - p).length_squared() <= rr * rr and _target_id[t] != blast[i]:
+				if (target_pos[t] - p).length_squared() <= rr * rr and not (
+					remembered > 0 and _is_remembered(bmem, mem_base, remembered, int(_target_id[t]))
+				):
 					_record_hit(i, t, 1.0)
 					break
 			e = _entry_next[e]
@@ -266,11 +280,15 @@ func collide_bullets(pool: BulletPool, match_owner: bool = false) -> int:
 ## path order) to hit_bullets / hit_targets / hit_t after those of the last
 ## collide_bullets() call. hit_t is the fraction of *this* segment. Returns how
 ## many hits were added. BulletManager uses it for the part of a tick that a
-## reflected bullet flies after the mirror.
-func sweep_segment(bullet: int, start: Vector2, d: Vector2, radius: float, mask: int, last_target: int, max_hits: int) -> int:
+## reflected bullet flies after the mirror. The bullet's pierce-hit ring is
+## excluded the same way as in collide_bullets().
+func sweep_segment(pool: BulletPool, bullet: int, start: Vector2, d: Vector2, radius: float, mask: int, max_hits: int) -> int:
 	var first := hit_count
 	if target_count > 0 and mask != 0 and max_hits > 0:
-		_sweep_bullet(bullet, start, d, radius, mask, last_target, max_hits)
+		var remembered := int(pool.hit_mem_count[bullet])
+		_sweep_bullet(
+			bullet, start, d, radius, mask, max_hits, pool.hit_mem, bullet * BulletPool.HIT_MEMORY, remembered
+		)
 	return hit_count - first
 
 
@@ -282,9 +300,14 @@ func get_target_instance_id(target: int) -> int:
 ## targets in every cell the path crosses. Records up to `max_hits` hits in path
 ## order: after each one the bullet is swept again from the impact point for the
 ## remaining path, ignoring targets it already hit (this is what lets a piercing
-## bullet hit several targets in one tick). The path is clipped to the grid, so
-## a bullet that starts or ends outside it still tests the part inside.
-func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, last_target: int, max_hits: int) -> void:
+## bullet hit several targets in one tick). Targets in `mem[mem_base .. + mem_count)`
+## (hurtbox instance ids remembered from earlier ticks) are excluded up front.
+## `mem_count` 0 skips that work. The path is clipped to the grid, so a bullet
+## that starts or ends outside it still tests the part inside.
+func _sweep_bullet(
+	i: int, start: Vector2, d: Vector2, br: float, mask: int, max_hits: int,
+	mem: PackedInt64Array, mem_base: int, mem_count: int
+) -> void:
 	var fx0 := (start.x - _origin.x) * _inv_cell
 	var fy0 := (start.y - _origin.y) * _inv_cell
 	var dfx := d.x * _inv_cell
@@ -311,9 +334,11 @@ func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, las
 	if tc0 > tc1:
 		return
 	_excl_count = 0
+	if mem_count > 0:
+		_seed_excl(mem, mem_base, mem_count)
 	var t_min := 0.0
 	for _hit in max_hits:
-		var target := _sweep_once(start, d, br, mask, last_target, t_min, tc0, tc1, fx0, fy0, dfx, dfy)
+		var target := _sweep_once(start, d, br, mask, t_min, tc0, tc1, fx0, fy0, dfx, dfy)
 		if target == -1:
 			return
 		_record_hit(i, target, _sweep_t)
@@ -326,12 +351,12 @@ func _sweep_bullet(i: int, start: Vector2, d: Vector2, br: float, mask: int, las
 			return
 
 
-## One grid traversal for _sweep_bullet(): the earliest target (not in _excl,
-## not `last_target`) that the bullet touches at some t >= t_min, or -1. Its hit
-## fraction is left in _sweep_t. [tc0, tc1] is the part of the path inside the
-## grid; (fx0, fy0, dfx, dfy) is the path in cell units.
+## One grid traversal for _sweep_bullet(): the earliest target (not in _excl)
+## that the bullet touches at some t >= t_min, or -1. Its hit fraction is left
+## in _sweep_t. [tc0, tc1] is the part of the path inside the grid; (fx0, fy0,
+## dfx, dfy) is the path in cell units.
 func _sweep_once(
-	start: Vector2, d: Vector2, br: float, mask: int, last_target: int, t_min: float,
+	start: Vector2, d: Vector2, br: float, mask: int, t_min: float,
 	tc0: float, tc1: float, fx0: float, fy0: float, dfx: float, dfy: float
 ) -> int:
 	var t_begin := maxf(tc0, t_min)
@@ -367,7 +392,7 @@ func _sweep_once(
 			var e := _heads[cell]
 			while e != -1:
 				var t := _entry_target[e]
-				if (target_layer[t] & mask) != 0 and _target_id[t] != last_target and not _is_excluded(t):
+				if (target_layer[t] & mask) != 0 and not _is_excluded(t):
 					var rr := target_radius[t] + br
 					var f := start - target_pos[t]
 					var c := f.length_squared() - rr * rr
@@ -408,6 +433,28 @@ func _sweep_once(
 func _is_excluded(target: int) -> bool:
 	for k in _excl_count:
 		if _excl[k] == target:
+			return true
+	return false
+
+
+## Copies remembered hurtbox instance ids into _excl as this tick's grid indices,
+## so the sweep's existing exclusion list covers earlier ticks too.
+func _seed_excl(mem: PackedInt64Array, base: int, mem_count: int) -> void:
+	for t in target_count:
+		var id := int(_target_id[t])
+		if id == -1:
+			continue
+		if not _is_remembered(mem, base, mem_count, id):
+			continue
+		if _excl_count >= _excl.size():
+			_excl.resize(_excl.size() * 2)
+		_excl[_excl_count] = t
+		_excl_count += 1
+
+
+func _is_remembered(mem: PackedInt64Array, base: int, mem_count: int, target_id: int) -> bool:
+	for k in mem_count:
+		if mem[base + k] == target_id:
 			return true
 	return false
 
