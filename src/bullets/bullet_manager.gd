@@ -719,7 +719,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		# Recorded here, not during the sweep: a veto or an inactive target returns
 		# before this, and a bullet with no pierce left is despawned instead.
 		# The same tick's other hits are already excluded by HurtboxGrid._excl;
-		# this is what the next tick seeds that list from.
+		# later ticks skip these ids when a candidate actually touches the path.
 		pool.remember_target(bullet, hurtbox.get_instance_id())
 		pool.pierce[bullet] -= 1
 	else:

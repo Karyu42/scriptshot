@@ -453,7 +453,11 @@ if t then b:steer_toward(t, 6) end
 
 Order inside `BulletManager.step` for each swept hit (PR #2): **`hurtbox.receive_hit(damage, pos, vel)`
 fires first (the owner applies the damage)** -> **`on_hit(pool, index, hurtbox)`** -> if the bullet
-was piercing, `pierce -= 1` and that target is recorded in the pierce-hit ring, otherwise `mark_dead(HIT)`. Consequences:
+was piercing, `pierce -= 1` and that target is recorded in the pierce-hit ring, otherwise `mark_dead(HIT)`.
+The ring (`BulletPool.hit_mem`) keeps the last 8 hurtboxes that bullet actually pierced
+(`BulletPool.HIT_MEMORY`). A later tick does not hit those again until they fall out of the ring,
+so overlapping several targets spends one pierce on each. A veto, an inactive target, and the hit
+that despawns a bullet which has no pierce left are not recorded. Consequences:
 
 - **`on_hit` is a notification, not a veto.** It runs *after* the damage was dealt, so its return value
   (the draft's old `return false`) is **ignored**; it cannot cancel the hit or consume less.
@@ -467,7 +471,7 @@ How to get "pass through / ignore this target / only some targets" instead:
 
 | Want | Use today | Engine ask |
 |---|---|---|
-| pass through N targets | `pierce = N` (native, with anti-rehit memory) | exists |
+| pass through N targets | `pierce = N` (anti-rehit ring of the last 8 hurtboxes) | exists |
 | never hit some layers | `hit_mask` | exists |
 | decide per target, before damage | `can_hit = function(b, target) return ... end` | **OI-18a**: an **opt-in per-bullet flag** (set when the script defines `can_hit`; bullets without it never pay for the call) that runs **before damage and before the pierce count**; synchronous, hit-rate only, counted against the script budget |
 | refund a pierce after the fact | `b.pierce = b.pierce + 1` inside `on_hit` | **OI-18b**: re-read `pierce` after the hook instead of caching `piercing` |
