@@ -26,7 +26,7 @@ from typing import Any
 RESULT_RE = re.compile(r"SPIKE_RESULT\s+(\{.*\})")
 DONE_RE = re.compile(r"\bSPIKE_DONE\b")
 INFO_RE = re.compile(r"\bSPIKE_INFO\b")
-ERROR_RE = re.compile(r"\bSPIKE_ERROR\b|SCRIPT ERROR")
+ERROR_RE = re.compile(r"\bSPIKE_ERROR\b|\bSPIKE_FAIL\b|SCRIPT ERROR")
 
 EXPECTED_MODES = ("C", "A", "B", "B+hook")
 ALIVE_MIN_HOOKED = 990

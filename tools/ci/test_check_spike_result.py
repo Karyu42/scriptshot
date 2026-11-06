@@ -98,5 +98,17 @@ class TestCheckSpikeResult(unittest.TestCase):
         self.assertTrue(any("SCRIPT ERROR" in f for f in fails))
 
 
+    def test_spike_fail_fails_gate(self) -> None:
+        """SPIKE_FAIL (wrong renderer on mobile) must fail closed before DONE."""
+        bad = (
+            'SPIKE_INFO method=mobile driver=vulkan\n'
+            'SPIKE_FAIL expected rendering method gl_compatibility on mobile, got method=mobile driver=vulkan\n'
+            'SPIKE_DONE\n'
+        )
+        results, done, errors = parse_log(bad)
+        fails = check(results, done, errors)
+        self.assertTrue(any('SPIKE_FAIL' in f for f in fails))
+
+
 if __name__ == "__main__":
     unittest.main()
