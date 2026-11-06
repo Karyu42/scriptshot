@@ -4,7 +4,10 @@ extends Node
 ## runs the full BulletManager.step() every frame including swept collision
 ## against 32 hurtboxes and 28 static walls, and the MultiMesh buffer fill, and
 ## reports per-frame times. A tenth of the bullets are fast enough to take the
-## swept (anti-tunnelling) path of the collision code.
+## swept (anti-tunnelling) path of the collision code. Another tenth pierce
+## (3 extra targets), so the pierce sweep and the hit-memory ring are part of
+## the measured workload; that choice uses its own RNG and does not consume the
+## stream that places the bullets.
 ##
 ## Run:  ./tools/run_benchmark.sh            (see README for options)
 ##       godot --headless --path . res://tests/benchmark/bullet_benchmark.tscn -- --bullets=5000,10000
@@ -44,6 +47,11 @@ const FIXED_DELTA := 1.0 / 60.0
 const WALL_THICKNESS := 64.0
 ## Share of bullets that are fast enough to need the swept collision path.
 const FAST_FRACTION := 0.1
+## Share of bullets spawned with pierce > 0 (see PIERCE_EXTRA). Separate from
+## FAST_FRACTION, so some slow bullets take the pierce sweep too.
+const PIERCE_FRACTION := 0.1
+## Extra targets a piercing benchmark bullet passes through before it is consumed.
+const PIERCE_EXTRA := 3
 
 var counts: Array[int] = [5000, 10000]
 var frames := 600
@@ -62,6 +70,8 @@ var _rng := RandomNumberGenerator.new()
 ## Separate stream for the hooked/plain choice: drawing from _rng would change the
 ## trajectories (and so the numbers) of the hooked = 0 baseline.
 var _hook_rng := RandomNumberGenerator.new()
+## Separate stream for the pierce / plain choice, same reason as _hook_rng.
+var _pierce_rng := RandomNumberGenerator.new()
 var _noop_behavior_id := 0
 var _request := ShotRequest.new()
 var _results: Array[Dictionary] = []
@@ -95,6 +105,7 @@ func _ready() -> void:
 		return
 	_rng.seed = 20260101
 	_hook_rng.seed = 20260102
+	_pierce_rng.seed = 20260103
 	_manager = BulletManager.new()
 	_manager.capacity = 32768
 	# The benchmark measures raw simulation cost at any bullet count: lift the
@@ -113,8 +124,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f"
-		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction])
+	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f | pierce fraction %.2f (pierce %d)"
+		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction, PIERCE_FRACTION, PIERCE_EXTRA])
 	_next_count()
 
 
@@ -180,6 +191,8 @@ func _top_up(n: int) -> void:
 		_request.lifetime = _rng.randf_range(2.0, 6.0)
 		_request.radius = 3.0
 		_request.hit_mask = Layers.ENEMY
+		if _pierce_rng.randf() < PIERCE_FRACTION:
+			_request.pierce = PIERCE_EXTRA
 		if hooked_fraction > 0.0 and _hook_rng.randf() < hooked_fraction:
 			_request.behavior_id = _noop_behavior_id
 		if not _manager.emitter.request_shot(_request):
@@ -282,7 +295,8 @@ func _report() -> void:
 				"backend": _manager.backend,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
-				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "results": _results,
+				"target_ms": target_ms, "hooked_fraction": hooked_fraction,
+				"pierce_fraction": PIERCE_FRACTION, "pierce": PIERCE_EXTRA, "results": _results,
 			}, "\t"))
 	get_tree().quit(exit_code)
 

@@ -87,11 +87,13 @@ func test_reflect_without_reverse_keeps_velocity() -> void:
 	assert_eq(pool.vel[i], Vector2(200, 0))
 
 
-func test_reflect_clears_the_piercing_last_hit() -> void:
+func test_reflect_clears_the_piercing_hit_memory() -> void:
 	var i := _enemy_bullet()
-	pool.last_hit[i] = 1234
+	pool.remember_target(i, 1234)
+	pool.remember_target(i, 5678)
 	pool.reflect(i, Layers.PLAYER)
-	assert_eq(pool.last_hit[i], 0)
+	assert_eq(int(pool.hit_mem_count[i]), 0)
+	assert_eq(int(pool.hit_mem_head[i]), 0)
 
 
 func test_reflect_rejects_bad_owner_and_dead_or_out_of_range_slots() -> void:

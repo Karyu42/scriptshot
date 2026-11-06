@@ -264,9 +264,13 @@ inheritance". To remove a bullet from a hook call `pool.mark_dead(index)`.
   tick: `pierce = n` can hit up to `n + 1` targets per tick, in path order, each
   at most once. After a piercing hit the bullet is re-swept from the impact
   point, ignoring targets already hit. Of several targets on the path the
-  **nearest** one wins, regardless of which grid cell it is registered in. (A
-  piercing bullet only remembers the last target it hit across ticks, so it can
-  hit a target it is still overlapping again if it overlaps two at once.)
+  **nearest** one wins, regardless of which grid cell it is registered in.
+  Across ticks the bullet remembers the last `BulletPool.HIT_MEMORY` hurtboxes
+  it actually pierced (a flat ring of instance ids, `BulletPool.hit_mem`) and
+  will not hit those again until they fall out of the ring, including while it
+  still overlaps several of them at once. Only a bullet that has landed a pierce
+  hit consults the ring; plain bullets leave it empty. The hit that despawns a
+  bullet with no pierce left does not record a target, and neither does a veto.
 * A bullet that leaves `world_bounds` this tick is flagged `BOUNDS` before
   collision, but still tests the part of its path inside the bounds; if it hits a
   wall or hurtbox on the way, that is its despawn reason instead.
@@ -888,7 +892,7 @@ bullets are harmless whatever a script asks for. Player shots are
 (`BulletManager.reflect`, `BulletPool.reflect(slot, ...)`) hands a live bullet to
 the other faction: `owner_layer` becomes `new_owner_layer`, `hit_mask` becomes
 `Layers.hostile_to(new_owner_layer)`, the colour becomes that faction's
-(`Layers.bullet_color`: player yellow, enemy `#FF5A4D`), the piercing `last_hit`
+(`Layers.bullet_color`: player yellow, enemy `#FF5A4D`), the piercing hit
 memory is cleared, the bullet's `reflect_count` goes up, and with `reverse` the
 velocity and heading flip. Also:
 

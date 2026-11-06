@@ -7,6 +7,14 @@ const DT := 1.0 / 60.0
 var manager: BulletManager
 
 
+class DeactivateHurtbox:
+	extends BulletBehavior
+	var target: Hurtbox
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		target.active = false
+
+
 class RecordingBehavior:
 	extends BulletBehavior
 	var log: Array[String] = []
@@ -129,6 +137,115 @@ func test_piercing_bullet_passes_through_and_hits_target_once() -> void:
 	assert_signal_emit_count(hb, "hit", 1, "one hit while overlapping for several ticks")
 	assert_eq(manager.pool.count, 1, "bullet survived (pierce)")
 	assert_eq(manager.pool.pierce[0], 0)
+
+
+func test_slow_piercing_bullet_hits_one_overlapping_target_once() -> void:
+	var hb := _hurtbox(Vector2(0, 0), Layers.ENEMY, 30.0)
+	var hits := _hit_counter(hb)
+	var req := ShotRequest.polar(Vector2(0, 0), 0.0, 120.0)  # 2 px per tick
+	req.pierce = 9
+	req.radius = 4.0
+	manager.emitter.request_shot(req)
+	for _i in 20:
+		manager.step(_tick)
+	assert_eq(hits[0], 1)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.pool.pierce[0], 8)
+
+
+func test_slow_piercing_bullet_hits_each_overlapping_target_once() -> void:
+	# Issue #5. A pierce-9 bullet crawling at 2 px/tick through two r=30 hurtboxes
+	# used to hit both again every tick (last_hit kept only the latest), spending
+	# all 10 hits in a handful of ticks. Each target is hit once; a third target
+	# further along is still hit.
+	var a := _hurtbox(Vector2(0, 0), Layers.ENEMY, 30.0)
+	var b := _hurtbox(Vector2(20, 0), Layers.ENEMY, 30.0)
+	var c := _hurtbox(Vector2(120, 0), Layers.ENEMY, 10.0)
+	var hits_a := _hit_counter(a)
+	var hits_b := _hit_counter(b)
+	var hits_c := _hit_counter(c)
+	var req := ShotRequest.polar(Vector2(10, 0), 0.0, 120.0)  # 2 px per tick
+	req.pierce = 9
+	req.radius = 4.0
+	req.lifetime = 2.0
+	manager.emitter.request_shot(req)
+	for _i in 50:
+		manager.step(_tick)
+	assert_eq(hits_a[0], 1)
+	assert_eq(hits_b[0], 1)
+	assert_eq(hits_c[0], 1, "a new target is not blocked by the two already pierced")
+	assert_eq(manager.pool.count, 1, "three hits do not exhaust pierce 9")
+	assert_eq(manager.pool.pierce[0], 6)
+
+
+func test_inactive_target_is_not_remembered() -> void:
+	# Both targets are on the path. A's on_hit turns B off before B is applied,
+	# so B is not damaged and does not enter the ring.
+	var a := _hurtbox(Vector2(0, 0), Layers.ENEMY, 12.0)
+	var b := _hurtbox(Vector2(40, 0), Layers.ENEMY, 12.0)
+	var hits_a := _hit_counter(a)
+	var hits_b := _hit_counter(b)
+	var off := DeactivateHurtbox.new()
+	off.target = b
+	var req := ShotRequest.polar(Vector2(-30, 0), 0.0, BulletLimits.MAX_SPEED)
+	req.pierce = 3
+	req.radius = 4.0
+	req.behavior_id = manager.register_behavior(off)
+	manager.emitter.request_shot(req)
+	manager.step(_tick)
+	assert_eq(hits_a[0], 1)
+	assert_eq(hits_b[0], 0, "turned off before its hit was delivered")
+	assert_eq(int(manager.pool.hit_mem_count[0]), 1)
+	assert_eq(int(manager.pool.hit_mem[0]), a.get_instance_id())
+
+
+func test_ninth_overlapping_target_falls_out_of_the_ring_and_can_be_hit_again() -> void:
+	var counters: Array = []
+	for _i in BulletPool.HIT_MEMORY + 1:
+		counters.append(_hit_counter(_hurtbox(Vector2.ZERO, Layers.ENEMY, 30.0)))
+	var req := ShotRequest.polar(Vector2.ZERO, 0.0, 0.0)
+	req.pierce = 20
+	req.radius = 4.0
+	req.lifetime = 2.0
+	manager.emitter.request_shot(req)
+	manager.step(_tick)
+	var first := 0
+	for c: Array[int] in counters:
+		assert_eq(c[0], 1)
+		first += c[0]
+	assert_eq(first, BulletPool.HIT_MEMORY + 1)
+	assert_eq(int(manager.pool.hit_mem_count[0]), BulletPool.HIT_MEMORY)
+	manager.step(_tick)
+	var twice := 0
+	var total := 0
+	for c: Array[int] in counters:
+		total += c[0]
+		if c[0] == 2:
+			twice += 1
+		else:
+			assert_eq(c[0], 1)
+	assert_eq(twice, 1, "only the id that fell out of the ring is hit again")
+	assert_eq(total, BulletPool.HIT_MEMORY + 2)
+
+
+func test_the_hit_that_spends_the_last_pierce_is_remembered_and_the_killing_hit_is_not() -> void:
+	# pierce 1 allows two hits. The first (pierce 1 -> 0) is recorded. The second
+	# despawns the bullet and is not recorded.
+	var a := _hurtbox(Vector2(0, 0), Layers.ENEMY, 12.0)
+	var b := _hurtbox(Vector2(40, 0), Layers.ENEMY, 12.0)
+	var hits_a := _hit_counter(a)
+	var hits_b := _hit_counter(b)
+	var req := ShotRequest.polar(Vector2(-30, 0), 0.0, BulletLimits.MAX_SPEED)
+	req.pierce = 1
+	req.radius = 4.0
+	manager.emitter.request_shot(req)
+	manager.step(_tick)
+	assert_eq(hits_a[0], 1)
+	assert_eq(hits_b[0], 1)
+	assert_eq(manager.pool.count, 0)
+	# The only bullet was the last slot, so removal does not overwrite its ring.
+	assert_eq(int(manager.pool.hit_mem_count[0]), 1)
+	assert_eq(int(manager.pool.hit_mem[0]), a.get_instance_id())
 
 
 func test_hooks_run_in_order_and_receive_despawn_reason() -> void:

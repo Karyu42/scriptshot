@@ -124,9 +124,9 @@ func test_piercing_bullet_is_not_rehit_on_same_target() -> void:
 	autofree(node)
 	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY, node)
 	var b := _bullet(Vector2(0, 0))
-	pool.last_hit[b] = node.get_instance_id()
+	pool.remember_target(b, node.get_instance_id())
 	assert_eq(grid.collide_bullets(pool), 0)
-	pool.last_hit[b] = 0
+	pool.clear_hit_memory(b)
 	assert_eq(grid.collide_bullets(pool), 1)
 
 
@@ -224,9 +224,9 @@ func test_swept_bullet_respects_layer_mask_and_pierce_skip() -> void:
 	var b := _moving_bullet(Vector2(-200, 0), Vector2(200, 0), Layers.ENEMY)
 	assert_eq(grid.collide_bullets(pool), 0, "wrong layer")
 	pool.hit_mask[b] = Layers.PLAYER
-	pool.last_hit[b] = node.get_instance_id()
+	pool.remember_target(b, node.get_instance_id())
 	assert_eq(grid.collide_bullets(pool), 0, "already pierced this target")
-	pool.last_hit[b] = 0
+	pool.clear_hit_memory(b)
 	assert_eq(grid.collide_bullets(pool), 1)
 
 
@@ -380,9 +380,51 @@ func test_piercing_sweep_skips_the_target_it_last_hit() -> void:
 	grid.add_circle(Vector2(0, 0), 20.0, Layers.ENEMY, node)
 	var t1 := grid.add_circle(Vector2(100, 0), 10.0, Layers.ENEMY)
 	var b := _pierce_bullet(Vector2(-10, 0), Vector2(200, 0), 2)
-	pool.last_hit[b] = node.get_instance_id()
+	pool.remember_target(b, node.get_instance_id())
 	assert_eq(grid.collide_bullets(pool), 1)
 	assert_eq(grid.hit_targets[0], t1)
+
+
+func test_piercing_sweep_skips_every_remembered_target() -> void:
+	# Issue #5: one remembered id is not enough when the bullet still overlaps two.
+	var a := Node2D.new()
+	var b := Node2D.new()
+	autofree(a)
+	autofree(b)
+	grid.begin(4.0)
+	grid.add_circle(Vector2(0, 0), 30.0, Layers.ENEMY, a)
+	grid.add_circle(Vector2(20, 0), 30.0, Layers.ENEMY, b)
+	var fresh := grid.add_circle(Vector2(80, 0), 10.0, Layers.ENEMY)
+	var bullet := _pierce_bullet(Vector2(10, 0), Vector2(12, 0), 9)
+	pool.remember_target(bullet, a.get_instance_id())
+	pool.remember_target(bullet, b.get_instance_id())
+	assert_eq(grid.collide_bullets(pool), 0, "both overlapping targets are remembered")
+	pool.clear_hit_memory(bullet)
+	assert_eq(grid.collide_bullets(pool), 2, "clearing the ring lets the same overlap hit both")
+	pool.remember_target(bullet, a.get_instance_id())
+	pool.remember_target(bullet, b.get_instance_id())
+	pool.pos[bullet] = Vector2(200, 0)
+	pool.prev_pos[bullet] = Vector2(40, 0)
+	assert_eq(grid.collide_bullets(pool), 1, "a target it has not pierced is still hit")
+	assert_eq(grid.hit_targets[0], fresh)
+
+
+func test_point_test_skips_every_remembered_target() -> void:
+	# Pierce already spent (pierce 0, short move): the cheap point test used to
+	# skip only the single last_hit, so the other overlapped target was hit again.
+	var a := Node2D.new()
+	var b := Node2D.new()
+	autofree(a)
+	autofree(b)
+	grid.add_circle(Vector2(0, 0), 30.0, Layers.ENEMY, a)
+	grid.add_circle(Vector2(20, 0), 30.0, Layers.ENEMY, b)
+	var bullet := _bullet(Vector2(10, 0))
+	pool.remember_target(bullet, a.get_instance_id())
+	pool.remember_target(bullet, b.get_instance_id())
+	assert_eq(grid.collide_bullets(pool), 0)
+	pool.clear_hit_memory(bullet)
+	assert_eq(grid.collide_bullets(pool), 1, "the same overlap still hits once the ring is cleared")
+	assert_eq(grid.hit_t[0], 1.0, "a short move still takes the cheap point test")
 
 
 func test_hit_buffers_grow_when_piercing_bullets_exceed_the_pool_size() -> void:

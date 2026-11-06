@@ -115,7 +115,7 @@ func test_vetoed_hit_does_not_spend_a_pierce_or_set_the_rehit_guard() -> void:
 	manager.spawn(r)
 	manager.step(_tick)
 	assert_eq(manager.pool.pierce[0], 2)
-	assert_eq(manager.pool.last_hit[0], 0)
+	assert_eq(int(manager.pool.hit_mem_count[0]), 0)
 	assert_signal_not_emitted(hb, "hit")
 
 

@@ -748,7 +748,7 @@ func _continue_reflected(delta: float) -> void:
 		if pool.can_hit_veto[slot] != 0:
 			max_hits += BulletPool.VETO_MAX_HITS - 1
 		var added := grid.sweep_segment(
-			slot, start, d, pool.radius[slot], pool.hit_mask[slot], pool.last_hit[slot], max_hits
+			pool, slot, start, d, pool.radius[slot], pool.hit_mask[slot], max_hits
 		)
 		last_hit_count += added
 		for k in range(first, first + added):
@@ -858,8 +858,12 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		pool.hook_slot = outer_slot
 		pool.sanitize(bullet)
 	if piercing:
+		# Recorded here, not during the sweep: a veto or an inactive target returns
+		# before this, and a bullet with no pierce left is despawned instead.
+		# The same tick's other hits are already excluded by HurtboxGrid._excl;
+		# later ticks skip these ids when a candidate actually touches the path.
+		pool.remember_target(bullet, hurtbox.get_instance_id())
 		pool.pierce[bullet] -= 1
-		pool.last_hit[bullet] = hurtbox.get_instance_id()
 	else:
 		pool.mark_dead(bullet, BulletPool.DespawnReason.HIT)
 		pool.claim_from_bounds(bullet, BulletPool.DespawnReason.HIT)

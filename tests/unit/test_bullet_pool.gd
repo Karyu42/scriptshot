@@ -700,3 +700,43 @@ func test_claim_from_bounds_only_relabels_bounds_deaths() -> void:
 	assert_eq(p.dead_reason[b], BulletPool.DespawnReason.LIFETIME + 1)
 	assert_eq(p.dead_reason[c], 0, "alive bullets stay alive")
 	assert_eq(p.pending_count, 2, "relabelling does not queue the bullet twice")
+
+
+# --- pierce hit memory (the ring that replaced last_hit) ----------------------
+
+func test_hit_memory_ring_drops_the_oldest_and_follows_swap_remove() -> void:
+	var keep := _spawn_at_x(1.0)
+	var slot := _spawn_at_x(2.0)
+	for n in BulletPool.HIT_MEMORY:
+		pool.remember_target(slot, 100 + n)
+	pool.remember_target(slot, 999)  # drops 100
+	assert_eq(int(pool.hit_mem_count[slot]), BulletPool.HIT_MEMORY)
+	pool.remember_target(slot, 101)  # still in the ring: not pushed again
+	assert_eq(int(pool.hit_mem_count[slot]), BulletPool.HIT_MEMORY)
+	pool.despawn(keep)
+	assert_eq(int(pool.hit_mem_count[0]), BulletPool.HIT_MEMORY)
+	var ids: Array[int] = []
+	for k in BulletPool.HIT_MEMORY:
+		ids.append(int(pool.hit_mem[k]))
+	assert_false(ids.has(100), "the oldest id was dropped")
+	assert_true(ids.has(101))
+	assert_true(ids.has(999))
+	pool.remember_target(0, 1000)  # head moved with the bullet, so 101 is next to go
+	ids.clear()
+	for k in BulletPool.HIT_MEMORY:
+		ids.append(int(pool.hit_mem[k]))
+	assert_false(ids.has(101))
+	assert_true(ids.has(999))
+	assert_true(ids.has(1000))
+	pool.despawn(0)
+	var fresh := _spawn_at_x(3.0)
+	assert_eq(int(pool.hit_mem_count[fresh]), 0, "a respawned slot does not inherit the ring")
+
+
+func test_spawn_of_a_plain_bullet_does_not_keep_a_previous_rings_count() -> void:
+	var slot := _spawn_at_x(0.0)
+	pool.remember_target(slot, 42)
+	pool.despawn(slot)
+	var again := pool.spawn_simple(Vector2.ZERO, Vector2.ZERO, 10.0)
+	assert_eq(int(pool.hit_mem_count[again]), 0)
+	assert_eq(int(pool.hit_mem_head[again]), 0)
