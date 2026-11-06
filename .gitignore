@@ -41,3 +41,7 @@ Thumbs.db
 .sconsign.dblite
 *.os
 *.o
+
+# Python
+__pycache__/
+*.py[cod]
