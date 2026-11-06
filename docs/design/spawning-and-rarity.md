@@ -1,6 +1,6 @@
 # Scriptshot — Spawning, Elites and Rarity
 
-> Status: **draft for review, companion to [`pillars.md`](pillars.md)** (branch `design/pillars`, PR #1). It replaces the old open question Q9 ("boss rarity target") with the owner's direction of 2026-10-30: **elite enemies for early excitement** and **rarity tiers (common / rare / legendary) for both elites and bosses**, each with distinct visuals, behaviours and rewards. Every number is a **starting value to be playtested**. Code names (`BulletPool`, `Hurtbox`, `ShotRequest`, …) refer to `main` (PR #2 and PR #4, merged); anything not on `main` is a proposal. World definitions (chunk, region, `D∞`, tier) are the ones of pillars §6.1 **as amended below**.
+> Status: **companion to [`pillars.md`](pillars.md) (PR #1 merged).** Build-order slice for the first playable minutes: [`first-playable-elites.md`](first-playable-elites.md). It replaces the old open question Q9 ("boss rarity target") with the owner's direction of 2026-10-30: **elite enemies for early excitement** and **rarity tiers (common / rare / legendary) for both elites and bosses**, each with distinct visuals, behaviours and rewards. Every number is a **starting value to be playtested**. Code names (`BulletPool`, `Hurtbox`, `ShotRequest`, …) refer to `main` (PR #2 and PR #4, merged); anything not on `main` is a proposal. World definitions (chunk, region, `D∞`, tier) are the ones of pillars §6.1 **as amended below**.
 
 Nothing here limits what a player may write (P2). Elites and rare bosses are *questions your script answers*: each affix is a world rule that punishes one lazy habit (straight lines, spam of tiny bullets, a single big hit, ignoring the escorts), and some variants lean into scripts that try to skip the fight altogether (Null attacks, Equalizer, Rift). Rewards depend only on **what was killed**, never on how the player's script behaved.
 
@@ -17,6 +17,8 @@ Nothing here limits what a player may write (P2). Elites and rare bosses are *qu
 9. Simulation: expected times and densities
 10. Engineering notes (what to build, how to test)
 11. Decisions on the rarity questions (Q17–Q24, in the `pillars.md` decisions log)
+
+Build order for the first playable minutes (Herald, T0 regulars, T0 common elites): [`first-playable-elites.md`](first-playable-elites.md). This file stays the full spec.
 
 ## 1. Goals and constraints
 
