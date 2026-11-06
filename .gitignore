@@ -1,5 +1,9 @@
 # Godot 4
 .godot/
+
+# Stock lua-gdextension 0.8.2 binaries. tools/ci/fetch_native_libs.sh downloads
+# them and checks the SHA256 pin. Never commit the addon.
+/addons/lua-gdextension/
 .nomedia
 *.translation
 
