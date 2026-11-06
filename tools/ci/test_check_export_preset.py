@@ -75,6 +75,15 @@ class CheckExportPresetTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("ad-hoc", out)
 
+    def test_macos_xcode_codesign_rejected(self):
+        # 3 is Xcode codesign (macOS editor hosts only). Linux CI accepts 1 only.
+        t = cfg("macOS", "macOS", codesign__codesign="3", codesign__identity='""',
+                notarization__notarization="0", binary_format__architecture='"universal"')
+        rc, out = run(t, "macOS")
+        self.assertEqual(rc, 1)
+        self.assertIn("must be 1", out)
+        self.assertIn("Xcode", out)
+
     def test_macos_notarization_rejected(self):
         t = cfg("macOS", "macOS", codesign__codesign="1", notarization__notarization="2")
         self.assertEqual(run(t, "macOS")[0], 1)
@@ -87,6 +96,21 @@ class CheckExportPresetTest(unittest.TestCase):
 
     def test_ios_rejected(self):
         self.assertEqual(run(cfg("iOS", "iOS"), "iOS")[0], 1)
+
+
+class CommittedPresetsTest(unittest.TestCase):
+    def test_repo_presets_match_policy(self):
+        root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+        path = os.path.join(root, "export_presets.cfg")
+        self.assertTrue(os.path.isfile(path), path)
+        for name in ("Windows Desktop", "macOS", "Linux", "Web", "Android"):
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = c.main(["x", path, name])
+            text = out.getvalue()
+            self.assertEqual(rc, 0, text)
+            self.assertIn("policy ok", text)
+            self.assertNotIn("::error::", text)
 
 
 if __name__ == "__main__":

@@ -9,17 +9,19 @@ Input: the JSON from `tools/run_benchmark.sh --json=PATH` (tests/benchmark/bulle
                   "reached": true, "min_alive_before_step": 4966, ...}, ...]}
 
 Policy (agreed targets):
-  * FLOOR   (default 5,000 bullets):  p95 > budget, no result, or a shortfall -> HARD FAIL (exit 1)
-  * TARGET  (default 10,000 bullets): p95 > budget, no result, or a shortfall -> ::warning:: + summary line, exit 0
+  * FLOOR   (default 5,000 bullets):  p95 > budget, no result, a bad timing, or a shortfall -> HARD FAIL (exit 1)
+  * TARGET  (default 10,000 bullets): p95 > budget, no result, a bad timing, or a shortfall -> ::warning:: + summary line, exit 0
     A "shortfall" is the benchmark's own `"reached": false` (fewer bullets alive than requested on some
     measured frame), which would otherwise let a run that simulates less than it claims look fast.
+    A shortfall is not also described as "within budget".
+  * Timings, plain and hooked: a missing, non-numeric, NaN, infinite or negative work_p50/p95/p99 fails at
+    FLOOR and warns at TARGET. `nan > budget` is false, so a NaN p95 must not pass silently.
   * Optional --baseline: p95 regression > --regression-pct at FLOOR fails, at TARGET warns.
+    A missing or unreadable baseline file prints ::error:: and exits 1. It does not raise a traceback.
   * Optional --hooked-report: a second JSON from `run_benchmark.sh --hooked=1.0` (every bullet carries a no-op
     script hook). Same FLOOR/TARGET counts and the same policy (FLOOR hard fail, TARGET warning), but with its own
     budget, --hooked-target-ms (default: --p95-ms), because CI runs on GitHub-hosted runners that are much slower
-    than a real device, and the checks are strict: the report must really be a hooked run (top-level
-    "hooked_fraction" == 1.0), and a missing row or a missing / NaN / infinite / negative timing is a failure at
-    FLOOR (warning at TARGET), never a silent pass.
+    than a real device. The report must really be a hooked run (top-level "hooked_fraction" == 1.0).
   * The hooked/plain p95 ratio at the FLOOR and TARGET counts is always logged (stdout, summary, and --ratio-json),
     never gated; a missing, zero or non-finite value on either side shows as "n/a".
 
@@ -87,11 +89,12 @@ def table(results, floor, target, budget, title="Bullet benchmark"):
 
 
 def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
-          title="Bullet benchmark", strict=False, label=""):
+          title="Bullet benchmark", label=""):
     """Returns (exit_code, annotations, summary_lines).
 
-    strict: a row with a missing / NaN / infinite / negative timing is reported instead of compared
-    (NaN > budget is False, so without this a NaN p95 would pass). label is prefixed to messages.
+    A row with a missing / NaN / infinite / negative timing is reported instead of compared
+    (NaN > budget is False, so a NaN p95 would otherwise pass). label is prefixed to messages.
+    A shortfall does not also earn a "within budget" note.
     """
     errors, warnings, notes = [], [], []
 
@@ -100,23 +103,26 @@ def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
         if r is None:
             sink.append(f"{label}no result for {role} count of {n} bullets (was it passed to --bullets?)")
             return
-        if strict:
-            bad = bad_timings(r)
-            if bad:
-                sink.append(f"{label}invalid timing at {n} bullets ({role}): {', '.join(bad)} "
-                            f"missing, NaN, infinite or negative, so the run proves nothing")
-                return
-        if r.get("reached") is False:
+        bad = bad_timings(r)
+        if bad:
+            sink.append(f"{label}invalid timing at {n} bullets ({role}): {', '.join(bad)} "
+                        f"missing, NaN, infinite or negative, so the run proves nothing")
+            return
+        shortfall = r.get("reached") is False
+        if shortfall:
             sink.append(f"{label}shortfall at {n} bullets ({role}): only {r.get('min_alive_before_step', '?')} were alive "
                         f"on the slowest-filled frame, so the timing is not valid")
         p95 = r["work_p95_ms"]
         if p95 > budget:
             sink.append(f"{label}p95 {p95:.2f} ms > budget {budget} ms at {n} bullets ({role})")
-        else:
+        elif not shortfall:
             notes.append(f"{label}{n} bullets ({role}): p50 {r['work_p50_ms']:.2f} / p95 {p95:.2f} / "
                          f"p99 {r['work_p99_ms']:.2f} ms, within {budget} ms")
         if baseline is not None and n in baseline:
-            b = baseline[n]["work_p95_ms"]
+            b = baseline[n].get("work_p95_ms") if isinstance(baseline[n], dict) else None
+            if isinstance(b, bool) or not isinstance(b, (int, float)) or not math.isfinite(b):
+                sink.append(f"{label}baseline p95 at {n} bullets ({role}) is missing or not a finite number")
+                return
             if p95 > b * (1 + regression_pct / 100):
                 sink.append(f"{label}p95 regressed more than {regression_pct:g}% vs baseline at {n} bullets "
                             f"({b:.2f} -> {p95:.2f} ms, {role})")
@@ -177,7 +183,7 @@ def check_hooked_report(a):
     code, annotations, summary = check(
         results, a.floor_bullets, a.target_bullets, budget, None, a.regression_pct,
         title="Hooked bullet benchmark, no-op on_update hook on every bullet",
-        strict=True, label=label)
+        label=label)
     if frac != 1.0:
         # Without this a run whose --hooked was dropped would pass as a cheap plain run.
         msg = f"{label}the report is not a fully hooked run (hooked_fraction = {frac!r}, expected 1.0)"
@@ -205,10 +211,16 @@ def main(argv=None):
 
     try:
         results = load(a.report)
-    except (OSError, ValueError, KeyError) as e:
+    except (OSError, ValueError, KeyError, TypeError) as e:
         print(f"::error::cannot read benchmark results from {a.report}: {e}")
         return 1
-    baseline = load(a.baseline) if a.baseline else None
+    baseline = None
+    if a.baseline:
+        try:
+            baseline = load(a.baseline)
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            print(f"::error::cannot read baseline results from {a.baseline}: {e}")
+            return 1
 
     code, annotations, summary = check(results, a.floor_bullets, a.target_bullets, a.p95_ms,
                                        baseline, a.regression_pct)
