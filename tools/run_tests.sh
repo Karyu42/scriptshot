@@ -66,12 +66,29 @@ for arg in "$@"; do
 	esac
 done
 
-# Godot aborts while releasing Lua states at process exit even when every test
-# passed. A 134 with a green summary and no in-suite crash is that shutdown,
-# not a failed test. A crash during a test prints handle_crash and still fails.
+# Godot aborts while releasing Lua states at process exit even when the suite
+# is green (lua-gdextension #240). A 134 with a green summary and no in-suite
+# crash is that shutdown, not a failed test. A crash during a test prints
+# handle_crash and still fails.
+#
+# GUT prints "All tests passed" only when nothing is pending or risky. Pending
+# native stubs (the extension is not built) omit that banner and print
+# "N pending/risky tests." instead. That summary is still green: it is only
+# used when there are no failing tests and no failing before/after asserts.
+suite_is_green() {
+	local log="$1"
+	if grep -a -q 'handle_crash' "$log"; then
+		return 1
+	fi
+	if grep -a -E -q -e 'Failing Tests' -e '[0-9]+ failing tests' -e 'assert\(s\) in before_all/after_all' -- "$log"; then
+		return 1
+	fi
+	grep -a -E -q -e '---- All tests passed! ----' -e '---- [0-9]+ pending/risky tests\. ----' -- "$log"
+}
+
 tolerate_lua_shutdown() {
 	local status="$1" log="$2"
-	if [ "$status" -eq 134 ] && grep -q 'All tests passed' "$log" && ! grep -q 'handle_crash' "$log"; then
+	if [ "$status" -eq 134 ] && suite_is_green "$log"; then
 		echo "run_tests.sh: godot aborted while releasing Lua at exit after a green suite"
 		return 0
 	fi

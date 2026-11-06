@@ -74,4 +74,5 @@ list, then runs GUT. The budget tests and the bullet-hook tests run in
 separate processes: shutting down both in one process aborts inside the stock
 extension. A green suite can still abort while Godot releases the Lua states;
 `run_tests.sh` treats that exit as success when the summary is green and the
-log has no in-suite crash.
+log has no in-suite crash. A green summary is `All tests passed`, or
+`N pending/risky tests` when the only leftovers are pending native stubs.
