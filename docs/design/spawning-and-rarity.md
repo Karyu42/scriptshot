@@ -374,7 +374,7 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 4. **Engine items** (extends pillars §5.5): per-`Hurtbox` `ABSORB/REFLECT` arcs (shared with Shieldbearer/Mirror/Phaser); the **`pierces_script_invuln`** bullet flag for Null bullets (already in PR #4 on `main`; `null_pierce` is its design/Lua-facing name; **owned by the Gameplay Engineer**); a bullet **owner flip** (Sower Overgrowth, Mirrored: same code path as reflection); a `signature` recorder (Archivist Replay reuses the Habituation signature buckets of pillars §5.3).
 5. **Budgets:** elites and escorts count against the per-platform enemy-bullet reserve (pillars §3.3). Summoner caps (6/8 alive) and Splitting halves must respect it; Null rings are ≤ 24 bullets.
 6. **Cue cost cap:** ≤ 12 cue-drawing elites on screen (§8.3); `draw_arc` segment count 32.
-7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD halo and the shimmer sting from `AudioStreamGenerator` on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4.
+7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD halo and the shimmer sting from `AudioStreamGenerator` on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4. **Status (2026-11-06): blocked pending cue implementation**, tracked by [issue #24](https://github.com/Karyu42/scriptshot/issues/24). Visual sign-off only after Gameplay lands the cues and QA re-runs. Re-check when the implementing PR merges.
 
 ## 11. Decisions on the rarity questions
 
