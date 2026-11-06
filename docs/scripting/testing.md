@@ -170,7 +170,7 @@ unzip -l out_android/spike.apk | grep -E 'lib/(arm64-v8a|x86_64)/libluagdextensi
 aapt2 dump badging out_android/spike.apk | grep native-code      # native-code: 'arm64-v8a' 'x86_64'
 ```
 
-**Emulator run (QA, GitHub Actions with KVM; not run by the Scripting Engineer: no KVM on the authoring box).**
+**Emulator run (QA, GitHub Actions with KVM; not run by the Scripting Engineer: no KVM on the authoring box).** Automated by `.github/workflows/android-emulator-smoke.yml` (`workflow_dispatch` → *Android emulator smoke*; scripts in `tools/ci/export_spike_android.sh`, `tools/ci/android_spike_emulator_run.sh`, `tools/ci/check_spike_result.py`). Manual steps below match that job.
 
 ```bash
 adb install -r out_android/spike.apk

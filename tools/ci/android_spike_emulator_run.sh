@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Install the spike APK on a booted emulator, launch it, scrape logcat for SPIKE_*.
+# Intended to run inside reactivecircus/android-emulator-runner's `script:`.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+APK="${SPIKE_APK:-$ROOT/build/android/spike-debug.apk}"
+PACKAGE="${SPIKE_PACKAGE:-org.scriptshot.spike}"
+TIMEOUT_SEC="${SPIKE_TIMEOUT_SEC:-180}"
+LOG="${SPIKE_LOG:-$ROOT/build/android/spike-emulator.logcat.txt}"
+
+test -s "$APK" || { echo "::error::APK missing: $APK"; exit 1; }
+mkdir -p "$(dirname "$LOG")"
+
+echo "android_spike_emulator_run.sh: adb devices"
+adb devices
+
+echo "android_spike_emulator_run.sh: installing $APK"
+adb install -r "$APK"
+
+echo "android_spike_emulator_run.sh: clearing logcat and launching $PACKAGE"
+adb logcat -c
+# Prefer an explicit activity launch; monkey is the documented fallback.
+if ! adb shell am start -W -n "${PACKAGE}/com.godot.game.GodotApp" >/tmp/am-start.txt 2>&1; then
+  cat /tmp/am-start.txt || true
+  echo "android_spike_emulator_run.sh: am start failed; trying monkey"
+  adb shell monkey -p "$PACKAGE" -c android.intent.category.LAUNCHER 1
+fi
+
+echo "android_spike_emulator_run.sh: waiting up to ${TIMEOUT_SEC}s for SPIKE_DONE"
+# godot:I is the documented logcat tag for print(); also keep a broader filter as fallback.
+set +e
+timeout "${TIMEOUT_SEC}" sh -c "adb logcat -v time | tee '$LOG' | grep -m1 SPIKE_DONE"
+rc=$?
+set -e
+if [ "$rc" -eq 124 ]; then
+  echo "::error::timed out after ${TIMEOUT_SEC}s waiting for SPIKE_DONE"
+  echo "---- last 200 log lines ----"
+  tail -n 200 "$LOG" || true
+  exit 1
+fi
+if [ "$rc" -ne 0 ]; then
+  echo "::error::logcat scrape failed (exit $rc)"
+  tail -n 200 "$LOG" || true
+  exit 1
+fi
+
+echo "android_spike_emulator_run.sh: gating SPIKE_RESULT lines"
+python3 "$ROOT/tools/ci/check_spike_result.py" "$LOG"

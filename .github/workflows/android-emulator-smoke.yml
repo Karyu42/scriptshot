@@ -1,0 +1,190 @@
+# Android emulator smoke (manual only).
+#
+# Boots an x86_64 AVD, installs the Lua spike debug APK (arm64 + x86_64), launches the
+# export_bench scene (~1000 bullets, FPS/p50/p95 overlay via SPIKE_RESULT JSON), and gates
+# on SPIKE_DONE + four SPIKE_RESULT lines. See docs/scripting/testing.md section 2.4.
+#
+# Why not the main-game arm64 APK from the CI export matrix?
+#   * export_presets.cfg Android is arm64-v8a only (enforced by tools/ci/check_export_preset.py).
+#   * GitHub-hosted runners are x86_64; an arm64 AVD there is QEMU without usable accel and
+#     is too slow/flaky for CI. The spike preset deliberately ships both ABIs for this job.
+#   * Real-device / phone APKs (prerelease test-android-*, qa/android-phone-test) stay manual.
+#
+# How to run:
+#   Actions > "Android emulator smoke" > Run workflow
+#   Optional inputs: api_level (default 30), apk_source (build-spike only for now).
+#
+# Does NOT run on pull_request / push, so PR CI never pays the emulator cost.
+name: Android emulator smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      api_level:
+        description: "Android API level for the x86_64 AVD"
+        type: choice
+        options:
+          - "30"
+          - "33"
+          - "34"
+        default: "30"
+      apk_source:
+        description: "Where the APK comes from (build-spike = docs/scripting/spike dual-ABI export in-job)"
+        type: choice
+        options:
+          - build-spike
+        default: build-spike
+
+concurrency:
+  group: android-emulator-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GODOT_VERSION: "4.7.2"
+  GODOT_CHANNEL: stable
+  GODOT_DIR: ${{ github.workspace }}/.godot-bin
+  GODOT: ${{ github.workspace }}/.godot-bin/godot
+  PYTHONDONTWRITEBYTECODE: "1"
+  JAVA_VERSION: "17"
+  ANDROID_COMPILE_SDK: "36"
+  ANDROID_BUILD_TOOLS: "36.1.0"
+  SPIKE_APK: ${{ github.workspace }}/build/android/spike-debug.apk
+  SPIKE_PACKAGE: org.scriptshot.spike
+  SPIKE_TIMEOUT_SEC: "180"
+  SPIKE_LOG: ${{ github.workspace }}/build/android/spike-emulator.logcat.txt
+
+jobs:
+  spike-emulator:
+    name: Spike APK on x86_64 emulator
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Gate unit tests (no emulator)
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s tools/ci -p 'test_check_spike_result.py' -v
+
+      - name: Cache Godot binary
+        id: cache-godot
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+
+      - name: Cache export templates
+        id: cache-templates
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.${{ env.GODOT_CHANNEL }}
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}-android-only
+
+      - name: Download Android export templates
+        if: steps.cache-templates.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          tpz="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_export_templates.tpz"
+          curl -fsSL --retry 3 -O "$base/$tpz" -O "$base/SHA512-SUMS.txt"
+          grep -F " $tpz" SHA512-SUMS.txt | sha512sum -c -
+          dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
+          mkdir -p "$dest"
+          unzip -q "$tpz" -d tpl \
+            "templates/version.txt" \
+            "templates/android_debug.apk" \
+            "templates/android_release.apk"
+          mv tpl/templates/* "$dest/"
+          rm -rf tpl "$tpz" SHA512-SUMS.txt
+          test -s "$dest/android_debug.apk"
+          ls -lh "$dest"
+
+      - name: Set up JDK ${{ env.JAVA_VERSION }}
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+        with:
+          distribution: temurin
+          java-version: ${{ env.JAVA_VERSION }}
+
+      - name: Install Android SDK packages (export)
+        run: |
+          set -euo pipefail
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          sdkmanager="$sdk/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$sdkmanager" || { echo "::error::sdkmanager not found under $sdk"; exit 1; }
+          "$sdkmanager" --licenses >/dev/null < <(yes)
+          "$sdkmanager" "platform-tools" "build-tools;${ANDROID_BUILD_TOOLS}" "platforms;android-${ANDROID_COMPILE_SDK}"
+          echo "ANDROID_SDK_DIR=$sdk" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=$sdk" >> "$GITHUB_ENV"
+
+      - name: Generate debug keystore and editor settings
+        run: |
+          set -euo pipefail
+          ks="$RUNNER_TEMP/debug.keystore"
+          keytool -genkeypair -keystore "$ks" -storepass android -alias androiddebugkey -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Scriptshot CI Debug,O=Scriptshot,C=US"
+          {
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PATH=$ks"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_USER=androiddebugkey"
+            echo "GODOT_ANDROID_KEYSTORE_DEBUG_PASSWORD=android"
+          } >> "$GITHUB_ENV"
+          major_minor="${GODOT_VERSION%.*}"
+          mkdir -p "$HOME/.config/godot"
+          {
+            echo '[gd_resource type="EditorSettings" format=3]'
+            echo
+            echo '[resource]'
+            echo "export/android/java_sdk_path = \"$JAVA_HOME\""
+            echo "export/android/android_sdk_path = \"$ANDROID_SDK_DIR\""
+          } > "$HOME/.config/godot/editor_settings-${major_minor}.tres"
+
+      - name: Export spike Android APK (dual ABI)
+        if: inputs.apk_source == 'build-spike'
+        run: |
+          set -euo pipefail
+          bash tools/ci/export_spike_android.sh "$SPIKE_APK"
+          apksigner="${ANDROID_SDK_DIR}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
+          "$apksigner" verify "$SPIKE_APK"
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Run spike on emulator
+        uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d # v2.38.0
+        with:
+          api-level: ${{ inputs.api_level }}
+          arch: x86_64
+          target: google_apis
+          force-avd-creation: true
+          disable-animations: true
+          emulator-options: -no-snapshot-save -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: bash tools/ci/android_spike_emulator_run.sh
+
+      - name: Upload spike APK + logcat
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: android-spike-emulator-smoke
+          path: |
+            build/android/spike-debug.apk
+            build/android/spike-debug.apk.idsig
+            build/android/spike-emulator.logcat.txt
+          if-no-files-found: warn
