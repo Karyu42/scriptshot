@@ -55,34 +55,47 @@ hard-fail at 22 ms (`--hooked-target-ms` in the `perf` job). PR #20 did not edit
 lua-gdextension because `run_benchmark.sh` fetches it; that process still runs
 the same GDScript hook.
 
-PR #20 (run [42270990021](https://github.com/Karyu42/scriptshot/actions/runs/42270990021),
-ubuntu-24.04):
+Each row is one Actions run, taken from that run's `perf-reports` artifact
+(`bench.json` and `bench-hooked.json`). Work p95 is the 5,000-bullet `FLOOR`
+line. hooks+walls is the phase-mean line for that same count. The ratio is
+hooked p95 divided by plain p95. A `pull_request` run and the later push of
+the same PR to `main` are different machines. These are observations of those
+runs. The 22 ms hard gate is unchanged. Samples here have printed under 22
+and, on run 42272553748, over it.
 
-| bullets | plain work p95 | hooked work p95 | ratio | hooks+walls mean, plain → hooked |
-| ---: | ---: | ---: | ---: | --- |
-| 5,000 | 13.63 ms | 20.64 ms | 1.51× | 2.91 → 9.20 ms |
-| 10,000 | 27.14 ms | 41.42 ms | 1.53× | 5.80 → 18.41 ms |
+| run | event | plain 5k p95 | hooked 5k p95 | ratio | hooks+walls mean, plain → hooked |
+| --- | --- | ---: | ---: | ---: | --- |
+| [41917411499](https://github.com/Karyu42/scriptshot/actions/runs/41917411499) | #15 pull_request | 12.42 ms | 19.57 ms | 1.58× | 3.09 → 10.02 ms |
+| [41922925381](https://github.com/Karyu42/scriptshot/actions/runs/41922925381) | #15 push `main` | 9.10 ms | 14.65 ms | 1.61× | 2.20 → 7.37 ms |
+| [42264181982](https://github.com/Karyu42/scriptshot/actions/runs/42264181982) | #16 pull_request | 8.92 ms | 14.47 ms | 1.62× | 2.19 → 7.06 ms |
+| [42264668172](https://github.com/Karyu42/scriptshot/actions/runs/42264668172) | #16 push `main` | 8.80 ms | 13.90 ms | 1.58× | 2.19 → 6.86 ms |
+| [42264708047](https://github.com/Karyu42/scriptshot/actions/runs/42264708047) | #17 pull_request | 12.58 ms | 19.27 ms | 1.53× | 3.19 → 9.79 ms |
+| [42265409035](https://github.com/Karyu42/scriptshot/actions/runs/42265409035) | #17 pull_request | 6.29 ms | 9.93 ms | 1.58× | 1.57 → 5.01 ms |
+| [42265856711](https://github.com/Karyu42/scriptshot/actions/runs/42265856711) | #17 push `main` | 13.01 ms | 20.83 ms | 1.60× | 3.37 → 10.63 ms |
+| [42269500507](https://github.com/Karyu42/scriptshot/actions/runs/42269500507) | #18 pull_request | 10.09 ms | 15.21 ms | 1.51× | 2.28 → 7.14 ms |
+| [42270340021](https://github.com/Karyu42/scriptshot/actions/runs/42270340021) | #18 push `main` | 10.51 ms | 16.34 ms | 1.55× | 2.19 → 7.36 ms |
+| [42266273686](https://github.com/Karyu42/scriptshot/actions/runs/42266273686) | #19 pull_request | 12.34 ms | 19.29 ms | 1.56× | 3.06 → 9.45 ms |
+| [42267787371](https://github.com/Karyu42/scriptshot/actions/runs/42267787371) | #19 push `main` | 12.00 ms | 19.39 ms | 1.62× | 2.85 → 9.70 ms |
+| [42270990021](https://github.com/Karyu42/scriptshot/actions/runs/42270990021) | #20 pull_request | 13.63 ms | 20.64 ms | 1.51× | 2.91 → 9.20 ms |
+| [42271561141](https://github.com/Karyu42/scriptshot/actions/runs/42271561141) | #20 push `main` | 13.33 ms | 20.13 ms | 1.51× | 2.95 → 9.18 ms |
+| [42272553748](https://github.com/Karyu42/scriptshot/actions/runs/42272553748) | #22 pull_request | 14.90 ms | 22.65 ms | 1.52× | 3.49 → 10.62 ms |
 
-20.64 ms is under the 22 ms gate. The same job on `main` before this host:
+Run 42270990021 also printed 10,000 bullets: plain work p95 27.14 ms, hooked
+41.42 ms, hooks+walls 5.80 → 18.41 ms. On the samples in this table the
+hooked/plain ratio was 1.51× to 1.62×. Run 42272553748 is this branch at
+`82fb776` (documentation and one GUT test). The perf job still runs `NoopHook`.
+That sample printed hooked 5k p95 22.65 ms, which fails the 22 ms gate. Its
+plain 5k p95 was 14.90 ms and its ratio was 1.52×. The diff does not edit
+`BulletPool.run_update_hooks`, `BulletManager.step`, or the benchmark scene.
 
-| merge | hooked 5k p95 | plain 5k p95 | ratio | hooks+walls delta at 5k |
-| --- | ---: | ---: | ---: | ---: |
-| #16 | 13.90 ms | 8.80 ms | 1.58× | 4.67 ms |
-| #15 | 14.65 ms | 9.10 ms | 1.61× | 5.17 ms |
-| #18 | 16.34 ms | 10.51 ms | 1.55× | 5.17 ms |
-| #19 | 19.39 ms | 12.00 ms | 1.62× | 6.85 ms |
-| #17 | 20.83 ms | 13.01 ms | 1.60× | 7.26 ms |
-| #20 | 20.64 ms | 13.63 ms | 1.51× | 6.29 ms |
-
-Plain 5k p95 moved with the runner (8.80–13.63 ms). The hooked/plain ratio stayed
-about 1.5–1.6×. PR #17, with no Lua host, already printed 20.83 ms. A 20 ms
-reading is runner noise around that ratio, and it is not a CI gate.
+The 20 ms figure is a soft bar. `check_perf.py` does not enforce it. The 22 ms
+figure is the hard gate on this job.
 
 A short headless run on the follow-up machine (Godot 4.7.2, 20 warmup + 100
-measured frames) has the same shape at 5,000 bullets: plain work p95 7.93 ms
-with hooks+walls 1.74 ms, hooked work p95 11.71 ms with hooks+walls 5.45 ms
-(ratio 1.48×). Hurtboxes and the render fill stayed put. The absolute p95 is
-the machine; the added time is the hook phase.
+measured frames) printed, at 5,000 bullets, plain work p95 7.93 ms with
+hooks+walls 1.74 ms, and hooked work p95 11.71 ms with hooks+walls 5.45 ms
+(ratio 1.48×). Hurtboxes and the render fill stayed put on that sample. The
+added time was the hook phase.
 
 On the PR #20 runner the 5,000-bullet split is: `advance` lists every
 `behavior_id != 0` (2.01 → 2.45 ms) and `run_update_hooks` calls `on_update`,

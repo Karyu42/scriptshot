@@ -214,12 +214,11 @@ jobs:
           # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
           # appended to the job's step summary. PERF_BASELINE set = 5k regression fails, 10k regression warns.
           #
-          # HOOKED BUDGET (--hooked-target-ms 22.0) is calibrated to GitHub-hosted runners: hooked 5k
-          # p95 has printed 10.3-20.83 ms across runner instances (the same job differs ~1.8x between machines;
-          # PR #17 was 20.83 ms and PR #20 was 20.64 ms, ratio vs plain staying ~1.5-1.6x), so the
-          # real-device 16.6 ms would fail on hardware luck alone. 22 ms passes every observed runner and still
-          # catches the hook cost doubling (~0.65 -> ~1.3 us/bullet/tick, about +3.3 ms at 5k). 16.6 ms stays the
-          # real-device target (the plain tiers keep it). Revisit with a dedicated runner.
+          # HOOKED BUDGET (--hooked-target-ms 22.0) is the hard gate for hooked 5k. It stays 22.0.
+          # GitHub-hosted runners vary, so a 16.6 ms gate would fail some of them on machine speed.
+          # Observed hooked 5k p95 values are in scripting/README.md (run ids there). They include
+          # samples under 22 ms and 22.65 ms on run 42272553748, which fails this gate. Those numbers
+          # describe the runs that produced them. 16.6 ms stays the real-device target (the plain tiers keep it).
           # The hooked/plain p95 ratio of this same run is logged (stdout, step summary, reports/hooked-ratio.json),
           # never gated.
           args=(
