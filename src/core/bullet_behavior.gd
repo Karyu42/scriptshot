@@ -113,6 +113,11 @@ static func detect_script_hooks(s: Script) -> int:
 ## (`on_tick`, `on_batch`, `state`, ...) is not an event hook and is ignored. Typical use:
 ## `behavior.hook_mask = BulletBehavior.mask_from_names(lua_function_names)`, again (and
 ## `manager.refresh_behavior(id)`) after the script was reloaded.
+##
+## TODO: `on_wall` maps to HOOK_ON_DESPAWN only while a wall hit kills the bullet
+## (it is delivered as on_despawn / on_death with why "wall"). If a wall bounce
+## becomes a non-fatal event (OI-17), `on_wall` needs its own bit, or a mapping
+## to whichever hook actually delivers it.
 static func mask_from_names(names: PackedStringArray) -> int:
 	var mask := 0
 	for n in names:
