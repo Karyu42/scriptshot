@@ -26,8 +26,16 @@ var tag := ""
 
 func _ready() -> void:
 	var os_name := OS.get_name()
-	print("SPIKE_INFO godot=%s os=%s web=%s threads=%s mobile=%s renderer=%s cpu=%s" % [Engine.get_version_info().string, os_name, OS.has_feature("web"), OS.has_feature("threads"), OS.has_feature("mobile"), RenderingServer.get_video_adapter_name(), OS.get_processor_name()])
+	var method := RenderingServer.get_current_rendering_method()
+	var driver := RenderingServer.get_current_rendering_driver_name()
+	print("SPIKE_INFO godot=%s os=%s web=%s threads=%s mobile=%s renderer=%s method=%s driver=%s cpu=%s" % [Engine.get_version_info().string, os_name, OS.has_feature("web"), OS.has_feature("threads"), OS.has_feature("mobile"), RenderingServer.get_video_adapter_name(), method, driver, OS.get_processor_name()])
 	print("SPIKE_INFO lua runtime=%s version=%s" % [LuaState.get_lua_runtime(), LuaState.get_lua_version_string()])
+	# Android emulator CI (SwiftShader) hangs on Forward Mobile / Vulkan present (VkResult 5).
+	# Spike project forces gl_compatibility on .mobile; fail fast if that override is missing.
+	if OS.has_feature("mobile") and method != "gl_compatibility":
+		print("SPIKE_FAIL expected rendering method gl_compatibility on mobile, got method=%s driver=%s" % [method, driver])
+		get_tree().quit(1)
+		return
 	_next_phase()
 
 func _next_phase() -> void:

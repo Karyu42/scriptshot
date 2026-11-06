@@ -8,6 +8,7 @@
 #   * export_presets.cfg Android is arm64-v8a only (enforced by tools/ci/check_export_preset.py).
 #   * GitHub-hosted runners are x86_64; an arm64 AVD there is QEMU without usable accel and
 #     is too slow/flaky for CI. The spike preset deliberately ships both ABIs for this job.
+#   * Spike forces GL Compatibility on mobile (rendering_method.mobile + export extra_args); Forward Mobile/Vulkan + SwiftShader hangs without SPIKE_DONE.
 #   * Real-device / phone APKs (prerelease test-android-*, qa/android-phone-test) stay manual.
 #
 # How to run:
