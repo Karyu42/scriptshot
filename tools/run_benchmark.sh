@@ -15,10 +15,17 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GODOT="${GODOT:-godot}"
-ERROR_PATTERN='SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Failed to instantiate'
+ERROR_PATTERN='SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Failed to instantiate|Failed to load GDExtension'
 
 LOG="$(mktemp)"
 trap 'rm -f "$LOG"' EXIT
+
+# Same pin and issue #7 pre-seed as run_tests.sh. Idempotent when the addon is already there.
+bash tools/ci/fetch_native_libs.sh
+if [ "$?" -ne 0 ]; then
+	echo "run_benchmark.sh: fetch_native_libs.sh failed" >&2
+	exit 1
+fi
 
 # First run / fresh clone: build the .godot cache. Keep the output so import
 # problems are reported instead of silently swallowed.

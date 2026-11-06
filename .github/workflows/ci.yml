@@ -103,11 +103,9 @@ jobs:
           grep -q "config/features=.*\"$want\"" project.godot \
             || { echo "::error::project.godot config/features does not list \"$want\" (GODOT_VERSION=$GODOT_VERSION)"; exit 1; }
 
-      # PLACEHOLDER: the Lua binding is undecided. If it ships as a GDExtension, its native
-      # libraries (linux.x86_64 here; windows/macos/web in the export job) must be present
-      # before import, or Godot reports "Verifying GDExtensions" failures. Add
-      # tools/ci/fetch_native_libs.sh (download pinned release assets + verify checksums, or
-      # `git lfs pull`) and this step starts running automatically.
+      # Stock lua-gdextension 0.8.2 (Lua 5.4). The script checks the zip SHA256 and
+      # pre-seeds .godot/extension_list.cfg (issue #7). run_tests.sh fetches again;
+      # that second call is a no-op when the pin file is already present.
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
@@ -119,8 +117,8 @@ jobs:
           # It exits non-zero on a test failure, a non-zero import exit, or any line matching its
           # ERROR_PATTERN (SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|
           # Failed to instantiate) in the import or test output. Config: .gutconfig.json (tests/unit).
-          # Extra args pass straight to GUT. When the Lua GDExtension lands, add
-          # "Failed to load GDExtension" to ERROR_PATTERN in tools/run_tests.sh.
+          # Extra args pass straight to GUT. ERROR_PATTERN includes
+          # "Failed to load GDExtension" so a missing or broken addon fails the job.
           ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
           exit "${PIPESTATUS[0]}"
 
@@ -165,7 +163,6 @@ jobs:
           unzip -q "$zip" && rm "$zip"
           mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
           chmod +x godot
-      # PLACEHOLDER: fetch per-platform native Lua libs here once the binding is chosen (see test job).
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
@@ -385,9 +382,9 @@ jobs:
           set -euo pipefail
           test -f export_presets.cfg || { echo "::error::export_presets.cfg missing (commit it; see PR #2 .gitignore note)"; exit 1; }
           python3 tools/ci/check_export_preset.py export_presets.cfg "${{ matrix.preset }}"
-      # PLACEHOLDER: per-platform native Lua libraries. If the binding is a GDExtension, each
-      # export needs that platform's library under bin/<platform>/ (see docs/qa/release-builds.md);
-      # Web needs the wasm32 build matching the Web preset's thread_support, Android needs arm64.
+      # The 0.8.2 zip ships every platform library the export presets need (Windows,
+      # macOS, Linux, Web wasm32, Android). Web threads vs nothreads is selected by
+      # the gdextension file, not by a second download.
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"

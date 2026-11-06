@@ -16,6 +16,11 @@ func test_gitignore_covers_godot_cache() -> void:
 	assert_has(_gitignore_lines(), ".godot/")
 
 
+func test_gitignore_ignores_lua_gdextension_binaries() -> void:
+	assert_has(_gitignore_lines(), "/addons/lua-gdextension/",
+		"lua-gdextension binaries are fetched, never committed")
+
+
 func test_export_presets_are_not_ignored() -> void:
 	var lines := _gitignore_lines()
 	assert_does_not_have(lines, "export_presets.cfg", "export presets must be committable")
