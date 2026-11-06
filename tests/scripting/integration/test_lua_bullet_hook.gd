@@ -59,6 +59,32 @@ func test_a_script_with_no_event_hook_stays_a_plain_bullet() -> void:
 	assert_eq(manager.pool.behavior[slot], 0)
 
 
+## behavior_id != 0 is listed every tick. on_update is intentionally unmasked, and
+## this adapter does not override it, so the tick is the empty base method: no
+## ScriptHost.call_hook, no G1 coroutine. Masking that call is an engine change.
+func test_an_event_only_bullet_is_listed_every_tick_without_entering_lua() -> void:
+	var behavior := _behavior("return { on_hit = function(b, hit) end }")
+	assert_eq(behavior.hook_mask, BulletBehavior.HOOK_ON_HIT)
+	assert_false(behavior.host.has_callback("on_update"))
+	var request := _arm(behavior, Vector2(40, 0))
+	assert_gt(request.behavior_id, 0)
+	var slot := manager.spawn(request)
+	assert_eq(manager.pool.behavior[slot], request.behavior_id)
+	assert_eq(behavior.dispatches("on_spawn"), 0, "on_spawn is outside the mask")
+	manager.step(DT)
+	assert_eq(manager.pool.hooked_count, 1, "behavior_id != 0 stays on the per-tick list")
+	assert_eq(behavior.dispatches("on_hit"), 0, "the tick does not enter Lua")
+	assert_eq(behavior.dispatches("on_spawn"), 0)
+	assert_eq(behavior.dispatches("on_despawn"), 0)
+	assert_eq(behavior.dispatches("can_hit"), 0)
+	var listings := 0
+	var script: Script = behavior.get_script()
+	for d: Dictionary in script.get_script_method_list():
+		if str(d["name"]) == "on_update":
+			listings += 1
+	assert_eq(listings, 1, "on_update is the inherited empty method, not an override")
+
+
 func test_on_spawn_commits_velocity_through_the_pool() -> void:
 	var behavior := _behavior("""
 		return {

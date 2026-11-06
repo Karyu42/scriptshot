@@ -45,6 +45,81 @@ return {
 `b.id`, `b.x` and `b.y` are a snapshot taken when the callback starts. `why` is
 `lifetime`, `bounds`, `hit`, `manual`, `cleared`, `wall` or `invalid`.
 
+## Hook cost
+
+The CI hooked tier is `./tools/run_benchmark.sh --bullets=5000,10000 --hooked=1.0`.
+Every bullet uses `NoopHook` in `tests/benchmark/bullet_benchmark.gd`, a GDScript
+`on_update` that returns immediately. The gate is work p95 at 5,000 bullets,
+hard-fail at 22 ms (`--hooked-target-ms` in the `perf` job). PR #20 did not edit
+`BulletPool.run_update_hooks` or `BulletManager.step`. The job now loads stock
+lua-gdextension because `run_benchmark.sh` fetches it; that process still runs
+the same GDScript hook.
+
+Each row is one Actions run, taken from that run's `perf-reports` artifact
+(`bench.json` and `bench-hooked.json`). Work p95 is the 5,000-bullet `FLOOR`
+line. hooks+walls is the phase-mean line for that same count. The ratio is
+hooked p95 divided by plain p95. A `pull_request` run and the later push of
+the same PR to `main` are different machines. These are observations of those
+runs. The 22 ms hard gate is unchanged. Samples here have printed under 22 and over it (22.65 ms on run
+42272553748, 22.56 ms on run 42273854230, 22.77 ms on run 42274284985).
+
+| run | event | plain 5k p95 | hooked 5k p95 | ratio | hooks+walls mean, plain → hooked |
+| --- | --- | ---: | ---: | ---: | --- |
+| [41917411499](https://github.com/Karyu42/scriptshot/actions/runs/41917411499) | #15 pull_request | 12.42 ms | 19.57 ms | 1.58× | 3.09 → 10.02 ms |
+| [41922925381](https://github.com/Karyu42/scriptshot/actions/runs/41922925381) | #15 push `main` | 9.10 ms | 14.65 ms | 1.61× | 2.20 → 7.37 ms |
+| [42264181982](https://github.com/Karyu42/scriptshot/actions/runs/42264181982) | #16 pull_request | 8.92 ms | 14.47 ms | 1.62× | 2.19 → 7.06 ms |
+| [42264668172](https://github.com/Karyu42/scriptshot/actions/runs/42264668172) | #16 push `main` | 8.80 ms | 13.90 ms | 1.58× | 2.19 → 6.86 ms |
+| [42264708047](https://github.com/Karyu42/scriptshot/actions/runs/42264708047) | #17 pull_request | 12.58 ms | 19.27 ms | 1.53× | 3.19 → 9.79 ms |
+| [42265409035](https://github.com/Karyu42/scriptshot/actions/runs/42265409035) | #17 pull_request | 6.29 ms | 9.93 ms | 1.58× | 1.57 → 5.01 ms |
+| [42265856711](https://github.com/Karyu42/scriptshot/actions/runs/42265856711) | #17 push `main` | 13.01 ms | 20.83 ms | 1.60× | 3.37 → 10.63 ms |
+| [42269500507](https://github.com/Karyu42/scriptshot/actions/runs/42269500507) | #18 pull_request | 10.09 ms | 15.21 ms | 1.51× | 2.28 → 7.14 ms |
+| [42270340021](https://github.com/Karyu42/scriptshot/actions/runs/42270340021) | #18 push `main` | 10.51 ms | 16.34 ms | 1.55× | 2.19 → 7.36 ms |
+| [42266273686](https://github.com/Karyu42/scriptshot/actions/runs/42266273686) | #19 pull_request | 12.34 ms | 19.29 ms | 1.56× | 3.06 → 9.45 ms |
+| [42267787371](https://github.com/Karyu42/scriptshot/actions/runs/42267787371) | #19 push `main` | 12.00 ms | 19.39 ms | 1.62× | 2.85 → 9.70 ms |
+| [42270990021](https://github.com/Karyu42/scriptshot/actions/runs/42270990021) | #20 pull_request | 13.63 ms | 20.64 ms | 1.51× | 2.91 → 9.20 ms |
+| [42271561141](https://github.com/Karyu42/scriptshot/actions/runs/42271561141) | #20 push `main` | 13.33 ms | 20.13 ms | 1.51× | 2.95 → 9.18 ms |
+| [42272553748](https://github.com/Karyu42/scriptshot/actions/runs/42272553748) | #22 pull_request | 14.90 ms | 22.65 ms | 1.52× | 3.49 → 10.62 ms |
+| [42273854230](https://github.com/Karyu42/scriptshot/actions/runs/42273854230) | #22 pull_request | 14.93 ms | 22.56 ms | 1.51× | 3.46 → 10.39 ms |
+| [42274284985](https://github.com/Karyu42/scriptshot/actions/runs/42274284985) | #22 pull_request | 14.90 ms | 22.77 ms | 1.53× | 3.11 → 10.33 ms |
+
+Run 42270990021 also printed 10,000 bullets: plain work p95 27.14 ms, hooked
+41.42 ms, hooks+walls 5.80 → 18.41 ms. On the samples in this table the
+hooked/plain ratio was 1.51× to 1.62×. Runs 42272553748 (`82fb776`),
+42273854230 (`8f14bfd`) and 42274284985 (`4619271`) are this branch:
+documentation and one GUT test. The perf job still runs `NoopHook`. Those
+samples printed hooked 5k p95 22.65 ms, 22.56 ms and 22.77 ms. On each one the
+p50 was also over 22 ms (22.23, 22.16, 22.33). Plain 5k p95 was 14.90 ms,
+14.93 ms and 14.90 ms, and the ratios were 1.52×, 1.51× and 1.53×. The diff
+does not edit `BulletPool.run_update_hooks`, `BulletManager.step`, or the
+benchmark scene. Each of those three samples is a separate runner.
+
+The 20 ms figure is a soft bar. `check_perf.py` does not enforce it. The 22 ms
+figure is the hard gate on this job.
+
+A short headless run on the follow-up machine (Godot 4.7.2, 20 warmup + 100
+measured frames) printed, at 5,000 bullets, plain work p95 7.93 ms with
+hooks+walls 1.74 ms, and hooked work p95 11.71 ms with hooks+walls 5.45 ms
+(ratio 1.48×). Hurtboxes and the render fill stayed put on that sample. The
+added time was the hook phase.
+
+On the PR #20 runner the 5,000-bullet split is: `advance` lists every
+`behavior_id != 0` (2.01 → 2.45 ms) and `run_update_hooks` calls `on_update`,
+runs the inlined field check, then one `sweep_cross_writes` (hooks+walls
+2.91 → 9.20 ms, about 1.3 µs per bullet). `LuaBulletBehavior` does not override
+`on_update` and does not call `ScriptHost.call_hook` from the tick, so the G1
+`HOOK_YIELD` hook, the coroutine and the bullet table are outside this number.
+A script with no event callback keeps mask 0 and `behavior_id` 0 and stays off
+the list (`test_a_script_with_no_event_hook_stays_a_plain_bullet`).
+
+An event-only script (`on_spawn`, `on_hit`, `can_hit`, `on_death` and the other
+despawn names) still has `behavior_id != 0`. `HOOK_*` covers those four event
+hooks only. `BulletPool.advance` puts the bullet on the hooked list and
+`run_update_hooks` calls the empty base `on_update` every tick. There is no
+flag on `BulletBehavior` that skips that call. Leaving event-only bullets off
+the per-tick path, while a behaviour that overrides `on_update` still pays it,
+is a Gameplay Engineer change. This adapter keeps `mask_from_names` and
+`hook_mask_exact`, and does not set `HOOK_ALL`.
+
 ## Deferred
 
 The rest of the shot API (`spawn {}`, `wait`, the player proxy, the capability
@@ -52,10 +127,6 @@ prompt, the batch view, hot reload) and the 47 adversarial cases. The 64 MB
 cap is soft on this binary: the hook samples it every 1,000 instructions. A
 hard cap needs the source-built binding, which is behind the godot-cpp fork
 and is not part of M1.
-
-A bullet whose script defines an event hook still has `behavior_id ~= 0`, so
-the engine calls the empty `on_update` every tick and the bullet pays the
-hooked-path cost. Skipping that for event-only scripts needs an engine change.
 
 `ScriptHost` keeps every Lua state alive until the process exits. Freeing one
 state after another state that called into Godot has already been freed
