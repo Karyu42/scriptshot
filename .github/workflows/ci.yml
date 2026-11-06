@@ -1,9 +1,12 @@
 # Scriptshot CI.
-#   test   : headless import + GUT suite (./tools/run_tests.sh) on every PR and push to main.
+#   test   : headless import + GUT suite (./tools/run_tests.sh) and the export-preset policy check
+#            (tools/ci/check_export_preset.py, all five presets) on every PR and push to main.
 #   perf   : headless bullet benchmark (./tools/run_benchmark.sh) on every PR. p95 <= 16.6 ms is a HARD gate at
 #            5,000 bullets (floor) and a warning-only target at 10,000 (tools/ci/check_perf.py).
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
 #   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
+# Checkout does not enable Git LFS or submodules: this repo has neither. If native-libs starts
+# building godot-cpp from a submodule, turn submodules back on for that job only.
 # Headless numbers use the dummy renderer: they measure CPU simulation cost, not GPU/rendering.
 # See docs/qa/stress-test-plan.md.
 name: CI
@@ -39,10 +42,18 @@ env:
   # platform/android/java/app/config.gradle (compileSdk 36, buildTools 36.1.0, ndkVersion 29.0.14206865,
   # Java 17), Python/SCons from .github/actions/godot-deps (SCons 4.10.1), Emscripten from
   # .github/workflows/web_builds.yml (EM_VERSION 4.0.11). Update them together with GODOT_VERSION.
+  # NDK stays 29.0.14206865. r28b (28.1.13356709) is not the pin: docs/scripting/spike-results.md
+  # section 12 and docs/qa/release-builds.md chose Godot's own NDK for the shared pipeline.
+  # EMSCRIPTEN_VERSION is that engine CI pin. docs/scripting/testing.md uses 4.0.20 when building
+  # Scriptshot's own extension against the official web template; leave 4.0.11 until native-libs
+  # is actually enabled and that pin is reconciled on purpose.
   JAVA_VERSION: "17"
   ANDROID_COMPILE_SDK: "36"
   ANDROID_BUILD_TOOLS: "36.1.0"
   ANDROID_NDK_VERSION: "29.0.14206865"
+  # godot-cpp 10.0.0-stable (2026-09-15), api_version 4.7. The disabled native-libs job must use
+  # this commit if it is turned on. Not lua-gdextension 0.8.2's 58d1de7 (10.0.0-rc1, 4.6 API).
+  GODOT_CPP_COMMIT: "507ed9d840c01a3c5b2a39af8bb4000bfac30bf5"
   SCONS_VERSION: "4.10.1"
   EMSCRIPTEN_VERSION: "4.0.11"
 
@@ -52,14 +63,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          lfs: true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check export preset policy
+        run: |
+          set -euo pipefail
+          test -f export_presets.cfg || { echo "::error::export_presets.cfg is not committed"; exit 1; }
+          # Same checker the manual export job runs. Pure Python, so a bad codesign / ABI /
+          # keystore flag fails the PR instead of waiting for a workflow_dispatch export.
+          for preset in "Windows Desktop" "macOS" "Linux" "Web" "Android"; do
+            python3 tools/ci/check_export_preset.py export_presets.cfg "$preset"
+          done
 
       - name: Cache Godot binary
         id: cache-godot
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.GODOT_DIR }}
           key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
@@ -117,7 +135,7 @@ jobs:
 
       - name: Upload reports
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-reports
           path: |
@@ -129,11 +147,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          lfs: true
-      - uses: actions/cache@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-godot
         with:
           path: ${{ env.GODOT_DIR }}
@@ -165,6 +180,8 @@ jobs:
           # check_perf.py stays the CI gate (it also writes the step summary and the baseline check).
           # The JSON is written either way; a benchmark failure is tolerated only if it left JSON
           # behind and was not caused by an import/script error (those print "run_benchmark.sh: ...").
+          # Follow-up (not this job): median-of-3, or one retry when only the floor fails.
+          # docs/qa/stress-test-plan.md already plans that; headroom is still large, so it is not a gate.
           set +e
           ./tools/run_benchmark.sh --bullets=2000,5000,10000 --floor-bullets=5000 --target-bullets=10000 \
             --target-ms=16.6 \
@@ -192,10 +209,13 @@ jobs:
           fi
           [ -s reports/bench-hooked.json ] || { echo "::error::hooked benchmark produced no JSON (exit $rc)"; exit 1; }
       - name: Enforce budget (plain 5k hard fail, 10k warn-only; hooked 5k hard fail at 22 ms, 10k warn-only)
+        env:
+          # Repo variable: path to a committed bench.json from main. Empty = budget only.
+          # Passed as data so the value is not interpolated into the shell script.
+          PERF_BASELINE: ${{ vars.PERF_BASELINE }}
         run: |
           # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
-          # appended to the job's step summary. PERF_BASELINE (repo variable) = path to a committed
-          # bench.json from main (5k regression fails, 10k regression warns); unset = budget only.
+          # appended to the job's step summary. PERF_BASELINE set = 5k regression fails, 10k regression warns.
           #
           # HOOKED BUDGET (--hooked-target-ms 22.0) is calibrated to GitHub-hosted runners: observed hooked 5k
           # p95 was 10.3-18.5 ms across runner instances (the same job differs ~1.8x between machines), so the
@@ -204,13 +224,18 @@ jobs:
           # real-device target (the plain tiers keep it). Revisit with a dedicated runner.
           # The hooked/plain p95 ratio of this same run is logged (stdout, step summary, reports/hooked-ratio.json),
           # never gated.
-          python3 tools/ci/check_perf.py reports/bench.json \
-            --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25 \
-            --hooked-report reports/bench-hooked.json --hooked-target-ms 22.0 \
-            --ratio-json reports/hooked-ratio.json \
-            --summary "$GITHUB_STEP_SUMMARY" \
-            ${{ vars.PERF_BASELINE && format('--baseline {0}', vars.PERF_BASELINE) || '' }}
-      - uses: actions/upload-artifact@v4
+          args=(
+            python3 tools/ci/check_perf.py reports/bench.json
+            --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25
+            --hooked-report reports/bench-hooked.json --hooked-target-ms 22.0
+            --ratio-json reports/hooked-ratio.json
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ -n "${PERF_BASELINE:-}" ]; then
+            args+=(--baseline "$PERF_BASELINE")
+          fi
+          "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:
           name: perf-reports
@@ -218,7 +243,9 @@ jobs:
           if-no-files-found: ignore
 
   export:
-    name: Export (${{ matrix.preset }})
+    # When the job is skipped, matrix is empty and "Export (${{ matrix.preset }})" renders blank.
+    # The false branch does not read matrix, so the checks list says "Export (not requested)".
+    name: "${{ (github.event_name == 'workflow_dispatch' && inputs.run_export) && format('Export ({0})', matrix.preset) || 'Export (not requested)' }}"
     # Manual only. Preset names must match export_presets.cfg exactly (commit it; PR #2 un-ignored it,
     # export_credentials.cfg stays ignored). Everything is exported from Linux with the headless editor:
     # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
@@ -242,11 +269,8 @@ jobs:
           # runner and is low priority; leave this commented out:
           # - { preset: "iOS", platform: "ios.universal", mode: debug, out: "build/ios/Scriptshot.xcodeproj" }
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          lfs: true
-      - uses: actions/cache@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-godot
         with:
           path: ${{ env.GODOT_DIR }}
@@ -265,10 +289,12 @@ jobs:
           chmod +x godot
       - name: Cache export templates
         id: cache-templates
-        uses: actions/cache@v4
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.${{ env.GODOT_CHANNEL }}
-          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+          # "slim" drops the previous full-tpz cache (about 2 GB). Godot finds templates by this
+          # versioned directory, so a restore of only the files below is enough for the five presets.
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}-slim
       - name: Download export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
@@ -278,12 +304,44 @@ jobs:
           curl -fsSL --retry 3 -O "$base/$tpz" -O "$base/SHA512-SUMS.txt"
           grep -F " $tpz" SHA512-SUMS.txt | sha512sum -c -
           dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
-          mkdir -p "$dest" && unzip -q "$tpz" -d tpl && mv tpl/templates/* "$dest/"
+          mkdir -p "$dest"
+          # The release is one tpz (still downloaded whole). Cache only what the matrix needs.
+          # Archive names (Godot 4.7.2): android_*.apk, macos.zip, windows_*_x86_64.exe,
+          # linux_*.x86_64 (dot, not underscore), web_nothreads_*.zip, plus version.txt.
+          # windows_*_x86_64_console.exe is not required: export_console_wrapper=1 is "Debug Only"
+          # and this matrix exports Windows as release.
+          # Add web_dlink_nothreads_*.zip when variant/extensions_support is turned on
+          # (GDExtension / Lua). Do not add it before then.
+          unzip -q "$tpz" -d tpl \
+            "templates/version.txt" \
+            "templates/android_*.apk" \
+            "templates/macos.zip" \
+            "templates/windows_*_x86_64.exe" \
+            "templates/linux_*.x86_64" \
+            "templates/web_nothreads_*.zip"
+          mv tpl/templates/* "$dest/"
+          rm -rf tpl "$tpz" SHA512-SUMS.txt
+          missing=0
+          for f in \
+            version.txt \
+            android_debug.apk android_release.apk \
+            macos.zip \
+            windows_debug_x86_64.exe windows_release_x86_64.exe \
+            linux_debug.x86_64 linux_release.x86_64 \
+            web_nothreads_debug.zip web_nothreads_release.zip
+          do
+            if [ ! -s "$dest/$f" ]; then
+              echo "::error::export template missing after extract: $f"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ]
+          ls -lh "$dest"
 
       # ---- Android only: JDK, SDK packages, throwaway debug keystore, editor settings ----
       - name: Set up JDK ${{ env.JAVA_VERSION }} (Android)
         if: matrix.preset == 'Android'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -337,20 +395,57 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$(dirname '${{ matrix.out }}')"
-          "$GODOT" --headless --path . --import || true
+          # Same import policy as tools/run_benchmark.sh. A non-zero editor exit or a script/resource
+          # error fails here. Do not swallow it with `|| true` (Godot can also exit 0 on some of them).
+          ERROR_PATTERN='SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Failed to instantiate'
+          import_log="$(mktemp)"
+          if ! "$GODOT" --headless --path . --import >"$import_log" 2>&1 || grep -a -q -E "$ERROR_PATTERN" "$import_log"; then
+            cat "$import_log"
+            echo "::error::project import failed before export"
+            exit 1
+          fi
+          rm -f "$import_log"
           "$GODOT" --headless --path . --export-${{ matrix.mode }} "${{ matrix.preset }}" "${{ matrix.out }}"
           ls -la "$(dirname '${{ matrix.out }}')"
-      - uses: actions/upload-artifact@v4
+      - name: Verify export
+        run: |
+          set -euo pipefail
+          out="${{ matrix.out }}"
+          test -s "$out" || { echo "::error::export output missing or empty: $out"; exit 1; }
+          case "${{ matrix.preset }}" in
+            macOS)
+              # Ad-hoc codesign failure is only an export warning, so Godot can still exit 0.
+              # Write the listing to a file: grep -q under pipefail can SIGPIPE unzip and fail a good zip.
+              list="$RUNNER_TEMP/macos-zip.txt"
+              unzip -l "$out" > "$list"
+              grep -q '_CodeSignature/CodeResources' "$list" \
+                || { echo "::error::macOS zip has no _CodeSignature/CodeResources (ad-hoc sign did not run)"; exit 1; }
+              ;;
+            Android)
+              apksigner="${ANDROID_SDK_DIR}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
+              test -x "$apksigner" || { echo "::error::apksigner not found at $apksigner"; exit 1; }
+              "$apksigner" verify "$out"
+              ;;
+            Linux)
+              # Official templates target an older glibc, so ubuntu-24.04 can run them.
+              # Bound the run so a hang fails this step instead of the job timeout.
+              chmod +x "$out"
+              timeout 60s "$out" --headless --quit
+              ;;
+          esac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: scriptshot-${{ matrix.preset }}
           path: build/
 
   # DISABLED stub (runs only when vars.ENABLE_NATIVE_LIBS == 'true'). Native builds of GDExtension libraries on GitHub-hosted runners, one per
   # platform, each uploading bin/<platform>/. Enable (set the variable) only when the binding decision
-  # needs it and tools/ci/build_native_libs.sh exists. Toolchain pins come from the Godot 4.7.2 tag (see env).
+  # needs it and tools/ci/build_native_libs.sh exists. Toolchain pins come from the env block:
+  # NDK 29.0.14206865 (not r28b 28.1.13356709) and godot-cpp 507ed9d840c01a3c5b2a39af8bb4000bfac30bf5 (10.0.0-stable).
   # Note: upstream Godot 4.7.2 builds macOS on macos-26; this project decided macos-14 (Apple Silicon).
   native-libs:
-    name: Native libs (${{ matrix.platform }})
+    # When skipped, matrix is empty; the false branch avoids "Native libs ()".
+    name: "${{ vars.ENABLE_NATIVE_LIBS == 'true' && format('Native libs ({0})', matrix.platform) || 'Native libs (disabled)' }}"
     # Off until the repository variable ENABLE_NATIVE_LIBS is set to 'true'.
     if: ${{ vars.ENABLE_NATIVE_LIBS == 'true' }}
     runs-on: ${{ matrix.runner }}
@@ -366,10 +461,8 @@ jobs:
           - { platform: "android.arm64",   runner: ubuntu-24.04,    target: android }
           # - { platform: "ios.universal", runner: macos-14, target: ios }  # not a release target; optional compile check only
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.x"
       - name: Install SCons ${{ env.SCONS_VERSION }}
@@ -377,13 +470,13 @@ jobs:
         run: python -m pip install "scons==${SCONS_VERSION}"
       - name: Set up Emscripten ${{ env.EMSCRIPTEN_VERSION }}
         if: matrix.target == 'web'
-        uses: emscripten-core/setup-emsdk@v16
+        uses: emscripten-core/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with:
           version: ${{ env.EMSCRIPTEN_VERSION }}
           no-cache: true
       - name: Set up JDK ${{ env.JAVA_VERSION }} and NDK ${{ env.ANDROID_NDK_VERSION }}
         if: matrix.target == 'android'
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
         with:
           distribution: temurin
           java-version: ${{ env.JAVA_VERSION }}
@@ -397,7 +490,7 @@ jobs:
       - name: Build
         shell: bash
         run: bash tools/ci/build_native_libs.sh "${{ matrix.platform }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-libs-${{ matrix.platform }}
           path: bin/${{ matrix.platform }}/

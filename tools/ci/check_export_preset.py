@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Policy check for a committed export_presets.cfg (used by the manual `export` CI job).
+"""Policy check for a committed export_presets.cfg.
 
 Usage: check_export_preset.py export_presets.cfg "<preset name>"
 
+Runs in the `test` job on every pull request and push, and again in the manual `export` job.
 Decisions encoded here (docs/qa/release-builds.md):
   * No secrets in the committed file: every option whose key ends in "password" must be empty, and the
     Android keystore paths/users must be empty (CI injects GODOT_ANDROID_KEYSTORE_* from env).
   * Android: arm64-v8a only, no Gradle build (the plain template export needs no Gradle/NDK).
   * macOS: ad-hoc signing only ("Built-in (ad-hoc only)" = 1), no notarization, no Apple account.
+    Value 3 (Xcode codesign) is rejected: the export runner is Linux, where that mode does not exist.
   * Web: extensions_support is a WARNING when off (required once the Lua binding is a GDExtension).
 Exit code 0 = ok, 1 = policy violation or preset not found. Warnings do not fail.
 """
@@ -64,10 +66,12 @@ def check(cp, name):
             if got != want:
                 errors.append(f"architectures/{abi} must be {want} (Android release target is arm64 only), got {got}")
     elif platform == "macOS":
-        if opts.get("codesign/codesign", "") not in ("1", "3"):
-            errors.append("codesign/codesign must be 1 (Built-in, ad-hoc only); an unsigned arm64 app will not launch")
-        elif opts.get("codesign/codesign") == "3" and opts.get("codesign/identity", "") not in ("", "-"):
-            errors.append("codesign/identity must be empty or '-' (ad-hoc); no Apple developer account is available")
+        # 1 = "Built-in (ad-hoc only)", the only ad-hoc mode on the Linux export runner.
+        # 3 is Xcode codesign and exists only when the editor host is macOS, so a committed 3
+        # would not be what CI actually exports.
+        if opts.get("codesign/codesign", "") != "1":
+            errors.append("codesign/codesign must be 1 (Built-in, ad-hoc only) on the Linux CI runner; "
+                          "an unsigned arm64 app will not launch, and 3 (Xcode codesign) is macOS-host only")
         if opts.get("notarization/notarization", "0") != "0":
             errors.append("notarization/notarization must be 0 (Disabled): no Apple developer account")
         if opts.get("binary_format/architecture", "universal") != "universal":
