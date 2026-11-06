@@ -243,9 +243,9 @@ jobs:
           if-no-files-found: ignore
 
   export:
-    # When the job is skipped, matrix is empty and "Export (${{ matrix.preset }})" renders blank.
-    # The false branch does not read matrix, so the checks list says "Export (not requested)".
-    name: "${{ (github.event_name == 'workflow_dispatch' && inputs.run_export) && format('Export ({0})', matrix.preset) || 'Export (not requested)' }}"
+    # Static name. GitHub does not evaluate ${{ }} in a skipped job's name, so a conditional
+    # shows up as the raw expression in the checks list. The preset is on the Export and Verify steps.
+    name: Export
     # Manual only. Preset names must match export_presets.cfg exactly (commit it; PR #2 un-ignored it,
     # export_credentials.cfg stays ignored). Everything is exported from Linux with the headless editor:
     # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
@@ -391,7 +391,7 @@ jobs:
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
-      - name: Export
+      - name: Export (${{ matrix.preset }})
         run: |
           set -euo pipefail
           mkdir -p "$(dirname '${{ matrix.out }}')"
@@ -407,7 +407,7 @@ jobs:
           rm -f "$import_log"
           "$GODOT" --headless --path . --export-${{ matrix.mode }} "${{ matrix.preset }}" "${{ matrix.out }}"
           ls -la "$(dirname '${{ matrix.out }}')"
-      - name: Verify export
+      - name: Verify export (${{ matrix.preset }})
         run: |
           set -euo pipefail
           out="${{ matrix.out }}"
@@ -444,8 +444,9 @@ jobs:
   # NDK 29.0.14206865 (not r28b 28.1.13356709) and godot-cpp 507ed9d840c01a3c5b2a39af8bb4000bfac30bf5 (10.0.0-stable).
   # Note: upstream Godot 4.7.2 builds macOS on macos-26; this project decided macos-14 (Apple Silicon).
   native-libs:
-    # When skipped, matrix is empty; the false branch avoids "Native libs ()".
-    name: "${{ vars.ENABLE_NATIVE_LIBS == 'true' && format('Native libs ({0})', matrix.platform) || 'Native libs (disabled)' }}"
+    # Static name. A ${{ }} conditional in name: is shown verbatim when the job is skipped.
+    # Platform is on the Build step.
+    name: Native libs
     # Off until the repository variable ENABLE_NATIVE_LIBS is set to 'true'.
     if: ${{ vars.ENABLE_NATIVE_LIBS == 'true' }}
     runs-on: ${{ matrix.runner }}
@@ -487,7 +488,7 @@ jobs:
           sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
           "$sdk/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK_VERSION}"
           echo "ANDROID_NDK_ROOT=$sdk/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-      - name: Build
+      - name: Build (${{ matrix.platform }})
         shell: bash
         run: bash tools/ci/build_native_libs.sh "${{ matrix.platform }}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
