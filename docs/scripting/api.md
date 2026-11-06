@@ -248,7 +248,10 @@ All optional. Unspecified fields take engine defaults.
 #### Which engine hooks a script gets: the hook mask (adapter contract)
 
 The engine calls only the event hooks a behaviour *has* (`on_spawn`, `on_hit`, `can_hit`, `on_despawn`;
-`on_update` is not part of this), and only a hook that was called makes the engine run its extra
+`on_update` is not part of this). A bullet with `behavior_id != 0` still receives the empty base
+`on_update` every tick, including an event-only Lua script. Skipping that call is an engine change;
+the measured cost and the follow-up are in `scripting/README.md` ("Hook cost"). Only a hook that was
+called makes the engine run its extra
 safety sweep for that tick (`BulletPool.hook_ran`, see `docs/architecture.md`, "Hook mask"). For a GDScript
 behaviour the engine finds the overridden methods itself. **A Lua adapter overrides all four methods (it has
 to forward them), so detection would say "all four" for every Lua shot and every tick would pay the sweeps.**

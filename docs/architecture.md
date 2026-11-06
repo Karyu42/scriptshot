@@ -603,6 +603,18 @@ Where the cost goes and what was done:
   numbers.
 * Measure with `./tools/run_benchmark.sh --hooked=0.3` (or 1.0). CI's default has no
   hooked bullets.
+* **CI after the Lua host (PR #20).** The hooked tier is still `NoopHook.on_update`
+  in `tests/benchmark/bullet_benchmark.gd`. PR #20 did not edit `run_update_hooks`.
+  On that runner, 5,000 hooked bullets had work p95 20.64 ms against a plain
+  13.63 ms (ratio 1.51×); the `hooks+walls` mean went from 2.91 ms to 9.20 ms.
+  Earlier `main` runs of the same tier already printed 13.90–20.83 ms, and the
+  ratio stayed about 1.5–1.6×, so the absolute number follows the runner.
+  `LuaBulletBehavior` does not override `on_update` and does not call `ScriptHost`
+  on that path. An event-only Lua bullet still has `behavior_id != 0`, so
+  `advance()` lists it and the empty call still runs. Masking `on_update` is an
+  engine change. The adapter contract stays `mask_from_names` plus
+  `hook_mask_exact`. The table and the Gameplay Engineer follow-up are in
+  `scripting/README.md`.
 
 ### Owner inheritance for hook-spawned bullets
 
