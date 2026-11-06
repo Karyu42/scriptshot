@@ -11,8 +11,13 @@ func _init(manager: BulletManager) -> void:
 
 
 func request_shot_id(request: ShotRequest) -> int:
-	var slot := _manager.spawn(request)
-	return _manager.pool.id_of(slot) if slot >= 0 else -1
+	var spawned := _manager.spawn(request)
+	if spawned < 0:
+		return -1
+	# Plain bullets on the native backend already come back as a stable id.
+	if _manager.is_native_id(spawned):
+		return spawned
+	return _manager.pool.id_of(spawned)
 
 
 func request_child_shot_id(parent_id: int, request: ShotRequest) -> int:
@@ -21,6 +26,8 @@ func request_child_shot_id(parent_id: int, request: ShotRequest) -> int:
 
 
 func is_bullet_alive(id: int) -> bool:
+	if _manager.is_native_id(id):
+		return _manager.is_native_bullet_alive(id)
 	return _manager.pool.is_alive(id)
 
 
@@ -59,7 +66,7 @@ func get_headroom(owner_layer: int = Layers.PLAYER) -> int:
 
 
 func get_bullet_count() -> int:
-	return _manager.pool.count
+	return _manager.alive_count()
 
 
 func get_owner_count(owner_layer: int) -> int:

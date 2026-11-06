@@ -272,8 +272,9 @@ manager.refresh_behavior(id)
   the mask, that `on_hit` silently never runs. So: set the mask whenever the callback set changes, and call
   `refresh_behavior(id)` after a reload (the mask is read on every dispatch, so the new value is used at once; the call
   also re-runs the debug check). When in doubt use `BulletBehavior.HOOK_ALL`; it is always correct, only slower.
-- `set_script()` on a behaviour object resets its properties, `hook_mask` included, to their defaults (auto-detect), and the
-  engine notices the new script by itself; set the mask again after it.
+- `set_script()` on a behaviour object resets its properties to their defaults, including `hook_mask` (back to
+  auto-detect) and `hook_mask_exact` (back to false). The engine notices the new script by itself; set the mask and
+  `hook_mask_exact` again after it.
 - A behaviour implemented in C# or a GDExtension language is detected as `HOOK_ALL` (the detection only understands
   GDScript); give it an explicit mask the same way if it matters.
 
