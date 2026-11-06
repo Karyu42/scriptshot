@@ -61,7 +61,7 @@ line. hooks+walls is the phase-mean line for that same count. The ratio is
 hooked p95 divided by plain p95. A `pull_request` run and the later push of
 the same PR to `main` are different machines. These are observations of those
 runs. The 22 ms hard gate is unchanged. Samples here have printed under 22 and over it (22.65 ms on run
-42272553748, 22.56 ms on run 42273854230).
+42272553748, 22.56 ms on run 42273854230, 22.77 ms on run 42274284985).
 
 | run | event | plain 5k p95 | hooked 5k p95 | ratio | hooks+walls mean, plain → hooked |
 | --- | --- | ---: | ---: | ---: | --- |
@@ -80,15 +80,18 @@ runs. The 22 ms hard gate is unchanged. Samples here have printed under 22 and o
 | [42271561141](https://github.com/Karyu42/scriptshot/actions/runs/42271561141) | #20 push `main` | 13.33 ms | 20.13 ms | 1.51× | 2.95 → 9.18 ms |
 | [42272553748](https://github.com/Karyu42/scriptshot/actions/runs/42272553748) | #22 pull_request | 14.90 ms | 22.65 ms | 1.52× | 3.49 → 10.62 ms |
 | [42273854230](https://github.com/Karyu42/scriptshot/actions/runs/42273854230) | #22 pull_request | 14.93 ms | 22.56 ms | 1.51× | 3.46 → 10.39 ms |
+| [42274284985](https://github.com/Karyu42/scriptshot/actions/runs/42274284985) | #22 pull_request | 14.90 ms | 22.77 ms | 1.53× | 3.11 → 10.33 ms |
 
 Run 42270990021 also printed 10,000 bullets: plain work p95 27.14 ms, hooked
 41.42 ms, hooks+walls 5.80 → 18.41 ms. On the samples in this table the
-hooked/plain ratio was 1.51× to 1.62×. Runs 42272553748 (`82fb776`) and
-42273854230 (`8f14bfd`) are this branch: documentation and one GUT test. The
-perf job still runs `NoopHook`. Those samples printed hooked 5k p95 22.65 ms
-and 22.56 ms, both over the 22 ms gate. Plain 5k p95 was 14.90 ms and 14.93 ms,
-and the ratios were 1.52× and 1.51×. The diff does not edit
-`BulletPool.run_update_hooks`, `BulletManager.step`, or the benchmark scene.
+hooked/plain ratio was 1.51× to 1.62×. Runs 42272553748 (`82fb776`),
+42273854230 (`8f14bfd`) and 42274284985 (`4619271`) are this branch:
+documentation and one GUT test. The perf job still runs `NoopHook`. Those
+samples printed hooked 5k p95 22.65 ms, 22.56 ms and 22.77 ms. On each one the
+p50 was also over 22 ms (22.23, 22.16, 22.33). Plain 5k p95 was 14.90 ms,
+14.93 ms and 14.90 ms, and the ratios were 1.52×, 1.51× and 1.53×. The diff
+does not edit `BulletPool.run_update_hooks`, `BulletManager.step`, or the
+benchmark scene. Each of those three samples is a separate runner.
 
 The 20 ms figure is a soft bar. `check_perf.py` does not enforce it. The 22 ms
 figure is the hard gate on this job.
