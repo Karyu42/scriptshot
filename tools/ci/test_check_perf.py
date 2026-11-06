@@ -91,6 +91,16 @@ class CheckPerfTest(unittest.TestCase):
         self.assertIn("::error::p95 regressed more than 25% vs baseline at 5000 bullets", out)
         self.assertIn("::warning::p95 regressed more than 25% vs baseline at 10000 bullets", out)
 
+    def test_baseline_nonfinite_p95_fails_cleanly(self):
+        with tempfile.TemporaryDirectory() as d:
+            base = os.path.join(d, "base.json")
+            with open(base, "w") as f:
+                json.dump({"results": [row(5000, 2.0, float("nan"), 5.0), row(10000, 5.0, 6.0, 7.0)]}, f)
+            code, out, _ = run([row(5000, 3.0, 6.0, 7.0), row(10000, 7.0, 8.0, 9.0)], "--baseline", base)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::baseline p95 at 5000 bullets (hard floor) is missing or not a finite number", out)
+        self.assertNotIn("Traceback", out)
+
     def test_5k_shortfall_is_hard_fail_even_if_fast(self):
         code, out, summ = run([row(5000, 1.0, 1.5, 2.0, reached=False, min_alive=4100), row(10000, 7.0, 8.0, 10.0)])
         self.assertEqual(code, 1)
@@ -109,6 +119,95 @@ class CheckPerfTest(unittest.TestCase):
             code = check_perf.main(["/nonexistent/bench.json"])
         self.assertEqual(code, 1)
         self.assertIn("::error::cannot read benchmark results", out.getvalue())
+
+    def test_plain_nonfinite_or_negative_p95_fails_at_floor(self):
+        # Same rule as the hooked tier: nan > budget is False, so a NaN p95 must not pass.
+        for val in (float("nan"), float("inf"), float("-inf"), -1.0, None, "9.0"):
+            bad = row(5000, 3.5, 5.0, 6.2)
+            bad["work_p95_ms"] = val
+            code, out, summ = run([bad, row(10000, 7.0, 8.0, 10.0)])
+            self.assertEqual(code, 1, val)
+            self.assertIn("::error::invalid timing at 5000 bullets (hard floor): work_p95_ms", out)
+            self.assertNotIn("5000 bullets (hard floor): p50", out)
+            self.assertNotIn("5000 bullets (hard floor): p50", summ)
+            self.assertIn("**FAIL**", summ)
+
+    def test_plain_other_bad_timings_fail_at_floor_like_the_hooked_path(self):
+        for key, val in (("work_p50_ms", float("inf")), ("work_p99_ms", float("nan")), ("work_p95_ms", -0.01)):
+            bad = row(5000, 3.5, 5.0, 6.2)
+            bad[key] = val
+            code, out, _ = run([bad, row(10000, 7.0, 8.0, 10.0)])
+            self.assertEqual(code, 1, (key, val))
+            self.assertIn(f"::error::invalid timing at 5000 bullets (hard floor): {key}", out)
+        gone = row(5000, 3.5, 5.0, 6.2)
+        del gone["work_p95_ms"]
+        code, out, _ = run([gone, row(10000, 7.0, 8.0, 10.0)])
+        self.assertEqual(code, 1)
+        self.assertIn("invalid timing at 5000 bullets (hard floor): work_p95_ms", out)
+
+    def test_plain_10k_nan_only_warns(self):
+        code, out, _ = run([row(5000, 3.5, 5.0, 6.2), row(10000, 7.0, float("nan"), 10.0)])
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::invalid timing at 10000 bullets (target): work_p95_ms", out)
+        self.assertNotIn("::error::", out)
+
+    def test_shortfall_under_budget_does_not_also_say_within_budget(self):
+        code, out, summ = run([row(5000, 1.0, 1.5, 2.0, reached=False, min_alive=4100),
+                               row(10000, 7.0, 8.0, 10.0)])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::shortfall at 5000 bullets", out)
+        self.assertNotIn("5000 bullets (hard floor): p50", summ)
+        self.assertIn("10000 bullets (target):", summ)
+
+    def test_target_shortfall_under_budget_does_not_say_within_budget(self):
+        code, out, summ = run([row(5000, 3.5, 5.0, 6.2),
+                               row(10000, 1.0, 2.0, 3.0, reached=False, min_alive=8000)])
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::shortfall at 10000 bullets", out)
+        self.assertNotIn("10000 bullets (target): p50", summ)
+        self.assertIn("5000 bullets (hard floor):", summ)
+
+    def test_shortfall_over_budget_reports_both_and_not_within(self):
+        code, out, summ = run([row(5000, 20.0, 30.0, 40.0, reached=False, min_alive=1000),
+                               row(10000, 7.0, 8.0, 10.0)])
+        self.assertEqual(code, 1)
+        self.assertIn("::error::shortfall at 5000 bullets", out)
+        self.assertIn("::error::p95 30.00 ms > budget 16.6 ms at 5000 bullets", out)
+        self.assertNotIn("5000 bullets (hard floor): p50", summ)
+
+    def test_missing_baseline_file_is_a_clean_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "bench.json")
+            with open(path, "w") as f:
+                json.dump({"results": [row(5000, 3.5, 5.0, 6.2), row(10000, 7.0, 8.0, 10.0)]}, f)
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                try:
+                    code = check_perf.main([path, "--baseline", os.path.join(d, "missing.json")])
+                except Exception as exc:
+                    self.fail(f"uncaught {type(exc).__name__}: {exc}")
+        text = out.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("::error::cannot read baseline results from", text)
+        self.assertNotIn("Traceback", text)
+
+    def test_unreadable_baseline_is_a_clean_error(self):
+        for raw in ("{", "[]", '{"results": [1]}', ""):
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "bench.json")
+                base = os.path.join(d, "base.json")
+                with open(path, "w") as f:
+                    json.dump({"results": [row(5000, 3.5, 5.0, 6.2), row(10000, 7.0, 8.0, 10.0)]}, f)
+                with open(base, "w") as f:
+                    f.write(raw)
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    try:
+                        code = check_perf.main([path, "--baseline", base])
+                    except Exception as exc:
+                        self.fail(f"{raw!r} raised {type(exc).__name__}: {exc}")
+            self.assertEqual(code, 1, raw)
+            self.assertIn("::error::cannot read baseline results from", out.getvalue(), raw)
 
 
 def run_hooked(plain_rows, hooked_rows, *extra, fraction=1.0, raw_hooked=None):
@@ -217,11 +316,13 @@ class HookedTierTest(unittest.TestCase):
         self.assertNotIn("::error::", out)
 
     def test_hooked_shortfall_follows_the_same_policy(self):
-        code, out, _ = run_hooked(PLAIN_OK, [row(5000, 1.0, 1.5, 2.0, reached=False, min_alive=4100),
-                                             row(10000, 1.0, 2.0, 3.0, reached=False, min_alive=8000)])
+        code, out, summ = run_hooked(PLAIN_OK, [row(5000, 1.0, 1.5, 2.0, reached=False, min_alive=4100),
+                                                row(10000, 1.0, 2.0, 3.0, reached=False, min_alive=8000)])
         self.assertEqual(code, 1)
         self.assertIn("::error::[hooked] shortfall at 5000 bullets (hard floor): only 4100 were alive", out)
         self.assertIn("::warning::[hooked] shortfall at 10000 bullets (target): only 8000 were alive", out)
+        self.assertNotIn("[hooked] 5000 bullets (hard floor): p50", summ)
+        self.assertNotIn("[hooked] 10000 bullets (target): p50", summ)
 
     def test_a_report_that_is_not_fully_hooked_fails(self):
         for frac in (None, 0.0, 0.5, "1.0", True):

@@ -9,7 +9,8 @@ Windows is unsigned, Android is a debug-signed APK.
 ## 1. What the job produces
 
 All five exports run on `ubuntu-24.04` with the pinned headless Godot 4.7.2 and its export templates
-(checksum-verified, cached). Each artifact is uploaded as `scriptshot-<preset>`.
+(checksum-verified). The template cache stores only the files the matrix needs, not the full tpz
+(see below). Each artifact is uploaded as `scriptshot-<preset>`.
 
 | Preset | Output (git-ignored `build/`) | Contents | Signing |
 |---|---|---|---|
@@ -23,16 +24,26 @@ The macOS and Android exports need **Import ETC2 ASTC** enabled in `project.godo
 (`rendering/textures/vram_compression/import_etc2_astc=true`; already on `main`). Without it Godot refuses to export,
 with the message "ETC2/ASTC texture compression is required".
 
-`tools/ci/check_export_preset.py` runs before each export and fails on: any password in the committed
-`export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only or uses Gradle,
-a macOS preset without ad-hoc signing or with notarization, and an iOS preset. It warns about the Web preset
-having `extensions_support` off (needed once the Lua binding is a GDExtension) or threads on (needs COOP/COEP).
+`tools/ci/check_export_preset.py` runs in the `test` job on every pull request and push, once per preset
+(Windows Desktop, macOS, Linux, Web, Android), and again before each manual export. It fails on: any password
+in the committed `export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only
+or uses Gradle, a macOS preset whose `codesign/codesign` is not `1` or that enables notarization, and an iOS preset.
+`codesign/codesign=3` (Xcode codesign) is rejected: that mode exists only on a macOS editor host, and CI exports
+from Linux, where the only ad-hoc value is `1`. It warns about the Web preset having `extensions_support` off
+(needed once the Lua binding is a GDExtension) or threads on (needs COOP/COEP).
+
+After a successful export the same job checks the artifact, because Godot can exit 0 on a failed ad-hoc sign
+(it is only an export warning):
+
+* macOS: the zip listing must contain `_CodeSignature/CodeResources`.
+* Android: `apksigner verify` on the APK (build-tools from the Android matrix entry).
+* Linux: `timeout 60s ./Scriptshot.x86_64 --headless --quit`. The official template targets an older glibc, so the `ubuntu-24.04` runner can launch it. Windows and Web have no equivalent cheap smoke here.
 
 ## 2. macOS: unsigned first launch
 
 The app is ad-hoc signed and **not notarized**, so Gatekeeper blocks the first launch of a downloaded copy
 ("Apple cannot check it for malicious software"). Ad-hoc signing is still required: arm64 macOS refuses to
-run completely unsigned binaries, so keep `codesign/codesign=1`.
+run completely unsigned binaries, so keep `codesign/codesign=1`. Do not commit `3` (Xcode codesign); CI rejects it.
 
 1. Unzip `Scriptshot.zip` and move `Scriptshot.app` to Applications (or anywhere).
 2. **macOS 14 (Sonoma) and older:** right-click (or Control-click) `Scriptshot.app` > **Open** > **Open**.
@@ -50,7 +61,8 @@ Notarization (no warning at all) needs a paid Apple developer account and is out
 * Windows: run `Scriptshot.exe`. On the first launch SmartScreen shows "Windows protected your PC": **More info > Run anyway**.
   Resource editing (icon/metadata) is built into the 4.7.2 exporter, so no rcedit or wine is needed on the Linux runner.
 * Linux: `chmod +x Scriptshot.x86_64 && ./Scriptshot.x86_64`. The Godot template is built on an older Ubuntu LTS for
-  portability. Artifact download strips the executable bit, hence the chmod.
+  portability. Artifact download strips the executable bit, hence the chmod. CI also runs the binary once with
+  `--headless --quit` before uploading it.
 
 ## 4. Web hosting
 
@@ -100,16 +112,41 @@ Taken from the Godot 4.7.2-stable tag (`godotengine/godot`) and kept in the `env
 | Godot | 4.7.2 stable, SHA512-checked | release assets |
 | JDK | Temurin 17 | `platform/android/java/app/config.gradle` (`javaVersion`) |
 | Android | compileSdk/targetSdk 36, build-tools 36.1.0, minSdk 24 | `config.gradle` |
-| Android NDK (native builds only) | 29.0.14206865 | `config.gradle` (`ndkVersion`) |
+| Android NDK (native builds only) | 29.0.14206865 | `config.gradle` (`ndkVersion`). Not r28b (`28.1.13356709`); the shared pipeline in `docs/scripting/spike-results.md` section 12 uses Godot's own NDK. |
+| godot-cpp (native builds only, job disabled) | `507ed9d840c01a3c5b2a39af8bb4000bfac30bf5` (10.0.0-stable, `api_version` 4.7) | `docs/scripting/spike-results.md` section 12. Not `58d1de7` (lua-gdextension 0.8.2's 10.0.0-rc1, 4.6 API). |
 | Python / SCons (native builds) | Python 3.x, SCons 4.10.1 | `.github/actions/godot-deps` |
-| Emscripten (Web native builds) | 4.0.11 | `.github/workflows/web_builds.yml` (`EM_VERSION`) |
+| Emscripten (Web native builds) | 4.0.11 | `.github/workflows/web_builds.yml` (`EM_VERSION`). `docs/scripting/testing.md` uses 4.0.20 for Scriptshot's own extension against the official web template; the disabled stub keeps 4.0.11 until that job is enabled. |
 
 Runners for **native library builds**: `ubuntu-24.04` (Linux, Web, Android), `windows-latest` (MSVC), `macos-14` (Apple Silicon).
 Upstream Godot builds macOS on `macos-26`; this project uses `macos-14`. The disabled `native-libs` job in `ci.yml`
-documents this and runs only when the repository variable `ENABLE_NATIVE_LIBS` is `true`. An iOS compile check is optional and low priority:
+documents this and runs only when the repository variable `ENABLE_NATIVE_LIBS` is `true`. It does not build anything
+today. When it does, it must use the NDK and godot-cpp pins above. An iOS compile check is optional and low priority:
 there is a commented line in the matrix, nothing more.
 
-## 7. Native library artifact layout (`bin/<platform>/`)
+## 7. Export template cache
+
+GitHub publishes one templates tpz (about 1.2 GB). The export job still downloads that archive on a cache miss,
+checks its SHA512, and then extracts only the files the five presets need into
+`~/.local/share/godot/export_templates/4.7.2.stable` (the directory name is what Godot matches; `version.txt` is
+kept so the directory matches an official install):
+
+| Kept | Used by |
+|---|---|
+| `android_debug.apk`, `android_release.apk` | Android (the matrix exports the debug APK; release is kept for a later signing switch) |
+| `macos.zip` | macOS |
+| `windows_debug_x86_64.exe`, `windows_release_x86_64.exe` | Windows Desktop, x86_64 |
+| `linux_debug.x86_64`, `linux_release.x86_64` | Linux. The archive name uses a dot (`linux_release.x86_64`), not an underscore |
+| `web_nothreads_debug.zip`, `web_nothreads_release.zip` | Web (`thread_support=false`, `extensions_support=false`) |
+| `version.txt` | install marker |
+
+Not cached, on purpose: other CPU architectures, iOS, threaded web, `android_source.zip`, and
+`web_dlink_nothreads_*.zip`. Add the dlink nothreads zips when `variant/extensions_support` is turned on
+(GDExtension / Lua); that switches the Web export onto `web_dlink_nothreads_release.zip`. The Windows console
+wrappers (`windows_*_x86_64_console.exe`) are also omitted: `debug/export_console_wrapper=1` is "Debug Only"
+and the matrix exports Windows as release, so the exporter does not copy a console exe. The cache key ends in
+`-slim` so an older full-template cache is not restored.
+
+## 8. Native library artifact layout (`bin/<platform>/`)
 
 Only needed if the Lua binding is a GDExtension. Each platform's libraries live in their own folder under the project's `bin/`, so
 the `native-libs` job can upload `bin/<platform>/` as `native-libs-<platform>` and `tools/ci/fetch_native_libs.sh <platform>` can restore it
@@ -141,7 +178,7 @@ android.release.arm64  = "res://bin/android.arm64/<lib>.android.template_release
 The `test` and `perf` jobs only need `bin/linux.x86_64/`. Whether the binaries are committed or fetched in CI (pinned release + SHA256) is open;
 a 53 MB zip should not be committed. The macOS dylib is ad-hoc signed by the exporter together with the app.
 
-## 8. Verified locally, and what was not
+## 9. Verified locally, and what was not
 
 Checked on this box with Godot 4.7.2 and the official templates, a clean copy of the repo, and the real `export_presets.cfg`: all five exports
 succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm, Android debug APK 28 MB with arm64-v8a libs only, macOS zip 61 MB
