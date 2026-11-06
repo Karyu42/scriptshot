@@ -100,7 +100,7 @@ macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses
 
 A separate workflow (`.github/workflows/android-emulator-smoke.yml`) boots an **x86_64** Android
 emulator on GitHub Actions, installs the **Lua spike** debug APK (`docs/scripting/spike`, dual ABI
-arm64-v8a + x86_64), and gates on `SPIKE_RESULT` / `SPIKE_DONE` from the ~1000-bullet export bench.
+arm64-v8a + x86_64), and gates on `SPIKE_RESULT` / `SPIKE_DONE` from the ~1000-bullet export bench (FPS / frame-time percentiles are in the JSON lines, not an on-screen overlay).
 It is **`workflow_dispatch` only** — it never runs on pull requests, so PR CI does not pay the
 emulator cost.
 

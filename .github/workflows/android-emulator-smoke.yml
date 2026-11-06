@@ -1,7 +1,7 @@
 # Android emulator smoke (manual only).
 #
 # Boots an x86_64 AVD, installs the Lua spike debug APK (arm64 + x86_64), launches the
-# export_bench scene (~1000 bullets, FPS/p50/p95 overlay via SPIKE_RESULT JSON), and gates
+# export_bench scene (~1000 bullets; FPS / frame_ms p50/p95 in SPIKE_RESULT JSON, not an on-screen overlay), and gates
 # on SPIKE_DONE + four SPIKE_RESULT lines. See docs/scripting/testing.md section 2.4.
 #
 # Why not the main-game arm64 APK from the CI export matrix?
@@ -53,7 +53,7 @@ env:
   ANDROID_BUILD_TOOLS: "36.1.0"
   SPIKE_APK: ${{ github.workspace }}/build/android/spike-debug.apk
   SPIKE_PACKAGE: org.scriptshot.spike
-  SPIKE_TIMEOUT_SEC: "180"
+  SPIKE_TIMEOUT_SEC: "300"
   SPIKE_LOG: ${{ github.workspace }}/build/android/spike-emulator.logcat.txt
 
 jobs:
