@@ -1,0 +1,17 @@
+[gd_resource type="Resource" load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://src/world/affix_def.gd" id="1_affix"]
+
+[resource]
+script = ExtResource("1_affix")
+id = &"summoner"
+group = &"spawn"
+min_tier = 0
+halves = 0
+hp_fraction = 0.0
+speed_mul = 1.0
+resplit = false
+interval = 6.0
+count = 2
+max_alive = 6
+drop = false

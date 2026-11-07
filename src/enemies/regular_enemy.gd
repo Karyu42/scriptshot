@@ -79,12 +79,17 @@ static func formation_offset(p_archetype: StringName, index: int, count: int) ->
 	return Vector2.from_angle(TAU * float(index) / float(count)) * ring
 
 
-static func push_outside_safe_zone(pos: Vector2, p_archetype: StringName) -> Vector2:
-	var limit := safe_centre_limit(p_archetype)
+## Closest a circle of `radius` may sit to the origin without entering the disk.
+static func push_centre_outside(pos: Vector2, radius: float) -> Vector2:
+	var limit := WorldGen.SAFE_RADIUS + radius
 	if pos.length() >= limit:
 		return pos
 	var dir := Vector2.RIGHT if pos.length_squared() < 0.000001 else pos.normalized()
 	return dir * limit
+
+
+static func push_outside_safe_zone(pos: Vector2, p_archetype: StringName) -> Vector2:
+	return push_centre_outside(pos, radius_of(p_archetype))
 
 
 func configure(
@@ -142,17 +147,24 @@ func _physics_process(delta: float) -> void:
 	queue_redraw()
 
 
+## Drifter 90, Swarmer 140. Elites override this (halves run at 117).
+func _move_speed() -> float:
+	if archetype == ARCH_SWARMER:
+		return SWARMER_SPEED
+	return DRIFTER_SPEED
+
+
 func _chase(delta: float, to_player: Vector2) -> void:
 	var step := Vector2.ZERO
 	if archetype == ARCH_DRIFTER:
 		if to_player.length_squared() > 0.000001:
 			_heading = to_player.normalized()
-		step = _heading * DRIFTER_SPEED * delta
+		step = _heading * _move_speed() * delta
 	else:
 		_erratic_left -= delta
 		if _erratic_left <= 0.0:
 			_roll_erratic(to_player)
-		step = _heading * SWARMER_SPEED * delta
+		step = _heading * _move_speed() * delta
 	var aim := global_position + _heading
 	if player != null:
 		aim = player.global_position

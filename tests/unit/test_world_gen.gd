@@ -129,6 +129,71 @@ func test_tier_1_chunks_spawn_nothing() -> void:
 	assert_eq(WorldGen.chunk_encounters(1, 7, -8).size(), 2)
 
 
+func test_herald_delay_matches_the_pinned_vectors() -> void:
+	assert_eq(WorldGen.HERALD_DELAY_BASE, 58.0)
+	assert_eq(WorldGen.HERALD_DELAY_SPAN, 20.0)
+	assert_almost_eq(WorldGen.herald_delay(1), 65.7547, 1e-4)
+	assert_almost_eq(WorldGen.herald_delay(1), 58.0 + 20.0 * 0.3877327727, 1e-9)
+	assert_almost_eq(WorldGen.herald_delay(42), 75.3363, 1e-4)
+	assert_almost_eq(WorldGen.herald_delay(42), 58.0 + 20.0 * 0.8668172005, 1e-9)
+	# u = 0.8750332294 >= 0.5 → summoner. Seed 2 is the splitting side of the same rule.
+	assert_eq(WorldGen.herald_affix(1), &"summoner")
+	assert_eq(WorldGen.herald_affix(2), &"splitting")
+	assert_eq(WorldGen.pick_uniform_affix(0.0, AffixCatalog.HERALD_AFFIXES), &"splitting")
+	assert_eq(WorldGen.pick_uniform_affix(0.499999, AffixCatalog.HERALD_AFFIXES), &"splitting")
+	assert_eq(WorldGen.pick_uniform_affix(0.5, AffixCatalog.HERALD_AFFIXES), &"summoner")
+	var reversed: Array[StringName] = [&"summoner", &"splitting"]
+	assert_eq(WorldGen.pick_uniform_affix(0.0, reversed), &"splitting")
+
+
+func test_herald_delay_stays_inside_the_window_for_every_seed() -> void:
+	for seed_value in range(0, 256):
+		var u := WorldGen.hash_u(seed_value, "herald")
+		var delay := WorldGen.herald_delay(seed_value)
+		assert_gte(u, 0.0)
+		assert_lt(u, 1.0)
+		assert_almost_eq(delay, 58.0 + 20.0 * u, 1e-9)
+		assert_gte(delay, 58.0)
+		assert_lt(delay, 78.0)
+		var affix := WorldGen.herald_affix(seed_value)
+		var roll := WorldGen.hash_u(seed_value, "herald", "eaff")
+		var expect: StringName = &"summoner" if roll >= 0.5 else &"splitting"
+		assert_eq(affix, expect)
+	# Closing 500 px at the player's 300 px/s still finishes inside 80 s of the arm.
+	var close := (WorldGen.HERALD_AHEAD - WorldGen.WAKE_RADIUS) / 300.0
+	assert_almost_eq(WorldGen.HERALD_AHEAD - WorldGen.WAKE_RADIUS, 500.0, 0.001)
+	assert_almost_eq(close, 500.0 / 300.0, 0.001)
+	assert_lt(close, 1.8)
+	var samples: Array[int] = [1, 2, 42, 99, 255]
+	for seed_value in samples:
+		assert_lt(WorldGen.herald_delay(seed_value) + close, 80.0)
+
+
+func test_herald_heading_and_clamp() -> void:
+	var fast := WorldGen.herald_heading(Vector2(0, 40), Vector2.RIGHT)
+	assert_almost_eq(fast.x, 0.0, 0.0001)
+	assert_almost_eq(fast.y, 1.0, 0.0001)
+	var slow := WorldGen.herald_heading(Vector2(19.9, 0), Vector2.UP)
+	assert_almost_eq(slow.x, 0.0, 0.0001)
+	assert_almost_eq(slow.y, -1.0, 0.0001)
+	var exactly := WorldGen.herald_heading(Vector2(20, 0), Vector2.UP)
+	assert_almost_eq(exactly.x, 1.0, 0.0001)
+	assert_almost_eq(exactly.y, 0.0, 0.0001)
+	assert_eq(WorldGen.herald_heading(Vector2.ZERO, Vector2.ZERO), Vector2.RIGHT)
+	# Outward from the tier-0 edge lands on the inset square, still tier 0.
+	var edge := WorldGen.clamp_herald_point(Vector2(17000, 0), Vector2.RIGHT)
+	assert_almost_eq(edge.x, 16320.0, 0.01)
+	assert_almost_eq(edge.y, 0.0, 0.01)
+	assert_eq(WorldGen.tier_at(edge.x, edge.y), 0)
+	# Heading back through the origin from just outside the disk is pushed to 512.
+	var inner := WorldGen.clamp_herald_point(Vector2(700, 0), Vector2.LEFT)
+	assert_almost_eq(inner.x, -512.0, 0.01)
+	assert_almost_eq(inner.y, 0.0, 0.01)
+	var ahead := WorldGen.clamp_herald_point(Vector2(600, 0), Vector2.RIGHT)
+	assert_almost_eq(ahead.x, 1800.0, 0.01)
+	assert_almost_eq(ahead.y, 0.0, 0.01)
+
+
 func test_formation_slots_stay_outside_the_safe_zone() -> void:
 	for i in 12:
 		var pos := RegularEnemy.spawn_position(Vector2(520, 0), RegularEnemy.ARCH_SWARMER, i, 12)

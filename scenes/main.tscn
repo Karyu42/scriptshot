@@ -1,4 +1,4 @@
-[gd_scene load_steps=12 format=3]
+[gd_scene load_steps=13 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/open_ground.gd" id="2_ground"]
@@ -11,6 +11,7 @@
 [ext_resource type="Script" path="res://src/world/chunk_stream.gd" id="9_chunks"]
 [ext_resource type="Script" path="res://src/world/herald_arm.gd" id="10_herald"]
 [ext_resource type="PackedScene" path="res://scenes/regular_enemy.tscn" id="11_enemy"]
+[ext_resource type="Script" path="res://src/world/herald_director.gd" id="12_director"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -51,6 +52,9 @@ script = ExtResource("7_cam")
 
 [node name="HeraldArm" type="Node" parent="."]
 script = ExtResource("10_herald")
+
+[node name="HeraldDirector" type="Node" parent="."]
+script = ExtResource("12_director")
 
 [node name="Hud" type="CanvasLayer" parent="."]
 

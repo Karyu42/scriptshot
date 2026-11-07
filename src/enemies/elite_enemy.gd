@@ -1,0 +1,243 @@
+class_name EliteEnemy
+extends RegularEnemy
+## Common elite Drifter (L2 Herald, and the body L3 will reuse).
+## 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
+## Splitting and Summoner come from AffixDef. Halves are not elites: 40% HP,
+## ×1.3 speed, radius 12, already awake, no cue, no shard, no further split.
+## Nothing here fires a bullet. Adds are bodies. Plain shots stay plain.
+
+signal shard_dropped
+
+const GROUP_ELITE := &"elites"
+## T0 common: 30 × 1.0 × 2.5.
+const ELITE_HP := RegularEnemy.DRIFTER_HP * 1.0 * 2.5
+const COMMON_SPEED_MUL := 1.0
+const HALF_RADIUS := 12.0
+## Centre gap so two radius-12 halves do not sit on top of each other.
+const HALF_SEPARATION := 32.0
+## Same spacing the slice uses for a 1-point escort, so adds clear the body.
+const SUMMON_OFFSET := 48.0
+
+var affix := StringName()
+var is_herald := false
+var is_half := false
+var grants_shard := false
+var cue: EliteCue
+var sting: EliteSting
+
+var _affix_def: AffixDef
+var _speed := RegularEnemy.DRIFTER_SPEED
+var _death_handled := false
+var _summon_wait := 6.0
+var _summon_interval := 6.0
+var _summon_batch := 2
+var _summon_cap := 6
+var _summon_serial := 0
+var _summons: Array[RegularEnemy] = []
+var _glyph := EliteCue.GLYPH_CIRCLE
+
+
+func configure_elite(
+	p_affix: StringName,
+	p_anchor: Vector2,
+	p_spawn: Vector2,
+	p_seed: int,
+	p_player: Node2D,
+	p_herald: bool,
+	p_half: bool = false,
+) -> void:
+	is_herald = p_herald
+	is_half = p_half
+	grants_shard = p_herald and not p_half
+	# Halves keep the def (HP fraction, speed) but not the affix, so they cannot split.
+	affix = StringName() if p_half else p_affix
+	if p_affix != StringName():
+		_affix_def = AffixCatalog.get_affix(p_affix)
+	if _affix_def != null:
+		_glyph = EliteCue.glyph_kind(_affix_def.group)
+	configure(
+		ARCH_DRIFTER,
+		p_anchor,
+		p_spawn,
+		p_seed,
+		WorldGen.chunk_of(p_spawn),
+		-1,
+		0,
+		p_player,
+	)
+
+
+func summon_alive() -> int:
+	var kept: Array[RegularEnemy] = []
+	for body: RegularEnemy in _summons:
+		if is_instance_valid(body) and body.is_alive():
+			kept.append(body)
+	_summons = kept
+	return kept.size()
+
+
+func _ready() -> void:
+	super._ready()
+	if is_half:
+		woken = true
+		return
+	add_to_group(GROUP_ELITE)
+	cue = EliteCue.new()
+	cue.glyph = _glyph
+	cue.try_acquire()
+	sting = EliteSting.new()
+	sting.name = "EliteSting"
+	add_child(sting)
+
+
+func _exit_tree() -> void:
+	if cue != null:
+		cue.release()
+		cue = null
+
+
+func _physics_process(delta: float) -> void:
+	var was_woken := woken
+	super._physics_process(delta)
+	if not _alive:
+		return
+	if cue != null:
+		cue.advance(delta)
+	if woken and not was_woken:
+		_on_woke()
+	if not is_half and affix == AffixCatalog.SUMMONER:
+		_tick_summon(delta)
+	queue_redraw()
+
+
+func _move_speed() -> float:
+	return _speed
+
+
+func _apply_stats() -> void:
+	super._apply_stats()
+	if is_half:
+		var fraction := 0.4
+		var mul := 1.3
+		if _affix_def != null:
+			fraction = _affix_def.hp_fraction
+			mul = _affix_def.speed_mul
+		body_radius = HALF_RADIUS
+		_speed = RegularEnemy.DRIFTER_SPEED * mul
+		_fill = DRIFTER_FILL
+		health.max_hp = ELITE_HP * fraction
+		health.hp = health.max_hp
+		health.invulnerability_time = 0.0
+		health.regen_enabled = false
+		_hurtbox.radius = body_radius
+		_hurtbox.layer = Layers.ENEMY
+		_hurtbox.active = true
+		return
+	_speed = RegularEnemy.DRIFTER_SPEED * COMMON_SPEED_MUL
+	health.max_hp = ELITE_HP
+	health.hp = health.max_hp
+	health.invulnerability_time = 0.0
+	health.regen_enabled = false
+	_hurtbox.radius = body_radius
+	_hurtbox.layer = Layers.ENEMY
+	_hurtbox.active = true
+	if _affix_def != null and affix == AffixCatalog.SUMMONER:
+		_summon_interval = _affix_def.interval
+		_summon_batch = _affix_def.count
+		_summon_cap = _affix_def.max_alive
+		_summon_wait = _summon_interval
+
+
+func _on_died() -> void:
+	if _death_handled:
+		return
+	_death_handled = true
+	if not is_half and affix == AffixCatalog.SPLITTING:
+		_spawn_halves()
+	if grants_shard:
+		shard_dropped.emit()
+	super._on_died()
+
+
+func _on_woke() -> void:
+	if is_half:
+		return
+	if cue != null:
+		cue.start_brighten()
+	if sting != null:
+		sting.play_sting()
+
+
+func outline_width() -> float:
+	return OUTLINE_WIDTH if is_half else EliteCue.OUTLINE_WIDTH
+
+
+func _draw() -> void:
+	draw_circle(Vector2.ZERO, body_radius, _fill.lerp(Color.WHITE, _flash))
+	draw_arc(Vector2.ZERO, body_radius, 0.0, TAU, ARC_POINTS, OUTLINE_COLOR, outline_width(), true)
+	if cue != null:
+		cue.draw_on(self, body_radius)
+
+
+func _tick_summon(delta: float) -> void:
+	if delta > 0.0:
+		_summon_wait -= delta
+	if _summon_wait > 0.0:
+		return
+	# One batch per tick. A huge delta does not dump several waves at once.
+	_summon_wait = _summon_interval
+	var room := _summon_cap - summon_alive()
+	var n := mini(_summon_batch, maxi(room, 0))
+	for _i in n:
+		_spawn_one_summon()
+
+
+func _spawn_one_summon() -> void:
+	var parent := get_parent()
+	if parent == null:
+		return
+	var packed := load("res://scenes/regular_enemy.tscn") as PackedScene
+	if packed == null:
+		return
+	var body := packed.instantiate() as RegularEnemy
+	if body == null:
+		return
+	var offset := Vector2.from_angle(TAU * float(_summon_serial) / 8.0) * SUMMON_OFFSET
+	var pos := RegularEnemy.push_centre_outside(global_position + offset, RegularEnemy.SWARMER_RADIUS)
+	body.name = "HeraldSummon%d" % _summon_serial
+	body.configure(ARCH_SWARMER, pos, pos, world_seed, chunk, -1, _summon_serial, player)
+	body.woken = woken
+	_summon_serial += 1
+	parent.add_child(body)
+	_summons.append(body)
+
+
+func _spawn_halves() -> void:
+	if is_half:
+		return
+	var n := 2
+	if _affix_def != null:
+		n = maxi(_affix_def.halves, 0)
+	var parent := get_parent()
+	if parent == null or n <= 0:
+		return
+	var packed := load("res://scenes/elite_enemy.tscn") as PackedScene
+	if packed == null:
+		return
+	var perp := Vector2(-_heading.y, _heading.x)
+	if perp.length_squared() <= 0.000001:
+		perp = Vector2.UP
+	else:
+		perp = perp.normalized()
+	for i in n:
+		var side := -1.0 if i % 2 == 0 else 1.0
+		var along := float(i / 2)
+		var offset := perp * side * HALF_SEPARATION + _heading * along * 18.0
+		var pos := RegularEnemy.push_centre_outside(global_position + offset, HALF_RADIUS)
+		var half := packed.instantiate() as EliteEnemy
+		if half == null:
+			continue
+		half.name = "HeraldHalf%d" % i
+		half.configure_elite(AffixCatalog.SPLITTING, pos, pos, world_seed, player, false, true)
+		half.woken = true
+		parent.add_child(half)
