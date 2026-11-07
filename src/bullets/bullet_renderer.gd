@@ -61,15 +61,22 @@ func setup(capacity: int, world_bounds: Rect2 = Rect2(-4096, -4096, 8192, 8192))
 	multimesh = mm
 	_allocate(mini(MIN_INSTANCES, capacity))
 	mm.visible_instance_count = 0
-	# Fixed bounds: no per-frame AABB recomputation or culling surprises.
-	var pad := 64.0
-	mm.custom_aabb = AABB(
-		Vector3(world_bounds.position.x - pad, world_bounds.position.y - pad, -1.0),
-		Vector3(world_bounds.size.x + pad * 2.0, world_bounds.size.y + pad * 2.0, 2.0)
-	)
+	set_world_bounds(world_bounds)
 	var mat := ShaderMaterial.new()
 	mat.shader = preload("res://src/bullets/bullet.gdshader")
 	material = mat
+
+
+## Moves the culling AABB onto a new window of the same role. The mesh and the
+## instance buffers stay; only the box the renderer is allowed to draw in moves.
+func set_world_bounds(world_bounds: Rect2) -> void:
+	if multimesh == null:
+		return
+	var pad := 64.0
+	multimesh.custom_aabb = AABB(
+		Vector3(world_bounds.position.x - pad, world_bounds.position.y - pad, -1.0),
+		Vector3(world_bounds.size.x + pad * 2.0, world_bounds.size.y + pad * 2.0, 2.0)
+	)
 
 
 ## Copies the pool's current state into the MultiMesh.

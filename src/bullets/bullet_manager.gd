@@ -29,7 +29,14 @@ const PHYSICS_PRIORITY := 100
 ## unowned bullets can fill at most `logical_cap - enemy_reserve` slots in total.
 @export var enemy_reserve := -1
 ## Bullets are despawned when they leave this rectangle (world space).
+## The open world recentres this same rectangle on the camera (see
+## bounds_center); it does not grow. Tests and the benchmark leave
+## bounds_center null and keep whatever rect they set.
 @export var world_bounds := Rect2(-1312, -752, 2624, 1504)
+## When set, step() recentres world_bounds on this node without changing its
+## size. A Camera2D contributes its screen centre (look-ahead and shake
+## included). Null keeps the rect where it is.
+var bounds_center: Node2D
 ## Spatial hash cell size for collision, in pixels.
 @export var cell_size := 64.0
 ## Disable to run the simulation without drawing (benchmarks, dedicated tests).
@@ -392,6 +399,7 @@ func reflect(
 
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
+	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
 	_collect_targets()
@@ -516,6 +524,37 @@ func step(delta: float) -> void:
 	last_phase_usec[Phase.DESPAWN] = t4 - t3
 	last_phase_usec[Phase.RENDER] = t5 - t4
 	last_step_usec = t5 - t0
+
+
+## Slides world_bounds so it is centred on `center`, keeping the current size.
+## Rebuilds the GDScript hurtbox, reflector and wall grids to match, and moves
+## the renderer AABBs. The native sim, when one is selected, keeps the bounds it
+## was configured with: the default backend is GDScript, and this slice does not
+## retune the C++ path.
+func recenter_world_bounds(center: Vector2) -> void:
+	if pool == null or grid == null or walls == null or reflector_grid == null:
+		return
+	var size := world_bounds.size
+	var next := Rect2(center - size * 0.5, size)
+	if next.is_equal_approx(world_bounds):
+		return
+	world_bounds = next
+	grid.setup(world_bounds, cell_size)
+	reflector_grid.setup(world_bounds, cell_size)
+	walls.set_bounds(world_bounds)
+	if _renderer != null:
+		_renderer.set_world_bounds(world_bounds)
+	if _native_renderer != null:
+		_native_renderer.set_world_bounds(world_bounds)
+
+
+func _follow_bounds() -> void:
+	if bounds_center == null:
+		return
+	var center := bounds_center.global_position
+	if bounds_center is Camera2D:
+		center = (bounds_center as Camera2D).get_screen_center_position()
+	recenter_world_bounds(center)
 
 
 ## Surface normal (unit vector pointing out of the wall) of the wall that bullet

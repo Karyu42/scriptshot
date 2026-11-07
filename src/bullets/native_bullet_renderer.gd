@@ -30,14 +30,20 @@ func setup(capacity: int, world_bounds: Rect2) -> void:
 	allocated = 0
 	_allocate(mini(MIN_INSTANCES, capacity))
 	mm.visible_instance_count = 0
-	var pad := 64.0
-	mm.custom_aabb = AABB(
-		Vector3(world_bounds.position.x - pad, world_bounds.position.y - pad, -1.0),
-		Vector3(world_bounds.size.x + pad * 2.0, world_bounds.size.y + pad * 2.0, 2.0)
-	)
+	set_world_bounds(world_bounds)
 	var mat := ShaderMaterial.new()
 	mat.shader = preload("res://src/bullets/bullet.gdshader")
 	material = mat
+
+
+func set_world_bounds(world_bounds: Rect2) -> void:
+	if multimesh == null:
+		return
+	var pad := 64.0
+	multimesh.custom_aabb = AABB(
+		Vector3(world_bounds.position.x - pad, world_bounds.position.y - pad, -1.0),
+		Vector3(world_bounds.size.x + pad * 2.0, world_bounds.size.y + pad * 2.0, 2.0)
+	)
 
 
 func update_from(backend: NativeBackend) -> void:

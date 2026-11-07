@@ -8,9 +8,11 @@ var main: Node2D
 func before_each() -> void:
 	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	add_child_autofree(main)
-	# Turrets would add bullets of their own; silence them except in the tests that want them.
-	for turret: Turret in main.get_node("Turrets").get_children():
-		turret.emitter = null
+	# The sandbox still has turrets; the open-world main does not.
+	var turrets := main.get_node_or_null("Turrets")
+	if turrets != null:
+		for turret: Turret in turrets.get_children():
+			turret.emitter = null
 	await wait_physics_frames(2)
 
 

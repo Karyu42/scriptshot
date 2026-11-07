@@ -1,0 +1,232 @@
+class_name WorldGen
+extends RefCounted
+## Pure world rolls for the first-playable slice. No node, no scene, no RNG:
+## every value is a function of the seed and the coordinates.
+##
+## hash_u is the only roll. It is NOT GDScript hash() (that is not stable across
+## engine versions) and not the Python cadence sim. Layout is the slice default
+## in docs/design/first-playable-elites.md §5: FNV-1a 64 of the payload, then
+## the splitmix64 avalanche with no added gamma, then the top 53 bits as a unit
+## interval. Pinned vectors live in tests/unit/test_world_gen.gd.
+
+const CHUNK_PX := 2048
+const TIER_PX := 16384
+const SAFE_RADIUS := 512.0
+const WAKE_RADIUS := 700.0
+const ANCHOR_INSET := 256.0
+const ANCHOR_SALTS := 8
+const BUDGET_BASE := 6
+const BUDGET_PER_TIER := 4
+const RING_RADIUS := 1
+## T0 splits the budget into this many encounters, 3 points each.
+const T0_ENCOUNTERS := 2
+const POINTS_PER_ENCOUNTER := 3
+
+# FNV-1a 64 offset basis 14695981039346656037 (0xCBF29CE484222325) and prime.
+# The offset's high bit is set; GDScript has no unsigned literal, so this is
+# the same bits as a signed int.
+const FNV_OFFSET := -3750763034362895579
+const FNV_PRIME := 1099511628211
+# splitmix64 avalanche multipliers (no gamma added):
+# 0xBF58476D1CE4E5B9 and 0x94D049BB133111EB.
+const SPLIT_1 := -4658895280553007687
+const SPLIT_2 := -7723592293110705685
+const _UNIT_SCALE := 9007199254740992.0 # 2^53
+const _MANTISSA_MASK := 0x1FFFFFFFFFFFFF
+
+
+## u in [0, 1). Parts after the seed are strings (UTF-8) or ints (int64, two's
+## complement). Each part is preceded by a 0x1F separator. Omitted arguments
+## stop the payload; do not pass null in the middle.
+static func hash_u(
+	seed: int,
+	p0: Variant = null,
+	p1: Variant = null,
+	p2: Variant = null,
+	p3: Variant = null,
+	p4: Variant = null,
+	p5: Variant = null,
+	p6: Variant = null,
+	p7: Variant = null,
+) -> float:
+	var h := FNV_OFFSET
+	h = _mix_i64(h, seed)
+	for part: Variant in [p0, p1, p2, p3, p4, p5, p6, p7]:
+		if part == null:
+			break
+		h = _mix_byte(h, 0x1F)
+		h = _mix_part(h, part)
+	return _to_unit(_splitmix(h))
+
+
+## T = floor(max(|x|, |y|) / 16384). The tier of a chunk is this function at the
+## chunk centre, so tier 0 is the 16×16 chunks with cx, cy in [-8, 7] (spawning
+## §2). The boundary line |x| or |y| = 16384 itself is tier 1.
+static func tier_at(x: float, y: float) -> int:
+	return floori(maxf(absf(x), absf(y)) / float(TIER_PX))
+
+
+static func chunk_of(pos: Vector2) -> Vector2i:
+	return Vector2i(floori(pos.x / float(CHUNK_PX)), floori(pos.y / float(CHUNK_PX)))
+
+
+static func chunk_origin(cx: int, cy: int) -> Vector2:
+	return Vector2(float(cx * CHUNK_PX), float(cy * CHUNK_PX))
+
+
+static func chunk_tier(cx: int, cy: int) -> int:
+	var centre := chunk_origin(cx, cy) + Vector2(float(CHUNK_PX), float(CHUNK_PX)) * 0.5
+	return tier_at(centre.x, centre.y)
+
+
+static func chunk_in_ring(player_chunk: Vector2i, cx: int, cy: int, radius: int = RING_RADIUS) -> bool:
+	return maxi(absi(cx - player_chunk.x), absi(cy - player_chunk.y)) <= radius
+
+
+static func budget_for_tier(tier: int) -> int:
+	return BUDGET_BASE + BUDGET_PER_TIER * maxi(tier, 0)
+
+
+## The inset rectangle anchors are drawn from. Half-open on the far edge except
+## for the fallback corner, which sits on that edge.
+static func inset_rect(cx: int, cy: int) -> Rect2:
+	var origin := chunk_origin(cx, cy)
+	var inset := Vector2(ANCHOR_INSET, ANCHOR_INSET)
+	var span := float(CHUNK_PX) - 2.0 * ANCHOR_INSET
+	return Rect2(origin + inset, Vector2(span, span))
+
+
+## Encounter anchor. `rolls` are unit-square samples (salt 0, then 1, ...). A
+## sample whose distance to the origin is < 512 is rejected. After 8 rejects,
+## the inset corner farthest from the origin is used.
+static func pick_anchor(cx: int, cy: int, rolls: Array[Vector2]) -> Vector2:
+	var rect := inset_rect(cx, cy)
+	var limit := mini(rolls.size(), ANCHOR_SALTS)
+	for i in limit:
+		var roll := rolls[i]
+		var point := rect.position + Vector2(roll.x * rect.size.x, roll.y * rect.size.y)
+		if point.length() >= SAFE_RADIUS:
+			return point
+	return farthest_inset_point(cx, cy)
+
+
+static func farthest_inset_point(cx: int, cy: int) -> Vector2:
+	var rect := inset_rect(cx, cy)
+	var max_corner := rect.position + rect.size
+	var corners: Array[Vector2] = [
+		rect.position,
+		Vector2(rect.position.x, max_corner.y),
+		Vector2(max_corner.x, rect.position.y),
+		max_corner,
+	]
+	var best := corners[0]
+	var best_d := best.length_squared()
+	for i in range(1, corners.size()):
+		var d := corners[i].length_squared()
+		if d > best_d:
+			best = corners[i]
+			best_d = d
+	return best
+
+
+static func encounter_anchor(seed: int, cx: int, cy: int, index: int) -> Vector2:
+	var rolls: Array[Vector2] = []
+	for salt in ANCHOR_SALTS:
+		rolls.append(Vector2(
+			hash_u(seed, cx, cy, index, "enc", "x", salt),
+			hash_u(seed, cx, cy, index, "enc", "y", salt),
+		))
+	return pick_anchor(cx, cy, rolls)
+
+
+## T0: two encounters. 0 = one Swarmer group (3 points), 1 = three Drifters.
+## A chunk whose centre is tier 1 or higher spawns nothing in this slice.
+## Elite replacement is L3; every row here is a regular pack.
+static func chunk_encounters(seed: int, cx: int, cy: int) -> Array[EncounterSpec]:
+	var result: Array[EncounterSpec] = []
+	if chunk_tier(cx, cy) != 0:
+		return result
+	var swarmer_n := 8 + floori(hash_u(seed, cx, cy, 0, "enc", "n") * 7.0)
+	result.append(_pack(seed, cx, cy, 0, &"swarmer", swarmer_n))
+	result.append(_pack(seed, cx, cy, 1, &"drifter", 3))
+	return result
+
+
+static func _pack(seed: int, cx: int, cy: int, index: int, archetype: StringName, count: int) -> EncounterSpec:
+	var spec := EncounterSpec.new()
+	spec.chunk = Vector2i(cx, cy)
+	spec.index = index
+	spec.anchor = encounter_anchor(seed, cx, cy, index)
+	spec.is_elite = false
+	spec.rarity = 0
+	spec.base = StringName()
+	spec.affix_ids = []
+	var members: Array[Dictionary] = []
+	members.append({"archetype": archetype, "count": count})
+	spec.members = members
+	spec.points_spent = POINTS_PER_ENCOUNTER
+	return spec
+
+
+static func _mix_part(h: int, part: Variant) -> int:
+	# The public hash takes mixed parts, so each one arrives as a Variant.
+	@warning_ignore_start("unsafe_cast")
+	var mixed := h
+	if part is String:
+		var text := part as String
+		var bytes := text.to_utf8_buffer()
+		for i in bytes.size():
+			mixed = _mix_byte(mixed, bytes[i])
+	elif part is StringName:
+		var name := part as StringName
+		var named := String(name).to_utf8_buffer()
+		for i in named.size():
+			mixed = _mix_byte(mixed, named[i])
+	elif part is int:
+		mixed = _mix_i64(h, part as int)
+	else:
+		push_error("WorldGen.hash_u: each part must be a string or an int")
+	@warning_ignore_restore("unsafe_cast")
+	return mixed
+
+
+static func _mix_i64(h: int, n: int) -> int:
+	var v := n
+	for _byte_index in 8:
+		h = _mix_byte(h, v & 0xFF)
+		v = _lshr(v, 8)
+	return h
+
+
+static func _mix_byte(h: int, byte: int) -> int:
+	return _mul64(h ^ (byte & 0xFF), FNV_PRIME)
+
+
+## Product modulo 2^64. GDScript ints are signed and wrap on overflow, which is
+## the two's-complement product the FNV and splitmix steps specify.
+static func _mul64(a: int, b: int) -> int:
+	return a * b
+
+
+## Logical right shift. GDScript `>>` sign-fills; the low (64-n) bits match,
+## so masking them off is the logical result.
+static func _lshr(value: int, n: int) -> int:
+	if n <= 0:
+		return value
+	if n >= 64:
+		return 0
+	var shifted := value >> n
+	var keep := 64 - n
+	var mask := (1 << keep) - 1
+	return shifted & mask
+
+
+static func _splitmix(z: int) -> int:
+	z = _mul64(z ^ _lshr(z, 30), SPLIT_1)
+	z = _mul64(z ^ _lshr(z, 27), SPLIT_2)
+	return z ^ _lshr(z, 31)
+
+
+static func _to_unit(h: int) -> float:
+	var mant := _lshr(h, 11) & _MANTISSA_MASK
+	return float(mant) / _UNIT_SCALE

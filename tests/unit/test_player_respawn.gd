@@ -57,8 +57,10 @@ class FastGun:
 func before_each() -> void:
 	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
 	add_child_autofree(main)
-	for turret: Turret in main.get_node("Turrets").get_children():
-		turret.emitter = null
+	var turrets := main.get_node_or_null("Turrets")
+	if turrets != null:
+		for turret: Turret in turrets.get_children():
+			turret.emitter = null
 	player = main.get_node("Player")
 	bullets = main.get_node("BulletManager")
 	await wait_physics_frames(2)
