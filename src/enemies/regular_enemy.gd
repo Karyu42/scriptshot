@@ -4,6 +4,9 @@ extends Node2D
 ## Drawn as a filled circle with a 2 px outline. No shot, no drops.
 ## Contact with the player's drawn body (radius 14) calls Health.try_damage(1)
 ## with no pierce flag, so engine i-frames and script invulnerability both block it.
+## No contact while the player's centre is inside or on the 512 px disk. A body
+## never overlaps that disk while the player is still inside: its centre stays
+## at least 512 px plus its own radius out.
 
 signal died
 
@@ -53,9 +56,19 @@ var _flash := 0.0
 var _ready_done := false
 
 
+static func radius_of(p_archetype: StringName) -> float:
+	return SWARMER_RADIUS if p_archetype == ARCH_SWARMER else DRIFTER_RADIUS
+
+
+## Closest a body's centre may sit to the origin without the circle crossing
+## into the 512 px disk.
+static func safe_centre_limit(p_archetype: StringName) -> float:
+	return WorldGen.SAFE_RADIUS + radius_of(p_archetype)
+
+
 static func spawn_position(p_anchor: Vector2, p_archetype: StringName, index: int, count: int) -> Vector2:
 	var pos := p_anchor + formation_offset(p_archetype, index, count)
-	return _push_outside_safe_zone(pos)
+	return push_outside_safe_zone(pos, p_archetype)
 
 
 static func formation_offset(p_archetype: StringName, index: int, count: int) -> Vector2:
@@ -65,11 +78,12 @@ static func formation_offset(p_archetype: StringName, index: int, count: int) ->
 	return Vector2.from_angle(TAU * float(index) / float(count)) * ring
 
 
-static func _push_outside_safe_zone(pos: Vector2) -> Vector2:
-	if pos.length() >= WorldGen.SAFE_RADIUS:
+static func push_outside_safe_zone(pos: Vector2, p_archetype: StringName) -> Vector2:
+	var limit := safe_centre_limit(p_archetype)
+	if pos.length() >= limit:
 		return pos
 	var dir := Vector2.RIGHT if pos.length_squared() < 0.000001 else pos.normalized()
-	return dir * WorldGen.SAFE_RADIUS
+	return dir * limit
 
 
 func configure(
@@ -156,33 +170,39 @@ func _idle(delta: float) -> void:
 		var outward := from_anchor.normalized()
 		_heading = _heading.bounce(outward)
 		next = anchor + from_anchor.limit_length(IDLE_RADIUS)
-	if next.length() < WorldGen.SAFE_RADIUS:
-		var away := next.normalized() if next.length_squared() > 0.000001 else Vector2.RIGHT
-		_heading = _heading.bounce(away)
-		next = away * WorldGen.SAFE_RADIUS
+	next = _hold_outside_disk(next, true)
 	global_position = next
 
 
-## While the player is still inside the safe disk, a chase stops on the rim so
-## the tutorial range stays clear. Once the player is outside, the chase may
-## cross the disk (the player on the far side is a straight line through it).
+## While the player's centre is still inside the safe disk, a chase stops where
+## the body is tangent to the disk. Once the player is strictly outside, the
+## chase may cross it.
 func _clamp_chase(next: Vector2) -> Vector2:
 	if player != null and player.global_position.length() > WorldGen.SAFE_RADIUS:
 		return next
-	if next.length() >= WorldGen.SAFE_RADIUS:
+	return _hold_outside_disk(next, false)
+
+
+func _hold_outside_disk(next: Vector2, reflect_heading: bool) -> Vector2:
+	var limit := WorldGen.SAFE_RADIUS + body_radius
+	if next.length() >= limit:
 		return next
-	if next.length_squared() < 0.000001:
-		return Vector2(WorldGen.SAFE_RADIUS, 0.0)
-	return next.normalized() * WorldGen.SAFE_RADIUS
+	var away := Vector2.RIGHT if next.length_squared() < 0.000001 else next.normalized()
+	if reflect_heading:
+		_heading = _heading.bounce(away)
+	return away * limit
 
 
 func _contact(dist: float) -> void:
+	if player == null or player.global_position.length() <= WorldGen.SAFE_RADIUS:
+		return
 	if dist > PLAYER_RADIUS + body_radius:
 		return
 	var body := player as Player
 	if body == null or body.health == null:
 		return
-	# No pierce flag: SOURCE_PIERCES_SCRIPT_INVULN is not set.
+	# No pierce flag: SOURCE_PIERCES_SCRIPT_INVULN is not set. Engine i-frames
+	# and script invulnerability still apply once the player is outside.
 	body.health.try_damage(CONTACT_DAMAGE)
 
 

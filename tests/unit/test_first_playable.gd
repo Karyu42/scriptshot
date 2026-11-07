@@ -1,14 +1,24 @@
 extends GutTest
 ## L0/L1 on scenes/main.tscn: safe zone, three targets, hostiles you can kill.
 
+const _SAVE := "user://gut_first_playable.cfg"
+
 
 func before_each() -> void:
 	Input.action_release("fire")
 	Input.action_release("move_right")
 
 
+func after_each() -> void:
+	_discard_save(_SAVE)
+
+
+func after_all() -> void:
+	_discard_save(_SAVE)
+
+
 func test_cold_start_safe_zone_and_three_targets() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	var main := _open_main()
 	add_child_autofree(main)
 	var dummies := main.get_node("Dummies").get_children()
 	assert_eq(dummies.size(), 3)
@@ -25,8 +35,9 @@ func test_cold_start_safe_zone_and_three_targets() -> void:
 	var hostiles := main.get_tree().get_nodes_in_group(RegularEnemy.GROUP)
 	assert_gt(hostiles.size(), 0, "T0 regulars spawned around the origin")
 	for node: Node in hostiles:
-		var body := node as Node2D
-		assert_gte(body.global_position.length(), WorldGen.SAFE_RADIUS - 0.05)
+		var body := node as RegularEnemy
+		assert_not_null(body)
+		assert_gte(body.global_position.length() - body.body_radius, WorldGen.SAFE_RADIUS - 0.05)
 	var herald := main.get_node("HeraldArm") as HeraldArm
 	assert_false(herald.armed)
 	var bullets := main.get_node("BulletManager") as BulletManager
@@ -34,7 +45,7 @@ func test_cold_start_safe_zone_and_three_targets() -> void:
 
 
 func test_targets_die_respawn_and_never_deal_contact_damage() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	var main := _open_main()
 	add_child_autofree(main)
 	var player := main.get_node("Player") as Player
 	var dummy := main.get_node("Dummies/Target0") as TrainingDummy
@@ -51,7 +62,7 @@ func test_targets_die_respawn_and_never_deal_contact_damage() -> void:
 
 
 func test_leaving_the_safe_zone_arms_the_herald_and_the_window_follows() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	var main := _open_main()
 	add_child_autofree(main)
 	var player := main.get_node("Player") as Player
 	var herald := main.get_node("HeraldArm") as HeraldArm
@@ -76,7 +87,7 @@ func test_leaving_the_safe_zone_arms_the_herald_and_the_window_follows() -> void
 
 
 func test_a_regular_dies_to_the_bullet_manager() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	var main := _open_main()
 	add_child_autofree(main)
 	var player := main.get_node("Player") as Player
 	var bullets := main.get_node("BulletManager") as BulletManager
@@ -104,3 +115,16 @@ func test_a_regular_dies_to_the_bullet_manager() -> void:
 	assert_true(bullets.emitter.request_shot(lethal))
 	await wait_physics_frames(2)
 	assert_false(is_instance_valid(enemy) and enemy.is_alive())
+
+
+func _open_main() -> Main:
+	# The previous test's scene frees after after_each and writes this path.
+	_discard_save(_SAVE)
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = _SAVE
+	return main
+
+
+func _discard_save(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))

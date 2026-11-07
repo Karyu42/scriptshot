@@ -54,8 +54,15 @@ class FastGun:
 		indices.append(context.shot_index)
 
 
+const _SAVE := "user://gut_player_respawn.cfg"
+
+
 func before_each() -> void:
-	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+	var opened := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	opened.save_path = _SAVE
+	main = opened
 	add_child_autofree(main)
 	var turrets := main.get_node_or_null("Turrets")
 	if turrets != null:
@@ -68,6 +75,13 @@ func before_each() -> void:
 
 func after_each() -> void:
 	Input.action_release("fire")
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+
+
+func after_all() -> void:
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
 
 
 func _kill() -> void:

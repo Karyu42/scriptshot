@@ -63,8 +63,19 @@ func test_clearing_the_target_is_safe() -> void:
 	assert_eq(camera.global_position, Vector2(10, 10))
 
 
+const _SAVE := "user://gut_follow_camera.cfg"
+
+
+func after_all() -> void:
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+
+
 func test_main_scene_camera_starts_on_the_player() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = _SAVE
 	(main.get_node("Player") as Node2D).position = Vector2(600, 300)
 	add_child_autofree(main)
 	var cam := main.get_node("FollowCamera") as FollowCamera

@@ -42,7 +42,10 @@ var _has_center := false
 
 
 func _init() -> void:
-	process_physics_priority = 10
+	# After BulletManager (priority 100). A kill landed by this tick's bullets
+	# has to count when the same tick also unloads the chunk; running earlier
+	# records the body as still alive and the encounter respawns on the way back.
+	process_physics_priority = BulletManager.PHYSICS_PRIORITY + 10
 
 
 func _physics_process(_delta: float) -> void:
@@ -69,6 +72,10 @@ func loaded_coords() -> Array[Vector2i]:
 
 func is_loaded(cx: int, cy: int) -> bool:
 	return _active.has(Vector2i(cx, cy))
+
+
+func is_absent(cx: int, cy: int, index: int) -> bool:
+	return _absent.has(Vector3i(cx, cy, index))
 
 
 func alive_in(cx: int, cy: int, index: int) -> int:

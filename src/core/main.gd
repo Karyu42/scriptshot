@@ -13,6 +13,10 @@ extends Node2D
 ## bullets, weapon) and only resets the player's hp to max. It happens at
 ## RespawnPoints.get_respawn_position(): the last cleared boss arena, else the origin.
 @export var respawn_delay := 1.5
+## Save slot. The game uses user://save.cfg. Tests set this to a throwaway
+## path before the node enters the tree; _ready reads it, and leaving the tree
+## writes the same path. An empty string means the default slot.
+@export var save_path := SaveGame.DEFAULT_PATH
 
 var _respawn_timer := 0.0
 var _herald: HeraldArm
@@ -50,7 +54,8 @@ func _bind_open_world() -> void:
 	_chunks = get_node_or_null("ChunkStream") as ChunkStream
 	if _chunks == null:
 		return
-	_save = SaveGame.load_from(SaveGame.DEFAULT_PATH)
+	var slot := save_path if not save_path.is_empty() else SaveGame.DEFAULT_PATH
+	_save = SaveGame.load_from(slot)
 	_chunks.seed = _save.world_seed
 	_chunks.load_absent(_save.regular_absent)
 	_chunks.player = _player

@@ -132,4 +132,4 @@ func test_tier_1_chunks_spawn_nothing() -> void:
 func test_formation_slots_stay_outside_the_safe_zone() -> void:
 	for i in 12:
 		var pos := RegularEnemy.spawn_position(Vector2(520, 0), RegularEnemy.ARCH_SWARMER, i, 12)
-		assert_gte(pos.length(), WorldGen.SAFE_RADIUS - 0.05)
+		assert_gte(pos.length() - RegularEnemy.SWARMER_RADIUS, WorldGen.SAFE_RADIUS - 0.05)

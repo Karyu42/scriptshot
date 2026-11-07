@@ -100,6 +100,39 @@ func test_bullets_damage_and_kill_through_health() -> void:
 	assert_false(swarmer.is_alive())
 
 
+func test_bodies_do_not_overlap_the_safe_disk() -> void:
+	var drifter := RegularEnemy.spawn_position(Vector2(512, 0), RegularEnemy.ARCH_DRIFTER, 0, 1)
+	assert_almost_eq(drifter.x, WorldGen.SAFE_RADIUS + RegularEnemy.DRIFTER_RADIUS, 0.01)
+	assert_gte(drifter.length() - RegularEnemy.DRIFTER_RADIUS, WorldGen.SAFE_RADIUS - 0.01)
+	var swarmer := RegularEnemy.spawn_position(Vector2(512, 0), RegularEnemy.ARCH_SWARMER, 0, 1)
+	assert_almost_eq(swarmer.x, WorldGen.SAFE_RADIUS + RegularEnemy.SWARMER_RADIUS, 0.01)
+	# The old rim (centre on 512) overlaps the disk. With the player inside,
+	# chase holds the body tangent to it and deals no contact damage.
+	var player := _player(Vector2(500, 0))
+	var enemy := _enemy(Vector2(512, 0), RegularEnemy.ARCH_DRIFTER, player)
+	await wait_physics_frames(5)
+	assert_gte(enemy.global_position.length() - enemy.body_radius, WorldGen.SAFE_RADIUS - 0.05)
+	assert_eq(player.health.hp, player.health.max_hp)
+
+
+func test_no_contact_damage_with_the_player_on_the_safe_rim() -> void:
+	var player := _player(Vector2(WorldGen.SAFE_RADIUS, 0.0))
+	_enemy(Vector2(WorldGen.SAFE_RADIUS + RegularEnemy.DRIFTER_RADIUS, 0.0), RegularEnemy.ARCH_DRIFTER, player)
+	await wait_physics_frames(5)
+	assert_eq(player.global_position.length(), WorldGen.SAFE_RADIUS)
+	assert_eq(player.health.hp, player.health.max_hp)
+	assert_false(player.health.is_engine_invulnerable())
+
+
+func test_contact_damage_just_outside_the_safe_disk() -> void:
+	var player := _player(Vector2(512.5, 0.0))
+	_enemy(Vector2(512.5 + RegularEnemy.DRIFTER_RADIUS, 0.0), RegularEnemy.ARCH_DRIFTER, player)
+	await wait_physics_frames(2)
+	assert_gt(player.global_position.length(), WorldGen.SAFE_RADIUS)
+	assert_eq(player.health.hp, player.health.max_hp - 1.0)
+	assert_true(player.health.is_engine_invulnerable())
+
+
 func _player(at: Vector2) -> Player:
 	var player := (preload("res://scenes/player.tscn") as PackedScene).instantiate() as Player
 	player.position = at

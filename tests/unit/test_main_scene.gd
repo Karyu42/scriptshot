@@ -2,11 +2,17 @@ extends GutTest
 ## Smoke test for the playable sandbox: the scene loads, input moves the player,
 ## holding fire spawns bullets through the emitter, and the stress toggle works.
 
+const _SAVE := "user://gut_main_scene.cfg"
+
 var main: Node2D
 
 
 func before_each() -> void:
-	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+	var opened := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	opened.save_path = _SAVE
+	main = opened
 	add_child_autofree(main)
 	# The sandbox still has turrets; the open-world main does not.
 	var turrets := main.get_node_or_null("Turrets")
@@ -20,6 +26,13 @@ func after_each() -> void:
 	Input.action_release("move_right")
 	Input.action_release("fire")
 	Input.action_release("move_left")
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+
+
+func after_all() -> void:
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
 
 
 func test_scene_wires_player_to_bullet_emitter() -> void:

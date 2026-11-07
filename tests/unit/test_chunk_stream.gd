@@ -65,7 +65,7 @@ func test_cold_load_has_no_body_inside_the_safe_zone() -> void:
 				var enemy := child as RegularEnemy
 				assert_not_null(enemy)
 				bodies += 1
-				assert_gte(enemy.global_position.length(), WorldGen.SAFE_RADIUS - 0.05)
+				assert_gte(enemy.global_position.length() - enemy.body_radius, WorldGen.SAFE_RADIUS - 0.05)
 				assert_true(enemy.archetype == RegularEnemy.ARCH_DRIFTER or enemy.archetype == RegularEnemy.ARCH_SWARMER)
 	assert_gt(bodies, 0)
 	var spec := WorldGen.chunk_encounters(7, 0, 0)
@@ -139,6 +139,48 @@ func test_absent_rows_round_trip_through_the_save() -> void:
 	assert_eq(again.alive_in(1, 1, 1), 0)
 	assert_gt(again.alive_in(1, 1, 0), 0)
 	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_last_drifter_killed_on_the_unload_tick_stays_gone() -> void:
+	_player.position = Vector2(3000, 3000)
+	_sync()
+	assert_eq(_stream.alive_in(1, 1, 1), 3)
+	var root := _stream.get_node("Chunk_1_1/Encounter1") as Node
+	var spared: RegularEnemy = null
+	var killed := 0
+	for child: Node in root.get_children():
+		var enemy := child as RegularEnemy
+		if enemy == null or not enemy.is_alive():
+			continue
+		if spared == null:
+			spared = enemy
+		else:
+			enemy.health.try_damage(10000.0)
+			killed += 1
+	assert_eq(killed, 2)
+	assert_eq(_stream.alive_in(1, 1, 1), 1)
+	var bullets := BulletManager.new()
+	bullets.backend_preference = "gdscript"
+	bullets.world_bounds = Rect2(-20000, -20000, 40000, 40000)
+	bullets.render_enabled = false
+	bullets.auto_step = true
+	add_child_autofree(bullets)
+	var shot := ShotRequest.polar(spared.global_position, 0.0, 0.0)
+	shot.damage = 100.0
+	shot.radius = 24.0
+	shot.owner_layer = Layers.PLAYER
+	shot.hit_mask = Layers.ENEMY
+	shot.lifetime = 2.0
+	assert_true(bullets.emitter.request_shot(shot))
+	# Same physics frame: the bullet kills the last Drifter, and the player
+	# has already left the chunk's ring.
+	_player.position = Vector2(6 * 2048 + 100, 6 * 2048 + 100)
+	await wait_physics_frames(1)
+	assert_false(_stream.is_loaded(1, 1))
+	assert_true(_stream.is_absent(1, 1, 1), "the kill on the unload tick is remembered")
+	_player.position = Vector2(3000, 3000)
+	_sync()
+	assert_eq(_stream.alive_in(1, 1, 1), 0, "coming straight back does not refill the pack")
 
 
 func _sync() -> void:
