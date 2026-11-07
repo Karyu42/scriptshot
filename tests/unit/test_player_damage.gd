@@ -10,7 +10,7 @@ var bullets: BulletManager
 
 
 func before_each() -> void:
-	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	main = (load("res://scenes/sandbox.tscn") as PackedScene).instantiate()
 	add_child_autofree(main)
 	for turret: Turret in main.get_node("Turrets").get_children():
 		turret.emitter = null

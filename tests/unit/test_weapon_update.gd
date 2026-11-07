@@ -56,11 +56,20 @@ class FireOnly:
 		emitter.request_shot(ShotRequest.polar(context.muzzle_position, context.aim_angle, 300.0))
 
 
+const _SAVE := "user://gut_weapon_update.cfg"
+
+
 func before_each() -> void:
-	main = (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+	var opened := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	opened.save_path = _SAVE
+	main = opened
 	add_child_autofree(main)
-	for turret: Turret in main.get_node("Turrets").get_children():
-		turret.emitter = null
+	var turrets := main.get_node_or_null("Turrets")
+	if turrets != null:
+		for turret: Turret in turrets.get_children():
+			turret.emitter = null
 	player = main.get_node("Player")
 	bullets = main.get_node("BulletManager")
 	await wait_physics_frames(2)
@@ -68,6 +77,13 @@ func before_each() -> void:
 
 func after_each() -> void:
 	Input.action_release("fire")
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
+
+
+func after_all() -> void:
+	if FileAccess.file_exists(_SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
 
 
 func test_update_runs_every_tick_even_when_trigger_is_up() -> void:

@@ -109,6 +109,23 @@ func clear_walls() -> void:
 	_dirty = true
 
 
+## Moves the grid onto a new rectangle without dropping the walls. The next
+## sweep re-buckets them. Used when the bullet window recentres on the camera
+## and the size stays the same, so cols/rows usually do not change.
+func set_bounds(p_bounds: Rect2) -> void:
+	if not p_bounds.has_area():
+		return
+	bounds = p_bounds
+	_origin = p_bounds.position
+	var new_cols := maxi(ceili(p_bounds.size.x * _inv_cell), 1)
+	var new_rows := maxi(ceili(p_bounds.size.y * _inv_cell), 1)
+	if new_cols != cols or new_rows != rows:
+		cols = new_cols
+		rows = new_rows
+		_heads.resize(cols * rows)
+	_dirty = true
+
+
 ## Re-buckets the walls. `max_bullet_radius` is the largest bullet radius that
 ## will be swept; walls are inflated by it when assigned to cells.
 func rebuild(max_bullet_radius: float) -> void:

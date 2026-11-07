@@ -10,7 +10,7 @@ var bullets: BulletManager
 
 
 func before_each() -> void:
-	main = (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main = (load("res://scenes/sandbox.tscn") as PackedScene).instantiate() as Main
 	add_child_autofree(main)
 	for turret: Turret in main.get_node("Turrets").get_children():
 		turret.emitter = null
@@ -130,7 +130,7 @@ func test_death_without_a_cleared_arena_respawns_at_the_origin() -> void:
 
 
 func test_default_respawn_delay_is_one_and_a_half_seconds() -> void:
-	var fresh: Main = (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	var fresh: Main = (load("res://scenes/sandbox.tscn") as PackedScene).instantiate() as Main
 	autofree(fresh)
 	assert_eq(fresh.respawn_delay, 1.5)
 

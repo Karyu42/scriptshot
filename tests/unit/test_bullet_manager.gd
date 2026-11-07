@@ -455,7 +455,8 @@ func test_walls_are_collected_from_world_layer_bodies_in_the_group() -> void:
 
 
 func test_world_walls_in_the_main_scene_stop_bullets() -> void:
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate()
+	# The open-world main has no walls. The boxed arena lives on as the sandbox.
+	var main := (load("res://scenes/sandbox.tscn") as PackedScene).instantiate()
 	add_child_autofree(main)
 	var bullets := main.get_node("BulletManager") as BulletManager
 	assert_gt(bullets.walls.wall_count, 4, "border walls plus some obstacles")
