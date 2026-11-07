@@ -1,8 +1,9 @@
 class_name SaveGame
 extends RefCounted
 ## One slot at user://save.cfg. L0/L1 write world_seed and regular_absent.
-## herald_done, elite_kills and shards are stored at their defaults so later
-## layers share the file; this slice never changes them.
+## L2 sets herald_done when the Herald spawns or is cancelled, and adds 1 to
+## shards when that elite body dies. elite_kills stays empty until L3.
+## The countdown remainder and the Herald's position are not stored.
 
 const DEFAULT_PATH := "user://save.cfg"
 ## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.

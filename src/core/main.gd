@@ -20,6 +20,7 @@ extends Node2D
 
 var _respawn_timer := 0.0
 var _herald: HeraldArm
+var _herald_director: HeraldDirector
 var _chunks: ChunkStream
 var _save: SaveGame
 
@@ -62,6 +63,9 @@ func _bind_open_world() -> void:
 		_chunks.enemy_scene = preload("res://scenes/regular_enemy.tscn")
 	_chunks.absent_changed.connect(_on_absent_changed)
 	_chunks.update_streaming()
+	_herald_director = get_node_or_null("HeraldDirector") as HeraldDirector
+	if _herald_director != null and _herald != null:
+		_herald_director.bind(_herald, _player, _save)
 	# The bullet window follows the camera. The sandbox scene has no chunk
 	# stream and keeps the fixed rect its walls were built for.
 	_bullets.bounds_center = _camera
@@ -103,15 +107,25 @@ func _update_hud() -> void:
 	var stress := "ON" if _stress.enabled else "off"
 	var zone := "safe" if _player.global_position.length() <= WorldGen.SAFE_RADIUS else "wild"
 	var herald := "sandbox"
-	if _herald != null:
+	if _herald_director != null and _herald_director.resolved:
+		if _herald_director.herald != null and is_instance_valid(_herald_director.herald) and _herald_director.herald.is_alive():
+			herald = "up"
+		else:
+			herald = "done"
+	elif _herald_director != null and _herald_director.counting:
+		herald = "in %.0fs" % _herald_director.seconds_left()
+	elif _herald != null:
 		if _herald.armed:
 			herald = "armed (%s)" % String(_herald.arm_reason)
 		elif _herald.clear_seconds_left >= 0.0:
 			herald = "tutorial %.0fs" % _herald.clear_seconds_left
 		else:
 			herald = "idle"
+	var shards := 0
+	if _save != null:
+		shards = _save.shards
 	var chunk := WorldGen.chunk_of(_player.global_position)
-	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]\nzone %s   herald %s   chunk %d,%d  tier %d" % [
+	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]\nzone %s   herald %s   shards %d   chunk %d,%d  tier %d" % [
 		Engine.get_frames_per_second(),
 		_bullets.alive_count(),
 		_bullets.pool.logical_cap,
@@ -127,6 +141,7 @@ func _update_hud() -> void:
 		_stress.get_target_count(),
 		zone,
 		herald,
+		shards,
 		chunk.x,
 		chunk.y,
 		WorldGen.chunk_tier(chunk.x, chunk.y),

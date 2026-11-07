@@ -21,6 +21,15 @@ const RING_RADIUS := 1
 ## T0 splits the budget into this many encounters, 3 points each.
 const T0_ENCOUNTERS := 2
 const POINTS_PER_ENCOUNTER := 3
+## Herald countdown: 58 + 20·u seconds, u = hash_u(seed, "herald"), so [58, 78).
+const HERALD_DELAY_BASE := 58.0
+const HERALD_DELAY_SPAN := 20.0
+## Spawn this far along the player's heading, then clamp (first-playable §5).
+const HERALD_AHEAD := 1200.0
+## Keep the clamped point this far inside the tier-0 square (16384 - 64).
+const HERALD_EDGE_MARGIN := 64.0
+## Heading uses velocity only when it is at least this fast; otherwise aim.
+const HERALD_MIN_HEADING_SPEED := 20.0
 
 # FNV-1a 64 offset basis 14695981039346656037 (0xCBF29CE484222325) and prime.
 # The offset's high bit is set; GDScript has no unsigned literal, so this is
@@ -150,6 +159,66 @@ static func chunk_encounters(seed: int, cx: int, cy: int) -> Array[EncounterSpec
 	result.append(_pack(seed, cx, cy, 0, &"swarmer", swarmer_n))
 	result.append(_pack(seed, cx, cy, 1, &"drifter", 3))
 	return result
+
+
+## Seconds from the Herald arm until the spawn check. [58, 78).
+static func herald_delay(seed: int) -> float:
+	return HERALD_DELAY_BASE + HERALD_DELAY_SPAN * hash_u(seed, "herald")
+
+
+## One affix, uniform over the sorted ids. floor(u * n), so u >= 0.5 is the
+## second id when there are two (summoner, after splitting).
+static func herald_affix(seed: int) -> StringName:
+	return pick_uniform_affix(hash_u(seed, "herald", "eaff"), AffixCatalog.HERALD_AFFIXES)
+
+
+static func pick_uniform_affix(u: float, ids: Array[StringName]) -> StringName:
+	var names: Array[String] = []
+	for id: StringName in ids:
+		names.append(String(id))
+	names.sort()
+	var n := names.size()
+	if n <= 0:
+		return StringName()
+	var index := floori(u * float(n))
+	if index < 0:
+		index = 0
+	if index >= n:
+		index = n - 1
+	return StringName(names[index])
+
+
+## Velocity if it is at least 20 px/s, otherwise the aim direction, otherwise +X.
+static func herald_heading(velocity: Vector2, aim: Vector2) -> Vector2:
+	if velocity.length() >= HERALD_MIN_HEADING_SPEED:
+		return velocity.normalized()
+	if aim.length_squared() > 0.000001:
+		return aim.normalized()
+	return Vector2.RIGHT
+
+
+## Point 1,200 px along `heading`. Outside the tier-0 square (half-extent
+## 16384 - 64) it is scaled toward the origin onto that square. Inside the
+## 512 px disk it is pushed back out along its own radius to 512. The body
+## radius is not applied here: the spawner then keeps the whole circle outside
+## the disk, the same rule as every other hostile.
+static func clamp_herald_point(player_pos: Vector2, heading: Vector2) -> Vector2:
+	var dir := heading
+	if dir.length_squared() <= 0.000001:
+		dir = Vector2.RIGHT
+	else:
+		dir = dir.normalized()
+	var point := player_pos + dir * HERALD_AHEAD
+	var limit := float(TIER_PX) - HERALD_EDGE_MARGIN
+	var chebyshev := maxf(absf(point.x), absf(point.y))
+	if chebyshev > limit and chebyshev > 0.0:
+		point *= limit / chebyshev
+	if point.length() < SAFE_RADIUS:
+		var radial := point
+		if radial.length_squared() <= 0.000001:
+			radial = dir
+		point = radial.normalized() * SAFE_RADIUS
+	return point
 
 
 static func _pack(seed: int, cx: int, cy: int, index: int, archetype: StringName, count: int) -> EncounterSpec:

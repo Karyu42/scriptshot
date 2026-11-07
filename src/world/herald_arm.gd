@@ -1,6 +1,7 @@
 class_name HeraldArm
 extends Node
-## L0 trigger for the Herald. Arms once, and only arms: the spawn itself is L2.
+## L0 trigger for the Herald. Arms once. HeraldDirector (L2) owns the delay,
+## the spawn, the cancel, and the save flag.
 ##
 ## The arm happens when the player first leaves the safe disk (distance > 512),
 ## or 60 s after all three tutorial targets have reached 0 HP, whichever is
