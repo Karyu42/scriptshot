@@ -6,5 +6,6 @@
   "log_level": 1,
   "should_exit": true,
   "should_exit_on_success": true,
-  "ignore_pause": true
+  "ignore_pause": true,
+  "pre_run_script": "res://tests/pre_run.gd"
 }

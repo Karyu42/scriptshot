@@ -124,6 +124,23 @@ func test_no_contact_damage_with_the_player_on_the_safe_rim() -> void:
 	assert_false(player.health.is_engine_invulnerable())
 
 
+func test_chase_slides_around_the_safe_disk() -> void:
+	# Player on the far side, woken Drifter headed straight through the origin.
+	var player := _player(Vector2(-700, 0))
+	var enemy := _enemy(Vector2(600, 0), RegularEnemy.ARCH_DRIFTER, player)
+	enemy.woken = true
+	var limit := WorldGen.SAFE_RADIUS + enemy.body_radius
+	var start_gap := absf(angle_difference(enemy.global_position.angle(), PI))
+	for _frame in 90:
+		await wait_physics_frames(1)
+		var centre := enemy.global_position.length()
+		assert_gte(centre, limit - 0.05, "frame centre %s" % centre)
+		assert_gte(centre - enemy.body_radius, WorldGen.SAFE_RADIUS - 0.05)
+	var end_gap := absf(angle_difference(enemy.global_position.angle(), PI))
+	assert_gt(absf(enemy.global_position.angle()), 0.05, "left the head-on line")
+	assert_lt(end_gap, start_gap - 0.05, "closed on the player along the rim")
+
+
 func test_contact_damage_just_outside_the_safe_disk() -> void:
 	var player := _player(Vector2(512.5, 0.0))
 	_enemy(Vector2(512.5 + RegularEnemy.DRIFTER_RADIUS, 0.0), RegularEnemy.ARCH_DRIFTER, player)

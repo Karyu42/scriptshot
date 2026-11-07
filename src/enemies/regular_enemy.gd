@@ -4,9 +4,10 @@ extends Node2D
 ## Drawn as a filled circle with a 2 px outline. No shot, no drops.
 ## Contact with the player's drawn body (radius 14) calls Health.try_damage(1)
 ## with no pierce flag, so engine i-frames and script invulnerability both block it.
-## No contact while the player's centre is inside or on the 512 px disk. A body
-## never overlaps that disk while the player is still inside: its centre stays
-## at least 512 px plus its own radius out.
+## No contact while the player's centre is inside or on the 512 px disk. The
+## whole body stays outside that disk at all times: every step (chase, idle,
+## swarmer jitter) slides along the tangent instead of crossing it. There is
+## no knockback.
 
 signal died
 
@@ -142,15 +143,20 @@ func _physics_process(delta: float) -> void:
 
 
 func _chase(delta: float, to_player: Vector2) -> void:
+	var step := Vector2.ZERO
 	if archetype == ARCH_DRIFTER:
 		if to_player.length_squared() > 0.000001:
 			_heading = to_player.normalized()
-		global_position = _clamp_chase(global_position + _heading * DRIFTER_SPEED * delta)
+		step = _heading * DRIFTER_SPEED * delta
 	else:
 		_erratic_left -= delta
 		if _erratic_left <= 0.0:
 			_roll_erratic(to_player)
-		global_position = _clamp_chase(global_position + _heading * SWARMER_SPEED * delta)
+		step = _heading * SWARMER_SPEED * delta
+	var aim := global_position + _heading
+	if player != null:
+		aim = player.global_position
+	global_position = _slide_outside_disk(global_position, step, aim)
 
 
 ## Heading = direction to the player plus a uniform ±60° from hash_u, re-rolled
@@ -164,33 +170,60 @@ func _roll_erratic(to_player: Vector2) -> void:
 
 
 func _idle(delta: float) -> void:
-	var next := global_position + _heading * IDLE_SPEED * delta
-	var from_anchor := next - anchor
+	var step := _heading * IDLE_SPEED * delta
+	var proposed := global_position + step
+	var from_anchor := proposed - anchor
 	if from_anchor.length() > IDLE_RADIUS:
 		var outward := from_anchor.normalized()
 		_heading = _heading.bounce(outward)
-		next = anchor + from_anchor.limit_length(IDLE_RADIUS)
-	next = _hold_outside_disk(next, true)
-	global_position = next
+		proposed = anchor + from_anchor.limit_length(IDLE_RADIUS)
+		step = proposed - global_position
+	global_position = _slide_outside_disk(global_position, step, global_position + _heading)
 
 
-## While the player's centre is still inside the safe disk, a chase stops where
-## the body is tangent to the disk. Once the player is strictly outside, the
-## chase may cross it.
-func _clamp_chase(next: Vector2) -> Vector2:
-	if player != null and player.global_position.length() > WorldGen.SAFE_RADIUS:
-		return next
-	return _hold_outside_disk(next, false)
-
-
-func _hold_outside_disk(next: Vector2, reflect_heading: bool) -> Vector2:
+## One step that is not allowed to enter the disk of radius 512 + body radius.
+## A step that would enter keeps its length and turns onto the tangent, so a
+## chase routes around the rim instead of stopping or cutting through. The
+## side is the one the step already leans toward; a head-on step uses `aim`
+## and then a stable counterclockwise tie-break.
+func _slide_outside_disk(current: Vector2, step: Vector2, aim: Vector2) -> Vector2:
 	var limit := WorldGen.SAFE_RADIUS + body_radius
-	if next.length() >= limit:
-		return next
-	var away := Vector2.RIGHT if next.length_squared() < 0.000001 else next.normalized()
-	if reflect_heading:
-		_heading = _heading.bounce(away)
-	return away * limit
+	if step.length_squared() <= 0.0000001:
+		if current.length() >= limit:
+			return current
+		if current.length_squared() <= 0.000001:
+			return Vector2(limit, 0.0)
+		return current.normalized() * limit
+	var dest := current + step
+	if not _segment_enters_disk(current, dest, limit):
+		return dest
+	var radial := current
+	if radial.length_squared() <= 0.000001:
+		radial = Vector2.RIGHT
+	radial = radial.normalized()
+	var tangent := Vector2(-radial.y, radial.x)
+	var side := radial.cross(step)
+	if absf(side) <= 0.000001:
+		side = radial.cross(aim - current)
+	if absf(side) <= 0.000001:
+		side = 1.0
+	if side < 0.0:
+		tangent = -tangent
+	var slid := current + tangent * step.length()
+	if slid.length() < limit:
+		slid = slid.normalized() * limit
+	return slid
+
+
+func _segment_enters_disk(a: Vector2, b: Vector2, limit: float) -> bool:
+	if a.length() < limit or b.length() < limit:
+		return true
+	var ab := b - a
+	var denom := ab.length_squared()
+	if denom <= 0.0000001:
+		return false
+	var t := clampf(-a.dot(ab) / denom, 0.0, 1.0)
+	return (a + ab * t).length() < limit
 
 
 func _contact(dist: float) -> void:

@@ -13,10 +13,10 @@ extends Node2D
 ## bullets, weapon) and only resets the player's hp to max. It happens at
 ## RespawnPoints.get_respawn_position(): the last cleared boss arena, else the origin.
 @export var respawn_delay := 1.5
-## Save slot. The game uses user://save.cfg. Tests set this to a throwaway
-## path before the node enters the tree; _ready reads it, and leaving the tree
-## writes the same path. An empty string means the default slot.
-@export var save_path := SaveGame.DEFAULT_PATH
+## Save slot. Empty, or the player default, means SaveGame.resolved_path():
+## the player slot in the game, and the GUT throwaway slot while tests run.
+## Set a different path before the node enters the tree to use another file.
+@export var save_path := ""
 
 var _respawn_timer := 0.0
 var _herald: HeraldArm
@@ -54,8 +54,7 @@ func _bind_open_world() -> void:
 	_chunks = get_node_or_null("ChunkStream") as ChunkStream
 	if _chunks == null:
 		return
-	var slot := save_path if not save_path.is_empty() else SaveGame.DEFAULT_PATH
-	_save = SaveGame.load_from(slot)
+	_save = SaveGame.load_from(_slot_path())
 	_chunks.seed = _save.world_seed
 	_chunks.load_absent(_save.regular_absent)
 	_chunks.player = _player
@@ -66,6 +65,18 @@ func _bind_open_world() -> void:
 	# The bullet window follows the camera. The sandbox scene has no chunk
 	# stream and keeps the fixed rect its walls were built for.
 	_bullets.bounds_center = _camera
+
+
+func current_save_path() -> String:
+	if _save != null:
+		return _save.path
+	return _slot_path()
+
+
+func _slot_path() -> String:
+	if save_path.is_empty() or save_path == SaveGame.DEFAULT_PATH:
+		return SaveGame.resolved_path()
+	return save_path
 
 
 func _on_absent_changed() -> void:

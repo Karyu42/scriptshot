@@ -5,6 +5,10 @@ extends RefCounted
 ## layers share the file; this slice never changes them.
 
 const DEFAULT_PATH := "user://save.cfg"
+## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.
+## The GUT pre-run hook sets it to a throwaway file so a test that leaves
+## Main.save_path unset cannot create or rewrite the player's slot.
+static var slot_override := ""
 
 var path := DEFAULT_PATH
 var world_seed := 0
@@ -15,11 +19,20 @@ var shards := 0
 var existed := false
 
 
-static func load_from(path: String = DEFAULT_PATH) -> SaveGame:
+static func resolved_path() -> String:
+	if not slot_override.is_empty():
+		return slot_override
+	return DEFAULT_PATH
+
+
+static func load_from(path: String = "") -> SaveGame:
+	var use := path
+	if use.is_empty() or use == DEFAULT_PATH:
+		use = resolved_path()
 	var save := SaveGame.new()
-	save.path = path
+	save.path = use
 	var cfg := ConfigFile.new()
-	if cfg.load(path) == OK and cfg.has_section_key("world", "world_seed"):
+	if cfg.load(use) == OK and cfg.has_section_key("world", "world_seed"):
 		save._read(cfg)
 		save.existed = true
 	else:
