@@ -8,6 +8,8 @@ func test_pinned_hash_vectors() -> void:
 	assert_almost_eq(WorldGen.hash_u(42, "herald"), 0.8668172005, 1e-10)
 	assert_almost_eq(WorldGen.hash_u(1, "herald", "eaff"), 0.8750332294, 1e-10)
 	assert_almost_eq(WorldGen.hash_u(1, 0, 0, 0, "elite"), 0.2137598812, 1e-10)
+	assert_false(WorldGen.roll_is_elite(0.2137598812))
+	assert_false(WorldGen.chunk_encounters(1, 0, 0)[0].is_elite)
 
 
 func test_hash_u_is_stable_and_in_the_unit_interval() -> void:
@@ -119,7 +121,21 @@ func test_t0_composition_is_a_pure_function_of_the_seed() -> void:
 			for cy in range(-2, 3):
 				var rows := WorldGen.chunk_encounters(seed, cx, cy)
 				assert_eq(rows.size(), 2)
-				assert_between(rows[0].count_of(0), 8, 14)
+				for row_index in rows.size():
+					var row := rows[row_index]
+					var roll := WorldGen.elite_roll(seed, cx, cy, row.index)
+					if WorldGen.roll_is_elite(roll):
+						assert_true(row.is_elite)
+						assert_eq(row.archetype_of(0), &"drifter")
+						assert_eq(row.count_of(0), 1)
+					elif row.index == 0:
+						assert_false(row.is_elite)
+						assert_eq(row.archetype_of(0), &"swarmer")
+						assert_between(row.count_of(0), 8, 14)
+					else:
+						assert_false(row.is_elite)
+						assert_eq(row.archetype_of(0), &"drifter")
+						assert_eq(row.count_of(0), 3)
 
 
 func test_tier_1_chunks_spawn_nothing() -> void:

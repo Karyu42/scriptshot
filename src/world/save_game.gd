@@ -2,8 +2,9 @@ class_name SaveGame
 extends RefCounted
 ## One slot at user://save.cfg. L0/L1 write world_seed and regular_absent.
 ## L2 sets herald_done when the Herald spawns or is cancelled, and adds 1 to
-## shards when that elite body dies. elite_kills stays empty until L3.
-## The countdown remainder and the Herald's position are not stored.
+## shards when that body dies. L3 adds 1 shard per natural elite body and sets
+## a bit in elite_kills for that chunk encounter. Halves, summons, and escorts
+## do not. The countdown remainder and the Herald's position are not stored.
 
 const DEFAULT_PATH := "user://save.cfg"
 ## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.
@@ -63,6 +64,20 @@ func _read(cfg: ConfigFile) -> void:
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+
+
+## Bits for one chunk, OR of every saved row for that coordinate. 0 when none.
+## The low two bits are T0 encounters 0 and 1. Bit 2 is reserved and kept.
+func elite_bits_at(cx: int, cy: int) -> int:
+	var bits := 0
+	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
+	for entry: Variant in elite_kills:
+		if entry is Dictionary:
+			var d: Dictionary = entry
+			if int(d.get("cx", 0)) == cx and int(d.get("cy", 0)) == cy:
+				bits |= int(d.get("bits", 0))
+	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+	return bits & 0x7
 
 
 ## One saved absence row, or Vector3i.ZERO when the index is out of range.

@@ -92,9 +92,23 @@ func test_a_regular_dies_to_the_bullet_manager() -> void:
 	var player := main.get_node("Player") as Player
 	var bullets := main.get_node("BulletManager") as BulletManager
 	var hostiles := main.get_tree().get_nodes_in_group(RegularEnemy.GROUP)
-	var enemy := hostiles[0] as RegularEnemy
+	var enemy: RegularEnemy = null
+	for node: Node in hostiles:
+		var body := node as RegularEnemy
+		if body == null or not body.is_alive() or body is EliteEnemy:
+			continue
+		enemy = body
+		break
+	assert_not_null(enemy, "a regular body is in the ring")
 	player.teleport(enemy.global_position + Vector2(-80, 0))
-	await wait_physics_frames(2)
+	# A woken Swarmer pack jitters. Freeze the bodies and centre the window on
+	# this one so the 4 px bullet is still on it when the manager steps, including
+	# when the first group in the ring is an elite and this regular sits further out.
+	for node: Node in hostiles:
+		var body := node as RegularEnemy
+		if body != null:
+			body.set_physics_process(false)
+	bullets.recenter_world_bounds(enemy.global_position)
 	var hp := enemy.health.hp
 	var req := ShotRequest.polar(enemy.global_position, 0.0, 0.0)
 	req.damage = 1.0

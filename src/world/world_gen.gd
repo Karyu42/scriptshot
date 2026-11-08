@@ -21,6 +21,11 @@ const RING_RADIUS := 1
 ## T0 splits the budget into this many encounters, 3 points each.
 const T0_ENCOUNTERS := 2
 const POINTS_PER_ENCOUNTER := 3
+## Per encounter, on chunk load. T0 rarity is not rolled: rare and legendary are 0.
+const ELITE_CHANCE := 0.04
+const RARITY_COMMON := 0
+## One escort Drifter sits this far from the anchor (first-playable §5).
+const ESCORT_DISTANCE := 48.0
 ## Herald countdown: 58 + 20·u seconds, u = hash_u(seed, "herald"), so [58, 78).
 const HERALD_DELAY_BASE := 58.0
 const HERALD_DELAY_SPAN := 20.0
@@ -150,15 +155,47 @@ static func encounter_anchor(seed: int, cx: int, cy: int, index: int) -> Vector2
 
 ## T0: two encounters. 0 = one Swarmer group (3 points), 1 = three Drifters.
 ## A chunk whose centre is tier 1 or higher spawns nothing in this slice.
-## Elite replacement is L3; every row here is a regular pack.
+## An elite roll replaces that pack. It does not add a third encounter, and it
+## does not roll "erar": every T0 elite is common.
 static func chunk_encounters(seed: int, cx: int, cy: int) -> Array[EncounterSpec]:
 	var result: Array[EncounterSpec] = []
 	if chunk_tier(cx, cy) != 0:
 		return result
-	var swarmer_n := 8 + floori(hash_u(seed, cx, cy, 0, "enc", "n") * 7.0)
-	result.append(_pack(seed, cx, cy, 0, &"swarmer", swarmer_n))
-	result.append(_pack(seed, cx, cy, 1, &"drifter", 3))
+	for index in T0_ENCOUNTERS:
+		if roll_is_elite(elite_roll(seed, cx, cy, index)):
+			result.append(_elite_pack(seed, cx, cy, index))
+		elif index == 0:
+			var swarmer_n := 8 + floori(hash_u(seed, cx, cy, index, "enc", "n") * 7.0)
+			result.append(_pack(seed, cx, cy, index, &"swarmer", swarmer_n))
+		else:
+			result.append(_pack(seed, cx, cy, index, &"drifter", 3))
 	return result
+
+
+## hash_u(seed, cx, cy, encounter, "elite"). Compared with `< ELITE_CHANCE`.
+static func elite_roll(seed: int, cx: int, cy: int, index: int) -> float:
+	return hash_u(seed, cx, cy, index, "elite")
+
+
+static func roll_is_elite(u: float) -> bool:
+	return u < ELITE_CHANCE
+
+
+## One affix, same uniform rule as the Herald, over the sorted T0 set.
+## The trailing 0 is the affix slot (spawning §3.4's n). There is no second slot
+## while rarity is hardcoded common.
+static func elite_affix(seed: int, cx: int, cy: int, index: int) -> StringName:
+	return pick_uniform_affix(hash_u(seed, cx, cy, index, "eaff", 0), AffixCatalog.HERALD_AFFIXES)
+
+
+## 48 px from the anchor, further from the origin. The slice pins the distance
+## and not the direction; radial outward keeps an anchor that is already outside
+## the disk from pulling the escort back toward it.
+static func escort_position(anchor: Vector2) -> Vector2:
+	var away := Vector2.RIGHT
+	if anchor.length_squared() > 0.000001:
+		away = anchor.normalized()
+	return anchor + away * ESCORT_DISTANCE
 
 
 ## Seconds from the Herald arm until the spawn check. [58, 78).
@@ -219,6 +256,26 @@ static func clamp_herald_point(player_pos: Vector2, heading: Vector2) -> Vector2
 			radial = dir
 		point = radial.normalized() * SAFE_RADIUS
 	return point
+
+
+static func _elite_pack(seed: int, cx: int, cy: int, index: int) -> EncounterSpec:
+	var spec := EncounterSpec.new()
+	spec.chunk = Vector2i(cx, cy)
+	spec.index = index
+	spec.anchor = encounter_anchor(seed, cx, cy, index)
+	spec.is_elite = true
+	spec.rarity = RARITY_COMMON
+	spec.base = &"drifter"
+	var affixes: Array[StringName] = []
+	affixes.append(elite_affix(seed, cx, cy, index))
+	spec.affix_ids = affixes
+	# One Drifter escort (1 point). A Swarmer group costs 3 and cannot escort.
+	# The other 2 points of the replaced pack are dropped, so they are not spent.
+	var members: Array[Dictionary] = []
+	members.append({"archetype": &"drifter", "count": 1})
+	spec.members = members
+	spec.points_spent = 1
+	return spec
 
 
 static func _pack(seed: int, cx: int, cy: int, index: int, archetype: StringName, count: int) -> EncounterSpec:
