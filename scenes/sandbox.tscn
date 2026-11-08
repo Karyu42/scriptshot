@@ -1,4 +1,4 @@
-[gd_scene load_steps=22 format=3]
+[gd_scene load_steps=23 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/arena.gd" id="2_arena"]
@@ -10,6 +10,7 @@
 [ext_resource type="Script" path="res://src/bullets/stress_test.gd" id="6_stress"]
 [ext_resource type="Script" path="res://src/camera/follow_camera.gd" id="7_cam"]
 [ext_resource type="Script" path="res://src/player/aim_reticle.gd" id="8_ret"]
+[ext_resource type="Script" path="res://src/fx/rarity_preview.gd" id="14_preview"]
 
 [sub_resource type="RectangleShape2D" id="Rect_WallTop"]
 size = Vector2(2688, 64)
@@ -155,6 +156,9 @@ limit_top = -720
 limit_right = 1280
 limit_bottom = 720
 script = ExtResource("7_cam")
+
+[node name="RarityPreview" type="Node2D" parent="."]
+script = ExtResource("14_preview")
 
 [node name="Hud" type="CanvasLayer" parent="."]
 

@@ -1,4 +1,4 @@
-[gd_scene load_steps=14 format=3]
+[gd_scene load_steps=15 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/open_ground.gd" id="2_ground"]
@@ -13,6 +13,7 @@
 [ext_resource type="PackedScene" path="res://scenes/regular_enemy.tscn" id="11_enemy"]
 [ext_resource type="Script" path="res://src/world/herald_director.gd" id="12_director"]
 [ext_resource type="PackedScene" path="res://scenes/elite_enemy.tscn" id="13_elite"]
+[ext_resource type="Script" path="res://src/fx/rarity_preview.gd" id="14_preview"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -57,6 +58,9 @@ script = ExtResource("10_herald")
 
 [node name="HeraldDirector" type="Node" parent="."]
 script = ExtResource("12_director")
+
+[node name="RarityPreview" type="Node2D" parent="."]
+script = ExtResource("14_preview")
 
 [node name="Hud" type="CanvasLayer" parent="."]
 
