@@ -28,17 +28,25 @@ move to C++.
 - **While any reflector is registered, native routing is off.** The count
   changes as soon as the reflector enters or leaves, so a spawn made in that
   same callback already goes to the GDScript pool. The live-bullet move is
-  not done inside the callback. Outside `step()` it runs immediately. During
-  `step()` it is flagged and runs once, after this tick's merged hit commits,
-  native wall compaction, and despawn hooks, and before the next tick moves
-  or collides. A register/unregister pair that ends back at zero clears the
-  flag, so nothing is moved. The move copies position, velocity, damage,
-  pierce, `hit_mem`, owner, and the shared seq, then the pool sorts slots
-  into that seq. Bullets already removed this tick are not copied. When the
-  last reflector unregisters, new hook-free spawns may use native again;
-  bullets already in the pool stay there. `reflect()` itself is still the
-  pool's, and a native id (no reflector in the world) still returns false
-  from `reflect_bullet()`.
+  phase-aware, matching the all-GD tick (`advance`, then `on_update`, then
+  walls and zones). Pool `on_update` already runs before the native sim
+  moves. A reflector registered in that window, or any earlier pre-movement
+  hook, migrates live native bullets immediately. If `advance` has already
+  walked the pool, the migrated bullets take that same integrate once, in
+  the pool, and then collide with everyone else this tick. They are not
+  moved by the native sim as well. Slots are sorted into the shared seq
+  before the wall and zone sweep, and not while the hook's own slot is live.
+  A reflector registered during hit delivery (`on_hit`, `can_hit`,
+  `on_despawn`) does not clear the native sim yet: the move is flagged and
+  runs once, after this tick's merged hit commits, native wall compaction,
+  and despawn hooks, and before the next tick moves or collides. That move
+  does not integrate again. A register/unregister pair that ends back at
+  zero clears the flag, so nothing is moved. The move copies position,
+  velocity, damage, pierce, `hit_mem`, owner, and the shared seq. Bullets
+  already removed this tick are not copied. When the last reflector
+  unregisters, new hook-free spawns may use native again; bullets already in
+  the pool stay there. `reflect()` itself is still the pool's, and a native
+  id (no reflector in the world) still returns false from `reflect_bullet()`.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.

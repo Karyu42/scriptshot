@@ -555,6 +555,130 @@ func _meet_next_tick(preference: String) -> PackedInt32Array:
 	return out
 
 
+## Registers a mirror from on_update, after advance and before collision.
+class _UpdateMirror:
+	extends BulletBehavior
+	var host: Node
+	var zone: Reflector
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		if zone != null and not zone.is_inside_tree():
+			host.add_child(zone)
+
+
+func _live_rows(created: BulletManager) -> PackedInt32Array:
+	var out := PackedInt32Array()
+	out.append(created.last_reflect_count)
+	var native_left := 0
+	if created.native != null:
+		native_left = created.native.count()
+	out.append(native_left)
+	out.append(created.pool.count)
+	out.append(created.alive_count())
+	for i in created.pool.count:
+		out.append(roundi(created.pool.pos[i].x * 100.0))
+		out.append(roundi(created.pool.pos[i].y * 100.0))
+		out.append(roundi(created.pool.vel[i].x))
+		out.append(roundi(created.pool.vel[i].y))
+		out.append(created.pool.owner_layer[i])
+		out.append(created.pool.pierce[i])
+		out.append(created.pool.seq[i])
+	return out
+
+
+## Zone at x=50, r=30. 4000 px/s travels ~67 px this tick, through the mirror.
+## `plain_first` swaps spawn order. A hurtbox in front counts pierce hits.
+func _update_mirror_case(preference: String, plain_first: bool, pierce: int, with_target: bool) -> PackedInt32Array:
+	var created := _manager(preference)
+	var zone := Reflector.new()
+	zone.radius = 30.0
+	zone.mode = Reflector.Mode.MIRROR
+	zone.position = Vector2(50, 0)
+	var hook := _UpdateMirror.new()
+	hook.host = created
+	hook.zone = zone
+	var hook_id := created.register_behavior(hook)
+	var hits: Array[int] = [0]
+	if with_target:
+		var box := Hurtbox.new()
+		box.position = Vector2(20, 8)
+		box.radius = 10.0
+		box.layer = Layers.ENEMY
+		created.add_child(box)
+		box.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits[0] += 1)
+	var behind := Hurtbox.new()
+	behind.position = Vector2(130, 0)
+	behind.radius = 8.0
+	behind.layer = Layers.ENEMY
+	created.add_child(behind)
+	var behind_hits: Array[int] = [0]
+	behind.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: behind_hits[0] += 1)
+	var hooked := _shot(Vector2(0, 0), 4000.0, pierce)
+	hooked.behavior_id = hook_id
+	var plain := _shot(Vector2(0, 16), 4000.0, pierce)
+	if plain_first:
+		created.spawn(plain)
+		created.spawn(hooked)
+	else:
+		created.spawn(hooked)
+		created.spawn(plain)
+	created.step(DT)
+	var first := _live_rows(created)
+	created.step(DT)
+	var second := _live_rows(created)
+	var out := PackedInt32Array()
+	out.append(hits[0])
+	out.append(behind_hits[0])
+	out.append_array(first)
+	out.append_array(second)
+	if zone.is_inside_tree():
+		zone.get_parent().remove_child(zone)
+	zone.free()
+	_close(created)
+	return out
+
+
+func test_on_update_mirror_reflects_the_native_bullet_this_tick() -> void:
+	if not _ready_native():
+		return
+	var gd := _update_mirror_case("gdscript", false, 0, false)
+	var nat := _update_mirror_case("native", false, 0, false)
+	assert_eq(nat, gd)
+	# first rows: hits, behind, r1, native, pool, alive, then bullet 0, bullet 1.
+	assert_eq(gd[2], 2, "both shots reflect in the registration tick")
+	assert_eq(gd[3], 0, "native store empty after the same-tick move")
+	assert_eq(gd[4], gd[5], "every survivor is in the pool")
+	assert_eq(gd[1], 0, "the body behind the mirror is not hit")
+	# Bullet 1 is the off-axis shot: its reflected vy is the mirror normal.
+	assert_ne(gd[16], 0, "off-axis reflection is not a plain reversal")
+	assert_lt(gd[8], 0, "on-axis shot reversed")
+	# Second tick does not reflect either bullet again.
+	var second_r := 2 + 4 + 7 * 2
+	assert_eq(gd[second_r], 0)
+
+
+func test_on_update_mirror_with_pierce_matches_gdscript() -> void:
+	if not _ready_native():
+		return
+	var gd := _update_mirror_case("gdscript", false, 3, true)
+	var nat := _update_mirror_case("native", false, 3, true)
+	assert_eq(nat, gd)
+	assert_eq(gd[0], 2, "both bullets hit the target in front of the mirror")
+	assert_eq(gd[1], 0, "nothing reaches the body behind the mirror")
+	assert_eq(gd[2], 2, "both shots still reflect")
+
+
+func test_on_update_mirror_plain_spawned_first_matches_gdscript() -> void:
+	if not _ready_native():
+		return
+	var gd := _update_mirror_case("gdscript", true, 0, false)
+	var nat := _update_mirror_case("native", true, 0, false)
+	assert_eq(nat, gd)
+	assert_eq(gd[2], 2)
+	assert_eq(gd[3], 0)
+	assert_eq(gd[4], 2)
+
+
 func test_mid_flight_mirror_matches_gdscript() -> void:
 	if not _ready_native():
 		return

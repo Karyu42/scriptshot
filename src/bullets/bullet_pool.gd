@@ -491,7 +491,43 @@ func advance(delta: float, bounds: Rect2) -> void:
 			hooked_count += 1
 
 
-## Runs BulletBehavior.on_update for every bullet advance() put on the `hooked` list
+## One bullet's integrate, the body of advance() for a single slot. Used when a
+## mirror registered in on_update pulls native bullets into the pool after
+## advance() has already walked the old count: those bullets still need this
+## tick's step, and only this one. Does not touch the hooked list (a migrated
+## bullet is hook-free; the list was built for the bullets that already advanced).
+func advance_one(i: int, delta: float, bounds: Rect2) -> void:
+	if i < 0 or i >= count or dead_reason[i] != 0:
+		return
+	var min_x := bounds.position.x
+	var min_y := bounds.position.y
+	var max_x := bounds.end.x
+	var max_y := bounds.end.y
+	prev_pos[i] = pos[i]
+	var a := age[i] + delta
+	age[i] = a
+	if not a < lifetime[i]:
+		mark_dead(i, DespawnReason.LIFETIME)
+		return
+	var v := vel[i]
+	var turn := turn_rate[i]
+	var acc := accel[i]
+	if turn != 0.0 or acc != 0.0:
+		if turn != 0.0:
+			v = v.rotated(turn * delta)
+			rot[i] = rot[i].rotated(turn * delta)
+		if acc != 0.0:
+			var speed := v.length()
+			if speed > 0.0:
+				v *= clampf(speed + acc * delta, 0.0, BulletLimits.MAX_SPEED) / speed
+		vel[i] = v
+	var p := pos[i] + v * delta
+	pos[i] = p
+	if not (p.x >= min_x and p.x <= max_x and p.y >= min_y and p.y <= max_y):
+		if p.is_finite():
+			mark_dead(i, DespawnReason.BOUNDS)
+		else:
+			_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
 ## (alive and still scripted when its turn comes), and re-checks each one right after
 ## its hook returned (sanitize()). `behaviors` is BulletManager's behaviour table,
 ## indexed by behavior id.

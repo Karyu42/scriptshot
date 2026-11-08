@@ -145,13 +145,27 @@ var _wall_hit_index := PackedInt32Array()
 ## the GDScript pool. The count itself updates immediately, including from a hit
 ## callback, so a spawn in that callback already takes the pool.
 var _reflector_count := 0
-## True for the whole of step(), after the pre-move migration check. A reflector
-## that appears in here must not clear the native sim until this tick's commits
-## have finished.
-var _stepping := false
-## Set when a reflector appears during step(). Flushed once, after hit delivery,
-## native compaction, and despawn hooks. Cleared if the count falls back to 0
-## before that boundary (a register/unregister pair in one callback).
+## Where step() is. Migration is phase-aware: before the native sim has moved
+## or collided this tick, live native bullets move into the pool immediately so
+## they still take this tick's pool advance and collision. During hit delivery
+## the native hit list is live, so the move waits until those commits finish.
+const _PHASE_IDLE := 0
+const _PHASE_PRE_MOVE := 1
+const _PHASE_MOVED := 2
+const _PHASE_DELIVERING := 3
+var _phase := _PHASE_IDLE
+## Delta of the step in progress. A bullet migrated after pool.advance() still
+## needs this one integrate; it has not been moved by the native sim yet.
+var _step_delta := 0.0
+## True while pool.run_update_hooks is on the stack. Sorting slots there would
+## pull the hook's slot out from under it, so the sort waits until the hooks return.
+var _inside_update_hooks := false
+## Set when a mid-hook migration appended bullets that still need seq order
+## before this tick's wall and zone sweep.
+var _resort_before_collision := false
+## Set when the first reflector appears during hit delivery. Flushed once, after
+## merged commits, native wall compaction, and despawn hooks. Cleared if the
+## count falls back to 0 before that boundary (a register/unregister pair).
 var _pending_migration := false
 ## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
 var _order_count := 0
@@ -193,13 +207,15 @@ func _reflectors_changed(delta: int) -> void:
 		return
 	if before > 0:
 		return
-	# First reflector. Outside step(), move now so the next tick cannot advance
-	# a native bullet past it. Inside step(), the native hit list is still live:
-	# defer until those commits, and this tick's walls, are done.
-	if _stepping:
+	# First reflector. Hit delivery still has the native hit list in hand, so
+	# the move waits until those commits finish. Any earlier phase (outside
+	# step, before pool.advance, or in on_update before the native sim moves)
+	# brings the bullets across now. After pool.advance they still need that
+	# one integrate; before it, the upcoming advance is their only step.
+	if _phase == _PHASE_DELIVERING:
 		_pending_migration = true
 	else:
-		_migrate_native_to_pool()
+		_migrate_native_to_pool(_phase == _PHASE_MOVED)
 
 
 func _flush_pending_migration() -> void:
@@ -500,15 +516,26 @@ func _on_pool_cleared() -> void:
 		_order_count = 0
 
 
-func _migrate_native_to_pool() -> void:
+## Copies every live native bullet into the pool and clears the sim. `catch_up`
+## is true only after pool.advance() has already run and before the native sim
+## has moved: those bullets missed the pool integrate, so they take it now and
+## only now. Slots are not reordered while an on_update hook is on the stack.
+func _migrate_native_to_pool(catch_up: bool = false) -> void:
 	if native == null or native.count() == 0 or pool == null:
 		return
+	var first := pool.count
 	var rows: Array = native.export_states()
 	native.clear()
 	for i in rows.size():
 		var state: Dictionary = rows[i]
 		pool.adopt_native(state)
-	pool.sort_slots_by_seq()
+	if catch_up:
+		for i in range(first, pool.count):
+			pool.advance_one(i, _step_delta, world_bounds)
+	if catch_up and _inside_update_hooks:
+		_resort_before_collision = true
+	else:
+		pool.sort_slots_by_seq()
 	_sync_pool_external()
 
 
@@ -654,11 +681,13 @@ func reflect(
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
 	# A mirror that was already registered owns every bullet before this tick
-	# moves. One that appears during the tick is deferred (see _reflectors_changed).
+	# moves. One that appears in on_update (before the native sim moves) migrates
+	# immediately. One that appears during hit delivery is deferred.
+	_step_delta = delta
 	_flush_pending_migration()
 	if _reflector_count > 0:
 		_migrate_native_to_pool()
-	_stepping = true
+	_phase = _PHASE_PRE_MOVE
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -669,11 +698,20 @@ func step(delta: float) -> void:
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
 	pool.advance(delta, world_bounds)
+	# on_update runs after the pool integrate and before native movement, matching
+	# the all-GD order (BulletPool.advance, then hooks, then collision). A mirror
+	# registered here migrates native bullets and gives them this same integrate.
+	_phase = _PHASE_MOVED
 	var t1 := Time.get_ticks_usec()
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
+	_inside_update_hooks = true
 	pool.run_update_hooks(_behaviors, delta)
+	_inside_update_hooks = false
+	if _resort_before_collision:
+		pool.sort_slots_by_seq()
+		_resort_before_collision = false
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -698,6 +736,9 @@ func step(delta: float) -> void:
 	# flies on for the rest of the tick along its new heading.
 	var zone_hits := _collect_zone_hits()
 	last_hit_count = grid.collide_bullets(pool)
+	# From here a new reflector is a hit-delivery registration: the native sim
+	# either is about to move, or has nothing left to move. Do not catch up.
+	_phase = _PHASE_DELIVERING
 	# Integrate native bullets before any hit is delivered, so both stores'
 	# candidates exist and can be applied in one seq order. With no native
 	# bullets this is the all-GD path below, unchanged.
@@ -778,10 +819,10 @@ func step(delta: float) -> void:
 	# so nothing bad reaches the renderer below or the next tick. Skipped if nothing ran.
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
-	# Hit callbacks, can_hit, and on_despawn may have registered a reflector.
-	# Native commits for this tick have already run. Move survivors now, before
-	# the renderer and before the next tick's advance.
-	_stepping = false
+	# on_hit, can_hit, and on_despawn may have registered a reflector. Native
+	# commits for this tick have already run, so this move does not integrate
+	# again. It lands before the renderer and before the next tick's advance.
+	_phase = _PHASE_IDLE
 	_flush_pending_migration()
 	var t4 := Time.get_ticks_usec()
 
