@@ -25,11 +25,21 @@ move to C++.
   the pool too: the native step runs later in the same tick, so a child born
   during a hook would move a tick early, and owner inheritance already lives
   on the pool. That split is a reversible default.
+- **While any reflector is registered, native routing is off.** Every new
+  bullet goes to the GDScript pool. The first reflector also migrates every
+  live native bullet into the pool, with position, velocity, damage, pierce,
+  `hit_mem`, owner and the shared seq, before the next tick moves or collides.
+  The pool then sorts slots into that seq so the walk matches all-GD order.
+  When the last reflector unregisters, new hook-free spawns may use native
+  again; bullets already in the pool stay there. `reflect()` itself is still
+  the pool's, and a native id (no reflector in the world) still returns false
+  from `reflect_bullet()`.
+- Hits from both stores in one tick are delivered in shared seq order, the
+  order a single pool would walk. A hurtbox turned off by an earlier bullet
+  is skipped for the later one, on both backends.
 - Both stores share one saturation model (logical cap, enemy reserve, owner
   counters, drop reasons, the rate-limited warning and `pool_saturated`).
-  Dead-but-not-flushed bullets still hold a slot. A reflected bullet is not a
-  native concern: reflectors and `reflect()` stay on the GDScript pool, and a
-  native id still returns false from `reflect_bullet()`.
+  Dead-but-not-flushed bullets still hold a slot.
 - Spawn limits match `BulletLimits`: `NativeBackend` clamps with those
   constants and passes `MAX_SPEED` into `configure`. The extension does not
   hard-code a second ceiling. A non-finite shot is refused.
@@ -136,10 +146,10 @@ bullet, so they stay in the GDScript pool even when native is selected.
 
 | bullets | hooks | gdscript | native |
 | ---: | --- | ---: | ---: |
-| 5,000 | plain | 7.45 ms | 0.92 ms |
-| 10,000 | plain | 14.56 ms | 1.78 ms |
-| 5,000 | hooked | 11.21 ms | 11.56 ms |
-| 10,000 | hooked | 22.92 ms | 25.09 ms |
+| 5,000 | plain | 7.41 ms | 0.85 ms |
+| 10,000 | plain | 14.65 ms | 1.50 ms |
+| 5,000 | hooked | 11.45 ms | 11.44 ms |
+| 10,000 | hooked | 22.55 ms | 22.91 ms |
 
 Plain native bullets were entirely in `NativeBulletSim` (pool count 0). Hooked
 runs were entirely in the pool (native count 0). The default-backend hooked 5k
@@ -155,9 +165,10 @@ Left for later PRs, on purpose:
 - The narrow zero-copy Lua view. M1, when it happens, uses packed copies
   through stock lua-gdextension. This PR does not fork Lua.
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
-- Reflector zones, wall normals, and `can_hit` vetoes for native bullets.
-  Hook-free native bullets are not reflected and do not report a wall normal.
-  A bullet whose mask includes `can_hit` stays on the GDScript pool.
+- Wall normals and `can_hit` vetoes inside the C++ sim. A bullet whose mask
+  includes `can_hit` stays on the GDScript pool. While any reflector is
+  registered, native routing is off entirely, so mirrors and the pool's
+  wall-normal rules still run. Native reflection inside the C++ sim is later.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
   clamps silently to the same limits.
 - A shared id space. Native ids use bit 62. `reflect_bullet()` on a native id

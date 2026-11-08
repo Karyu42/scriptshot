@@ -22,6 +22,7 @@
 #include <godot_cpp/variant/packed_vector2_array.hpp>
 #include <godot_cpp/variant/rect2.hpp>
 #include <godot_cpp/variant/rid.hpp>
+#include <godot_cpp/variant/callable.hpp>
 #include <godot_cpp/variant/variant.hpp>
 #include <godot_cpp/variant/vector2.hpp>
 
@@ -87,14 +88,30 @@ public:
 	// step() so BulletManager can deliver them after the GDScript collision pass:
 	// a callback that spawns is not swept until the next tick, same as on_hit.
 	void deliver_hits();
+	// Hit candidates queued by the last step(), in store iteration order.
+	// commit_pending_hit applies one (inactive targets consume nothing).
+	// finish_delivery applies walls and compacts. Uncommitted hits are skipped.
+	int get_pending_hit_count() const { return (int)hit_events.size(); }
+	godot::PackedInt32Array get_pending_hit_seqs() const;
+	void commit_pending_hit(int p_index);
+	void finish_delivery();
+	int find_seq(int p_seq) const;
+	void set_seq_at(int p_slot, int p_seq);
+	// Full state of every live bullet, for moving them into the GDScript pool.
+	godot::Array export_states() const;
 	// Writes the live bullets into the MultiMesh buffers and uploads them.
 	// Returns the live count (use it as visible_instance_count).
 	int upload(const godot::RID &p_multimesh, int p_allocated, bool p_interpolate, float p_stretch);
 
 	// --- bullets ---------------------------------------------------------
+	// p_seq is the shared spawn-order slot (BulletManager). It is the key hit
+	// resolution sorts by when bullets live in both stores.
 	int64_t spawn(const godot::Vector2 &p_position, const godot::Vector2 &p_velocity, float p_angle, float p_lifetime,
 			float p_radius, float p_damage, int p_hit_mask, const godot::Color &p_color, float p_acceleration,
-			float p_turn_rate, int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags);
+			float p_turn_rate, int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq);
+	// Called with the removed bullet's seq before the slot is overwritten, so the
+	// manager can hand that seq to the global tail (unified swap-remove).
+	void set_retire_callback(const godot::Callable &p_cb) { retire_order = p_cb; }
 	bool is_alive(int64_t p_id) const;
 	int slot_of(int64_t p_id) const;
 	int64_t id_of(int p_slot) const;
@@ -133,6 +150,7 @@ private:
 		int64_t bullet_id;
 		float x, y, vx, vy, damage;
 		int32_t flags;
+		int32_t seq;
 	};
 	struct DespawnEvent {
 		float lifetime;
@@ -145,7 +163,7 @@ private:
 	std::vector<float> px, py, qx, qy, vx, vy, rx, ry;
 	std::vector<float> radius, age, lifetime, accel, turn, damage;
 	std::vector<float> col; // 4 per bullet
-	std::vector<int32_t> hit_mask, pierce, owner_layer;
+	std::vector<int32_t> hit_mask, pierce, owner_layer, seq;
 	std::vector<uint8_t> collide_world, dead, source_flags;
 	// Pierce-hit ring, HIT_MEMORY per slot. Count 0 means the window is unread.
 	std::vector<uint64_t> hit_mem;
@@ -212,6 +230,10 @@ private:
 	// Slots that touched a wall this step. Applied after hit delivery so a
 	// hurtbox in front of the wall still wins the despawn reason.
 	std::vector<int32_t> wall_slots;
+	// Per-bullet pierce exclusion list. Grows; there is no fixed cap.
+	std::vector<int32_t> excl_buf;
+	godot::Callable retire_order;
+	void commit_hit(const HitEvent &h);
 
 	// ---- render buffers: two alternating sets, see upload() ----
 	godot::PackedFloat32Array cur_buf[2];

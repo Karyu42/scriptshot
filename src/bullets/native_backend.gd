@@ -137,6 +137,42 @@ func set_record_events(on: bool) -> void:
 	sim.set_record_events(on)
 
 
+func set_retire_callback(callback: Callable) -> void:
+	sim.set_retire_callback(callback)
+
+
+func pending_hit_count() -> int:
+	var n: int = sim.get_pending_hit_count()
+	return n
+
+
+func pending_hit_seqs() -> PackedInt32Array:
+	var seqs: PackedInt32Array = sim.get_pending_hit_seqs()
+	return seqs
+
+
+func commit_pending_hit(index: int) -> void:
+	sim.commit_pending_hit(index)
+
+
+func finish_delivery() -> void:
+	sim.finish_delivery()
+
+
+func find_seq(wanted: int) -> int:
+	var slot: int = sim.find_seq(wanted)
+	return slot
+
+
+func set_seq_at(slot: int, wanted: int) -> void:
+	sim.set_seq_at(slot, wanted)
+
+
+func export_states() -> Array:
+	var rows: Array = sim.export_states()
+	return rows
+
+
 func last_despawns() -> Array:
 	var logged: Array = sim.get_last_despawns()
 	return logged
@@ -147,7 +183,7 @@ func last_despawns() -> Array:
 ## are clamped the same way BulletPool.spawn clamps them (the pool also warns;
 ## this prototype clamp is silent). The owner's own layer is stripped from
 ## hit_mask, matching the pool.
-func spawn(r: ShotRequest) -> int:
+func spawn(r: ShotRequest, seq: int) -> int:
 	var bad := _non_finite_field(r)
 	if bad != "":
 		ScriptWarnings.warn("NativeBackend.spawn", "NativeBackend.spawn: rejected a shot with a non-finite %s" % bad)
@@ -163,7 +199,7 @@ func spawn(r: ShotRequest) -> int:
 		mask &= ~r.owner_layer
 	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if r.pierces_script_invuln else 0
 	var id: int = sim.spawn(r.position, velocity, r.angle, life, radius, dmg, mask, r.color, acc, turn, r.pierce,
-		r.collide_world, r.owner_layer, flags)
+		r.collide_world, r.owner_layer, flags, seq)
 	return id
 
 

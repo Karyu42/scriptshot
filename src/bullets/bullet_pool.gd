@@ -119,6 +119,16 @@ var despawn_counts := PackedInt32Array([0, 0, 0, 0, 0, 0, 0])
 var log_despawns := false
 var despawn_log_reason := PackedInt32Array()
 var despawn_log_life := PackedFloat32Array()
+## Unified slot index shared with NativeBulletSim. BulletManager sets it when
+## the native backend is on, so a mixed tick can deliver hits in all-GD order.
+## Unused while the callback is unset (GDScript-only managers).
+var seq := PackedInt32Array()
+## Called with the new slot after a successful spawn. Manager assigns `seq`.
+var alloc_order: Callable
+## Called with the slot about to be removed, before its fields are overwritten.
+var retire_order: Callable
+## Called after clear() drops every slot without a per-bullet retire.
+var store_cleared: Callable
 ## How many alive bullets carry the can_hit_veto flag (lets the collision loop
 ## skip the per-bullet check entirely while there are none).
 var veto_count := 0
@@ -250,6 +260,7 @@ func _init(p_capacity: int = 16384) -> void:
 	hit_mem.resize(capacity * HIT_MEMORY)
 	hit_mem_count.resize(capacity)
 	hit_mem_head.resize(capacity)
+	seq.resize(capacity)
 	dead_reason.resize(capacity)
 	pending.resize(capacity)
 	hooked.resize(capacity)
@@ -359,6 +370,7 @@ func spawn(request: ShotRequest) -> int:
 	dead_reason[i] = 0
 	if r > max_radius:
 		max_radius = r
+	_stamp_seq(i)
 	return i
 
 
@@ -420,6 +432,7 @@ func spawn_simple(
 	dead_reason[i] = 0
 	if bullet_radius > max_radius:
 		max_radius = bullet_radius
+	_stamp_seq(i)
 	return i
 
 
@@ -962,6 +975,8 @@ func clear() -> void:
 	pending_count = 0
 	hooked_count = 0
 	dead_reason.fill(0)
+	if store_cleared.is_valid():
+		store_cleared.call()
 
 
 ## True when the pool holds `logical_cap` bullets, i.e. every further shot is
@@ -1240,7 +1255,16 @@ func reflect(
 	return true
 
 
+func _stamp_seq(i: int) -> void:
+	if alloc_order.is_valid():
+		alloc_order.call(i)
+	else:
+		seq[i] = i
+
+
 func _remove_at(i: int) -> void:
+	if retire_order.is_valid():
+		retire_order.call(i)
 	var reason := int(dead_reason[i]) - 1
 	if reason >= 0 and reason < despawn_counts.size():
 		despawn_counts[reason] += 1
@@ -1278,8 +1302,186 @@ func _remove_at(i: int) -> void:
 		behavior[i] = behavior[last]
 		pierce[i] = pierce[last]
 		collide_world[i] = collide_world[last]
+		seq[i] = seq[last]
 		_copy_hit_memory(last, i)
 	dead_reason[i] = dead_reason[last] if i != last else 0
 	dead_reason[last] = 0
 	user[last] = null
 	count = last
+
+
+## Inserts a bullet that already lived in NativeBulletSim. Does not allocate a
+## new seq or count another spawn: the caller passes the seq it already had.
+## Returns the slot, or -1 if the pool has no physical room.
+func adopt_native(row: Dictionary) -> int:
+	if count >= capacity:
+		return -1
+	var owner: int = row["owner"]
+	var owner_slot_i := owner_slot(owner)
+	owner_counts[owner_slot_i] += 1
+	var i := count
+	count += 1
+	_assign_handle(i)
+	user[i] = null
+	var pos_v: Vector2 = row["pos"]
+	var prev_v: Vector2 = row["prev"]
+	var vel_v: Vector2 = row["vel"]
+	var rot_v: Vector2 = row["rot"]
+	pos[i] = pos_v
+	prev_pos[i] = prev_v
+	vel[i] = vel_v
+	rot[i] = rot_v
+	var radius_v: float = row["radius"]
+	var age_v: float = row["age"]
+	var life_v: float = row["lifetime"]
+	var accel_v: float = row["accel"]
+	var turn_v: float = row["turn"]
+	var damage_v: float = row["damage"]
+	radius[i] = radius_v
+	age[i] = age_v
+	lifetime[i] = life_v
+	accel[i] = accel_v
+	turn_rate[i] = turn_v
+	damage[i] = damage_v
+	param_a[i] = 0.0
+	param_b[i] = 0.0
+	var color_v: Color = row["color"]
+	color[i] = color_v
+	var mask_v: int = row["hit_mask"]
+	var pierce_v: int = row["pierce"]
+	var seq_v: int = row["seq"]
+	var flags_v: int = row["flags"]
+	var head_v: int = row["hit_head"]
+	hit_mask[i] = mask_v
+	owner_layer[i] = owner
+	reflect_count[i] = 0
+	pierces_script_invuln[i] = 1 if flags_v != 0 else 0
+	can_hit_veto[i] = 0
+	behavior[i] = 0
+	pierce[i] = pierce_v
+	var collides: bool = row["collide"]
+	collide_world[i] = 1 if collides else 0
+	seq[i] = seq_v
+	clear_hit_memory(i)
+	var mem: PackedInt64Array = row["hit_mem"]
+	var base := i * HIT_MEMORY
+	for k in mem.size():
+		hit_mem[base + k] = mem[k]
+	hit_mem_count[i] = mem.size()
+	hit_mem_head[i] = head_v
+	dead_reason[i] = 0
+	if radius_v > max_radius:
+		max_radius = radius_v
+	return i
+
+
+## Puts slots into increasing seq order. Stable ids (handles) move with the
+## bullets. Used after native bullets are adopted so the pool's slot walk
+## matches the all-GD order.
+func sort_slots_by_seq() -> void:
+	for i in count:
+		var best := i
+		for j in range(i + 1, count):
+			if seq[j] < seq[best]:
+				best = j
+		if best != i:
+			_swap_slots(i, best)
+
+
+func _swap_slots(a: int, b: int) -> void:
+	var ha := _handle_of_slot[a]
+	var hb := _handle_of_slot[b]
+	_handle_of_slot[a] = hb
+	_handle_of_slot[b] = ha
+	_slot_of_handle[ha] = b
+	_slot_of_handle[hb] = a
+	var pos_t := pos[a]
+	pos[a] = pos[b]
+	pos[b] = pos_t
+	var prev_t := prev_pos[a]
+	prev_pos[a] = prev_pos[b]
+	prev_pos[b] = prev_t
+	var vel_t := vel[a]
+	vel[a] = vel[b]
+	vel[b] = vel_t
+	var rot_t := rot[a]
+	rot[a] = rot[b]
+	rot[b] = rot_t
+	var radius_t := radius[a]
+	radius[a] = radius[b]
+	radius[b] = radius_t
+	var age_t := age[a]
+	age[a] = age[b]
+	age[b] = age_t
+	var life_t := lifetime[a]
+	lifetime[a] = lifetime[b]
+	lifetime[b] = life_t
+	var accel_t := accel[a]
+	accel[a] = accel[b]
+	accel[b] = accel_t
+	var turn_t := turn_rate[a]
+	turn_rate[a] = turn_rate[b]
+	turn_rate[b] = turn_t
+	var damage_t := damage[a]
+	damage[a] = damage[b]
+	damage[b] = damage_t
+	var pa_t := param_a[a]
+	param_a[a] = param_a[b]
+	param_a[b] = pa_t
+	var pb_t := param_b[a]
+	param_b[a] = param_b[b]
+	param_b[b] = pb_t
+	var color_t := color[a]
+	color[a] = color[b]
+	color[b] = color_t
+	var mask_t := hit_mask[a]
+	hit_mask[a] = hit_mask[b]
+	hit_mask[b] = mask_t
+	var owner_t := owner_layer[a]
+	owner_layer[a] = owner_layer[b]
+	owner_layer[b] = owner_t
+	var reflect_t := reflect_count[a]
+	reflect_count[a] = reflect_count[b]
+	reflect_count[b] = reflect_t
+	var pierce_flag_t := pierces_script_invuln[a]
+	pierces_script_invuln[a] = pierces_script_invuln[b]
+	pierces_script_invuln[b] = pierce_flag_t
+	var veto_t := can_hit_veto[a]
+	can_hit_veto[a] = can_hit_veto[b]
+	can_hit_veto[b] = veto_t
+	var behavior_t := behavior[a]
+	behavior[a] = behavior[b]
+	behavior[b] = behavior_t
+	var pierce_t := pierce[a]
+	pierce[a] = pierce[b]
+	pierce[b] = pierce_t
+	var collide_t := collide_world[a]
+	collide_world[a] = collide_world[b]
+	collide_world[b] = collide_t
+	var seq_t := seq[a]
+	seq[a] = seq[b]
+	seq[b] = seq_t
+	var dead_t := dead_reason[a]
+	dead_reason[a] = dead_reason[b]
+	dead_reason[b] = dead_t
+	var user_t: Variant = user[a]
+	user[a] = user[b]
+	user[b] = user_t
+	var mem_a := PackedInt64Array()
+	var mem_b := PackedInt64Array()
+	mem_a.resize(HIT_MEMORY)
+	mem_b.resize(HIT_MEMORY)
+	var base_a := a * HIT_MEMORY
+	var base_b := b * HIT_MEMORY
+	for k in HIT_MEMORY:
+		mem_a[k] = hit_mem[base_a + k]
+		mem_b[k] = hit_mem[base_b + k]
+	for k in HIT_MEMORY:
+		hit_mem[base_a + k] = mem_b[k]
+		hit_mem[base_b + k] = mem_a[k]
+	var count_t := hit_mem_count[a]
+	hit_mem_count[a] = hit_mem_count[b]
+	hit_mem_count[b] = count_t
+	var head_t := hit_mem_head[a]
+	hit_mem_head[a] = hit_mem_head[b]
+	hit_mem_head[b] = head_t

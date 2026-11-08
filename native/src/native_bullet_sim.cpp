@@ -31,8 +31,16 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("deliver_hits"), &NativeBulletSim::deliver_hits);
 	ClassDB::bind_method(D_METHOD("upload", "multimesh", "allocated", "interpolate", "stretch"), &NativeBulletSim::upload);
 	ClassDB::bind_method(D_METHOD("spawn", "position", "velocity", "angle", "lifetime", "radius", "damage", "hit_mask", "color",
-								"acceleration", "turn_rate", "pierce", "collide_world", "owner_layer", "source_flags"),
+								"acceleration", "turn_rate", "pierce", "collide_world", "owner_layer", "source_flags", "seq"),
 			&NativeBulletSim::spawn);
+	ClassDB::bind_method(D_METHOD("set_retire_callback", "callback"), &NativeBulletSim::set_retire_callback);
+	ClassDB::bind_method(D_METHOD("get_pending_hit_count"), &NativeBulletSim::get_pending_hit_count);
+	ClassDB::bind_method(D_METHOD("get_pending_hit_seqs"), &NativeBulletSim::get_pending_hit_seqs);
+	ClassDB::bind_method(D_METHOD("commit_pending_hit", "index"), &NativeBulletSim::commit_pending_hit);
+	ClassDB::bind_method(D_METHOD("finish_delivery"), &NativeBulletSim::finish_delivery);
+	ClassDB::bind_method(D_METHOD("find_seq", "seq"), &NativeBulletSim::find_seq);
+	ClassDB::bind_method(D_METHOD("set_seq_at", "slot", "seq"), &NativeBulletSim::set_seq_at);
+	ClassDB::bind_method(D_METHOD("export_states"), &NativeBulletSim::export_states);
 	ClassDB::bind_method(D_METHOD("is_alive", "id"), &NativeBulletSim::is_alive);
 	ClassDB::bind_method(D_METHOD("slot_of", "id"), &NativeBulletSim::slot_of);
 	ClassDB::bind_method(D_METHOD("id_of", "slot"), &NativeBulletSim::id_of);
@@ -88,6 +96,7 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 	hit_mask.assign(n, 0);
 	pierce.assign(n, 0);
 	owner_layer.assign(n, 0);
+	seq.assign(n, 0);
 	collide_world.assign(n, 1);
 	dead.assign(n, 0);
 	source_flags.assign(n, 0);
@@ -510,7 +519,7 @@ double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double d
 
 int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_velocity, float p_angle, float p_lifetime,
 		float p_radius, float p_damage, int p_hit_mask, const Color &p_color, float p_acceleration, float p_turn_rate,
-		int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags) {
+		int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq) {
 	const bool finite = std::isfinite(p_position.x) && std::isfinite(p_position.y) && std::isfinite(p_velocity.x)
 			&& std::isfinite(p_velocity.y) && std::isfinite(p_radius) && std::isfinite(p_lifetime)
 			&& std::isfinite(p_damage) && std::isfinite(p_acceleration) && std::isfinite(p_turn_rate)
@@ -559,6 +568,7 @@ int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_veloc
 	hit_mask[i] = p_hit_mask;
 	pierce[i] = p_pierce;
 	owner_layer[i] = p_owner_layer;
+	seq[i] = p_seq;
 	collide_world[i] = p_collide_world ? 1 : 0;
 	source_flags[i] = (uint8_t)p_source_flags;
 	clear_hit_memory(i);
@@ -625,6 +635,9 @@ void NativeBulletSim::remove_at(int i) {
 		despawn_log.push_back(DespawnEvent{ lifetime[i], reason });
 	}
 	owner_counts[owner_slot_of(owner_layer[i])]--;
+	if (retire_order.is_valid()) {
+		retire_order.call(seq[i]);
+	}
 	const uint32_t released = handle_of_slot[i];
 	generation[released] = (generation[released] + 1) & GENERATION_MASK;
 	if (generation[released] == 0) {
@@ -657,6 +670,7 @@ void NativeBulletSim::remove_at(int i) {
 		hit_mask[i] = hit_mask[last];
 		pierce[i] = pierce[last];
 		owner_layer[i] = owner_layer[last];
+		seq[i] = seq[last];
 		collide_world[i] = collide_world[last];
 		source_flags[i] = source_flags[last];
 		copy_hit_memory(last, i);
@@ -775,7 +789,6 @@ int NativeBulletSim::step(double delta) {
 	const bool have_walls = !wall_lo_x.empty();
 	const bool have_targets = target_count > 0;
 	const float fdelta = (float)delta;
-	int32_t excl[64];
 
 	for (int i = 0; i < count; i++) {
 		if (dead[i] != 0) {
@@ -855,27 +868,26 @@ int NativeBulletSim::step(double delta) {
 			if (short_path) {
 				int ti = -1;
 				if (point_hit(nx, ny, r, mask, i, ti)) {
-					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i] });
+					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i], seq[i] });
 				}
 			} else {
 				double sx = old_x, sy = old_y;
 				int left = pierce[i];
-				int excl_n = 0;
+				excl_buf.clear();
 				for (;;) {
 					double t;
-					const int ti = sweep_targets(sx, sy, (double)nx - sx, (double)ny - sy, r, mask, i, excl, excl_n, t);
+					const int ti = sweep_targets(sx, sy, (double)nx - sx, (double)ny - sy, r, mask, i, excl_buf.data(),
+							(int)excl_buf.size(), t);
 					if (ti < 0) {
 						break;
 					}
 					const double ix = sx + ((double)nx - sx) * t;
 					const double iy = sy + ((double)ny - sy) * t;
 					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), (float)ix, (float)iy, vxi, vyi, damage[i],
-							source_flags[i] });
+							source_flags[i], seq[i] });
 					if (left > 0) {
 						left--;
-						if (excl_n < 64) {
-							excl[excl_n++] = ti;
-						}
+						excl_buf.push_back(ti);
 						sx = ix;
 						sy = iy;
 						continue;
@@ -893,45 +905,83 @@ int NativeBulletSim::step(double delta) {
 	return last_hit_count;
 }
 
-void NativeBulletSim::deliver_hits() {
-	// Bullets are still in place (compact runs at the end), so a handler may
-	// spawn without pulling a later hit's slot out from under it. A target that
-	// is gone or inactive does not consume the bullet: same as BulletManager
-	// checking Hurtbox.active before pierce bookkeeping.
-	for (const HitEvent &h : hit_events) {
-		const int s = slot_of(h.bullet_id);
-		if (s < 0) {
-			continue;
-		}
-		const int dead_now = dead[s];
-		if (dead_now != 0 && dead_now != REASON_BOUNDS + 1) {
-			continue;
-		}
-		Object *target = ObjectDB::get_instance(h.target_id);
-		if (target == nullptr) {
-			continue;
-		}
-		const Variant active = target->get("active");
-		if (active.get_type() == Variant::BOOL && !(bool)active) {
-			continue;
-		}
-		const bool piercing = pierce[s] > 0;
-		if (!piercing) {
-			px[s] = h.x;
-			py[s] = h.y;
-		}
-		target->call("receive_hit", h.damage, Vector2(h.x, h.y), Vector2(h.vx, h.vy), h.bullet_id, h.flags);
-		if (record_events) {
-			hit_log.push_back(h);
-		}
-		if (piercing) {
-			remember_target(s, h.target_id);
-			pierce[s] -= 1;
-		} else {
-			mark_dead(s, REASON_HIT);
-			claim_from_bounds(s, REASON_HIT);
+void NativeBulletSim::commit_hit(const HitEvent &h) {
+	const int s = slot_of(h.bullet_id);
+	if (s < 0) {
+		return;
+	}
+	const int dead_now = dead[s];
+	if (dead_now != 0 && dead_now != REASON_BOUNDS + 1) {
+		return;
+	}
+	Object *target = ObjectDB::get_instance(h.target_id);
+	if (target == nullptr) {
+		return;
+	}
+	const Variant active = target->get("active");
+	if (active.get_type() == Variant::BOOL && !(bool)active) {
+		return;
+	}
+	const bool piercing = pierce[s] > 0;
+	if (!piercing) {
+		px[s] = h.x;
+		py[s] = h.y;
+	}
+	target->call("receive_hit", h.damage, Vector2(h.x, h.y), Vector2(h.vx, h.vy), h.bullet_id, h.flags);
+	if (record_events) {
+		hit_log.push_back(h);
+	}
+	if (piercing) {
+		remember_target(s, h.target_id);
+		pierce[s] -= 1;
+	} else {
+		mark_dead(s, REASON_HIT);
+		claim_from_bounds(s, REASON_HIT);
+	}
+}
+
+void NativeBulletSim::commit_pending_hit(int p_index) {
+	if (p_index < 0 || p_index >= (int)hit_events.size()) {
+		return;
+	}
+	commit_hit(hit_events[(size_t)p_index]);
+}
+
+PackedInt32Array NativeBulletSim::get_pending_hit_seqs() const {
+	PackedInt32Array out;
+	out.resize((int)hit_events.size());
+	for (int i = 0; i < (int)hit_events.size(); i++) {
+		out[i] = hit_events[(size_t)i].seq;
+	}
+	return out;
+}
+
+int NativeBulletSim::find_seq(int p_seq) const {
+	for (int i = 0; i < count; i++) {
+		if (seq[i] == p_seq) {
+			return i;
 		}
 	}
+	return -1;
+}
+
+void NativeBulletSim::set_seq_at(int p_slot, int p_seq) {
+	if (p_slot >= 0 && p_slot < count) {
+		seq[p_slot] = p_seq;
+	}
+}
+
+void NativeBulletSim::deliver_hits() {
+	for (const HitEvent &h : hit_events) {
+		commit_hit(h);
+	}
+	finish_delivery();
+}
+
+void NativeBulletSim::finish_delivery() {
+	// Bullets are still in place until compact, so a handler may spawn without
+	// pulling a later hit's slot out from under it. Hits left uncommitted are
+	// skipped: the manager delivers them itself, in global seq order.
 	for (int s : wall_slots) {
 		if (s < 0 || s >= count) {
 			continue;
@@ -1091,6 +1141,41 @@ PackedInt32Array NativeBulletSim::get_dropped_by_limit() const {
 	out.resize(2);
 	out[0] = (int32_t)dropped_by_limit[0];
 	out[1] = (int32_t)dropped_by_limit[1];
+	return out;
+}
+
+Array NativeBulletSim::export_states() const {
+	Array out;
+	for (int i = 0; i < count; i++) {
+		Dictionary row;
+		row["pos"] = Vector2(px[i], py[i]);
+		row["prev"] = Vector2(qx[i], qy[i]);
+		row["vel"] = Vector2(vx[i], vy[i]);
+		row["rot"] = Vector2(rx[i], ry[i]);
+		row["radius"] = radius[i];
+		row["age"] = age[i];
+		row["lifetime"] = lifetime[i];
+		row["accel"] = accel[i];
+		row["turn"] = turn[i];
+		row["damage"] = damage[i];
+		row["color"] = Color(col[4 * i], col[4 * i + 1], col[4 * i + 2], col[4 * i + 3]);
+		row["hit_mask"] = hit_mask[i];
+		row["pierce"] = pierce[i];
+		row["owner"] = owner_layer[i];
+		row["collide"] = collide_world[i] != 0;
+		row["flags"] = (int)source_flags[i];
+		row["seq"] = seq[i];
+		PackedInt64Array mem;
+		const int n = hit_mem_count[i];
+		mem.resize(n);
+		const uint64_t *base = &hit_mem[(size_t)i * HIT_MEMORY];
+		for (int k = 0; k < n; k++) {
+			mem[k] = (int64_t)base[k];
+		}
+		row["hit_mem"] = mem;
+		row["hit_head"] = (int)hit_mem_head[i];
+		out.push_back(row);
+	}
 	return out;
 }
 

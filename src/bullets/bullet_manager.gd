@@ -13,6 +13,10 @@ extends Node2D
 ## (ties broken by tree order), so the manager runs after everything at the
 ## default priority of 0.
 const PHYSICS_PRIORITY := 100
+## Managers currently in a tree. Reflector enter/exit notifies each of them.
+## Node2D, not BulletManager: a static Array of this class cannot be parsed
+## while the class is still being compiled.
+static var _managers: Array[Node2D] = []
 
 ## Physical size of the bullet pool: the memory that is allocated up front. The
 ## number of bullets the game actually allows is `logical_cap` (never more than this).
@@ -137,6 +141,11 @@ var _return_wall_hit := PackedByteArray()
 ## (0 = none). Set after the wall sweep and cleared before removal; see
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
+## Reflectors currently registered. While this is > 0 every new bullet stays in
+## the GDScript pool, and live native bullets are migrated in.
+var _reflector_count := 0
+## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
+var _order_count := 0
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -145,6 +154,32 @@ var _wall_hit_index := PackedInt32Array()
 
 func _init() -> void:
 	process_physics_priority = PHYSICS_PRIORITY
+
+
+func _enter_tree() -> void:
+	if not _managers.has(self):
+		_managers.append(self)
+	# Reflectors that entered earlier already updated the registry. Later ones
+	# notify. Snapshot so neither is missed and neither is counted twice.
+	_reflector_count = Reflector.registry.size()
+
+
+func _exit_tree() -> void:
+	_managers.erase(self)
+
+
+static func notify_reflectors(delta: int) -> void:
+	for node in _managers:
+		var manager := node as BulletManager
+		if manager != null:
+			manager._reflectors_changed(delta)
+
+
+func _reflectors_changed(delta: int) -> void:
+	var before := _reflector_count
+	_reflector_count = maxi(_reflector_count + delta, 0)
+	if before == 0 and _reflector_count > 0:
+		_migrate_native_to_pool()
 
 
 func _ready() -> void:
@@ -326,6 +361,10 @@ func spawn(request: ShotRequest) -> int:
 ## True when this request should be simulated in C++. Hook context is handled
 ## by spawn() before this is asked.
 func _wants_native(request: ShotRequest) -> bool:
+	# Any registered reflector keeps every new bullet on the pool. Native
+	# reflection is not implemented; the pool's mirror path is the baseline.
+	if _reflector_count > 0:
+		return false
 	return native != null and not _has_per_bullet_hooks(request.behavior_id)
 
 
@@ -346,14 +385,154 @@ func _has_per_bullet_hooks(behavior_id: int) -> bool:
 
 
 func _spawn_native(request: ShotRequest) -> int:
+	var seq := _alloc_order()
 	native.set_external_count(pool.count)
-	var id := native.spawn(request)
-	_sync_pool_external()
+	var id := native.spawn(request, seq)
+	if id < 0:
+		_rollback_order(seq)
+	else:
+		_sync_pool_external()
 	return id
 
 
 func _sync_pool_external() -> void:
 	pool.external_count = native.count() if native != null else 0
+
+
+func _alloc_order() -> int:
+	var assigned := _order_count
+	_order_count += 1
+	return assigned
+
+
+func _rollback_order(assigned: int) -> void:
+	if assigned == _order_count - 1:
+		_order_count -= 1
+
+
+func _assign_pool_seq(i: int) -> void:
+	pool.seq[i] = _alloc_order()
+
+
+func _retire_pool_bullet(i: int) -> void:
+	# Hooked runs keep every bullet in the pool. The tail is the last slot, so
+	# the rewrite is one write; the scan is only for a mixed store.
+	if native == null or native.count() == 0:
+		_retire_local(pool.seq[i], pool.count - 1, false, i)
+		return
+	_retire_seq(pool.seq[i])
+
+
+func _retire_native_seq(removed: int) -> void:
+	if pool.count == 0:
+		_retire_local(removed, native.count() - 1, true, -1)
+		return
+	_retire_seq(removed)
+
+
+## Single-store swap-remove. `removed` is that bullet's seq. The tail is the
+## last slot; stamping it here lets the store's copy land the tail in the hole.
+func _retire_local(removed: int, last: int, native_tail: bool, pool_slot: int) -> void:
+	if _order_count <= 1:
+		_order_count = 0
+		return
+	var tail := _order_count - 1
+	_order_count -= 1
+	if removed == tail or last < 0:
+		return
+	if native_tail:
+		native.set_seq_at(last, removed)
+	elif pool_slot != last:
+		pool.seq[last] = removed
+
+
+## Unified swap-remove: the bullet that holds the highest seq takes the seq of
+## the one that just left, matching BulletPool's move-last-into-the-hole.
+func _retire_seq(removed: int) -> void:
+	if _order_count <= 1:
+		_order_count = 0
+		return
+	var tail := _order_count - 1
+	_order_count -= 1
+	if removed == tail:
+		return
+	if native != null:
+		var slot := native.find_seq(tail)
+		if slot >= 0:
+			native.set_seq_at(slot, removed)
+			return
+	for i in pool.count:
+		if pool.seq[i] == removed:
+			continue
+		if pool.seq[i] == tail:
+			pool.seq[i] = removed
+			return
+
+
+func _on_pool_cleared() -> void:
+	if native == null or native.count() == 0:
+		_order_count = 0
+
+
+func _migrate_native_to_pool() -> void:
+	if native == null or native.count() == 0 or pool == null:
+		return
+	var rows: Array = native.export_states()
+	native.clear()
+	for i in rows.size():
+		var state: Dictionary = rows[i]
+		pool.adopt_native(state)
+	pool.sort_slots_by_seq()
+	_sync_pool_external()
+
+
+## Pool hits and native hits, in ascending seq, ties broken by the order the
+## candidates were recorded (path order within one bullet).
+func _apply_hits_by_seq(pool_hits: int) -> void:
+	var native_seqs := native.pending_hit_seqs()
+	var total := pool_hits + native_seqs.size()
+	var seqs := PackedInt32Array()
+	var kind := PackedByteArray()
+	var index := PackedInt32Array()
+	seqs.resize(total)
+	kind.resize(total)
+	index.resize(total)
+	for k in pool_hits:
+		seqs[k] = pool.seq[grid.hit_bullets[k]]
+		kind[k] = 0
+		index[k] = k
+	for k in native_seqs.size():
+		var at := pool_hits + k
+		seqs[at] = native_seqs[k]
+		kind[at] = 1
+		index[at] = k
+	var order := _argsort_stable(seqs)
+	for n in order.size():
+		var at: int = order[n]
+		if kind[at] == 0:
+			var k: int = index[at]
+			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+		else:
+			native.commit_pending_hit(index[at])
+
+
+func _argsort_stable(keys: PackedInt32Array) -> PackedInt32Array:
+	var order := PackedInt32Array()
+	order.resize(keys.size())
+	for i in keys.size():
+		order[i] = i
+	for i in range(1, order.size()):
+		var key := order[i]
+		var j := i - 1
+		while j >= 0:
+			var earlier: int = order[j]
+			var out_of_order := keys[earlier] > keys[key] or (keys[earlier] == keys[key] and earlier > key)
+			if not out_of_order:
+				break
+			order[j + 1] = earlier
+			j -= 1
+		order[j + 1] = key
+	return order
 
 
 ## Spawns a child of the live bullet with stable id `parent_id`, for spawn paths
@@ -448,6 +627,10 @@ func reflect(
 
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
+	# A mirror that appeared since the last spawn must own every bullet before
+	# this tick moves or collides them. New spawns already see _reflector_count.
+	if _reflector_count > 0:
+		_migrate_native_to_pool()
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -487,9 +670,22 @@ func step(delta: float) -> void:
 	# flies on for the rest of the tick along its new heading.
 	var zone_hits := _collect_zone_hits()
 	last_hit_count = grid.collide_bullets(pool)
+	# Integrate native bullets before any hit is delivered, so both stores'
+	# candidates exist and can be applied in one seq order. With no native
+	# bullets this is the all-GD path below, unchanged.
+	var native_queued := 0
+	var stepped_native := false
+	if native != null and native.count() > 0:
+		native_queued = native.step(delta)
+		stepped_native = true
 	if zone_hits == 0:
-		for k in last_hit_count:
-			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+		# stepped_native: both stores may hold bullets, so pool slot order is not
+		# the all-GD order. Seq is that order. No native bullets: the old loop.
+		if stepped_native:
+			_apply_hits_by_seq(last_hit_count)
+		else:
+			for k in last_hit_count:
+				_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
 	else:
 		_resolve_hits_in_time_order(zone_hits)
 		_continue_reflected(delta)
@@ -508,18 +704,14 @@ func step(delta: float) -> void:
 	for k in last_wall_hit_count:
 		_wall_clip[walls.hit_bullets[k]] = 1.0
 
-	# Plain bullets, after the pool's own collision. They use the same target
-	# snapshot (hooks already ran; a radius growth re-collected above). Hits are
-	# delivered now, before despawn hooks, so a callback spawn is not swept
-	# until next tick — the same timing as a spawn from on_hit.
-	var native_hits := 0
+	# Native walls and compaction. Hits were committed above, in seq order with
+	# the pool, so a callback spawn is still not swept until next tick.
 	var native_wall_hits := 0
-	if native != null:
-		native_hits = native.step(delta)
-		native.deliver_hits()
+	if stepped_native:
+		native.finish_delivery()
 		native_wall_hits = native.last_wall_hit_count()
 		_sync_pool_external()
-	last_hit_count += native_hits
+	last_hit_count += native_queued
 	last_wall_hit_count += native_wall_hits
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -632,6 +824,7 @@ func clear_bullets() -> void:
 		_sync_pool_external()
 		if _native_renderer != null:
 			_native_renderer.update_from(native)
+	_order_count = 0
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).
@@ -700,6 +893,10 @@ func _select_backend() -> void:
 		return
 	native = NativeBackend.new(capacity, world_bounds, cell_size)
 	native.set_limits(pool.logical_cap, pool.enemy_reserve)
+	pool.alloc_order = _assign_pool_seq
+	pool.retire_order = _retire_pool_bullet
+	pool.store_cleared = _on_pool_cleared
+	native.set_retire_callback(_retire_native_seq)
 	backend = "native"
 
 
