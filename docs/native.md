@@ -1,12 +1,13 @@
-# Native bullet core (PR1, prototype)
+# Native bullet core
 
-First slice of the hybrid C++ migration. A small GDExtension (`NativeBulletSim`,
-`native/`) advances **plain** bullets. Bullets with a per-bullet hook stay in
-the GDScript `BulletPool`, and that pool remains the default.
+Hybrid C++ migration. A small GDExtension (`NativeBulletSim`, `native/`)
+advances **hook-free** bullets: plain shots and declarative ones (kinematics
+only, no per-bullet hook). Bullets with a per-bullet hook stay in the GDScript
+`BulletPool`, and that pool remains the default and the fallback.
 
-**Status: prototype scaffold.** Linux x86_64 release build only. Not wired into
-CI. The C++ sim is good enough to review and to parity-test; it is not the
-final hot loop, and it has not been re-benchmarked on current `main`.
+**Status: opt-in, Linux x86_64.** Not wired into CI. The game does not move
+bullets unless native is opted in and the library loaded. Hooked bullets never
+move to C++.
 
 ## What this PR does
 
@@ -15,19 +16,52 @@ final hot loop, and it has not been re-benchmarked on current `main`.
 - `NativeBulletSim`: struct-of-arrays store, stable ids (generation-checked,
   bit 62 set so they are not pool slots), integrate, wall sweep, swept hurtbox
   tests, pierce, swap-remove, and the interpolated MultiMesh upload.
-- `BulletManager` routes a plain bullet (`behavior_id == 0`) to that sim only
-  when the native backend is selected **and** the spawn is not inside a hook.
-  `spawn_child()` and hook spawns stay on the GDScript pool, so owner
-  inheritance, hook masks, `sweep_cross_writes()`, and the saturation limits
-  are unchanged for them.
+- `BulletManager` routes a hook-free bullet to that sim only when native is
+  selected **and** the spawn is not inside a hook. A bullet is hook-free when
+  `behavior_id` is 0, or its behaviour's mask calls no event hook (`on_spawn`,
+  `on_hit`, `can_hit`, `on_despawn`) and the script does not override
+  `on_update`. Any unmasked event hook, or an `on_update` override, stays in
+  the pool. `spawn_child()` and spawns made while a hook is running stay in
+  the pool too: the native step runs later in the same tick, so a child born
+  during a hook would move a tick early, and owner inheritance already lives
+  on the pool. That split is a reversible default.
+- **While any reflector is registered, native routing is off.** The count
+  changes as soon as the reflector enters or leaves, so a spawn made in that
+  same callback already goes to the GDScript pool. The live-bullet move is
+  phase-aware, matching the all-GD tick (`advance`, then `on_update`, then
+  walls and zones). Pool `on_update` already runs before the native sim
+  moves. A reflector registered in that window, or any earlier pre-movement
+  hook, migrates live native bullets immediately. If `advance` has already
+  walked the pool, the migrated bullets take that same integrate once, in
+  the pool, and then collide with everyone else this tick. They are not
+  moved by the native sim as well. Slots are sorted into the shared seq
+  before the wall and zone sweep, and not while the hook's own slot is live.
+  A reflector registered during hit delivery (`on_hit`, `can_hit`,
+  `on_despawn`) does not clear the native sim yet: the move is flagged and
+  runs once, after this tick's merged hit commits, native wall compaction,
+  and despawn hooks, and before the next tick moves or collides. That move
+  does not integrate again. A register/unregister pair that ends back at
+  zero clears the flag, so nothing is moved. The move copies position,
+  velocity, damage, pierce, `hit_mem`, owner, and the shared seq. Bullets
+  already removed this tick are not copied. When the last reflector
+  unregisters, new hook-free spawns may use native again; bullets already in
+  the pool stay there. `reflect()` itself is still the pool's, and a native
+  id (no reflector in the world) still returns false from `reflect_bullet()`.
+- Hits from both stores in one tick are delivered in shared seq order, the
+  order a single pool would walk. A hurtbox turned off by an earlier bullet
+  is skipped for the later one, on both backends.
+- Both stores share one saturation model (logical cap, enemy reserve, owner
+  counters, drop reasons, the rate-limited warning and `pool_saturated`).
+  Dead-but-not-flushed bullets still hold a slot.
 - Spawn limits match `BulletLimits`: `NativeBackend` clamps with those
   constants and passes `MAX_SPEED` into `configure`. The extension does not
   hard-code a second ceiling. A non-finite shot is refused.
 - GDScript is the fallback and the default. `backend_preference` defaults to
-  `"gdscript"`, so loading the library does not move bullets, and
-  `SCRIPTSHOT_BULLET_BACKEND` does nothing until a manager is set to `"auto"`.
-  `"native"` uses the extension or, if it is missing, logs an error and stays
-  on GDScript.
+  `"gdscript"`, so loading the library does not move bullets on a manager that
+  did not opt in. `"native"` uses the extension or, if it is missing, logs
+  **one** warning and stays on GDScript. `"auto"` (the main scene and the
+  benchmark) resolves `--bullet-backend=`, then `SCRIPTSHOT_BULLET_BACKEND`,
+  then the project setting `scriptshot/bullets/backend` (default `gdscript`).
 
 `spawn()` returns a pool slot for GDScript bullets and a native id for plain
 native bullets. `ShotEmitter.request_shot_id()` / `is_bullet_alive()` understand
@@ -39,9 +73,9 @@ both. `alive_count()`, `spawned_total()`, and `snapshot()` cover both stores.
 
 | value | result |
 |---|---|
-| `"gdscript"` (export default) | pool only. Ignores `SCRIPTSHOT_BULLET_BACKEND`. |
-| `"native"` | plain bullets in `NativeBulletSim` if the extension loaded, otherwise GDScript plus an error |
-| `"auto"` | `SCRIPTSHOT_BULLET_BACKEND=native` or `=gdscript`; unset stays GDScript |
+| `"gdscript"` (export default) | pool only. Ignores the CLI, the env var and the project setting. |
+| `"native"` | hook-free bullets in `NativeBulletSim` if the extension loaded, otherwise GDScript plus one warning |
+| `"auto"` | `--bullet-backend=`, else `SCRIPTSHOT_BULLET_BACKEND`, else `scriptshot/bullets/backend`, else GDScript |
 
 `spawn()` on the native backend returns a native id, not a pool slot. The
 unit tests that index the pool are written for GDScript and leave the
@@ -50,11 +84,25 @@ environment variable. The native tests set `"native"` themselves.
 
 ```
 ./tools/build_native.sh
-./tools/run_tests.sh                         # GDScript path, native tests included
+./tools/run_tests.sh                         # extension missing: native tests pending
+./tools/run_tests.sh                         # extension built: the same tests run
 ./tools/run_tests.sh -gselect=native         # the opt-in tests only
-./tools/run_benchmark.sh --backend=gdscript
-./tools/run_benchmark.sh --backend=native
+
+# Benchmark. Hooked bullets stay on GDScript either way. Do not change the
+# 22 ms hooked gate; these flags only select the pool under measurement.
+./tools/run_benchmark.sh --backend=gdscript --hooked=0
+./tools/run_benchmark.sh --backend=gdscript --hooked=1
+./tools/run_benchmark.sh --backend=native --hooked=0
+./tools/run_benchmark.sh --backend=native --hooked=1
+# Same opt-in as the game, because the benchmark's default preference is auto:
+./tools/run_benchmark.sh --bullet-backend=native
 ```
+
+The shipped scenes (`scenes/main.tscn`, `scenes/sandbox.tscn`) set
+`backend_preference` to `auto`. With the project setting left at `gdscript`
+and no flag, they stay on the pool. To try native locally: build the library,
+then either set `scriptshot/bullets/backend` to `native` or launch with
+`--bullet-backend=native`.
 
 `bin/` is gitignored. `scriptshot_native.gdextension` lists only the Linux
 x86_64 release library (editor and debug point at it too). Without that
@@ -79,29 +127,47 @@ pip install scons==4.10.1
 
 ## Tests
 
-- `tests/unit/test_native_backend.gd`: load/switch, ids, plain vs hooked
-  routing, hook spawns staying in the pool, walls, swept hits, speed clamp,
-  despawn, snapshot. Pending when the extension is not built.
-- `tests/unit/test_native_parity.gd`: one seeded plain-bullet scenario on both
-  backends. Positions within 0.01, velocities within 0.05, same hit signatures
-  over 150 ticks.
+- `tests/unit/test_native_backend.gd`: load/switch, the project setting and the
+  CLI flag, one warning when the library is missing, declarative vs hooked
+  routing, hook spawns staying in the pool, the shared cap and enemy reserve,
+  walls, swept hits, speed clamp, despawn, snapshot. Pending when the extension
+  is not built (the missing-library warning test runs either way).
+- `tests/unit/test_native_parity.gd`: the same scenarios on both backends.
+  Seeded positions within 0.01 and velocities within 0.05, hit signatures,
+  kinematics after 90 ticks, slow-overlap impact, pierce hit-memory, wall and
+  despawn order, the camera window, saturation counts, damage flags. Pending
+  when the extension is not built.
 - `tests/unit/test_bullet_manager.gd` forces `"gdscript"` and still inspects
   the pool. Hook masks, `sweep_cross_writes()`, and the speed clamp on that
   path are untouched.
 
-**Known difference, checked loosely:** a slow non-piercing bullet that is
-already overlapping a target is reported at its end position by the GDScript
-point test and at the contact point by the native sweep. The parity test
-allows one tick of travel on impact points. Survivors must match tightly.
+Short non-piercing paths use the pool's endpoint test, so a bullet that is
+already overlapping a target is reported at its end position on both sides.
+A hurtbox turned off earlier in the same tick is skipped at delivery on both
+sides and does not consume pierce. The pierce ring is `BulletPool.HIT_MEMORY`
+(8): only a pierce hit that lands is recorded, and the oldest id falls out.
+The camera window recentres the native grids with the GDScript ones; bullets
+outside the new rect despawn on the next step.
 
-A hurtbox turned off earlier in the same tick is skipped by the pool at
-delivery (`active`). The prototype still delivers a native hit that was queued
-against the snapshot. Mixed pool-and-native ticks can disagree there.
+The seeded parity case still allows one tick of travel on swept impact points,
+so a contact that drifts by a fraction of a pixel does not fail the run.
+Survivors are compared within 0.01 px.
 
-The old ~10x numbers in the previous draft of this file were measured on
-`9573539` (before the hook-mask and plain-advance work). They are not a result
-for this branch. Re-benchmark after this lands (`--backend=native` vs
-`--backend=gdscript`).
+Work p95 on this VM (Godot 4.7.2 headless, 120 warmup + 600 frames, the
+benchmark's 32 hurtboxes and 28 walls). Hooked rows are `on_update` on every
+bullet, so they stay in the GDScript pool even when native is selected.
+
+| bullets | hooks | gdscript | native |
+| ---: | --- | ---: | ---: |
+| 5,000 | plain | 7.41 ms | 0.85 ms |
+| 10,000 | plain | 14.65 ms | 1.50 ms |
+| 5,000 | hooked | 11.45 ms | 11.44 ms |
+| 10,000 | hooked | 22.55 ms | 22.91 ms |
+
+Plain native bullets were entirely in `NativeBulletSim` (pool count 0). Hooked
+runs were entirely in the pool (native count 0). The default-backend hooked 5k
+sample is under the 20 ms soft bar and the 22 ms hard gate. 10k hooked only
+warns. These are one machine, not a CI gate.
 
 ## Out of scope
 
@@ -112,12 +178,10 @@ Left for later PRs, on purpose:
 - The narrow zero-copy Lua view. M1, when it happens, uses packed copies
   through stock lua-gdextension. This PR does not fork Lua.
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
-- Saturation model for native bullets. The prototype store is sized to the
-  physical `capacity` and does not apply `logical_cap`, the enemy reserve, or
-  `owner_counts`. Do not point a gameplay scene at `"native"` until that
-  exists. The GDScript path still enforces the model.
-- Reflector zones, wall normals, and `can_hit` vetoes for native bullets.
-  Plain native bullets are not reflected and do not report a wall normal.
+- Wall normals and `can_hit` vetoes inside the C++ sim. A bullet whose mask
+  includes `can_hit` stays on the GDScript pool. While any reflector is
+  registered, native routing is off entirely, so mirrors and the pool's
+  wall-normal rules still run. Native reflection inside the C++ sim is later.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
   clamps silently to the same limits.
 - A shared id space. Native ids use bit 62. `reflect_bullet()` on a native id

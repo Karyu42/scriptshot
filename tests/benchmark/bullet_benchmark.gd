@@ -23,7 +23,11 @@ extends Node
 ##                          (default 0 = no hooked bullets, the original workload; the same
 ##                          bullet trajectories are simulated at every fraction)
 ##   --backend=native       bullet backend: auto (default), gdscript or native.
-##                          auto follows SCRIPTSHOT_BULLET_BACKEND; unset stays on gdscript
+##                          auto is the native opt-in: --bullet-backend=, then
+##                          SCRIPTSHOT_BULLET_BACKEND, then project setting
+##                          scriptshot/bullets/backend. Unset stays on gdscript.
+##                          --backend=native forces the C++ pool for hook-free
+##                          bullets (hooked bullets stay on GDScript).
 ##   --json=path            also write results as JSON (includes the hooked fraction and backend)
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
@@ -244,9 +248,14 @@ func _finish_count() -> void:
 	var ph: Dictionary = result.phase_mean_ms
 	print("[bench]          mean ms by phase: advance %.2f | hooks+walls %.2f | hurtboxes %.2f | despawn %.2f | render fill %.2f"
 		% [ph.advance, ph.hooks_walls, ph.hurtboxes, ph.despawn, ph.render])
-	print("[bench] %6d bullets: work p50 %.2f ms  p95 %.2f ms  p99 %.2f ms  max %.2f ms | wall p50 %.2f ms  p95 %.2f ms | alive %d (min %d)"
+	var native_alive := _manager.native.count() if _manager.native != null else 0
+	var alive_at_end: int = result.alive_at_end
+	result["native_alive_at_end"] = native_alive
+	result["pool_alive_at_end"] = alive_at_end - native_alive
+	print("[bench] %6d bullets: work p50 %.2f ms  p95 %.2f ms  p99 %.2f ms  max %.2f ms | wall p50 %.2f ms  p95 %.2f ms | alive %d (min %d, pool %d, native %d)"
 		% [result.bullets, result.work_p50_ms, result.work_p95_ms, result.work_p99_ms, result.work_max_ms,
-			result.wall_p50_ms, result.wall_p95_ms, result.alive_at_end, result.min_alive_before_step])
+			result.wall_p50_ms, result.wall_p95_ms, result.alive_at_end, result.min_alive_before_step,
+			result.pool_alive_at_end, native_alive])
 	_next_count()
 
 

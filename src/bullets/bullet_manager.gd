@@ -13,6 +13,10 @@ extends Node2D
 ## (ties broken by tree order), so the manager runs after everything at the
 ## default priority of 0.
 const PHYSICS_PRIORITY := 100
+## Managers currently in a tree. Reflector enter/exit notifies each of them.
+## Node2D, not BulletManager: a static Array of this class cannot be parsed
+## while the class is still being compiled.
+static var _managers: Array[Node2D] = []
 
 ## Physical size of the bullet pool: the memory that is allocated up front. The
 ## number of bullets the game actually allows is `logical_cap` (never more than this).
@@ -59,16 +63,17 @@ var grid: HurtboxGrid
 var reflector_grid: HurtboxGrid
 var walls: WallGrid
 var emitter: ShotEmitter
-## "native" when the C++ NativeBulletSim simulates plain bullets, otherwise
+## "native" when the C++ NativeBulletSim simulates hook-free bullets, otherwise
 ## "gdscript" (everything in `pool`). Chosen in _ready(); see backend_preference.
 var backend := "gdscript"
 ## Which backend to use. "gdscript" (the default) keeps every bullet in the pool,
-## including when SCRIPTSHOT_BULLET_BACKEND is set: tests and the game do not
-## change because the prototype library loaded. "native" sends plain bullets to
-## NativeBulletSim when the extension is loaded, and falls back to GDScript
-## (with an error) when it is not. "auto" follows SCRIPTSHOT_BULLET_BACKEND
-## (`gdscript` or `native`); with the variable unset it stays on GDScript.
-## Set before _ready. The benchmark uses "auto".
+## including when the project setting or SCRIPTSHOT_BULLET_BACKEND says native:
+## tests and a scene that did not opt in do not move because the library loaded.
+## "native" sends hook-free bullets to NativeBulletSim when the extension is
+## loaded, and falls back to GDScript (one warning) when it is not. "auto"
+## follows, in order, `--bullet-backend=`, SCRIPTSHOT_BULLET_BACKEND, then the
+## project setting `scriptshot/bullets/backend`. Unset stays on GDScript.
+## Set before _ready. The main scene and the benchmark use "auto".
 @export_enum("auto", "gdscript", "native") var backend_preference := "gdscript"
 var native: NativeBackend
 
@@ -103,6 +108,10 @@ var _hook_cache := PackedInt32Array([0])
 var _hook_scripts: Array[Script] = [null]
 var _declared_checked := PackedInt32Array([-2])
 var _declared_scripts: Array[Script] = [null]
+## 1 when that behaviour's script overrides on_update. Refreshed with the event
+## mask. on_update is not a hook_mask bit; an override still keeps the bullet
+## on the GDScript pool.
+var _update_override := PackedByteArray([0])
 ## How many times an explicit hook_mask was looked at against its script (tests).
 var _declared_checks := 0
 var _sim_time := 0.0
@@ -132,6 +141,34 @@ var _return_wall_hit := PackedByteArray()
 ## (0 = none). Set after the wall sweep and cleared before removal; see
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
+## Reflectors currently registered. While this is > 0 every new bullet stays in
+## the GDScript pool. The count itself updates immediately, including from a hit
+## callback, so a spawn in that callback already takes the pool.
+var _reflector_count := 0
+## Where step() is. Migration is phase-aware: before the native sim has moved
+## or collided this tick, live native bullets move into the pool immediately so
+## they still take this tick's pool advance and collision. During hit delivery
+## the native hit list is live, so the move waits until those commits finish.
+const _PHASE_IDLE := 0
+const _PHASE_PRE_MOVE := 1
+const _PHASE_MOVED := 2
+const _PHASE_DELIVERING := 3
+var _phase := _PHASE_IDLE
+## Delta of the step in progress. A bullet migrated after pool.advance() still
+## needs this one integrate; it has not been moved by the native sim yet.
+var _step_delta := 0.0
+## True while pool.run_update_hooks is on the stack. Sorting slots there would
+## pull the hook's slot out from under it, so the sort waits until the hooks return.
+var _inside_update_hooks := false
+## Set when a mid-hook migration appended bullets that still need seq order
+## before this tick's wall and zone sweep.
+var _resort_before_collision := false
+## Set when the first reflector appears during hit delivery. Flushed once, after
+## merged commits, native wall compaction, and despawn hooks. Cleared if the
+## count falls back to 0 before that boundary (a register/unregister pair).
+var _pending_migration := false
+## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
+var _order_count := 0
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -140,6 +177,51 @@ var _wall_hit_index := PackedInt32Array()
 
 func _init() -> void:
 	process_physics_priority = PHYSICS_PRIORITY
+
+
+func _enter_tree() -> void:
+	if not _managers.has(self):
+		_managers.append(self)
+	# Reflectors that entered earlier already updated the registry. Later ones
+	# notify. Snapshot so neither is missed and neither is counted twice.
+	_reflector_count = Reflector.registry.size()
+
+
+func _exit_tree() -> void:
+	_managers.erase(self)
+
+
+static func notify_reflectors(delta: int) -> void:
+	for node in _managers:
+		var manager := node as BulletManager
+		if manager != null:
+			manager._reflectors_changed(delta)
+
+
+func _reflectors_changed(delta: int) -> void:
+	var before := _reflector_count
+	_reflector_count = maxi(_reflector_count + delta, 0)
+	if _reflector_count == 0:
+		# Net zero for this callback window: nothing is waiting to move.
+		_pending_migration = false
+		return
+	if before > 0:
+		return
+	# First reflector. Hit delivery still has the native hit list in hand, so
+	# the move waits until those commits finish. Any earlier phase (outside
+	# step, before pool.advance, or in on_update before the native sim moves)
+	# brings the bullets across now. After pool.advance they still need that
+	# one integrate; before it, the upcoming advance is their only step.
+	if _phase == _PHASE_DELIVERING:
+		_pending_migration = true
+	else:
+		_migrate_native_to_pool(_phase == _PHASE_MOVED)
+
+
+func _flush_pending_migration() -> void:
+	if _pending_migration and _reflector_count > 0:
+		_migrate_native_to_pool()
+	_pending_migration = false
 
 
 func _ready() -> void:
@@ -188,6 +270,8 @@ func set_bullet_limits(cap: int, reserve: int = -1) -> void:
 	@warning_ignore("integer_division")
 	var auto_reserve := effective_cap * 3 / 10
 	pool.set_limits(effective_cap, auto_reserve if reserve < 0 else reserve)
+	if native != null:
+		native.set_limits(pool.logical_cap, pool.enemy_reserve)
 
 
 ## Registers a behaviour and returns the id for ShotRequest.behavior_id.
@@ -198,6 +282,7 @@ func register_behavior(behavior: BulletBehavior) -> int:
 	_hook_scripts.append(null)
 	_declared_checked.append(-2)
 	_declared_scripts.append(null)
+	_update_override.append(0)
 	var id := _behaviors.size() - 1
 	_refresh_hooks(id, behavior)
 	return id
@@ -217,6 +302,7 @@ func refresh_behavior(id: int) -> void:
 func _refresh_hooks(id: int, b: BulletBehavior) -> void:
 	_hook_scripts[id] = b.get_script()
 	_hook_cache[id] = BulletBehavior.detect_hooks(b)
+	_update_override[id] = 1 if BulletBehavior.overrides_on_update(b) else 0
 
 
 ## The hooks of behaviour `id` that exist (BulletBehavior.HOOK_* bits). An explicit
@@ -288,24 +374,218 @@ func collect_walls() -> int:
 
 
 ## Spawns a bullet from a request and runs its on_spawn hook. Returns the pool
-## slot, or -1 when the pool is full (or the request is invalid, see BulletPool.spawn).
+## slot, or a native id, or -1 when the shot is refused (full, or invalid; see
+## BulletPool.spawn).
 ##
 ## Called from inside a bullet hook (on_spawn / on_update / on_hit / on_despawn
 ## of a BulletBehavior), the new bullet is a child of the bullet whose hook runs
 ## and takes that bullet's `owner_layer`, whatever the request says: see
-## spawn_child(). Those spawns, and spawn_child(), always stay in the GDScript
-## pool so owner inheritance and the saturation limits keep working.
+## spawn_child(). Those spawns, and spawn_child(), stay in the GDScript pool.
+## The native step runs later in the same tick, so a child born during a hook
+## would move a tick early if it were handed to the sim. Owner inheritance
+## already lives on the pool. Design call, reversible once native grows a
+## "born this tick" bit.
 ##
-## A plain bullet (behavior_id == 0) spawned outside a hook goes to
-## NativeBulletSim when the native backend is selected. spawn() then returns
+## A hook-free bullet spawned outside a hook goes to NativeBulletSim when native
+## is selected: behavior_id 0, or a behaviour whose mask calls nothing and whose
+## script does not override on_update (declarative kinematics). Any unmasked
+## event hook, or an on_update override, stays in the pool. spawn() then returns
 ## that bullet's stable native id (bit 62 set), not a pool slot. Only >= 0
 ## means the spawn succeeded.
 func spawn(request: ShotRequest) -> int:
 	if pool.hook_owner >= 0:
 		return _spawn_inheriting(pool.hook_owner, request, "BulletManager.spawn", "a hook")
-	if native != null and request.behavior_id == 0:
-		return native.spawn(request)
+	if _wants_native(request):
+		return _spawn_native(request)
 	return _spawn_checked(request)
+
+
+## True when this request should be simulated in C++. Hook context is handled
+## by spawn() before this is asked.
+func _wants_native(request: ShotRequest) -> bool:
+	# Any registered reflector keeps every new bullet on the pool. Native
+	# reflection is not implemented; the pool's mirror path is the baseline.
+	if _reflector_count > 0:
+		return false
+	return native != null and not _has_per_bullet_hooks(request.behavior_id)
+
+
+## True when the behaviour would actually run a per-bullet hook. An unknown id
+## is a plain bullet (the same warning the pool path raises).
+func _has_per_bullet_hooks(behavior_id: int) -> bool:
+	if behavior_id == 0:
+		return false
+	var b := _get_behavior(behavior_id)
+	if b == null:
+		push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % behavior_id)
+		return false
+	if _hooks_of(behavior_id, b) != 0:
+		return true
+	if b.get_script() != _hook_scripts[behavior_id]:
+		_refresh_hooks(behavior_id, b)
+	return _update_override[behavior_id] != 0
+
+
+func _spawn_native(request: ShotRequest) -> int:
+	var seq := _alloc_order()
+	native.set_external_count(pool.count)
+	var id := native.spawn(request, seq)
+	if id < 0:
+		_rollback_order(seq)
+	else:
+		_sync_pool_external()
+	return id
+
+
+func _sync_pool_external() -> void:
+	pool.external_count = native.count() if native != null else 0
+
+
+func _alloc_order() -> int:
+	var assigned := _order_count
+	_order_count += 1
+	return assigned
+
+
+func _rollback_order(assigned: int) -> void:
+	if assigned == _order_count - 1:
+		_order_count -= 1
+
+
+func _assign_pool_seq(i: int) -> void:
+	pool.seq[i] = _alloc_order()
+
+
+func _retire_pool_bullet(i: int) -> void:
+	# Hooked runs keep every bullet in the pool. The tail is the last slot, so
+	# the rewrite is one write; the scan is only for a mixed store.
+	if native == null or native.count() == 0:
+		_retire_local(pool.seq[i], pool.count - 1, false, i)
+		return
+	_retire_seq(pool.seq[i])
+
+
+func _retire_native_seq(removed: int) -> void:
+	if pool.count == 0:
+		_retire_local(removed, native.count() - 1, true, -1)
+		return
+	_retire_seq(removed)
+
+
+## Single-store swap-remove. `removed` is that bullet's seq. The tail is the
+## last slot; stamping it here lets the store's copy land the tail in the hole.
+func _retire_local(removed: int, last: int, native_tail: bool, pool_slot: int) -> void:
+	if _order_count <= 1:
+		_order_count = 0
+		return
+	var tail := _order_count - 1
+	_order_count -= 1
+	if removed == tail or last < 0:
+		return
+	if native_tail:
+		native.set_seq_at(last, removed)
+	elif pool_slot != last:
+		pool.seq[last] = removed
+
+
+## Unified swap-remove: the bullet that holds the highest seq takes the seq of
+## the one that just left, matching BulletPool's move-last-into-the-hole.
+func _retire_seq(removed: int) -> void:
+	if _order_count <= 1:
+		_order_count = 0
+		return
+	var tail := _order_count - 1
+	_order_count -= 1
+	if removed == tail:
+		return
+	if native != null:
+		var slot := native.find_seq(tail)
+		if slot >= 0:
+			native.set_seq_at(slot, removed)
+			return
+	for i in pool.count:
+		if pool.seq[i] == removed:
+			continue
+		if pool.seq[i] == tail:
+			pool.seq[i] = removed
+			return
+
+
+func _on_pool_cleared() -> void:
+	if native == null or native.count() == 0:
+		_order_count = 0
+
+
+## Copies every live native bullet into the pool and clears the sim. `catch_up`
+## is true only after pool.advance() has already run and before the native sim
+## has moved: those bullets missed the pool integrate, so they take it now and
+## only now. Slots are not reordered while an on_update hook is on the stack.
+func _migrate_native_to_pool(catch_up: bool = false) -> void:
+	if native == null or native.count() == 0 or pool == null:
+		return
+	var first := pool.count
+	var rows: Array = native.export_states()
+	native.clear()
+	for i in rows.size():
+		var state: Dictionary = rows[i]
+		pool.adopt_native(state)
+	if catch_up:
+		for i in range(first, pool.count):
+			pool.advance_one(i, _step_delta, world_bounds)
+	if catch_up and _inside_update_hooks:
+		_resort_before_collision = true
+	else:
+		pool.sort_slots_by_seq()
+	_sync_pool_external()
+
+
+## Pool hits and native hits, in ascending seq, ties broken by the order the
+## candidates were recorded (path order within one bullet).
+func _apply_hits_by_seq(pool_hits: int) -> void:
+	var native_seqs := native.pending_hit_seqs()
+	var total := pool_hits + native_seqs.size()
+	var seqs := PackedInt32Array()
+	var kind := PackedByteArray()
+	var index := PackedInt32Array()
+	seqs.resize(total)
+	kind.resize(total)
+	index.resize(total)
+	for k in pool_hits:
+		seqs[k] = pool.seq[grid.hit_bullets[k]]
+		kind[k] = 0
+		index[k] = k
+	for k in native_seqs.size():
+		var at := pool_hits + k
+		seqs[at] = native_seqs[k]
+		kind[at] = 1
+		index[at] = k
+	var order := _argsort_stable(seqs)
+	for n in order.size():
+		var at: int = order[n]
+		if kind[at] == 0:
+			var k: int = index[at]
+			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+		else:
+			native.commit_pending_hit(index[at])
+
+
+func _argsort_stable(keys: PackedInt32Array) -> PackedInt32Array:
+	var order := PackedInt32Array()
+	order.resize(keys.size())
+	for i in keys.size():
+		order[i] = i
+	for i in range(1, order.size()):
+		var key := order[i]
+		var j := i - 1
+		while j >= 0:
+			var earlier: int = order[j]
+			var out_of_order := keys[earlier] > keys[key] or (keys[earlier] == keys[key] and earlier > key)
+			if not out_of_order:
+				break
+			order[j + 1] = earlier
+			j -= 1
+		order[j + 1] = key
+	return order
 
 
 ## Spawns a child of the live bullet with stable id `parent_id`, for spawn paths
@@ -360,6 +640,7 @@ func _spawn_inheriting(owner: int, request: ShotRequest, where: String = "Bullet
 
 
 func _spawn_checked(request: ShotRequest) -> int:
+	_sync_pool_external()
 	var i := pool.spawn(request)
 	if i >= 0 and request.behavior_id != 0:
 		var b := _get_behavior(request.behavior_id)
@@ -399,6 +680,14 @@ func reflect(
 
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
+	# A mirror that was already registered owns every bullet before this tick
+	# moves. One that appears in on_update (before the native sim moves) migrates
+	# immediately. One that appears during hit delivery is deferred.
+	_step_delta = delta
+	_flush_pending_migration()
+	if _reflector_count > 0:
+		_migrate_native_to_pool()
+	_phase = _PHASE_PRE_MOVE
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -409,11 +698,20 @@ func step(delta: float) -> void:
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
 	pool.advance(delta, world_bounds)
+	# on_update runs after the pool integrate and before native movement, matching
+	# the all-GD order (BulletPool.advance, then hooks, then collision). A mirror
+	# registered here migrates native bullets and gives them this same integrate.
+	_phase = _PHASE_MOVED
 	var t1 := Time.get_ticks_usec()
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
+	_inside_update_hooks = true
 	pool.run_update_hooks(_behaviors, delta)
+	_inside_update_hooks = false
+	if _resort_before_collision:
+		pool.sort_slots_by_seq()
+		_resort_before_collision = false
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -438,9 +736,25 @@ func step(delta: float) -> void:
 	# flies on for the rest of the tick along its new heading.
 	var zone_hits := _collect_zone_hits()
 	last_hit_count = grid.collide_bullets(pool)
+	# From here a new reflector is a hit-delivery registration: the native sim
+	# either is about to move, or has nothing left to move. Do not catch up.
+	_phase = _PHASE_DELIVERING
+	# Integrate native bullets before any hit is delivered, so both stores'
+	# candidates exist and can be applied in one seq order. With no native
+	# bullets this is the all-GD path below, unchanged.
+	var native_queued := 0
+	var stepped_native := false
+	if native != null and native.count() > 0:
+		native_queued = native.step(delta)
+		stepped_native = true
 	if zone_hits == 0:
-		for k in last_hit_count:
-			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+		# stepped_native: both stores may hold bullets, so pool slot order is not
+		# the all-GD order. Seq is that order. No native bullets: the old loop.
+		if stepped_native:
+			_apply_hits_by_seq(last_hit_count)
+		else:
+			for k in last_hit_count:
+				_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
 	else:
 		_resolve_hits_in_time_order(zone_hits)
 		_continue_reflected(delta)
@@ -459,17 +773,14 @@ func step(delta: float) -> void:
 	for k in last_wall_hit_count:
 		_wall_clip[walls.hit_bullets[k]] = 1.0
 
-	# Plain bullets, after the pool's own collision. They use the same target
-	# snapshot (hooks already ran; a radius growth re-collected above). Hits are
-	# delivered now, before despawn hooks, so a callback spawn is not swept
-	# until next tick — the same timing as a spawn from on_hit.
-	var native_hits := 0
+	# Native walls and compaction. Hits were committed above, in seq order with
+	# the pool, so a callback spawn is still not swept until next tick.
 	var native_wall_hits := 0
-	if native != null:
-		native_hits = native.step(delta)
-		native.deliver_hits()
+	if stepped_native:
+		native.finish_delivery()
 		native_wall_hits = native.last_wall_hit_count()
-	last_hit_count += native_hits
+		_sync_pool_external()
+	last_hit_count += native_queued
 	last_wall_hit_count += native_wall_hits
 	var t3 := Time.get_ticks_usec()
 	# Despawn hooks, then actually remove the dead. Hooks may mark more bullets
@@ -508,6 +819,11 @@ func step(delta: float) -> void:
 	# so nothing bad reaches the renderer below or the next tick. Skipped if nothing ran.
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
+	# on_hit, can_hit, and on_despawn may have registered a reflector. Native
+	# commits for this tick have already run, so this move does not integrate
+	# again. It lands before the renderer and before the next tick's advance.
+	_phase = _PHASE_IDLE
+	_flush_pending_migration()
 	var t4 := Time.get_ticks_usec()
 
 	_sim_time += delta
@@ -527,10 +843,9 @@ func step(delta: float) -> void:
 
 
 ## Slides world_bounds so it is centred on `center`, keeping the current size.
-## Rebuilds the GDScript hurtbox, reflector and wall grids to match, and moves
-## the renderer AABBs. The native sim, when one is selected, keeps the bounds it
-## was configured with: the default backend is GDScript, and this slice does not
-## retune the C++ path.
+## Rebuilds the hurtbox, reflector and wall grids (GDScript and, when selected,
+## the native sim) to match, and moves the renderer AABBs. Bullets are not
+## moved; the next step despawns whatever is now outside the window.
 func recenter_world_bounds(center: Vector2) -> void:
 	if pool == null or grid == null or walls == null or reflector_grid == null:
 		return
@@ -546,6 +861,8 @@ func recenter_world_bounds(center: Vector2) -> void:
 		_renderer.set_world_bounds(world_bounds)
 	if _native_renderer != null:
 		_native_renderer.set_world_bounds(world_bounds)
+	if native != null:
+		native.set_bounds(world_bounds)
 
 
 func _follow_bounds() -> void:
@@ -578,8 +895,10 @@ func clear_bullets() -> void:
 		_renderer.update_from(pool)
 	if native != null:
 		native.clear()
+		_sync_pool_external()
 		if _native_renderer != null:
 			_native_renderer.update_from(native)
+	_order_count = 0
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).
@@ -637,15 +956,68 @@ func snapshot() -> Dictionary:
 func _select_backend() -> void:
 	var wanted := backend_preference
 	if wanted == "auto":
-		wanted = NativeBackend.requested_backend()
-	# Unset env comes back as "auto": that is the GDScript fallback, not "use native".
+		wanted = NativeBackend.opted_backend()
+	# Explicit "gdscript", or "auto" that resolved to it: the pool only.
 	if wanted != "native":
+		backend = "gdscript"
 		return
 	if not NativeBackend.is_available():
-		push_error("BulletManager: native backend requested but the NativeBulletSim extension is not loaded (build it with scons in native/); using the GDScript backend")
+		NativeBackend.warn_missing()
+		backend = "gdscript"
 		return
 	native = NativeBackend.new(capacity, world_bounds, cell_size)
+	native.set_limits(pool.logical_cap, pool.enemy_reserve)
+	pool.alloc_order = _assign_pool_seq
+	pool.retire_order = _retire_pool_bullet
+	pool.store_cleared = _on_pool_cleared
+	native.set_retire_callback(_retire_native_seq)
 	backend = "native"
+
+
+## Live bullets in both stores. The saturation cap is on this total.
+func _live_total() -> int:
+	return pool.count + (native.count() if native != null else 0)
+
+
+func _room_for(layer: int) -> bool:
+	return _live_total() < pool.limit_for(layer)
+
+
+func _at_logical_cap() -> bool:
+	return _live_total() >= pool.logical_cap
+
+
+func dropped_total_all() -> int:
+	return pool.dropped_total + (native.dropped_total() if native != null else 0)
+
+
+func dropped_by_owner_all(layer: int) -> int:
+	var n := pool.dropped_for(layer)
+	if native != null:
+		n += native.dropped_for(layer)
+	return n
+
+
+func dropped_by_limit_all(limit: int) -> int:
+	var n := pool.dropped_by_limit[limit] if limit >= 0 and limit < pool.dropped_by_limit.size() else 0
+	if native != null:
+		n += native.dropped_by_limit(limit)
+	return n
+
+
+func owner_count_all(layer: int) -> int:
+	var n := pool.owner_count(layer)
+	if native != null:
+		n += native.owner_count(layer)
+	return n
+
+
+func is_saturated_for(layer: int) -> bool:
+	return not _room_for(layer)
+
+
+func headroom_for(layer: int) -> int:
+	return maxi(pool.limit_for(layer) - _live_total(), 0)
 
 
 ## True for an id minted by NativeBulletSim (not a pool slot or pool id).
@@ -657,23 +1029,30 @@ func is_native_id(id: int) -> bool:
 ## and pushes a warning at most once per saturation_warning_interval. The warning
 ## says which limit refused the shots and whose they were.
 func _report_saturation() -> void:
-	var dropped_now := pool.dropped_total - _dropped_reported
+	var total := dropped_total_all()
+	var dropped_now := total - _dropped_reported
 	if dropped_now <= 0:
 		return
-	_dropped_reported = pool.dropped_total
-	var by_cap := pool.dropped_by_limit[BulletPool.DropLimit.LOGICAL_CAP] - _dropped_by_limit_reported[BulletPool.DropLimit.LOGICAL_CAP]
-	var by_reserve := pool.dropped_by_limit[BulletPool.DropLimit.ENEMY_RESERVE] - _dropped_by_limit_reported[BulletPool.DropLimit.ENEMY_RESERVE]
-	var by_player := pool.dropped_by_owner[BulletPool.OWNER_PLAYER] - _dropped_by_owner_reported[BulletPool.OWNER_PLAYER]
-	var by_enemy := pool.dropped_by_owner[BulletPool.OWNER_ENEMY] - _dropped_by_owner_reported[BulletPool.OWNER_ENEMY]
-	_dropped_by_limit_reported = pool.dropped_by_limit.duplicate()
-	_dropped_by_owner_reported = pool.dropped_by_owner.duplicate()
-	emitter.pool_saturated.emit(dropped_now, pool.dropped_total)
+	_dropped_reported = total
+	var cap_now := dropped_by_limit_all(BulletPool.DropLimit.LOGICAL_CAP)
+	var reserve_now := dropped_by_limit_all(BulletPool.DropLimit.ENEMY_RESERVE)
+	var player_now := dropped_by_owner_all(Layers.PLAYER)
+	var enemy_now := dropped_by_owner_all(Layers.ENEMY)
+	var by_cap := cap_now - _dropped_by_limit_reported[BulletPool.DropLimit.LOGICAL_CAP]
+	var by_reserve := reserve_now - _dropped_by_limit_reported[BulletPool.DropLimit.ENEMY_RESERVE]
+	var by_player := player_now - _dropped_by_owner_reported[BulletPool.OWNER_PLAYER]
+	var by_enemy := enemy_now - _dropped_by_owner_reported[BulletPool.OWNER_ENEMY]
+	_dropped_by_limit_reported[BulletPool.DropLimit.LOGICAL_CAP] = cap_now
+	_dropped_by_limit_reported[BulletPool.DropLimit.ENEMY_RESERVE] = reserve_now
+	_dropped_by_owner_reported[BulletPool.OWNER_PLAYER] = player_now
+	_dropped_by_owner_reported[BulletPool.OWNER_ENEMY] = enemy_now
+	emitter.pool_saturated.emit(dropped_now, total)
 	if _sim_time - _last_warning_time >= saturation_warning_interval:
 		_last_warning_time = _sim_time
 		saturation_warnings_emitted += 1
 		push_warning("BulletManager: bullet pool saturated (logical cap %d, enemy reserve %d, physical capacity %d); dropped %d shot(s) this tick: %d at the cap, %d by the enemy reserve; player %d, enemy %d, unowned %d. %d dropped in total. Fire fewer bullets, or raise BulletManager.logical_cap / capacity."
 			% [pool.logical_cap, pool.enemy_reserve, pool.capacity, dropped_now, by_cap, by_reserve,
-				by_player, by_enemy, dropped_now - by_player - by_enemy, pool.dropped_total])
+				by_player, by_enemy, dropped_now - by_player - by_enemy, total])
 
 
 ## One swept pass over the bullets against every active Reflector zone. Fills

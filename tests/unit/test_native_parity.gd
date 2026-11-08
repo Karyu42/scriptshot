@@ -3,10 +3,10 @@ extends GutTest
 ## must give the same bullets (positions, velocities, ages) tick by tick and the
 ## same hits. Plain bullets only (hooked bullets are GDScript in both backends).
 ##
-## Known, documented difference: a bullet that is already overlapping a target at
-## the end of a short path is hit at its end position by the GDScript point test
-## but at the exact contact point by the native sweep, so impact positions are
-## compared within one tick of travel; survivors must match tightly.
+## Short paths use the same endpoint test as the pool (impact at the end
+## position). Swept hits are the contact point on both sides. Survivor positions
+## must match tightly; the seeded scenario still allows one tick of travel on
+## impact points so a float-drift contact does not fail the whole run.
 
 const DT := 1.0 / 60.0
 const TICKS := 150
@@ -187,3 +187,313 @@ func _only_in_one(a: Dictionary, b: Dictionary, tick: int, gd: RunResult, nat: R
 			var prev_state: Array = nat.states[tick - 1].get(key, []) if tick > 0 else []
 			text += " [native-only %f prev %s now %s]" % [key, prev_state, b[key]]
 	return text
+
+
+func test_kinematics_match_after_n_ticks() -> void:
+	if not _available():
+		return
+	var gd := _kinematics("gdscript")
+	var nat := _kinematics("native")
+	assert_eq(nat.size(), gd.size())
+	for i in gd.size():
+		var a: Vector2 = gd[i]
+		var b: Vector2 = nat[i]
+		assert_lt(a.distance_to(b), POS_EPS, "bullet %d pos %s vs %s" % [i, a, b])
+
+
+func test_slow_overlap_reports_the_end_position() -> void:
+	if not _available():
+		return
+	var gd := _overlap_hit("gdscript")
+	var nat := _overlap_hit("native")
+	assert_eq(gd.size(), 1, "pool hit the overlapping target")
+	assert_eq(nat.size(), 1, "native hit the overlapping target")
+	assert_almost_eq(gd[0].x, 0.5, 0.001, "pool impact is the end of the short step")
+	assert_almost_eq(nat[0].x, gd[0].x, 0.001)
+	assert_almost_eq(nat[0].y, gd[0].y, 0.001)
+
+
+func test_pierce_hit_memory_and_inactive_targets_match() -> void:
+	if not _available():
+		return
+	var gd := _pierce_memory("gdscript")
+	var nat := _pierce_memory("native")
+	assert_eq(nat, gd)
+
+
+func test_wall_hit_and_despawn_order_match() -> void:
+	if not _available():
+		return
+	var gd := _despawn_script("gdscript")
+	var nat := _despawn_script("native")
+	assert_eq(nat, gd)
+
+
+func test_camera_window_despawns_the_same_bullets() -> void:
+	if not _available():
+		return
+	var gd := _window("gdscript")
+	var nat := _window("native")
+	assert_eq(nat, gd)
+
+
+func test_saturation_counts_match() -> void:
+	if not _available():
+		return
+	var gd := _saturation("gdscript")
+	var nat := _saturation("native")
+	assert_eq(nat, gd)
+
+
+func test_damage_flags_match() -> void:
+	if not _available():
+		return
+	var gd := _damage_flags("gdscript")
+	var nat := _damage_flags("native")
+	assert_eq(nat, gd)
+
+
+func _available() -> bool:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return false
+	return true
+
+
+func _open(preference: String, cap: int = 64) -> BulletManager:
+	var mgr := BulletManager.new()
+	mgr.backend_preference = preference
+	mgr.capacity = cap
+	mgr.logical_cap = cap
+	mgr.enemy_reserve = 0
+	mgr.world_bounds = Rect2(-500, -500, 1000, 1000)
+	mgr.render_enabled = false
+	mgr.auto_step = false
+	add_child(mgr)
+	mgr.pool.log_despawns = true
+	if mgr.native != null:
+		mgr.native.set_record_events(true)
+	return mgr
+
+
+func _close(mgr: BulletManager) -> void:
+	remove_child(mgr)
+	mgr.free()
+
+
+func _kinematics(preference: String) -> Array[Vector2]:
+	var mgr := _open(preference)
+	var positions: Array[Vector2] = [Vector2(-40, 10), Vector2.ZERO, Vector2(15, -20)]
+	var velocities: Array[Vector2] = [Vector2(120, -30), Vector2(200, 0), Vector2(90, 40)]
+	var accels: Array[float] = [0.0, 80.0, -40.0]
+	var turns: Array[float] = [0.0, 0.6, -1.2]
+	for i in positions.size():
+		var req := ShotRequest.with_velocity(positions[i], velocities[i])
+		req.acceleration = accels[i]
+		req.turn_rate = turns[i]
+		req.lifetime = 8.0
+		req.hit_mask = 0
+		req.collide_world = false
+		mgr.spawn(req)
+	for _tick in 90:
+		mgr.step(DT)
+	var pos: PackedVector2Array = mgr.snapshot()["pos"]
+	var out: Array[Vector2] = []
+	for p in pos:
+		out.append(p)
+	_close(mgr)
+	return out
+
+
+func _overlap_hit(preference: String) -> Array[Vector2]:
+	var mgr := _open(preference)
+	var hb := Hurtbox.new()
+	hb.radius = 10.0
+	hb.position = Vector2.ZERO
+	mgr.add_child(hb)
+	var hits: Array[Vector2] = []
+	hb.hit.connect(func(_d: float, p: Vector2, _v: Vector2) -> void: hits.append(p))
+	# 30 px/s is half a pixel per tick, already inside the hurtbox.
+	var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(30, 0))
+	req.radius = 4.0
+	req.lifetime = 2.0
+	req.hit_mask = Layers.ENEMY
+	mgr.spawn(req)
+	mgr.step(DT)
+	_close(mgr)
+	return hits
+
+
+func _pierce_memory(preference: String) -> Array:
+	var mgr := _open(preference)
+	var boxes: Array[Hurtbox] = []
+	var order: Array[int] = []
+	for i in 9:
+		var hb := Hurtbox.new()
+		hb.radius = 6.0
+		hb.position = Vector2.ZERO
+		hb.active = i == 0
+		mgr.add_child(hb)
+		boxes.append(hb)
+		var idx := i
+		hb.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: order.append(idx))
+	var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2.ZERO)
+	req.radius = 2.0
+	req.lifetime = 5.0
+	req.pierce = 20
+	req.hit_mask = Layers.ENEMY
+	mgr.spawn(req)
+	for i in 9:
+		for b in boxes:
+			b.active = false
+		boxes[i].active = true
+		mgr.step(DT)
+	# The ring holds 8. The 9th hit (index 8) drops index 0, so it can land again.
+	for b in boxes:
+		b.active = false
+	boxes[0].active = true
+	mgr.step(DT)
+	var alive := mgr.alive_count()
+	var pierce: PackedInt32Array = mgr.snapshot()["pierce"]
+	var left := int(pierce[0]) if pierce.size() == 1 else -1
+	_close(mgr)
+	return [order.duplicate(), alive, left]
+
+
+func _despawn_script(preference: String) -> Array:
+	var mgr := _open(preference)
+	mgr.add_wall(Rect2(40, -10, 20, 20))
+	var hb := Hurtbox.new()
+	hb.radius = 6.0
+	hb.position = Vector2(-40, 0)
+	mgr.add_child(hb)
+	# Unique lifetimes so the despawn log can be compared without ids.
+	# One tick: lifetime, bounds, hurtbox, wall. Slots are spawn order.
+	var positions: Array[Vector2] = [Vector2(0, 200), Vector2(490, -200), Vector2(20, 0), Vector2(-60, 0)]
+	var velocities: Array[Vector2] = [Vector2.ZERO, Vector2(1200, 0), Vector2(2400, 0), Vector2(2400, 0)]
+	var lives: Array[float] = [0.01, 4.0, 4.1, 4.2]
+	var masks: Array[int] = [0, 0, 0, Layers.ENEMY]
+	for i in positions.size():
+		var req := ShotRequest.with_velocity(positions[i], velocities[i])
+		req.lifetime = lives[i]
+		req.radius = 2.0
+		req.hit_mask = masks[i]
+		mgr.spawn(req)
+	mgr.step(DT)
+	var reasons: Array[int] = []
+	var logged_lives: Array[float] = []
+	if preference == "native":
+		var logged: Array = mgr.native.last_despawns()
+		for i in logged.size():
+			var row: Dictionary = logged[i]
+			var reason: int = row["reason"]
+			var life: float = row["lifetime"]
+			reasons.append(reason)
+			logged_lives.append(life)
+	else:
+		for i in mgr.pool.despawn_log_reason.size():
+			reasons.append(mgr.pool.despawn_log_reason[i])
+			logged_lives.append(mgr.pool.despawn_log_life[i])
+	var alive := mgr.alive_count()
+	var walls := mgr.last_wall_hit_count
+	var hits := mgr.last_hit_count
+	_close(mgr)
+	return [reasons, logged_lives, alive, walls, hits]
+
+
+func _window(preference: String) -> Array:
+	var mgr := _open(preference)
+	var hb := Hurtbox.new()
+	hb.radius = 8.0
+	hb.position = Vector2(5000, 5000)
+	mgr.add_child(hb)
+	var hits := 0
+	hb.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits += 1)
+	mgr.recenter_world_bounds(Vector2(5000, 5000))
+	var survivor := ShotRequest.with_velocity(Vector2(5000, 4960), Vector2.ZERO)
+	survivor.lifetime = 2.0
+	survivor.radius = 3.0
+	survivor.hit_mask = 0
+	var outside := ShotRequest.with_velocity(Vector2.ZERO, Vector2.ZERO)
+	outside.lifetime = 2.0
+	outside.hit_mask = 0
+	var hitter := ShotRequest.with_velocity(Vector2(5000, 5000), Vector2.ZERO)
+	hitter.lifetime = 2.0
+	hitter.radius = 3.0
+	hitter.hit_mask = Layers.ENEMY
+	mgr.spawn(survivor)
+	mgr.spawn(outside)
+	mgr.spawn(hitter)
+	mgr.step(DT)
+	var alive := mgr.alive_count()
+	var centre := mgr.world_bounds.get_center()
+	_close(mgr)
+	return [alive, hits, centre.x, centre.y]
+
+
+func _saturation(preference: String) -> Array:
+	var mgr := _open(preference, 32)
+	mgr.set_bullet_limits(10, 3)
+	var dropped_player := 0
+	for i in 8:
+		var req := ShotRequest.with_velocity(Vector2(i * 3, 0), Vector2.ZERO)
+		req.lifetime = 5.0
+		req.hit_mask = 0
+		if mgr.spawn(req) < 0:
+			dropped_player += 1
+	var dropped_enemy := 0
+	for i in 4:
+		var req := ShotRequest.with_velocity(Vector2(i * 3, 12), Vector2.ZERO)
+		req.lifetime = 5.0
+		req.owner_layer = Layers.ENEMY
+		req.hit_mask = Layers.PLAYER
+		if mgr.spawn(req) < 0:
+			dropped_enemy += 1
+	var unowned := ShotRequest.with_velocity(Vector2(0, 24), Vector2.ZERO)
+	unowned.owner_layer = 0
+	unowned.hit_mask = 0
+	unowned.lifetime = 5.0
+	var unowned_refused := mgr.spawn(unowned) < 0
+	mgr.step(DT)
+	var out := [
+		mgr.alive_count(),
+		mgr.emitter.get_owner_count(Layers.PLAYER),
+		mgr.emitter.get_owner_count(Layers.ENEMY),
+		mgr.emitter.get_owner_count(0),
+		mgr.emitter.get_dropped_count(),
+		dropped_player,
+		dropped_enemy,
+		unowned_refused,
+		mgr.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.LOGICAL_CAP),
+		mgr.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.ENEMY_RESERVE),
+		mgr.emitter.get_dropped_count_by_owner(Layers.PLAYER),
+		mgr.emitter.get_dropped_count_by_owner(Layers.ENEMY),
+		mgr.emitter.is_saturated(Layers.PLAYER),
+		mgr.emitter.is_saturated(Layers.ENEMY),
+		mgr.emitter.get_headroom(Layers.PLAYER),
+		mgr.emitter.get_headroom(Layers.ENEMY),
+		mgr.saturation_warnings_emitted,
+	]
+	_close(mgr)
+	return out
+
+
+func _damage_flags(preference: String) -> Array:
+	var mgr := _open(preference)
+	var hb := Hurtbox.new()
+	hb.radius = 8.0
+	hb.position = Vector2(10, 0)
+	mgr.add_child(hb)
+	var seen: Array = []
+	hb.hit.connect(func(damage: float, _p: Vector2, _v: Vector2) -> void:
+		seen.append([damage, hb.last_hit_flags]))
+	var req := ShotRequest.with_velocity(Vector2(10, 0), Vector2.ZERO)
+	req.radius = 2.0
+	req.damage = 4.5
+	req.lifetime = 2.0
+	req.hit_mask = Layers.ENEMY
+	req.pierces_script_invuln = true
+	mgr.spawn(req)
+	mgr.step(DT)
+	_close(mgr)
+	return seen
