@@ -30,7 +30,7 @@ Ship none of these in this slice. They stay specified in the companion docs.
 | Constrained mode | pillars §11, Q10–Q11 |
 | In-game editor, hot reload, capability prompt, leaderboards, in-game script sharing | pillars §2, §7, §10; Q15/Q16 |
 | Sparse terrain blocks, `sense.terrain` | pillars §6.1 |
-| Web/Android cue QA (additive halo, `AudioStreamGenerator` on device). **Blocked (2026-11-06) pending cue implementation** ([issue #24](https://github.com/Karyu42/scriptshot/issues/24)); Q24 stays decided. L3 common cues (`_draw()` ring/glyph/sting) are the first code that unblocks the common-elite part of the checklist (rare/legendary ADD halo still later) | spawning §10.7, Q24 |
+| Web/Android cue QA (legendary additive halo, `AudioStreamGenerator` on device). Shapes and the legendary halo are in code; device QA is still open ([issue #24](https://github.com/Karyu42/scriptshot/issues/24)). The halo is legendary-only (spawning §8.4): rare keeps the double ring, three ticks, and 4 px outline. The legendary 3 dB duck and the boss proximity hum are **INCOMPLETE / deferred** | spawning §10.7, Q24 |
 | Tutorial **shielded** dummy (needs an absorb arc). Three plain targets ship in L0; the shield attaches in L4 | pillars §2 step 4 |
 
 ## 2. Build layers

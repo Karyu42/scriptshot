@@ -9,16 +9,19 @@ extends Node
 ## pre-rendered ogg plays once. It is not looped: the phrases have a fixed
 ## length (0.4 s, 0.8 s, 2 s).
 ##
-## The legendary elite ducks the first existing Ambient, Music, or World bus
-## by 3 dB for 2 s. With only Master present (this project today) the duck
-## is a no-op. The player itself stays on World when that bus exists, else
-## Master, and never changes that bus's volume setting.
+## INCOMPLETE / deferred: the legendary 3 dB ambient duck does not run. It
+## waits until a music or world bus exists. Boss-tier playback is the 2 s
+## preview one-shot from RarityPhrases, not the proximity hum.
+## The player uses the World bus when that bus exists, otherwise Master, and
+## does not change that bus's volume.
 
 
 const BUFFER_LENGTH := 0.08
 const DUCK_DB := -3.0
 const DUCK_SECONDS := 2.0
 const DUCK_BUS_NAMES: PackedStringArray = ["Ambient", "Music", "World"]
+## INCOMPLETE / deferred. False until music/world buses and the mix exist.
+const DUCK_ACTIVE := false
 
 const FALLBACK_PATHS: PackedStringArray = [
 	"res://assets/audio/common_elite_sting.ogg",
@@ -255,6 +258,8 @@ func _play_ogg() -> void:
 
 
 func _begin_duck() -> void:
+	if not DUCK_ACTIVE:
+		return
 	if tier != RarityCue.TIER_ELITE_LEGENDARY or _holding_duck:
 		return
 	var bus := duck_bus_index()

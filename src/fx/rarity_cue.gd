@@ -7,10 +7,10 @@ extends RefCounted
 ## described here and exercised by tests and RarityPreview. This does not roll
 ## or spawn those tiers.
 ##
-## OPEN: spawning §8.4 names the ADD disc "Legendary halo". Issue #24 checklist
-## B groups it as "rare / legendary". Rare elites do not draw it until that is
-## decided. Set `force_halo` to preview the other reading. Bosses always draw
-## the glow fallback disc (pillars §8.1): a larger low-alpha disc, no bloom.
+## The additive halo is legendary-only (spawning §8.4, Chief of Staff
+## 2026-11-08). Rare keeps the double ring, three ticks, and 4 px outline.
+## `force_halo` is a debug preview only; play never sets it. Bosses draw the
+## glow fallback disc (pillars §8.1): a larger low-alpha disc, no bloom.
 
 
 const TIER_ELITE_COMMON := 0
@@ -76,7 +76,7 @@ var glyph := GLYPH_CIRCLE
 var glyphs: Array[int] = []
 var signature_name := ""
 var boss_hue := Color("F28FD0")
-## Preview-only. Does not decide whether rare elites ship with a halo.
+## Debug-only. Off in play. Does not give rare elites a halo.
 var force_halo := false
 var body_radius := 16.0
 

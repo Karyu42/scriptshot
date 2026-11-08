@@ -313,20 +313,37 @@ Rule: **shape and outline carry the rarity** (readable in grayscale and for colo
 |---|---|---|---|---|---|
 | **Common elite** | Base shape + **one thin outer ring** at 1.35× radius | 3 px (regular enemies 2 px) | white `#F2F2F2` ring; body keeps its role hue | One small **affix glyph** orbits (circle = Spawn, square = Defensive, triangle = Offensive) | Rising fifth, triangle wave, 0.4 s, on wake |
 | **Rare elite** | Base shape + **double ring** with **three triangular ticks** | 4 px | cyan `#4DE1FF` rings | Two glyphs orbit; telegraphs 20 % brighter | 3-note arpeggio + a quiet shimmer tail, 0.8 s |
-| **Legendary elite** | Base shape + **ring crowned with four ticks and a slow 1.5 s pulse** | 5 px | amber `#FFB347` crown | Name line under it for 2 s on wake; signature glyph | Low drone swell + 4-note motif, ambient ducked 3 dB for 2 s |
+| **Legendary elite** | Base shape + **ring crowned with four ticks and a slow 1.5 s pulse** | 5 px | amber `#FFB347` crown | Name line under it for 2 s on wake; signature glyph | Low drone swell + 4-note motif. The ambient duck of 3 dB for 2 s is **INCOMPLETE / deferred** until a music or world bus exists |
 
 ### 8.2 Bosses (cues on top of the existing boss look, pillars §8.1)
 
 | | Cue on the boss | Beacon tick (§6.4 of pillars) | Hum (§6.4 of pillars) |
 |---|---|---|---|
-| **Common** | Boss hue, standard outline | Thin tick in the boss hue | Single sine |
-| **Rare** | **Double outline** and one accent ring in cyan | **Double tick** | Hum plus a detuned second voice (beating) |
-| **Legendary** | **Crown of ticks**, amber accent, slow pulse of the outline width (3 → 5 px) | Tick with an **amber pulse** (1.5 s) | Hum plus a fifth above, slowly swelling |
+| **Common** | Boss hue, standard outline | Thin tick in the boss hue | Single sine. The proximity hum is **INCOMPLETE / deferred** until bosses exist. A 2 s one-shot in the cue gallery is a preview, not this hum |
+| **Rare** | **Double outline** and one accent ring in cyan | **Double tick** | Hum plus a detuned second voice (beating). Same deferral: preview one-shot only |
+| **Legendary** | **Crown of ticks**, amber accent, slow pulse of the outline width (3 → 5 px) | Tick with an **amber pulse** (1.5 s) | Hum plus a fifth above, slowly swelling. Same deferral: preview one-shot only |
 
 ### 8.3 Clarity rules
 - A rarity cue never overlaps the boss weak point or a telegraph; telegraph colours keep priority (enemy bullets stay warm `#FF5A4D`, Null attacks stay white-violet, pillars §12.2).
 - Max **12 elites with cues** drawn on screen; beyond that, cues fade to the outline only (cost cap).
 - Every audio cue has a visual equivalent: a 0.3 s brightening of the ring (accessibility).
+
+**Halo (Chief of Staff, 2026-11-08).** The additive disc in §8.4 is the **legendary** halo only. A rare elite keeps the double ring, the three triangular ticks, and the 4 px outline, and does not get that disc.
+
+**Note tables (reversible starting choice, Chief of Staff, 2026-11-08).** A minor pentatonic rooted at 440 Hz. The common sting is **not** in this choice: it stays a triangle wave, 440 Hz → 660 Hz, 0.4 s. The other rows may be replaced without a design change. Code: `RarityPhrases`.
+
+| Phrase | Notes | Wave | Length |
+|---|---|---|---|
+| Common sting (pinned) | 440 → 660, linear | triangle | 0.4 s |
+| Rare arpeggio | 440, 523.251, 659.255 (A4, C5, E5), 0.15 s each | triangle | inside 0.8 s |
+| Rare shimmer tail | 880 (A5), quiet | sine | the rest of the 0.8 s |
+| Legendary drone | 110 (A2), swelling | sine | across a 2 s phrase |
+| Legendary motif | 440, 523.251, 587.33, 659.255 (A4, C5, D5, E5), from 0.55 s | triangle | four notes in that 2 s phrase |
+| Boss common **preview** | 110 | sine | 2 s one-shot |
+| Boss rare **preview** | 110 and 113 (3 Hz beat) | sine | 2 s one-shot |
+| Boss legendary **preview** | 110, plus 165 swelling | sine | 2 s one-shot |
+
+The legendary 3 dB duck is **INCOMPLETE / deferred** until a music or world bus exists. It does not run. The boss rows above are gallery previews. The proximity hum (pillars §6.4) is **INCOMPLETE / deferred** until bosses are integrated. Those previews are not that hum.
 
 ### 8.4 GL Compatibility fallbacks
 The project renders with **GL Compatibility on desktop, web and mobile** (`project.godot`). Nothing above requires a post-process.
@@ -335,7 +352,7 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 |---|---|---|---|
 | Rings, ticks, crowns, glyphs, outlines | `CanvasItem._draw()` (`draw_arc`, `draw_line`, `draw_colored_polygon`) | Yes | None needed |
 | Pulse | `_process` modulating `modulate.a` / line width | Yes | Static ring (no pulse) |
-| Legendary halo | A low-alpha disc with a `CanvasItemMaterial` **blend mode ADD** | Yes (2D blend modes work in Compatibility; **QA to confirm on web and Android**) | Same disc with normal alpha blending and a brighter outline |
+| Legendary halo (legendary elites only; rare has no disc) | A low-alpha disc with a `CanvasItemMaterial` **blend mode ADD** | Yes (2D blend modes work in Compatibility; **QA to confirm on web and Android**) | Same disc with normal alpha blending and a brighter outline |
 | Beacon tick | `_draw()` on the HUD layer | Yes | None |
 | Boss glow / grid warp | Not used by rarity | n/a | Already covered in pillars §8.1 |
 | Audio stings | `AudioStreamGenerator` | Yes; starts after the first user gesture on web | Pre-rendered short `.ogg` loops if the generator misses its budget |
@@ -374,7 +391,7 @@ The project renders with **GL Compatibility on desktop, web and mobile** (`proje
 4. **Engine items** (extends pillars §5.5): per-`Hurtbox` `ABSORB/REFLECT` arcs (shared with Shieldbearer/Mirror/Phaser); the **`pierces_script_invuln`** bullet flag for Null bullets (already in PR #4 on `main`; `null_pierce` is its design/Lua-facing name; **owned by the Gameplay Engineer**); a bullet **owner flip** (Sower Overgrowth, Mirrored: same code path as reflection); a `signature` recorder (Archivist Replay reuses the Habituation signature buckets of pillars §5.3).
 5. **Budgets:** elites and escorts count against the per-platform enemy-bullet reserve (pillars §3.3). Summoner caps (6/8 alive) and Splitting halves must respect it; Null rings are ≤ 24 bullets.
 6. **Cue cost cap:** ≤ 12 cue-drawing elites on screen (§8.3); `draw_arc` segment count 32.
-7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD halo and the shimmer sting from `AudioStreamGenerator` on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4. **Status (2026-11-06): blocked pending cue implementation**, tracked by [issue #24](https://github.com/Karyu42/scriptshot/issues/24). Visual sign-off only after Gameplay lands the cues and QA re-runs. Re-check when the implementing PR merges.
+7. **QA checklist (GL Compatibility), assigned to QA & Build once web and Android builds exist (decided Q24):** the blend-mode ADD **legendary** halo (§8.4; rare has no disc) and the `AudioStreamGenerator` stings on web and Android; no cue depends on a shader that is Forward+/Mobile-only. If a check fails, use the fallbacks of §8.4. **Status (2026-11-06): was blocked pending cue implementation**, tracked by [issue #24](https://github.com/Karyu42/scriptshot/issues/24). **Status (2026-11-08):** shapes, the legendary halo, the Compatibility glow and grid-warp fallbacks, and the sting generator are in code. Web/Android device QA is still open. The legendary 3 dB duck and the boss proximity hum are **INCOMPLETE / deferred**. The 2 s boss one-shot is a preview, not that hum.
 
 ## 11. Decisions on the rarity questions
 

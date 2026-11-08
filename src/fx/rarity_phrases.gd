@@ -7,11 +7,14 @@ extends RefCounted
 ## the specified triangle sweep, 440 Hz → 660 Hz over 0.4 s; the envelope only
 ## silences the edges.
 ##
-## OPEN: the spec names the contour (3-note pentatonic arpeggio + shimmer,
-## drone + 4-note motif, single sine, detuned pair, fifth swell) and pins Hz
-## only for the common sweep. The Hz tables below are a reversible reading of
-## that contour on the common sting's A minor pentatonic (root 440). They are
-## not a locked design choice.
+## Chief of Staff (2026-11-08): A minor pentatonic rooted at 440 Hz is the
+## reversible starting choice for every phrase except the common sting, which
+## stays the pinned triangle sweep, 440 Hz → 660 Hz over 0.4 s. The other
+## tables are written in spawning §8.1 and may be replaced.
+##
+## Boss tiers here are a 2 s preview one-shot for the F9 gallery. They are not
+## the boss proximity hum. That hum is INCOMPLETE / deferred until boss
+## integration exists.
 
 
 const SAMPLE_RATE := 22050
@@ -37,9 +40,10 @@ const LEGENDARY_NOTE_LEN := 0.28
 const LEGENDARY_NOTE_AMP := 0.16
 const LEGENDARY_MOTIF_AT := 0.55
 
+## Preview one-shot length. Not the proximity-hum duration (that hum is deferred).
 const BOSS_DURATION := 2.0
 const BOSS_HUM_AMP := 0.16
-## A few hertz of beating. The spec says "detuned", not by how much.
+## Reversible: a few hertz of beating in the preview, not a pinned detune.
 const BOSS_DETUNE_HZ := 3.0
 const BOSS_DETUNE_AMP := 0.1
 const BOSS_FIFTH_HZ := 165.0

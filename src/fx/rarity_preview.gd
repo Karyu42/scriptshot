@@ -3,8 +3,9 @@ extends Node2D
 ## Debug gallery for every rarity tier (F9). Not a spawn: the bodies are not
 ## elites, not bosses, and world generation never reads them. Tiers the game
 ## does not roll yet are still drawn and can play their sting so QA can hear
-## the generator path. F9 again cycles the sting; after the last tier, F9
-## clears the gallery and any grid-warp chunk it registered.
+## the generator path. Boss audio here is a 2 s preview one-shot, not the
+## proximity hum (INCOMPLETE / deferred). F9 again cycles the sting; after
+## the last tier, F9 clears the gallery and any grid-warp chunk it registered.
 
 
 const KEY := KEY_F9
