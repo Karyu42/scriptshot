@@ -142,8 +142,17 @@ var _return_wall_hit := PackedByteArray()
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
 ## Reflectors currently registered. While this is > 0 every new bullet stays in
-## the GDScript pool, and live native bullets are migrated in.
+## the GDScript pool. The count itself updates immediately, including from a hit
+## callback, so a spawn in that callback already takes the pool.
 var _reflector_count := 0
+## True for the whole of step(), after the pre-move migration check. A reflector
+## that appears in here must not clear the native sim until this tick's commits
+## have finished.
+var _stepping := false
+## Set when a reflector appears during step(). Flushed once, after hit delivery,
+## native compaction, and despawn hooks. Cleared if the count falls back to 0
+## before that boundary (a register/unregister pair in one callback).
+var _pending_migration := false
 ## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
 var _order_count := 0
 
@@ -178,8 +187,25 @@ static func notify_reflectors(delta: int) -> void:
 func _reflectors_changed(delta: int) -> void:
 	var before := _reflector_count
 	_reflector_count = maxi(_reflector_count + delta, 0)
-	if before == 0 and _reflector_count > 0:
+	if _reflector_count == 0:
+		# Net zero for this callback window: nothing is waiting to move.
+		_pending_migration = false
+		return
+	if before > 0:
+		return
+	# First reflector. Outside step(), move now so the next tick cannot advance
+	# a native bullet past it. Inside step(), the native hit list is still live:
+	# defer until those commits, and this tick's walls, are done.
+	if _stepping:
+		_pending_migration = true
+	else:
 		_migrate_native_to_pool()
+
+
+func _flush_pending_migration() -> void:
+	if _pending_migration and _reflector_count > 0:
+		_migrate_native_to_pool()
+	_pending_migration = false
 
 
 func _ready() -> void:
@@ -627,10 +653,12 @@ func reflect(
 
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
-	# A mirror that appeared since the last spawn must own every bullet before
-	# this tick moves or collides them. New spawns already see _reflector_count.
+	# A mirror that was already registered owns every bullet before this tick
+	# moves. One that appears during the tick is deferred (see _reflectors_changed).
+	_flush_pending_migration()
 	if _reflector_count > 0:
 		_migrate_native_to_pool()
+	_stepping = true
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -750,6 +778,11 @@ func step(delta: float) -> void:
 	# so nothing bad reaches the renderer below or the next tick. Skipped if nothing ran.
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
+	# Hit callbacks, can_hit, and on_despawn may have registered a reflector.
+	# Native commits for this tick have already run. Move survivors now, before
+	# the renderer and before the next tick's advance.
+	_stepping = false
+	_flush_pending_migration()
 	var t4 := Time.get_ticks_usec()
 
 	_sim_time += delta

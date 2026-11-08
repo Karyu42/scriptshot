@@ -323,6 +323,238 @@ func test_reflector_routes_to_the_pool_and_migrates_live_native_bullets() -> voi
 	_close(created)
 
 
+## Registers a reflector from a hit callback. `where` is "hit", "can_hit",
+## "despawn", "net_zero", or "spawn".
+class _CallbackHook:
+	extends BulletBehavior
+	var host: Node
+	var zone: Reflector
+	var where := "hit"
+	func _register() -> void:
+		if zone != null and not zone.is_inside_tree():
+			host.add_child(zone)
+
+	func _unregister() -> void:
+		if zone != null and zone.is_inside_tree():
+			zone.get_parent().remove_child(zone)
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		if where == "hit":
+			_register()
+		elif where == "net_zero":
+			_register()
+			_unregister()
+
+	func on_despawn(_pool: BulletPool, _index: int, _reason: int) -> void:
+		if where == "despawn":
+			_register()
+
+	func can_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> bool:
+		if where == "can_hit":
+			_register()
+		return true
+
+
+func _callback_case(preference: String, where: String, bystander: bool) -> PackedInt32Array:
+	var created := _manager(preference)
+	var zone := Reflector.new()
+	zone.radius = 20.0
+	zone.position = Vector2(5000, 5000)
+	var hook := _CallbackHook.new()
+	hook.host = created
+	hook.zone = zone
+	hook.where = where
+	var hook_id := created.register_behavior(hook)
+	var box_a := Hurtbox.new()
+	box_a.position = Vector2(0, 0)
+	box_a.radius = 8.0
+	box_a.layer = Layers.ENEMY
+	created.add_child(box_a)
+	var box_b := Hurtbox.new()
+	box_b.position = Vector2(300, 0)
+	box_b.radius = 8.0
+	box_b.layer = Layers.ENEMY
+	created.add_child(box_b)
+	var hits_a: Array[int] = [0]
+	var hits_b: Array[int] = [0]
+	var spawned_is_native: Array[int] = [0]
+	box_a.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void:
+		hits_a[0] += 1
+		# The hurtbox signal runs before the bullet hook, so hook_owner is still
+		# clear. A plain spawn here is native unless the reflector count already moved.
+		if where == "spawn":
+			hook._register()
+			var req := _shot(Vector2(0, 900), 0.0, 0)
+			req.hit_mask = 0
+			var id := created.spawn(req)
+			if created.is_native_id(id):
+				spawned_is_native[0] = 1)
+	box_b.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits_b[0] += 1)
+	var hooked := _shot(Vector2.ZERO, 0.0, 0)
+	hooked.behavior_id = hook_id
+	if where == "can_hit":
+		hooked.can_hit_veto = true
+	var plain := _shot(Vector2(300, 0), 0.0, 0)
+	created.spawn(hooked)
+	created.spawn(plain)
+	var bystander_id := -1
+	if bystander:
+		bystander_id = created.spawn(_shot(Vector2(0, 700), 0.0, 0))
+	created.step(DT)
+	var native_left := 0
+	if created.native != null:
+		native_left = created.native.count()
+	# A net-zero register leaves this bullet in the native store. A reflector
+	# that sticks around has moved it into the pool by the end of the tick.
+	var bystander_native := 0
+	if bystander and created.is_native_bullet_alive(bystander_id):
+		bystander_native = 1
+	var out := PackedInt32Array()
+	out.append(hits_a[0])
+	out.append(hits_b[0])
+	out.append(created.alive_count())
+	out.append(native_left)
+	out.append(created.pool.count)
+	out.append(spawned_is_native[0])
+	out.append(bystander_native)
+	if zone.is_inside_tree():
+		zone.get_parent().remove_child(zone)
+	zone.free()
+	_close(created)
+	return out
+
+
+func test_on_hit_reflector_does_not_drop_the_later_native_hit() -> void:
+	if not _ready_native():
+		return
+	var gd := _callback_case("gdscript", "hit", false)
+	var nat := _callback_case("native", "hit", false)
+	assert_eq(nat, gd)
+	assert_eq(gd[0], 1, "target A")
+	assert_eq(gd[1], 1, "target B")
+	assert_eq(nat[3], 0, "native store empty after the boundary")
+	assert_eq(nat[4], nat[2], "every survivor is in the pool, none duplicated")
+
+
+func test_can_hit_reflector_does_not_drop_the_later_native_hit() -> void:
+	if not _ready_native():
+		return
+	var gd := _callback_case("gdscript", "can_hit", false)
+	var nat := _callback_case("native", "can_hit", false)
+	assert_eq(nat, gd)
+	assert_eq(gd[0], 1, "target A")
+	assert_eq(gd[1], 1, "target B")
+
+
+func test_on_despawn_reflector_migrates_after_the_hits() -> void:
+	if not _ready_native():
+		return
+	var gd := _callback_case("gdscript", "despawn", true)
+	var nat := _callback_case("native", "despawn", true)
+	assert_eq(gd[0], 1)
+	assert_eq(gd[1], 1)
+	assert_eq(nat, gd)
+	assert_eq(nat[3], 0)
+	assert_eq(nat[4], nat[2])
+
+
+func test_callback_spawn_after_register_stays_on_the_pool() -> void:
+	if not _ready_native():
+		return
+	var gd := _callback_case("gdscript", "spawn", false)
+	var nat := _callback_case("native", "spawn", false)
+	assert_eq(nat, gd)
+	assert_eq(nat[0], 1)
+	assert_eq(nat[1], 1)
+	assert_eq(nat[5], 0, "the callback spawn was not a native id")
+	assert_eq(nat[3], 0)
+	assert_eq(nat[4], nat[2])
+
+
+func test_register_then_unregister_in_one_callback_does_not_migrate() -> void:
+	if not _ready_native():
+		return
+	var gd := _callback_case("gdscript", "net_zero", true)
+	var nat := _callback_case("native", "net_zero", true)
+	assert_eq(gd[0], 1)
+	assert_eq(gd[1], 1)
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[6], 1, "the bystander stayed in the native store")
+
+
+func test_on_hit_reflector_is_met_on_the_next_tick() -> void:
+	if not _ready_native():
+		return
+	var gd := _meet_next_tick("gdscript")
+	var nat := _meet_next_tick("native")
+	assert_eq(nat, gd)
+	assert_eq(gd[0], 1, "the hooked bullet hit its target")
+	assert_eq(gd[1], 0, "the plain bullet turned before the body")
+	assert_eq(gd[2], 0, "native store empty after the first tick's boundary")
+	assert_eq(gd[3], 1, "the mirror caught the bullet on the next tick")
+	assert_eq(gd[4], 1, "the bullet is enemy-owned")
+	assert_eq(gd[5], -1, "the bullet is travelling back")
+
+
+func _meet_next_tick(preference: String) -> PackedInt32Array:
+	var created := _manager(preference)
+	var zone := Reflector.new()
+	zone.radius = 40.0
+	zone.mode = Reflector.Mode.REVERSE
+	zone.position = Vector2(200, 0)
+	var hook := _CallbackHook.new()
+	hook.host = created
+	hook.zone = zone
+	hook.where = "hit"
+	var hook_id := created.register_behavior(hook)
+	var box_a := Hurtbox.new()
+	box_a.position = Vector2(0, 400)
+	box_a.radius = 8.0
+	box_a.layer = Layers.ENEMY
+	created.add_child(box_a)
+	var body := Hurtbox.new()
+	body.position = Vector2(260, 0)
+	body.radius = 8.0
+	body.layer = Layers.ENEMY
+	created.add_child(body)
+	var hits_a: Array[int] = [0]
+	var hits_body: Array[int] = [0]
+	box_a.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits_a[0] += 1)
+	body.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits_body[0] += 1)
+	var hooked := _shot(Vector2(0, 400), 0.0, 0)
+	hooked.behavior_id = hook_id
+	# 2000 px/s from x=100 travels ~33 px this tick, short of the mirror at 160.
+	# The next 0.05 s covers the mirror and turns around before the body at 260.
+	var plain := _shot(Vector2(100, 0), 2000.0, 0)
+	created.spawn(hooked)
+	created.spawn(plain)
+	created.step(DT)
+	var native_after := 0
+	if created.native != null:
+		native_after = created.native.count()
+	created.step(0.05)
+	var enemy_owned := 0
+	var vx_sign := 0
+	for i in created.pool.count:
+		if created.pool.owner_layer[i] == Layers.ENEMY:
+			enemy_owned += 1
+			var vx := created.pool.vel[i].x
+			vx_sign = -1 if vx < 0.0 else (1 if vx > 0.0 else 0)
+	var out := PackedInt32Array()
+	out.append(hits_a[0])
+	out.append(hits_body[0])
+	out.append(native_after)
+	out.append(created.last_reflect_count)
+	out.append(enemy_owned)
+	out.append(vx_sign)
+	if zone.is_inside_tree():
+		zone.get_parent().remove_child(zone)
+	zone.free()
+	_close(created)
+	return out
+
+
 func test_mid_flight_mirror_matches_gdscript() -> void:
 	if not _ready_native():
 		return

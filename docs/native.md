@@ -25,14 +25,19 @@ move to C++.
   the pool too: the native step runs later in the same tick, so a child born
   during a hook would move a tick early, and owner inheritance already lives
   on the pool. That split is a reversible default.
-- **While any reflector is registered, native routing is off.** Every new
-  bullet goes to the GDScript pool. The first reflector also migrates every
-  live native bullet into the pool, with position, velocity, damage, pierce,
-  `hit_mem`, owner and the shared seq, before the next tick moves or collides.
-  The pool then sorts slots into that seq so the walk matches all-GD order.
-  When the last reflector unregisters, new hook-free spawns may use native
-  again; bullets already in the pool stay there. `reflect()` itself is still
-  the pool's, and a native id (no reflector in the world) still returns false
+- **While any reflector is registered, native routing is off.** The count
+  changes as soon as the reflector enters or leaves, so a spawn made in that
+  same callback already goes to the GDScript pool. The live-bullet move is
+  not done inside the callback. Outside `step()` it runs immediately. During
+  `step()` it is flagged and runs once, after this tick's merged hit commits,
+  native wall compaction, and despawn hooks, and before the next tick moves
+  or collides. A register/unregister pair that ends back at zero clears the
+  flag, so nothing is moved. The move copies position, velocity, damage,
+  pierce, `hit_mem`, owner, and the shared seq, then the pool sorts slots
+  into that seq. Bullets already removed this tick are not copied. When the
+  last reflector unregisters, new hook-free spawns may use native again;
+  bullets already in the pool stay there. `reflect()` itself is still the
+  pool's, and a native id (no reflector in the world) still returns false
   from `reflect_bullet()`.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
