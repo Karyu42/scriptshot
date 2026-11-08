@@ -37,10 +37,16 @@ move to C++.
   leg uses `WallGrid.box_normal` (corner, tangent and inside-face rules, lower
   wall index on a time tie). A zone that appears in `on_update` is in this
   tick's sweep. One that appears during hit delivery is not, same as the
-  pool, and the bullets are not migrated. `reflect_bullet()` on a native id
-  still returns false: a script reflect from `on_update` would integrate that
-  bullet before the sim has moved, which is not the pool's phase. Per-bullet
-  hooks, including `can_hit`, stay on the pool.
+  pool, and the bullets are not migrated. Per-bullet hooks, including
+  `can_hit`, stay on the pool.
+- **UNSUPPORTED: `reflect_bullet()` on a native id.**
+  `ShotEmitter.reflect_bullet()` / `BulletManager.reflect()` returns false and
+  does not change that bullet's position, velocity, owner, or reflection
+  count, from `on_update` or from outside a hook. This is hook-free zone and
+  wall-normal parity only. It is not scripting parity, and no script path that
+  depends on reflecting a native id runs on the sim. Queuing that call so it
+  lands on the pool's phase is the deferred-op follow-up. That slice is not
+  in this PR.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -185,10 +191,12 @@ Left for later PRs, on purpose:
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
   stays on the GDScript pool, and so does every other per-bullet hook.
-- Script `reflect_bullet()` / `BulletManager.reflect()` on a native id. Zone
-  reflection of hook-free bullets runs in the sim; a script reflect does not,
-  because applying it during `on_update` would move the bullet on a different
-  phase than the pool. The call returns false and changes nothing.
+- **UNSUPPORTED** script `reflect_bullet()` / `BulletManager.reflect()` on a
+  native id (outside a hook and inside `on_update`). The call returns false
+  and changes nothing. This is not scripting parity. The deferred-op
+  follow-up is the later slice that would queue the call; it is not here, and
+  this PR does not enable that script path on native. Zone reflection of
+  hook-free bullets is separate and does not go through `reflect_bullet()`.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
   clamps silently to the same limits.
 - A shared id space. Native ids use bit 62.

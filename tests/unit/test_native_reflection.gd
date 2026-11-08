@@ -571,26 +571,119 @@ func _invuln(preference: String, keep: bool) -> int:
 	return flags[0]
 
 
+## UNSUPPORTED: reflect_bullet on a native id. Not scripting parity. The
+## deferred-op follow-up is the later slice that would queue the call; this
+## PR does not enable that path.
+func _assert_reflect_unsupported(created: BulletManager, id: int, before: Dictionary) -> void:
+	assert_false(created.emitter.reflect_bullet(id, Layers.ENEMY, true))
+	assert_true(created.is_native_bullet_alive(id))
+	var after := _native_of(created, id)
+	var bp: Vector2 = before["pos"]
+	var ap: Vector2 = after["pos"]
+	var bv: Vector2 = before["vel"]
+	var av: Vector2 = after["vel"]
+	var bo: int = before["owner"]
+	var ao: int = after["owner"]
+	var br: int = before["reflects"]
+	var ar: int = after["reflects"]
+	assert_eq(ap, bp, "position unchanged")
+	assert_eq(av, bv, "velocity unchanged")
+	assert_eq(ao, bo, "owner unchanged")
+	assert_eq(ar, br, "reflection count unchanged")
+	assert_eq(ao, Layers.PLAYER)
+	assert_eq(ar, 0)
+
+
+func _native_of(created: BulletManager, id: int) -> Dictionary:
+	var snap := created.native.snapshot()
+	var ids: PackedInt64Array = snap["id"]
+	var pos: PackedVector2Array = snap["pos"]
+	var vel: PackedVector2Array = snap["vel"]
+	var owners: PackedInt32Array = snap["owner"]
+	var reflects: PackedInt32Array = snap["reflect_count"]
+	for i in ids.size():
+		if ids[i] == id:
+			return {"pos": pos[i], "vel": vel[i], "owner": owners[i], "reflects": reflects[i]}
+	return {"pos": Vector2.INF, "vel": Vector2.INF, "owner": -1, "reflects": -1}
+
+
+## Outside a hook. The call returns false and the bullet is unchanged.
 func test_reflect_bullet_on_a_native_id_returns_false() -> void:
 	if not _ready_native():
 		return
 	var created := _manager("native")
 	var id := created.spawn(_shot(Vector2(10, 20), Vector2(100, 0)))
 	assert_true(created.is_native_id(id))
-	var before := _rows(created)[0]
-	assert_false(created.emitter.reflect_bullet(id, Layers.ENEMY, true))
-	var after := _rows(created)[0]
-	var before_owner: int = before["owner"]
-	var after_owner: int = after["owner"]
-	var before_reflects: int = before["reflects"]
-	var after_reflects: int = after["reflects"]
-	assert_eq(after_owner, before_owner)
-	var bv: Vector2 = before["vel"]
-	var av: Vector2 = after["vel"]
-	assert_eq(av, bv)
-	assert_eq(after_reflects, 0)
-	assert_eq(before_reflects, 0)
+	_assert_reflect_unsupported(created, id, _native_of(created, id))
 	_close(created)
+
+
+## From on_update, which runs after the pool integrate and before the native
+## sim moves. Same refusal. The rest of the tick does not apply the reflect.
+func test_reflect_bullet_on_a_native_id_in_on_update_is_unsupported() -> void:
+	if not _ready_native():
+		return
+	var created := _manager("native")
+	var id := created.spawn(_shot(Vector2(10, 20), Vector2(100, 0)))
+	var before := _native_of(created, id)
+	var hook := _UnsupportedReflect.new()
+	hook.host = created
+	hook.target_id = id
+	var hooked := _shot(Vector2(0, 400), Vector2.ZERO)
+	hooked.behavior_id = created.register_behavior(hook)
+	hooked.hit_mask = 0
+	created.spawn(hooked)
+	created.step(DT)
+	assert_true(hook.saw, "on_update ran")
+	assert_false(hook.returned)
+	var at_call_pos: Vector2 = hook.pos
+	var at_call_vel: Vector2 = hook.vel
+	var before_pos: Vector2 = before["pos"]
+	var before_vel: Vector2 = before["vel"]
+	var before_owner: int = before["owner"]
+	var before_reflects: int = before["reflects"]
+	assert_eq(at_call_pos, before_pos, "position at the call")
+	assert_eq(at_call_vel, before_vel, "velocity at the call")
+	assert_eq(hook.owner, before_owner, "owner at the call")
+	assert_eq(hook.reflects, before_reflects, "reflection count at the call")
+	var after := _native_of(created, id)
+	var after_vel: Vector2 = after["vel"]
+	var after_owner: int = after["owner"]
+	var after_reflects: int = after["reflects"]
+	assert_eq(after_vel, before_vel, "the tick did not reverse velocity")
+	assert_eq(after_owner, Layers.PLAYER)
+	assert_eq(after_reflects, 0)
+	assert_true(created.is_native_bullet_alive(id))
+	_close(created)
+
+
+class _UnsupportedReflect:
+	extends BulletBehavior
+	var host: BulletManager
+	var target_id := -1
+	var returned := true
+	var saw := false
+	var pos := Vector2.INF
+	var vel := Vector2.INF
+	var owner := -2
+	var reflects := -2
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		saw = true
+		returned = host.emitter.reflect_bullet(target_id, Layers.ENEMY, true)
+		var snap := host.native.snapshot()
+		var ids: PackedInt64Array = snap["id"]
+		var positions: PackedVector2Array = snap["pos"]
+		var velocities: PackedVector2Array = snap["vel"]
+		var owners: PackedInt32Array = snap["owner"]
+		var counts: PackedInt32Array = snap["reflect_count"]
+		for i in ids.size():
+			if ids[i] == target_id:
+				pos = positions[i]
+				vel = velocities[i]
+				owner = owners[i]
+				reflects = counts[i]
+				return
 
 
 func test_dynamic_reflectors_match_including_one_added_mid_reflection() -> void:
