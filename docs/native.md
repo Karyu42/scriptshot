@@ -25,28 +25,22 @@ move to C++.
   the pool too: the native step runs later in the same tick, so a child born
   during a hook would move a tick early, and owner inheritance already lives
   on the pool. That split is a reversible default.
-- **While any reflector is registered, native routing is off.** The count
-  changes as soon as the reflector enters or leaves, so a spawn made in that
-  same callback already goes to the GDScript pool. The live-bullet move is
-  phase-aware, matching the all-GD tick (`advance`, then `on_update`, then
-  walls and zones). Pool `on_update` already runs before the native sim
-  moves. A reflector registered in that window, or any earlier pre-movement
-  hook, migrates live native bullets immediately. If `advance` has already
-  walked the pool, the migrated bullets take that same integrate once, in
-  the pool, and then collide with everyone else this tick. They are not
-  moved by the native sim as well. Slots are sorted into the shared seq
-  before the wall and zone sweep, and not while the hook's own slot is live.
-  A reflector registered during hit delivery (`on_hit`, `can_hit`,
-  `on_despawn`) does not clear the native sim yet: the move is flagged and
-  runs once, after this tick's merged hit commits, native wall compaction,
-  and despawn hooks, and before the next tick moves or collides. That move
-  does not integrate again. A register/unregister pair that ends back at
-  zero clears the flag, so nothing is moved. The move copies position,
-  velocity, damage, pierce, `hit_mem`, owner, and the shared seq. Bullets
-  already removed this tick are not copied. When the last reflector
-  unregisters, new hook-free spawns may use native again; bullets already in
-  the pool stay there. `reflect()` itself is still the pool's, and a native
-  id (no reflector in the world) still returns false from `reflect_bullet()`.
+- **Hook-free bullets stay native when reflectors are registered.** The sim
+  sweeps the same active `Reflector` circles the pool does (registry order,
+  after `on_update`) and asks `Reflector.evaluate()` for the guard, the arc
+  and the new heading, so REVERSE, MIRROR, AIM_AT_TARGET, partial arcs,
+  `max_reflections` (including 0 = unlimited and a zone's own limit) and the
+  reflected damage cannot drift. It then applies the same owner change,
+  colour, hit mask, hit-memory clear, reflect count and speed clamp, and
+  clears `SOURCE_PIERCES_SCRIPT_INVULN` unless `keep_script`. The bullet is
+  teleported to the impact and flies the rest of the tick; a wall on that
+  leg uses `WallGrid.box_normal` (corner, tangent and inside-face rules, lower
+  wall index on a time tie). A zone that appears in `on_update` is in this
+  tick's sweep. One that appears during hit delivery is not, same as the
+  pool, and the bullets are not migrated. `reflect_bullet()` on a native id
+  still returns false: a script reflect from `on_update` would integrate that
+  bullet before the sim has moved, which is not the pool's phase. Per-bullet
+  hooks, including `can_hit`, stay on the pool.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -96,6 +90,8 @@ environment variable. The native tests set `"native"` themselves.
 ./tools/run_benchmark.sh --backend=native --hooked=1
 # Same opt-in as the game, because the benchmark's default preference is auto:
 ./tools/run_benchmark.sh --bullet-backend=native
+# Reflection workload (default --mirrors=0 is the original bench):
+./tools/run_benchmark.sh --backend=native --mirrors=8 --bullets=5000
 ```
 
 The shipped scenes (`scenes/main.tscn`, `scenes/sandbox.tscn`) set
@@ -132,6 +128,10 @@ pip install scons==4.10.1
   routing, hook spawns staying in the pool, the shared cap and enemy reserve,
   walls, swept hits, speed clamp, despawn, snapshot. Pending when the extension
   is not built (the missing-library warning test runs either way).
+- `tests/unit/test_native_reflection.gd`: wall normals (faces, corners, grazing,
+  inside, index ties), per-tick reflection parity, `max_reflections` including
+  0, pierce plus reflect, mixed-store hit order, dynamic zones, and script
+  invulnerability flags. Pending when the extension is not built.
 - `tests/unit/test_native_parity.gd`: the same scenarios on both backends.
   Seeded positions within 0.01 and velocities within 0.05, hit signatures,
   kinematics after 90 ticks, slow-overlap impact, pierce hit-memory, wall and
@@ -169,6 +169,11 @@ runs were entirely in the pool (native count 0). The default-backend hooked 5k
 sample is under the 20 ms soft bar and the 22 ms hard gate. 10k hooked only
 warns. These are one machine, not a CI gate.
 
+`--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
+keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
+same machine measured work p50/p95 of 13.97/14.20 ms on GDScript and 0.95/1.04 ms
+native, with every bullet still in the sim (pool count 0).
+
 ## Out of scope
 
 Left for later PRs, on purpose:
@@ -178,11 +183,12 @@ Left for later PRs, on purpose:
 - The narrow zero-copy Lua view. M1, when it happens, uses packed copies
   through stock lua-gdextension. This PR does not fork Lua.
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
-- Wall normals and `can_hit` vetoes inside the C++ sim. A bullet whose mask
-  includes `can_hit` stays on the GDScript pool. While any reflector is
-  registered, native routing is off entirely, so mirrors and the pool's
-  wall-normal rules still run. Native reflection inside the C++ sim is later.
+- `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
+  stays on the GDScript pool, and so does every other per-bullet hook.
+- Script `reflect_bullet()` / `BulletManager.reflect()` on a native id. Zone
+  reflection of hook-free bullets runs in the sim; a script reflect does not,
+  because applying it during `on_update` would move the bullet on a different
+  phase than the pool. The call returns false and changes nothing.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
   clamps silently to the same limits.
-- A shared id space. Native ids use bit 62. `reflect_bullet()` on a native id
-  returns false.
+- A shared id space. Native ids use bit 62.

@@ -93,12 +93,53 @@ public:
 	// finish_delivery applies walls and compacts. Uncommitted hits are skipped.
 	int get_pending_hit_count() const { return (int)hit_events.size(); }
 	godot::PackedInt32Array get_pending_hit_seqs() const;
+	godot::PackedFloat32Array get_pending_hit_t() const;
 	void commit_pending_hit(int p_index);
 	void finish_delivery();
 	int find_seq(int p_seq) const;
 	void set_seq_at(int p_slot, int p_seq);
 	// Full state of every live bullet, for moving them into the GDScript pool.
 	godot::Array export_states() const;
+
+	// Reflector zones for this tick (circle, owner mask). Empty disables the
+	// zone sweep. BulletManager passes the active Reflector list, in registry
+	// order, after on_update and before step().
+	void set_zones(const godot::PackedVector2Array &p_pos, const godot::PackedFloat32Array &p_radius,
+			const godot::PackedInt32Array &p_owners, int p_count);
+	int get_zone_hit_count() const { return (int)zone_events.size(); }
+	godot::PackedInt32Array get_zone_hit_slots() const;
+	godot::PackedInt32Array get_zone_hit_zones() const;
+	godot::PackedFloat32Array get_zone_hit_t() const;
+	godot::PackedInt32Array get_zone_hit_seqs() const;
+
+	// Bullet fields the reflector rule reads. Slot is the dense index.
+	godot::Vector2 get_position_at(int p_slot) const;
+	godot::Vector2 get_previous_at(int p_slot) const;
+	godot::Vector2 get_velocity_at(int p_slot) const;
+	int get_owner_at(int p_slot) const;
+	int get_reflect_count_at(int p_slot) const;
+	float get_wall_clip_at(int p_slot) const;
+	bool is_slot_alive(int p_slot) const;
+
+	// Applies BulletPool.reflect + the post-reflect velocity and teleport.
+	// `p_new_damage` < 0 keeps the bullet's damage. Does not emit signals.
+	bool apply_reflect(int p_slot, int p_new_owner, int p_new_mask, const godot::Color &p_color, float p_new_damage,
+			bool p_keep_script, int p_limit, const godot::Vector2 &p_heading, float p_speed, const godot::Vector2 &p_impact);
+	// The outbound wall hit no longer counts: the bullet turned before it.
+	void cancel_outbound_wall(int p_slot);
+	// Flies the rest of the tick from the impact. Queues return-leg hurtbox hits;
+	// the caller commits them, then finish_return() applies a wall on that leg.
+	void begin_return(int p_slot, double p_delta, float p_reflected_t);
+	int get_return_hit_count() const { return (int)return_events.size(); }
+	void commit_return_hit(int p_index);
+	void finish_return(int p_slot);
+
+	// Surface normal of the wall this id hit this step, or ZERO. Valid from the
+	// wall clip until clear_wall_normals() (the despawn-hook window).
+	godot::Vector2 get_wall_normal(int64_t p_id) const;
+	void clear_wall_normals();
+	// Same normal WallGrid.first_hit would report for this path, for tests.
+	godot::Vector2 query_wall_normal(const godot::Vector2 &p_start, const godot::Vector2 &p_delta, float p_radius);
 	// Writes the live bullets into the MultiMesh buffers and uploads them.
 	// Returns the live count (use it as visible_instance_count).
 	int upload(const godot::RID &p_multimesh, int p_allocated, bool p_interpolate, float p_stretch);
@@ -151,11 +192,31 @@ private:
 		float x, y, vx, vy, damage;
 		int32_t flags;
 		int32_t seq;
+		float path_t;
 	};
 	struct DespawnEvent {
 		float lifetime;
 		int32_t reason;
+		float nx, ny;
 	};
+	struct ZoneEvent {
+		int32_t slot;
+		int32_t zone;
+		float t;
+		int32_t seq;
+	};
+	struct WallReport {
+		int64_t id;
+		float nx, ny;
+	};
+	struct WallContact {
+		double t = -1.0;
+		int wall = -1;
+		float nx = 0.0f;
+		float ny = 0.0f;
+	};
+	// Same cap as HurtboxGrid.MAX_ZONE_HITS.
+	static constexpr int MAX_ZONE_HITS = 4;
 
 	// ---- bullet storage (dense [0, count)) ----
 	int capacity = 0;
@@ -164,7 +225,12 @@ private:
 	std::vector<float> radius, age, lifetime, accel, turn, damage;
 	std::vector<float> col; // 4 per bullet
 	std::vector<int32_t> hit_mask, pierce, owner_layer, seq;
-	std::vector<uint8_t> collide_world, dead, source_flags;
+	std::vector<uint8_t> collide_world, dead, source_flags, reflect_count;
+	// Per-step wall bookkeeping. wall_clip is the fraction of the tick the
+	// outbound path survived (1 = no wall). wall_suppress drops that hit when
+	// a mirror turns the bullet first. wall_report is the normal hooks may read.
+	std::vector<float> wall_clip, wall_nx, wall_ny;
+	std::vector<uint8_t> wall_suppress, wall_report, return_wall_pending;
 	// Pierce-hit ring, HIT_MEMORY per slot. Count 0 means the window is unread.
 	std::vector<uint64_t> hit_mem;
 	std::vector<uint8_t> hit_mem_count, hit_mem_head;
@@ -216,6 +282,22 @@ private:
 	std::vector<int32_t> t_entry_next, t_entry_target;
 	int t_entry_count = 0;
 
+	// ---- reflector zones (separate hash; rebuilt each step they exist) ----
+	struct Zone {
+		float x, y, r;
+		int32_t layer;
+	};
+	std::vector<Zone> zones;
+	int zone_count = 0;
+	std::vector<int32_t> z_heads;
+	std::vector<uint8_t> z_occupied;
+	std::vector<int32_t> z_touched;
+	std::vector<int32_t> z_entry_next, z_entry_target;
+	int z_entry_count = 0;
+	std::vector<ZoneEvent> zone_events;
+	std::vector<HitEvent> return_events;
+	std::vector<WallReport> wall_reports;
+
 	// ---- walls (static; CSR cell lists rebuilt on change) ----
 	std::vector<float> wall_lo_x, wall_lo_y, wall_hi_x, wall_hi_y;
 	std::vector<int32_t> w_cell_start; // cols*rows + 1
@@ -256,9 +338,14 @@ private:
 	void copy_hit_memory(int src, int dst);
 
 	double wall_first_hit(double sx, double sy, double dx, double dy, double r) const;
+	WallContact query_wall(double sx, double sy, double dx, double dy, double r) const;
 	int sweep_targets(double sx, double sy, double dx, double dy, double r, int mask, int slot,
 			const int32_t *excl, int excl_n, double &r_t) const;
 	bool point_hit(double x, double y, double r, int mask, int slot, int &r_target) const;
+	void rebuild_zones();
+	void sweep_zones_for(int slot, float sx, float sy, float dx, float dy, float br, int mask);
+	void resize_zone_grid();
+	static void box_normal(float sx, float sy, float dx, float dy, float lox, float loy, float hix, float hiy, float &nx, float &ny);
 };
 
 } // namespace scriptshot

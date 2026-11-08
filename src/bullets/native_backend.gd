@@ -229,6 +229,121 @@ func set_targets(pos: PackedVector2Array, radius: PackedFloat32Array, layer: Pac
 	sim.set_targets(pos, radius, layer, ids, count)
 
 
+## Active reflector circles for this tick, in the same order BulletManager walks them.
+func set_zones(pos: PackedVector2Array, radius: PackedFloat32Array, owners: PackedInt32Array, count: int) -> void:
+	sim.set_zones(pos, radius, owners, count)
+
+
+func zone_hit_count() -> int:
+	var n: int = sim.get_zone_hit_count()
+	return n
+
+
+func zone_hit_slots() -> PackedInt32Array:
+	var v: PackedInt32Array = sim.get_zone_hit_slots()
+	return v
+
+
+func zone_hit_zones() -> PackedInt32Array:
+	var v: PackedInt32Array = sim.get_zone_hit_zones()
+	return v
+
+
+func zone_hit_t() -> PackedFloat32Array:
+	var v: PackedFloat32Array = sim.get_zone_hit_t()
+	return v
+
+
+func zone_hit_seqs() -> PackedInt32Array:
+	var v: PackedInt32Array = sim.get_zone_hit_seqs()
+	return v
+
+
+func pending_hit_t() -> PackedFloat32Array:
+	var v: PackedFloat32Array = sim.get_pending_hit_t()
+	return v
+
+
+func position_at(slot: int) -> Vector2:
+	var v: Vector2 = sim.get_position_at(slot)
+	return v
+
+
+func previous_at(slot: int) -> Vector2:
+	var v: Vector2 = sim.get_previous_at(slot)
+	return v
+
+
+func velocity_at(slot: int) -> Vector2:
+	var v: Vector2 = sim.get_velocity_at(slot)
+	return v
+
+
+func owner_at(slot: int) -> int:
+	var v: int = sim.get_owner_at(slot)
+	return v
+
+
+func reflect_count_at(slot: int) -> int:
+	var v: int = sim.get_reflect_count_at(slot)
+	return v
+
+
+func wall_clip_at(slot: int) -> float:
+	var v: float = sim.get_wall_clip_at(slot)
+	return v
+
+
+func is_slot_alive(slot: int) -> bool:
+	var v: bool = sim.is_slot_alive(slot)
+	return v
+
+
+func id_of_slot(slot: int) -> int:
+	var v: int = sim.id_of(slot)
+	return v
+
+
+func apply_reflect(slot: int, new_owner: int, new_mask: int, color: Color, new_damage: float, keep_script: bool, limit: int, heading: Vector2, speed: float, impact: Vector2) -> bool:
+	var ok: bool = sim.apply_reflect(slot, new_owner, new_mask, color, new_damage, keep_script, limit, heading, speed, impact)
+	return ok
+
+
+func cancel_outbound_wall(slot: int) -> void:
+	sim.cancel_outbound_wall(slot)
+
+
+func begin_return(slot: int, delta: float, reflected_t: float) -> void:
+	sim.begin_return(slot, delta, reflected_t)
+
+
+func return_hit_count() -> int:
+	var n: int = sim.get_return_hit_count()
+	return n
+
+
+func commit_return_hit(index: int) -> void:
+	sim.commit_return_hit(index)
+
+
+func finish_return(slot: int) -> void:
+	sim.finish_return(slot)
+
+
+func wall_normal(id: int) -> Vector2:
+	var v: Vector2 = sim.get_wall_normal(id)
+	return v
+
+
+func clear_wall_normals() -> void:
+	sim.clear_wall_normals()
+
+
+func query_wall_normal(start: Vector2, delta: Vector2, radius: float) -> Vector2:
+	var v: Vector2 = sim.query_wall_normal(start, delta, radius)
+	return v
+
+
 ## One tick: integrate, sweep, compact. Hits stay queued until deliver_hits().
 ## Returns the number of hurtbox hits.
 func step(delta: float) -> int:

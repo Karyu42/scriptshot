@@ -68,6 +68,10 @@ var json_path := ""
 var hooked_fraction := 0.0
 ## "auto", "gdscript" or "native". auto follows SCRIPTSHOT_BULLET_BACKEND.
 var backend_preference := "auto"
+## Reflector zones added on top of the wall field. 0 leaves the original workload.
+## Zones reflect both factions with the pool's reflection cap lifted, so plain
+## bullets bounce for the whole run instead of once.
+var mirror_count := 0
 
 var _manager: BulletManager
 var _rng := RandomNumberGenerator.new()
@@ -122,14 +126,15 @@ func _ready() -> void:
 	add_child(_manager)
 	_noop_behavior_id = _manager.register_behavior(NoopHook.new())
 	_build_walls()
+	_build_mirrors()
 	for i in TARGET_COUNT:
 		var hb := Hurtbox.new()
 		hb.radius = 24.0
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls | %d warmup + %d measured frames per count | hooked fraction %.2f | pierce fraction %.2f (pierce %d)"
-		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), warmup, frames, hooked_fraction, PIERCE_FRACTION, PIERCE_EXTRA])
+	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | pierce fraction %.2f (pierce %d)"
+		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, PIERCE_FRACTION, PIERCE_EXTRA])
 	_next_count()
 
 
@@ -172,6 +177,27 @@ func _build_walls() -> void:
 			_walls.append(Rect2(centre - size * 0.5, size))
 	for wall in _walls:
 		_manager.add_wall(wall)
+
+
+func _build_mirrors() -> void:
+	if mirror_count <= 0:
+		return
+	# Unlimited, so a bullet that has already bounced still meets the next zone.
+	# The default cap of 1 would make this a one-bounce scene.
+	_manager.pool.max_reflections = 0
+	var cols := maxi(ceili(sqrt(float(mirror_count))), 1)
+	for i in mirror_count:
+		var zone := Reflector.new()
+		zone.radius = 48.0
+		zone.mode = Reflector.Mode.REVERSE
+		zone.reflects_owners = Layers.PLAYER | Layers.ENEMY
+		var col := i % cols
+		var row := int(i / cols)
+		zone.position = Vector2(
+			ARENA.position.x + ARENA.size.x * (float(col) + 0.5) / float(cols),
+			ARENA.position.y + ARENA.size.y * (float(row) + 0.5) / float(maxi(ceili(float(mirror_count) / float(cols)), 1))
+		)
+		add_child(zone)
 
 
 func _inside_wall(p: Vector2) -> bool:
@@ -304,7 +330,7 @@ func _report() -> void:
 				"backend": _manager.backend,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
-				"target_ms": target_ms, "hooked_fraction": hooked_fraction,
+				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "mirrors": mirror_count,
 				"pierce_fraction": PIERCE_FRACTION, "pierce": PIERCE_EXTRA, "results": _results,
 			}, "\t"))
 	get_tree().quit(exit_code)
@@ -338,4 +364,8 @@ func _parse_args() -> String:
 				if not kv[1] in ["auto", "gdscript", "native"]:
 					return "--backend must be auto, gdscript or native, got '%s'" % kv[1]
 				backend_preference = kv[1]
+			"mirrors":
+				mirror_count = int(kv[1])
+				if mirror_count < 0:
+					return "--mirrors must be >= 0, got '%s'" % kv[1]
 	return ""
