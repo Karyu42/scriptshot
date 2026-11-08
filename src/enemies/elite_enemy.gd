@@ -1,7 +1,7 @@
 class_name EliteEnemy
 extends RegularEnemy
-## Common elite Drifter (L2 Herald, and the body L3 will reuse).
-## 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
+## Common elite Drifter. The Herald (L2) and a natural T0 elite (L3) are this
+## body. 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
 ## Splitting and Summoner come from AffixDef. Halves are not elites: 40% HP,
 ## ×1.3 speed, radius 12, already awake, no cue, no shard, no further split.
 ## Nothing here fires a bullet. Adds are bodies. Plain shots stay plain.
@@ -45,23 +45,31 @@ func configure_elite(
 	p_player: Node2D,
 	p_herald: bool,
 	p_half: bool = false,
+	p_chunk: Vector2i = Vector2i.ZERO,
+	p_encounter: int = -1,
 ) -> void:
 	is_herald = p_herald
 	is_half = p_half
-	grants_shard = p_herald and not p_half
+	# The Herald and a natural elite both drop one shard. A half does not.
+	# Encounter index -1 is the Herald (and halves): no chunk bit. L3 passes
+	# the real chunk and index so the kill mask can name the encounter.
+	grants_shard = not p_half
 	# Halves keep the def (HP fraction, speed) but not the affix, so they cannot split.
 	affix = StringName() if p_half else p_affix
 	if p_affix != StringName():
 		_affix_def = AffixCatalog.get_affix(p_affix)
 	if _affix_def != null:
 		_glyph = EliteCue.glyph_kind(_affix_def.group)
+	var chunk_pos := WorldGen.chunk_of(p_spawn)
+	if p_encounter >= 0:
+		chunk_pos = p_chunk
 	configure(
 		ARCH_DRIFTER,
 		p_anchor,
 		p_spawn,
 		p_seed,
-		WorldGen.chunk_of(p_spawn),
-		-1,
+		chunk_pos,
+		p_encounter,
 		0,
 		p_player,
 	)

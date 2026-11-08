@@ -7,9 +7,11 @@ extends Node
 ## Cancel when a natural elite (any EliteEnemy that is not this Herald and not
 ## a Splitting half) is woken, or dies after the countdown has started. A woken
 ## elite counts even if the wake happened before the arm: spawning §3.6 spawns
-## the Herald only if no elite has woken by the time the timer fires. The flag
-## is written as soon as that is known, so a quit does not lose the cancel
-## (the remaining time is not saved).
+## the Herald only if no elite has woken by the time the timer fires. A natural
+## elite that died before the arm without waking does not cancel: "killed since
+## arming" is a death during the countdown, and this node does not read the
+## chunk kill mask. The flag is written as soon as a cancel is known, so a quit
+## does not lose it (the remaining time is not saved).
 ##
 ## The Herald is not a chunk encounter. Its death does not set a chunk bit.
 ## Only `herald_done` and, on that body's death, `shards` are persisted.
@@ -25,9 +27,8 @@ var seed := 0
 var player: Node2D
 var save: SaveGame
 var herald: EliteEnemy
-## False in tests that force natural elite rolls off. The chunk stream does
-## not roll elites in this layer (that is L3); this switch is how a woken or
-## dead elite is ignored so the Herald still appears.
+## False in tests that force natural elite rolls off, so a decoy elite in the
+## tree does not cancel the spawn. The chunk stream's own rolls stay on.
 var natural_elites_cancel := true
 var counting := false
 var resolved := false

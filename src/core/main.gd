@@ -58,10 +58,15 @@ func _bind_open_world() -> void:
 	_save = SaveGame.load_from(_slot_path())
 	_chunks.seed = _save.world_seed
 	_chunks.load_absent(_save.regular_absent)
+	_chunks.load_elite_kills(_save.elite_kills)
 	_chunks.player = _player
 	if _chunks.enemy_scene == null:
 		_chunks.enemy_scene = preload("res://scenes/regular_enemy.tscn")
+	if _chunks.elite_scene == null:
+		_chunks.elite_scene = preload("res://scenes/elite_enemy.tscn")
 	_chunks.absent_changed.connect(_on_absent_changed)
+	_chunks.elite_kills_changed.connect(_on_elite_kills_changed)
+	_chunks.shard_gained.connect(_on_natural_shard)
 	_chunks.update_streaming()
 	_herald_director = get_node_or_null("HeraldDirector") as HeraldDirector
 	if _herald_director != null and _herald != null:
@@ -87,6 +92,20 @@ func _on_absent_changed() -> void:
 	if _save == null or _chunks == null:
 		return
 	_save.regular_absent = _chunks.absent_records()
+	_save.save()
+
+
+func _on_elite_kills_changed() -> void:
+	if _save == null or _chunks == null:
+		return
+	_save.elite_kills = _chunks.elite_kill_records()
+	_save.save()
+
+
+func _on_natural_shard() -> void:
+	if _save == null:
+		return
+	_save.shards += 1
 	_save.save()
 
 
