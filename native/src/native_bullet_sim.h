@@ -1,13 +1,13 @@
 #pragma once
-// NativeBulletSim: the plain-bullet simulation of Scriptshot in C++.
+// NativeBulletSim: the hook-free bullet simulation of Scriptshot in C++.
 //
 // Struct-of-arrays bullet storage with stable ids (handle + generation
-// indirection), integration (acceleration, turn rate,
-// lifetime, bounds), swept collision against the hurtbox spatial hash and the
-// static wall grid, pierce re-sweeps, swap-remove compaction and the
-// interpolated MultiMesh buffer fill. It has no knowledge of GDScript bullet
-// hooks: BulletManager keeps bullets that have a BulletBehavior in the
-// GDScript BulletPool and sends every plain bullet here.
+// indirection), integration (acceleration, turn rate, lifetime, bounds),
+// swept collision against the hurtbox spatial hash and the static wall grid,
+// pierce re-sweeps, the same hit-memory ring as BulletPool, the same
+// saturation limits, swap-remove compaction and the interpolated MultiMesh
+// buffer fill. It has no knowledge of GDScript bullet hooks: BulletManager
+// keeps bullets with a per-bullet hook in the GDScript BulletPool.
 //
 // Semantics intentionally mirror src/bullets/*.gd (see docs/native.md).
 
@@ -48,12 +48,33 @@ public:
 	// Native ids carry this bit so they never collide with BulletPool ids.
 	static constexpr int64_t ID_FLAG = int64_t(1) << 62;
 	static constexpr uint32_t GENERATION_MASK = 0x3FFFFFFFu;
+	// Same ring as BulletPool.HIT_MEMORY. Only a pierce hit that lands is recorded.
+	static constexpr int HIT_MEMORY = 8;
+	// Same slots as BulletPool.OWNER_*. Player wins when both faction bits are set.
+	static constexpr int OWNER_NONE = 0;
+	static constexpr int OWNER_PLAYER = 1;
+	static constexpr int OWNER_ENEMY = 2;
+	static constexpr int LAYER_PLAYER = 1;
+	static constexpr int LAYER_ENEMY = 2;
+	// Same indexes as BulletPool.DropLimit.
+	static constexpr int DROP_LOGICAL_CAP = 0;
+	static constexpr int DROP_ENEMY_RESERVE = 1;
 
 	NativeBulletSim();
 
 	// --- setup -----------------------------------------------------------
 	// p_max_speed is BulletLimits.MAX_SPEED, passed in so the ceiling lives in one place.
 	void configure(int p_capacity, const godot::Rect2 &p_bounds, float p_cell_size, float p_max_speed);
+	// Logical cap and enemy reserve, clamped the same way as BulletPool.set_limits.
+	// Until this is called, the store allows `capacity` bullets with no reserve
+	// (a bare BulletPool does the same).
+	void set_limits(int p_cap, int p_reserve);
+	// Recentres the collision grids on a new rectangle without moving bullets.
+	// The next step re-buckets walls. Used when the camera window slides.
+	void set_bounds(const godot::Rect2 &p_bounds);
+	// Bullets living in the GDScript pool, added to `count` for the saturation
+	// check so the two stores share one cap. BulletManager sets this before spawn.
+	void set_external_count(int p_count);
 	void add_wall(const godot::Rect2 &p_rect);
 	void clear_walls();
 	int get_wall_count() const { return (int)wall_lo_x.size(); }
@@ -73,7 +94,7 @@ public:
 	// --- bullets ---------------------------------------------------------
 	int64_t spawn(const godot::Vector2 &p_position, const godot::Vector2 &p_velocity, float p_angle, float p_lifetime,
 			float p_radius, float p_damage, int p_hit_mask, const godot::Color &p_color, float p_acceleration,
-			float p_turn_rate, int p_pierce, bool p_collide_world);
+			float p_turn_rate, int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags);
 	bool is_alive(int64_t p_id) const;
 	int slot_of(int64_t p_id) const;
 	int64_t id_of(int p_slot) const;
@@ -84,8 +105,14 @@ public:
 	// --- inspection ------------------------------------------------------
 	int get_count() const { return count; }
 	int get_capacity() const { return capacity; }
+	int get_logical_cap() const { return logical_cap; }
+	int get_enemy_reserve() const { return enemy_reserve; }
 	int64_t get_spawned_total() const { return spawned_total; }
 	int64_t get_dropped_total() const { return dropped_total; }
+	int get_owner_count(int p_layer) const;
+	godot::PackedInt32Array get_owner_counts() const;
+	godot::PackedInt32Array get_dropped_by_owner() const;
+	godot::PackedInt32Array get_dropped_by_limit() const;
 	float get_max_radius() const { return max_radius; }
 	int get_last_hit_count() const { return last_hit_count; }
 	int get_last_wall_hit_count() const { return last_wall_hit_count; }
@@ -93,6 +120,9 @@ public:
 	godot::Dictionary snapshot() const;
 	void set_record_events(bool p_on) { record_events = p_on; }
 	godot::Array get_last_hits() const;
+	// Removals from the last step(), in compact order: lifetime, reason.
+	// Empty unless set_record_events(true) was set. Filled by deliver_hits().
+	godot::Array get_last_despawns() const;
 
 protected:
 	static void _bind_methods();
@@ -102,6 +132,11 @@ private:
 		uint64_t target_id;
 		int64_t bullet_id;
 		float x, y, vx, vy, damage;
+		int32_t flags;
+	};
+	struct DespawnEvent {
+		float lifetime;
+		int32_t reason;
 	};
 
 	// ---- bullet storage (dense [0, count)) ----
@@ -110,9 +145,11 @@ private:
 	std::vector<float> px, py, qx, qy, vx, vy, rx, ry;
 	std::vector<float> radius, age, lifetime, accel, turn, damage;
 	std::vector<float> col; // 4 per bullet
-	std::vector<int32_t> hit_mask, pierce;
-	std::vector<uint8_t> collide_world, dead;
-	std::vector<uint64_t> last_hit;
+	std::vector<int32_t> hit_mask, pierce, owner_layer;
+	std::vector<uint8_t> collide_world, dead, source_flags;
+	// Pierce-hit ring, HIT_MEMORY per slot. Count 0 means the window is unread.
+	std::vector<uint64_t> hit_mem;
+	std::vector<uint8_t> hit_mem_count, hit_mem_head;
 	std::vector<uint32_t> handle_of_slot;
 	std::vector<int32_t> pending;
 	int pending_count = 0;
@@ -125,7 +162,16 @@ private:
 
 	int64_t spawned_total = 0;
 	int64_t dropped_total = 0;
+	int logical_cap = 0;
+	int enemy_reserve = 0;
+	int other_limit = 0;
+	// Occupancy of the other backend. Added to `count` when a spawn is admitted.
+	int external_count = 0;
+	int64_t owner_counts[3] = { 0, 0, 0 };
+	int64_t dropped_by_owner[3] = { 0, 0, 0 };
+	int64_t dropped_by_limit[2] = { 0, 0 };
 	float max_radius = 0.0f;
+	float min_target_radius = 0.0f;
 	int last_hit_count = 0;
 	int last_wall_hit_count = 0;
 	int64_t despawn_counts[6] = { 0, 0, 0, 0, 0, 0 };
@@ -162,6 +208,10 @@ private:
 	std::vector<HitEvent> hit_events;
 	bool record_events = false;
 	std::vector<HitEvent> hit_log;
+	std::vector<DespawnEvent> despawn_log;
+	// Slots that touched a wall this step. Applied after hit delivery so a
+	// hurtbox in front of the wall still wins the despawn reason.
+	std::vector<int32_t> wall_slots;
 
 	// ---- render buffers: two alternating sets, see upload() ----
 	godot::PackedFloat32Array cur_buf[2];
@@ -171,14 +221,22 @@ private:
 	void rebuild_hash();
 	void rebuild_walls();
 	void mark_dead(int slot, int reason);
+	void claim_from_bounds(int slot, int reason);
 	void remove_at(int slot);
 	void compact();
 	bool id_valid(int64_t p_id, uint32_t &r_handle) const;
 	void reset_handles();
+	int owner_slot_of(int layer) const;
+	void note_drop(int owner_slot, bool at_cap);
+	void clear_hit_memory(int slot);
+	void remember_target(int slot, uint64_t target_id);
+	bool is_remembered(int slot, uint64_t target_id) const;
+	void copy_hit_memory(int src, int dst);
 
 	double wall_first_hit(double sx, double sy, double dx, double dy, double r) const;
-	int sweep_targets(double sx, double sy, double dx, double dy, double r, int mask, uint64_t last,
+	int sweep_targets(double sx, double sy, double dx, double dy, double r, int mask, int slot,
 			const int32_t *excl, int excl_n, double &r_t) const;
+	bool point_hit(double x, double y, double r, int mask, int slot, int &r_target) const;
 };
 
 } // namespace scriptshot

@@ -85,6 +85,26 @@ static func detect_hooks(b: BulletBehavior) -> int:
 	return detect_script_hooks(s)
 
 
+## True when `b`'s script overrides `on_update`. The event mask does not cover
+## on_update: a bullet with behavior_id != 0 still receives the base call unless
+## the script never replaced it. A script that cannot be inspected (null, C#, a
+## GDExtension language) is treated as overriding it, same as detect_script_hooks
+## returning every event bit: missing a real hook would be wrong.
+static func overrides_on_update(b: BulletBehavior) -> bool:
+	var s: Script = b.get_script()
+	return script_overrides_on_update(s)
+
+
+static func script_overrides_on_update(s: Script) -> bool:
+	if s == null or not s is GDScript:
+		return true
+	var count := 0
+	for d: Dictionary in s.get_script_method_list():
+		if str(d["name"]) == "on_update":
+			count += 1
+	return count > 1
+
+
 ## The hooks overridden by `s`, as HOOK_* bits. This relies on GDScript's per-class method
 ## listing (an inherited method is listed once per class that defines it, so a hook listed
 ## twice is an override). A script that cannot be inspected that way (null, C#, a GDExtension

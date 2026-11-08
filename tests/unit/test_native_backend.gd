@@ -98,10 +98,13 @@ func test_lifetime_bounds_and_capacity() -> void:
 	var counts := manager.native.despawn_counts()
 	assert_eq(counts[BulletPool.DespawnReason.LIFETIME], 1)
 	assert_eq(counts[BulletPool.DespawnReason.BOUNDS], 1)
+	# Physical fill: lift the enemy reserve, or the player's share stops at 70%.
+	manager.set_bullet_limits(manager.capacity, 0)
 	for i in 300:
 		manager.spawn(_shot(Vector2.ZERO, Vector2.ZERO))
 	assert_eq(manager.alive_count(), 256)
 	assert_eq(manager.native.dropped_total(), 44)
+	assert_eq(manager.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.LOGICAL_CAP), 44)
 
 
 func test_accel_and_turn_rate_match_the_pool_math() -> void:
@@ -230,7 +233,7 @@ func test_unset_auto_stays_on_gdscript_and_gdscript_cannot_be_overridden() -> vo
 	auto.render_enabled = false
 	auto.auto_step = false
 	add_child_autofree(auto)
-	if NativeBackend.requested_backend() == "native" and NativeBackend.is_available():
+	if NativeBackend.opted_backend() == "native" and NativeBackend.is_available():
 		assert_eq(auto.backend, "native")
 	else:
 		assert_eq(auto.backend, "gdscript")
@@ -283,3 +286,163 @@ func test_upload_fills_current_and_previous_buffers() -> void:
 	assert_almost_eq(buf[7], 20.0, 0.001, "origin y")
 	assert_almost_eq(buf[0], 10.0, 0.001, "basis x scale = 2 * radius")
 	RenderingServer.free_rid(mm)
+
+
+func test_cli_flag_parses_only_the_two_backends() -> void:
+	assert_eq(NativeBackend.cli_backend(PackedStringArray(["--bullet-backend=native"])), "native")
+	assert_eq(NativeBackend.cli_backend(PackedStringArray(["--bullet-backend=GDSCRIPT"])), "gdscript")
+	assert_eq(NativeBackend.cli_backend(PackedStringArray(["--backend=native"])), "")
+	assert_eq(NativeBackend.cli_backend(PackedStringArray(["--bullet-backend=lua"])), "")
+	assert_eq(NativeBackend.cli_backend(PackedStringArray()), "")
+
+
+func test_auto_follows_project_setting_unless_env_says_otherwise() -> void:
+	var saved_setting: String = str(ProjectSettings.get_setting(NativeBackend.SETTING, "gdscript"))
+	var saved_env := OS.get_environment(NativeBackend.ENV_VAR)
+	ProjectSettings.set_setting(NativeBackend.SETTING, "native")
+	OS.set_environment(NativeBackend.ENV_VAR, "")
+	var from_setting := _auto_manager()
+	var setting_backend := from_setting.backend
+	OS.set_environment(NativeBackend.ENV_VAR, "gdscript")
+	var from_env := _auto_manager()
+	var env_backend := from_env.backend
+	ProjectSettings.set_setting(NativeBackend.SETTING, saved_setting)
+	OS.set_environment(NativeBackend.ENV_VAR, saved_env)
+	if NativeBackend.is_available():
+		assert_eq(setting_backend, "native", "project setting native opts in when the extension is loaded")
+	else:
+		assert_eq(setting_backend, "gdscript", "missing extension falls back")
+	assert_eq(env_backend, "gdscript", "env gdscript beats a native project setting")
+
+
+func test_missing_extension_warns_once_and_stays_on_gdscript() -> void:
+	if NativeBackend.is_available():
+		# The library is loaded in this process; the fallback is covered by the unbuilt run.
+		var forced := _bare_manager("native")
+		assert_eq(forced.backend, "native")
+		return
+	NativeBackend.missing_warned = false
+	NativeBackend.missing_warnings = 0
+	var first := _bare_manager("native")
+	var second := _bare_manager("native")
+	assert_eq(first.backend, "gdscript")
+	assert_eq(second.backend, "gdscript")
+	assert_eq(NativeBackend.missing_warnings, 1, "one warning for the process, not one per manager")
+
+
+func test_declarative_bullets_go_native_and_unmasked_hooks_stay_in_the_pool() -> void:
+	if not _need_native():
+		return
+	var declarative_id := manager.register_behavior(_Declarative.new())
+	var plain := _shot(Vector2.ZERO, Vector2(60, 0))
+	plain.behavior_id = declarative_id
+	assert_true(manager.is_native_id(manager.spawn(plain)), "no unmasked hook: C++ pool")
+	assert_eq(manager.pool.count, 0)
+	var update_id := manager.register_behavior(_UpdateOnly.new())
+	var hooked := _shot(Vector2(0, 8), Vector2.ZERO)
+	hooked.behavior_id = update_id
+	var slot := manager.spawn(hooked)
+	assert_false(manager.is_native_id(slot))
+	assert_eq(manager.pool.behavior[slot], update_id)
+	var masked_id := manager.register_behavior(_MaskedOff.new())
+	var masked := _shot(Vector2(0, 16), Vector2.ZERO)
+	masked.behavior_id = masked_id
+	assert_true(manager.is_native_id(manager.spawn(masked)), "explicit mask 0 calls no event hook")
+	var hit_id := manager.register_behavior(_HitOnly.new())
+	var hit := _shot(Vector2(0, 24), Vector2.ZERO)
+	hit.behavior_id = hit_id
+	var hit_slot := manager.spawn(hit)
+	assert_false(manager.is_native_id(hit_slot), "on_hit stays on GDScript")
+	assert_eq(manager.pool.count, 2)
+
+
+func test_shared_cap_counts_native_and_pool_together() -> void:
+	if not _need_native():
+		return
+	manager.set_bullet_limits(4, 0)
+	var update_id := manager.register_behavior(_UpdateOnly.new())
+	for i in 3:
+		assert_true(manager.is_native_id(manager.spawn(_shot(Vector2(i, 0), Vector2.ZERO))))
+	var hooked := _shot(Vector2(0, 4), Vector2.ZERO)
+	hooked.behavior_id = update_id
+	assert_gte(manager.spawn(hooked), 0)
+	assert_eq(manager.alive_count(), 4)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.native.count(), 3)
+	assert_eq(manager.spawn(_shot(Vector2(9, 0), Vector2.ZERO)), -1)
+	var extra := _shot(Vector2(0, 8), Vector2.ZERO)
+	extra.behavior_id = update_id
+	assert_eq(manager.spawn(extra), -1)
+	assert_eq(manager.emitter.get_dropped_count(), 2)
+	assert_eq(manager.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.LOGICAL_CAP), 2)
+	assert_eq(manager.emitter.get_owner_count(Layers.PLAYER), 4)
+	assert_true(manager.emitter.is_saturated())
+	assert_eq(manager.emitter.get_headroom(), 0)
+
+
+func test_enemy_reserve_is_shared_and_matches_the_pool_rules() -> void:
+	if not _need_native():
+		return
+	manager.set_bullet_limits(10, 3)
+	for i in 7:
+		assert_gte(manager.spawn(_shot(Vector2(i, 0), Vector2.ZERO)), 0, "player fills cap - reserve")
+	assert_eq(manager.spawn(_shot(Vector2(20, 0), Vector2.ZERO)), -1)
+	assert_eq(manager.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.ENEMY_RESERVE), 1)
+	for i in 3:
+		var enemy := _shot(Vector2(i, 10), Vector2.ZERO)
+		enemy.owner_layer = Layers.ENEMY
+		enemy.hit_mask = Layers.PLAYER
+		assert_true(manager.is_native_id(manager.spawn(enemy)))
+	var overflow := _shot(Vector2(0, 20), Vector2.ZERO)
+	overflow.owner_layer = Layers.ENEMY
+	overflow.hit_mask = Layers.PLAYER
+	assert_eq(manager.spawn(overflow), -1)
+	assert_eq(manager.emitter.get_dropped_count_by_limit(BulletPool.DropLimit.LOGICAL_CAP), 1)
+	assert_eq(manager.emitter.get_owner_count(Layers.PLAYER), 7)
+	assert_eq(manager.emitter.get_owner_count(Layers.ENEMY), 3)
+	assert_eq(manager.alive_count(), 10)
+	assert_true(manager.emitter.is_saturated(Layers.ENEMY))
+	assert_true(manager.emitter.is_saturated(Layers.PLAYER))
+
+
+func _auto_manager() -> BulletManager:
+	return _bare_manager("auto")
+
+
+func _bare_manager(preference: String) -> BulletManager:
+	var created := BulletManager.new()
+	created.backend_preference = preference
+	created.capacity = 32
+	created.render_enabled = false
+	created.auto_step = false
+	add_child_autofree(created)
+	return created
+
+
+class _Declarative:
+	extends BulletBehavior
+
+
+class _UpdateOnly:
+	extends BulletBehavior
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		pass
+
+
+class _HitOnly:
+	extends BulletBehavior
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		pass
+
+
+class _MaskedOff:
+	extends BulletBehavior
+
+	func _init() -> void:
+		hook_mask = 0
+		hook_mask_exact = true
+
+	func on_hit(_pool: BulletPool, _index: int, _hurtbox: Hurtbox) -> void:
+		pass

@@ -139,6 +139,7 @@ position = Vector2(-420, -90)
 
 [node name="BulletManager" type="Node2D" parent="."]
 script = ExtResource("5_bm")
+backend_preference = "auto"
 
 [node name="Player" parent="." instance=ExtResource("3_player")]
 

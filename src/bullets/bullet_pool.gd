@@ -79,6 +79,10 @@ var logical_cap := 0
 var enemy_reserve := 0
 ## Highest total a non-enemy shooter may bring the pool to (logical_cap - reserve).
 var _other_limit := 0
+## Bullets living in the other backend. Added to `count` for the admission check
+## so the two stores share one cap. 0 when native is off, which keeps this
+## pool's own test unchanged. BulletManager keeps it current.
+var external_count := 0
 
 
 ## Maximum number of simultaneously alive bullets the *memory* holds. Fixed at
@@ -105,6 +109,16 @@ var owner_counts := PackedInt32Array([0, 0, 0])
 ## that refused them (DropLimit). Both sum to `dropped_total`.
 var dropped_by_owner := PackedInt32Array([0, 0, 0])
 var dropped_by_limit := PackedInt32Array([0, 0])
+## Bullets removed, by DespawnReason. Not reset by clear() (statistics, like
+## spawned_total). An immediate despawn() of a live slot has no reason and is
+## not counted. The native sim keeps the same array for reasons 0..5.
+var despawn_counts := PackedInt32Array([0, 0, 0, 0, 0, 0, 0])
+## When set, advance() clears these and _remove_at appends each removal in
+## flush order (reason, lifetime). Tests compare the two backends. Off in play
+## so the hot path does not touch them.
+var log_despawns := false
+var despawn_log_reason := PackedInt32Array()
+var despawn_log_life := PackedFloat32Array()
 ## How many alive bullets carry the can_hit_veto flag (lets the collision loop
 ## skip the per-bullet check entirely while there are none).
 var veto_count := 0
@@ -273,8 +287,7 @@ func spawn(request: ShotRequest) -> int:
 		if shot_owner != 0:
 			shot_mask = Layers.hostile_to(shot_owner)
 	var owner_slot_i := owner_slot(shot_owner)
-	if count >= (logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit):
-		_record_drop(owner_slot_i)
+	if not _admit(owner_slot_i):
 		return -1
 	owner_counts[owner_slot_i] += 1
 	var i := count
@@ -373,8 +386,7 @@ func spawn_simple(
 	# the bullet whose hook runs, like every other bullet spawned from a hook.
 	var shot_owner := hook_owner if hook_owner > 0 else 0
 	var owner_slot_i := owner_slot(shot_owner)
-	if count >= (logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit):
-		_record_drop(owner_slot_i)
+	if not _admit(owner_slot_i):
 		return -1
 	owner_counts[owner_slot_i] += 1
 	var i := count
@@ -416,6 +428,9 @@ func spawn_simple(
 ## flush_dead(), which lets the manager run hooks first). Also rebuilds the
 ## `hooked` list.
 func advance(delta: float, bounds: Rect2) -> void:
+	if log_despawns:
+		despawn_log_reason.clear()
+		despawn_log_life.clear()
 	var min_x := bounds.position.x
 	var min_y := bounds.position.y
 	var max_x := bounds.end.x
@@ -1025,10 +1040,33 @@ func counters_consistent() -> bool:
 	return seen == owner_counts and vetoes == veto_count and count == owner_counts[0] + owner_counts[1] + owner_counts[2]
 
 
-func _record_drop(owner_slot_i: int) -> void:
+## Records one refused shot. `at_cap` is true when the combined live count is
+## already at `logical_cap` (or this store is physically full); otherwise the
+## enemy reserve refused a non-enemy shooter. BulletManager uses this when the
+## native store is holding part of the cap, so the reason is the shared total
+## and not this pool's count alone.
+func record_drop(layer: int, at_cap: bool) -> void:
+	var owner_slot_i := owner_slot(layer)
 	dropped_total += 1
 	dropped_by_owner[owner_slot_i] += 1
-	dropped_by_limit[DropLimit.LOGICAL_CAP if count >= logical_cap else DropLimit.ENEMY_RESERVE] += 1
+	dropped_by_limit[DropLimit.LOGICAL_CAP if at_cap else DropLimit.ENEMY_RESERVE] += 1
+
+
+## Shared-cap admission. `external_count` is the other backend. When it is 0 the
+## test is `count >= limit`, the same one this pool has always used, and a full
+## store is LOGICAL_CAP exactly when `count >= logical_cap`.
+func _admit(owner_slot_i: int) -> bool:
+	var total := count + external_count
+	var limit := logical_cap if owner_slot_i == OWNER_ENEMY else _other_limit
+	if total >= limit:
+		var layer := 0
+		if owner_slot_i == OWNER_PLAYER:
+			layer = Layers.PLAYER
+		elif owner_slot_i == OWNER_ENEMY:
+			layer = Layers.ENEMY
+		record_drop(layer, total >= logical_cap)
+		return false
+	return true
 
 
 # --- stable handles ------------------------------------------------------------
@@ -1203,6 +1241,12 @@ func reflect(
 
 
 func _remove_at(i: int) -> void:
+	var reason := int(dead_reason[i]) - 1
+	if reason >= 0 and reason < despawn_counts.size():
+		despawn_counts[reason] += 1
+		if log_despawns:
+			despawn_log_reason.append(reason)
+			despawn_log_life.append(lifetime[i])
 	var last := count - 1
 	owner_counts[owner_slot(owner_layer[i])] -= 1
 	if can_hit_veto[i] != 0:
