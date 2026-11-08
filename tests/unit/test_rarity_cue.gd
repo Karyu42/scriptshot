@@ -295,6 +295,63 @@ func test_preview_is_not_a_spawn_and_releases_its_cues() -> void:
 	assert_eq(RarityCue.slot_count(), 0)
 
 
+func test_gallery_hide_keeps_a_foreign_warp_registration() -> void:
+	var foreign := Rect2(10, 20, 300, 200)
+	var foreign_id := GridWarpFallback.add_chunk(foreign)
+	var preview := RarityPreview.new()
+	add_child_autofree(preview)
+	preview.show_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 2)
+	preview.hide_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 1)
+	assert_eq(GridWarpFallback.chunks[0], foreign)
+	assert_true(GridWarpFallback.remove_chunk(foreign_id))
+	assert_eq(GridWarpFallback.chunks.size(), 0)
+	assert_false(GridWarpFallback.remove_chunk(foreign_id))
+
+
+func test_gallery_hide_keeps_a_foreign_rect_equal_to_its_own() -> void:
+	var preview := RarityPreview.new()
+	add_child_autofree(preview)
+	preview.show_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 1)
+	var gallery_rect := GridWarpFallback.chunks[0]
+	var foreign_id := GridWarpFallback.add_chunk(gallery_rect)
+	assert_eq(GridWarpFallback.chunks.size(), 2)
+	preview.hide_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 1)
+	assert_true(GridWarpFallback.remove_chunk(foreign_id))
+	assert_eq(GridWarpFallback.chunks.size(), 0)
+
+
+func test_gallery_show_hide_is_idempotent_around_foreign_warps() -> void:
+	var foreign_id := GridWarpFallback.add_chunk(Rect2(10, 20, 300, 200))
+	var preview := RarityPreview.new()
+	add_child_autofree(preview)
+	preview.show_gallery()
+	preview.hide_gallery()
+	preview.show_gallery()
+	preview.hide_gallery()
+	preview.hide_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 1)
+	assert_true(GridWarpFallback.remove_chunk(foreign_id))
+	assert_eq(GridWarpFallback.chunks.size(), 0)
+
+
+func test_gallery_tree_exit_removes_only_its_warp() -> void:
+	var foreign_id := GridWarpFallback.add_chunk(Rect2(10, 20, 300, 200))
+	var preview := RarityPreview.new()
+	add_child(preview)
+	preview.show_gallery()
+	assert_eq(GridWarpFallback.chunks.size(), 2)
+	preview.free()
+	assert_false(is_instance_valid(preview))
+	assert_eq(GridWarpFallback.chunks.size(), 1)
+	assert_eq(GridWarpFallback.chunks[0], Rect2(10, 20, 300, 200))
+	assert_true(GridWarpFallback.remove_chunk(foreign_id))
+	assert_eq(GridWarpFallback.chunks.size(), 0)
+
+
 func test_boss_telegraph_outline_is_brighter_without_a_glow_pass() -> void:
 	var boss := _cue(RarityCue.TIER_BOSS_RARE)
 	var base := Color("FF5A4D")

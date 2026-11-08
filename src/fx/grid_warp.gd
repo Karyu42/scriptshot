@@ -19,10 +19,17 @@ const PULSE_LIFT := 0.35
 static var mode := MODE_OFFSET
 static var pulse_phase := 0.0
 static var chunks: Array[Rect2] = []
+## Parallel to `chunks`. Handles are never reused, so a stale handle cannot
+## remove a later registration, even one with the same rect.
+static var _ids: Array[int] = []
+static var _next_id := 1
 
 
+## Full teardown for tests. Not for one owner: that drops every registration
+## and resets the pulse. Gameplay code removes its own handle instead.
 static func reset() -> void:
 	chunks.clear()
+	_ids.clear()
 	mode = MODE_OFFSET
 	pulse_phase = 0.0
 
@@ -31,8 +38,27 @@ static func is_idle() -> bool:
 	return chunks.is_empty()
 
 
-static func add_chunk(rect: Rect2) -> void:
+## Returns a handle for this entry only. An equal rect added later is a
+## different handle.
+static func add_chunk(rect: Rect2) -> int:
+	var id := _next_id
+	_next_id += 1
+	_ids.append(id)
 	chunks.append(rect)
+	return id
+
+
+## Drops that handle. A missing or already-removed handle is a no-op, so a
+## second remove cannot take a different entry that happens to share the rect.
+static func remove_chunk(id: int) -> bool:
+	if id <= 0:
+		return false
+	var at := _ids.find(id)
+	if at < 0:
+		return false
+	_ids.remove_at(at)
+	chunks.remove_at(at)
+	return true
 
 
 static func advance(delta: float) -> void:

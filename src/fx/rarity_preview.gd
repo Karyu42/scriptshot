@@ -15,11 +15,17 @@ var _index := 0
 var _bodies: Array[Node2D] = []
 var _cues: Array[RarityCue] = []
 var _stings: Array[RaritySting] = []
-var _warp_added := false
+## Handle from GridWarpFallback.add_chunk. 0 means this gallery holds none.
+var _warp_id := 0
 
 
 func _ready() -> void:
 	set_process(false)
+
+
+func _exit_tree() -> void:
+	# Leaving the tree while shown drops only this gallery's warp entry.
+	_release_warp()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -94,9 +100,7 @@ func hide_gallery() -> void:
 	_bodies.clear()
 	_cues.clear()
 	_stings.clear()
-	if _warp_added:
-		GridWarpFallback.reset()
-		_warp_added = false
+	_release_warp()
 	shown = false
 	_index = 0
 	set_process(false)
@@ -107,7 +111,7 @@ func _process(delta: float) -> void:
 		return
 	for cue in _cues:
 		cue.advance(delta)
-	if _warp_added:
+	if _warp_id != 0:
 		GridWarpFallback.advance(delta)
 
 
@@ -133,9 +137,18 @@ func _origin() -> Vector2:
 
 
 func _register_warp(origin: Vector2) -> void:
+	_release_warp()
 	var size := float(WorldGen.CHUNK_PX)
-	GridWarpFallback.add_chunk(Rect2(origin - Vector2(size, size) * 0.5, Vector2(size, size)))
-	_warp_added = true
+	var rect := Rect2(origin - Vector2(size, size) * 0.5, Vector2(size, size))
+	_warp_id = GridWarpFallback.add_chunk(rect)
+
+
+func _release_warp() -> void:
+	if _warp_id == 0:
+		return
+	var id := _warp_id
+	_warp_id = 0
+	GridWarpFallback.remove_chunk(id)
 
 
 func _label(tier: int) -> String:
