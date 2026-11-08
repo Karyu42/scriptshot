@@ -84,10 +84,12 @@ static var registry: Array[Reflector] = []
 func _enter_tree() -> void:
 	add_to_group(GROUP)
 	registry.append(self)
+	BulletManager.notify_reflectors(1)
 
 
 func _exit_tree() -> void:
 	registry.erase(self)
+	BulletManager.notify_reflectors(-1)
 
 
 ## Unit vector the arc is centred on.

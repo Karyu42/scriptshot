@@ -133,6 +133,10 @@ common/max_physics_steps_per_frame=4
 common/physics_interpolation=true
 common/physics_jitter_fix=0.0
 
+[scriptshot]
+
+bullets/backend="gdscript"
+
 [rendering]
 
 textures/canvas_textures/default_texture_filter=0
