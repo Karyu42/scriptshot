@@ -25,12 +25,18 @@ func _draw() -> void:
 	var view := Rect2(center - half, half * 2.0)
 	draw_rect(view, FLOOR)
 	draw_circle(Vector2.ZERO, WorldGen.SAFE_RADIUS, SAFE_TINT)
-	var x := floorf(view.position.x / GRID_STEP) * GRID_STEP
-	while x <= view.end.x:
-		draw_line(Vector2(x, view.position.y), Vector2(x, view.end.y), GRID, 1.0)
-		x += GRID_STEP
-	var y := floorf(view.position.y / GRID_STEP) * GRID_STEP
-	while y <= view.end.y:
-		draw_line(Vector2(view.position.x, y), Vector2(view.end.x, y), GRID, 1.0)
-		y += GRID_STEP
+	# Idle (no boss chunk registered) keeps the original straight grid. A
+	# registered chunk uses the Compatibility warp fallback: _draw() vertex
+	# offset ≤ 3 px, or a brightness pulse. Never a post-process.
+	if GridWarpFallback.is_idle():
+		var x := floorf(view.position.x / GRID_STEP) * GRID_STEP
+		while x <= view.end.x:
+			draw_line(Vector2(x, view.position.y), Vector2(x, view.end.y), GRID, 1.0)
+			x += GRID_STEP
+		var y := floorf(view.position.y / GRID_STEP) * GRID_STEP
+		while y <= view.end.y:
+			draw_line(Vector2(view.position.x, y), Vector2(view.end.x, y), GRID, 1.0)
+			y += GRID_STEP
+	else:
+		GridWarpFallback.draw_grid(self, view, GRID, GRID_STEP)
 	draw_arc(Vector2.ZERO, WorldGen.SAFE_RADIUS, 0.0, TAU, 96, RING, 2.0, true)

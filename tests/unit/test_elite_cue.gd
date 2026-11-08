@@ -95,7 +95,10 @@ func test_sting_is_a_440_to_660_triangle_over_0_4s() -> void:
 	assert_almost_eq(EliteSting.integrated_cycles(), 220.0, 1.0)
 	var frames := EliteSting.render_frames()
 	assert_eq(frames.size(), int(round(0.4 * float(EliteSting.SAMPLE_RATE))))
-	assert_almost_eq(frames[0].x, -EliteSting.AMPLITUDE, 1e-4)
+	# Raised-cosine edge so the buffer does not click. The sweep underneath is
+	# still the 440 → 660 triangle (see frequency_at / integrated_cycles).
+	assert_almost_eq(frames[0].x, 0.0, 1e-4)
+	assert_almost_eq(frames[frames.size() - 1].x, 0.0, 1e-3)
 	assert_almost_eq(frames[0].y, frames[0].x, 1e-6)
 	var stream := EliteSting.fallback_stream()
 	assert_not_null(stream)

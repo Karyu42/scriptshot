@@ -23,14 +23,17 @@ func _ready() -> void:
 
 func _draw() -> void:
 	draw_rect(rect, floor_color)
-	var x := rect.position.x
-	while x <= rect.end.x:
-		draw_line(Vector2(x, rect.position.y), Vector2(x, rect.end.y), grid_color, 1.0)
-		x += grid_step
-	var y := rect.position.y
-	while y <= rect.end.y:
-		draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), grid_color, 1.0)
-		y += grid_step
+	if GridWarpFallback.is_idle():
+		var x := rect.position.x
+		while x <= rect.end.x:
+			draw_line(Vector2(x, rect.position.y), Vector2(x, rect.end.y), grid_color, 1.0)
+			x += grid_step
+		var y := rect.position.y
+		while y <= rect.end.y:
+			draw_line(Vector2(rect.position.x, y), Vector2(rect.end.x, y), grid_color, 1.0)
+			y += grid_step
+	else:
+		GridWarpFallback.draw_grid(self, rect, grid_color, grid_step)
 	draw_rect(rect, border_color, false, 4.0)
 	_draw_walls()
 

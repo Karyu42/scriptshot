@@ -93,6 +93,7 @@ func _ready() -> void:
 	cue = EliteCue.new()
 	cue.glyph = _glyph
 	cue.try_acquire()
+	cue.attach(self)
 	sting = EliteSting.new()
 	sting.name = "EliteSting"
 	add_child(sting)
@@ -177,12 +178,17 @@ func _on_woke() -> void:
 
 
 func outline_width() -> float:
-	return OUTLINE_WIDTH if is_half else EliteCue.OUTLINE_WIDTH
+	if is_half or cue == null:
+		return OUTLINE_WIDTH if is_half else EliteCue.OUTLINE_WIDTH
+	return cue.current_outline_width()
 
 
 func _draw() -> void:
 	draw_circle(Vector2.ZERO, body_radius, _fill.lerp(Color.WHITE, _flash))
-	draw_arc(Vector2.ZERO, body_radius, 0.0, TAU, ARC_POINTS, OUTLINE_COLOR, outline_width(), true)
+	var ocolor := OUTLINE_COLOR
+	if cue != null:
+		ocolor = cue.outline_color()
+	draw_arc(Vector2.ZERO, body_radius, 0.0, TAU, ARC_POINTS, ocolor, outline_width(), true)
 	if cue != null:
 		cue.draw_on(self, body_radius)
 
