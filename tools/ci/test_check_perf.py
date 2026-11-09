@@ -679,8 +679,138 @@ class SameRunBaseTest(unittest.TestCase):
         self.assertLess(summ.index("Same-runner comparison"), summ.index("### Bullet benchmark"))
 
 
-if __name__ == "__main__":
-    unittest.main()
+class PushParentBaseTest(unittest.TestCase):
+    """CoS ruling 2026-11-10: a push to main is gated against its parent commit (the previous main tip), benchmarked
+    in the same job, with the #42 rules unchanged; a missing / unusable parent falls back to the raw bars only and is
+    logged. All numbers FABRICATED."""
+    PUSH = ("--base-kind", "push-parent", "--base-sha", "a" * 40)
+
+    # --- parent present: the #42 rules, unchanged --------------------------------------------------------------
+
+    def test_parent_present_pass_logs_the_parent_base(self):
+        code, out, summ = run_ab(pair(7.5, 15.0), pair(11.5, 23.0), pair(7.5, 15.0), pair(11.5, 23.0), *self.PUSH)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"perf base: parent commit {'a' * 40} (push to main, previous main tip), same job, same runner",
+                      out)
+        self.assertIn("perf mode: plain 5000: mode=raw", out)
+        self.assertIn("perf mode: hooked 5000: mode=raw", out)
+        self.assertIn("### Same-runner comparison: pushed head vs base (parent commit = previous main tip)", summ)
+        self.assertNotIn("FALLBACK", out + summ)
+
+    def test_parent_under_bar_head_over_hooked_bar_fails_raw(self):
+        # Parent 21.0 meets the 22.0 bar, so no slow-runner mode: the pushed head at 23.6 fails the hard bar.
+        code, out, _ = run_ab(pair(7.5, 15.0), pair(23.6, 45.0), pair(7.5, 15.0), pair(21.0, 45.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 23.60 ms > budget 22.00 ms at 5000 bullets (hard floor), mode=raw", out)
+
+    def test_parent_under_plain_bar_head_over_fails_raw(self):
+        code, out, _ = run_ab(pair(16.7, 30.0), pair(20.0, 40.0), pair(16.0, 30.0), pair(20.0, 40.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::p95 16.70 ms > budget 16.60 ms at 5000 bullets (hard floor), mode=raw", out)
+
+    def test_relative_check_vs_parent_has_no_slack(self):
+        code, out, _ = run_ab(pair(11.01, 20.0), pair(15.0, 30.0), pair(10.0, 20.0), pair(15.0, 30.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::p95 regressed vs the parent commit on the same runner at 5000 bullets (hard floor): "
+                      "10.00 -> 11.01 ms, limit 11.00 ms (+10%)", out)
+        code, out, _ = run_ab(pair(11.0, 20.0), pair(15.0, 30.0), pair(10.0, 20.0), pair(15.0, 30.0), *self.PUSH)
+        self.assertEqual(code, 0, out)
+
+    def test_slow_runner_only_when_the_parent_also_misses_and_capped(self):
+        # Parent hooked 23.0 > 22.0 and plain 14.0 (F 1.87 -> cap 1.5): bar 33.0; head 23.5 within +10% passes.
+        code, out, _ = run_ab(pair(14.0, 28.0), pair(23.5, 45.0), pair(14.0, 28.0), pair(23.0, 45.0), *self.PUSH)
+        self.assertEqual(code, 0, out)
+        self.assertIn("perf mode: hooked 5000: mode=slow-runner (base 23.0 > 22.0, F=1.87, cap 1.5, bar 33.0)", out)
+        # Same slow runner, but the head regressed more than 10% vs the parent: fails.
+        code, out, _ = run_ab(pair(14.0, 28.0), pair(25.4, 45.0), pair(14.0, 28.0), pair(23.0, 45.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 regressed vs the parent commit on the same runner at 5000 bullets", out)
+        # Over the 1.5x cap: fails even though the parent is just as slow.
+        code, out, _ = run_ab(pair(30.0, 60.0), pair(34.0, 70.0), pair(30.0, 60.0), pair(32.0, 70.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 34.00 ms > budget 33.00 ms at 5000 bullets (hard floor), "
+                      "mode=slow-runner", out)
+
+    def test_10k_stays_warn_only_in_push_mode(self):
+        code, out, _ = run_ab(pair(14.0, 34.0), pair(20.0, 60.0), pair(14.0, 30.0), pair(20.0, 40.0), *self.PUSH)
+        self.assertEqual(code, 0, out)
+        self.assertIn("::warning::p95 regressed vs the parent commit on the same runner at 10000 bullets (target)", out)
+        self.assertNotIn("::error::", out)
+
+    # --- parent missing or unusable: raw bars only, logged as FALLBACK -----------------------------------------
+
+    def test_parent_missing_falls_back_to_the_raw_bars_and_logs_it(self):
+        reason = "HEAD has no parent commit (first commit or no history)"
+        code, out, summ = run_ab(PLAIN_OK, HOOKED_OK, None, None, "--base-kind", "push-parent",
+                                 "--no-base-reason", reason)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"perf base: none (push to main; parent commit unavailable: {reason}) -> FALLBACK mode=raw: "
+                      f"raw bars only, no relative check", out)
+        self.assertIn("perf mode: plain: mode=raw (no usable same-run base)", out)
+        self.assertIn("perf mode: hooked: mode=raw (no usable same-run base)", out)
+        self.assertIn(f"_FALLBACK: no same-run base (the parent commit could not be benchmarked: {reason})", summ)
+        self.assertNotIn("Same-runner comparison", summ)
+        # The hard bars still fail.
+        code, out, _ = run_ab(pair(15.0, 30.0), pair(22.1, 45.0), None, None, "--base-kind", "push-parent",
+                              "--no-base-reason", reason)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[hooked] p95 22.10 ms > budget 22.0 ms at 5000 bullets (hard floor)", out)
+        code, out, _ = run_ab(pair(16.61, 30.0), HOOKED_OK, None, None, "--base-kind", "push-parent",
+                              "--no-base-reason", reason)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::p95 16.61 ms > budget 16.6 ms at 5000 bullets (hard floor)", out)
+
+    def test_parent_that_cannot_be_benchmarked_falls_back_to_raw(self):
+        # perf_ab.sh drops the base files when the parent has no tools/run_benchmark.sh or its run fails: the
+        # --base-report path is then missing (or unreadable). Raw bars only, logged as FALLBACK.
+        for raw in ("", "{", '{"results": [1]}'):
+            code, out, summ = run_ab(pair(15.0, 30.0), pair(23.0, 45.0), None, None, *self.PUSH, raw_base=raw)
+            self.assertEqual(code, 1, raw)
+            self.assertIn("::warning::cannot read base (parent) results", out)
+            self.assertIn("but its benchmark is unusable -> FALLBACK mode=raw", out)
+            self.assertIn("::error::[hooked] p95 23.00 ms > budget 22.0 ms at 5000 bullets (hard floor)", out)
+            self.assertIn("_FALLBACK: the base (parent commit) benchmark of this job was unusable", summ)
+        # A NaN parent plain 5k row cannot unlock slow-runner mode either.
+        nan_base = [row(5000, 1, float("nan"), 2), row(10000, 1, 30.0, 31)]
+        code, out, _ = run_ab(pair(15.0, 30.0), pair(23.5, 45.0), nan_base, pair(23.0, 45.0), *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::warning::the base (parent) run has no valid plain 5000-bullet p95; mode=raw", out)
+
+    def test_parent_without_a_hooked_report_gives_raw_hooked_mode(self):
+        code, out, _ = run_ab(pair(14.0, 28.0), pair(23.0, 45.0), pair(14.0, 28.0), None, *self.PUSH)
+        self.assertEqual(code, 1)
+        self.assertIn("::warning::[hooked] no base (parent) hooked report: hooked mode=raw", out)
+        self.assertIn("::error::[hooked] p95 23.00 ms > budget 22.0 ms at 5000 bullets (hard floor)", out)
+
+    def test_fallback_is_never_looser_than_the_raw_bars(self):
+        # Exit code of the push fallback == the exit code with no base at all, over a grid around both bars.
+        for p5 in (15.0, 16.6, 16.61, 20.0, 30.0):
+            for h5 in (20.0, 22.0, 22.01, 23.6, 34.0):
+                args = (pair(p5, 2 * p5), pair(h5, 2 * h5), None, None)
+                raw_code, _, _ = run_ab(*args)
+                fb_code, _, _ = run_ab(*args, "--base-kind", "push-parent", "--no-base-reason", "x")
+                bad_code, _, _ = run_ab(*args, *self.PUSH, raw_base="{")
+                self.assertEqual(fb_code, raw_code, (p5, h5))
+                self.assertEqual(bad_code, raw_code, (p5, h5))
+                self.assertEqual(raw_code, 0 if (p5 <= 16.6 and h5 <= 22.0) else 1, (p5, h5))
+
+    def test_no_base_reason_needs_push_parent(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as cm:
+            run_ab(PLAIN_OK, HOOKED_OK, None, None, "--no-base-reason", "x")
+        self.assertEqual(cm.exception.code, 2)
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            run_ab(PLAIN_OK, HOOKED_OK, None, None, "--base-kind", "post-merge")
+
+    def test_pr_mode_wording_is_unchanged(self):
+        code, out, summ = run_ab(pair(11.1, 20.0), pair(15.0, 30.0), pair(10.0, 20.0), pair(15.0, 30.0))
+        self.assertEqual(code, 1)
+        self.assertIn("regressed vs main on the same runner", out)
+        self.assertIn("### Same-runner comparison: PR head vs base (main), measured in this job", summ)
+        self.assertNotIn("perf base:", out)
+        _, out, summ = run_ab(PLAIN_OK, HOOKED_OK, None, None)
+        self.assertNotIn("perf base:", out)
+        self.assertIn("_No same-run base (main) benchmark (push to main or workflow_dispatch)", summ)
+
 
 
 class FloatFlagTest(unittest.TestCase):
@@ -717,3 +847,7 @@ class FloatFlagTest(unittest.TestCase):
                          "--slow-runner-cap", "1", "--rel-tolerance-pct", "0", "--regression-pct", "0",
                          "--p95-ms", "16.6", "--reference-ms", "7.5")
         self.assertEqual(code, 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

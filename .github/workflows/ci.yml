@@ -6,7 +6,10 @@
 #            same runner (ABBA rounds): head 5k p95 may not exceed base x 1.10, and head raw p95 must meet the bar
 #            (plain 16.6 ms, hooked 22.0 ms at 5,000 bullets; HARD). Only if main's own p95 on this runner also misses
 #            a bar (slow runner) does that bar become bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (>= 1.0).
-#            10,000 bullets is warning-only. Push/dispatch (no base): the raw bars only.
+#            10,000 bullets is warning-only. Push to main: the same rules, with the parent commit (the previous main
+#            tip) benchmarked in the same job as the base (CoS ruling 2026-11-10); if the parent cannot be checked out
+#            or benchmarked, the raw bars only (logged as FALLBACK). Dispatch: the raw bars only, unless the
+#            perf_parent_base input runs the push code path against HEAD^1.
 #   web-smoke : on every PR and push to main, tools/ci/web_smoke.sh: exports the shipping "Web" preset and the
 #            "Web (smoke)" preset (release and debug, web_dlink_nothreads templates), checks the files (Lua side
 #            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
@@ -30,6 +33,10 @@ on:
     inputs:
       run_export:
         description: "Run the export matrix (needs a committed export_presets.cfg)"
+        type: boolean
+        default: false
+      perf_parent_base:
+        description: "Perf gate: benchmark HEAD^1 as the same-run base, exactly like a push to main (push-mode dry run)"
         type: boolean
         default: false
 
@@ -202,6 +209,49 @@ jobs:
           fi
           git worktree add --detach "$RUNNER_TEMP/perf-base" "$base"
           echo "PERF_BASE_DIR=$RUNNER_TEMP/perf-base" >> "$GITHUB_ENV"
+      - name: Check out the parent commit for a same-runner baseline (push to main; dispatch with perf_parent_base)
+        if: github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.perf_parent_base)
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          # CoS ruling 2026-11-10: a push to main is gated like a PR, against its parent commit (the previous main
+          # tip) benchmarked in this job on this runner. Base = github.event.before (the main tip before the push)
+          # if it is a real commit, else HEAD^1 (first parent; for a PR merge commit that is the same commit).
+          # No parent (first commit, zero/absent before with no HEAD^1) or a failed checkout = FALLBACK: no
+          # PERF_BASE_DIR, so check_perf.py applies the raw bars only and logs why. Never looser than the raw bars.
+          # A parent that checks out but cannot be benchmarked (e.g. predates tools/run_benchmark.sh or --hooked)
+          # is handled by perf_ab.sh / check_perf.py the same way as a failing PR base: raw bars, logged.
+          echo "PERF_BASE_KIND=push-parent" >> "$GITHUB_ENV"
+          fallback() {
+            echo "::warning::perf base: none ($1); FALLBACK to the raw bars only (plain 16.6 / hooked 22.0 ms at 5k)"
+            echo "PERF_NO_BASE_REASON=$1" >> "$GITHUB_ENV"
+            exit 0
+          }
+          parent="$(git rev-parse --verify -q 'HEAD^1^{commit}' || true)"
+          echo "HEAD = $(git rev-parse HEAD), HEAD^1 = ${parent:-none}, github.event.before = ${BEFORE_SHA:-none}"
+          base=""
+          if [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            if git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null \
+              || git fetch --no-tags --depth=1 origin "$BEFORE_SHA"; then
+              base="$BEFORE_SHA"
+              echo "baseline = github.event.before (main tip before this push): $base"
+              if [ -n "$parent" ] && [ "$parent" != "$base" ]; then
+                echo "::notice::github.event.before ($base) is not HEAD^1 ($parent): multi-commit push; the base is the previous main tip"
+              fi
+            else
+              echo "::warning::github.event.before $BEFORE_SHA could not be fetched; trying HEAD^1"
+            fi
+          fi
+          if [ -z "$base" ]; then
+            [ -n "$parent" ] || fallback "HEAD has no parent commit (first commit or no history)"
+            base="$parent"
+            echo "baseline = HEAD^1 (first parent): $base"
+          fi
+          git worktree add --detach "$RUNNER_TEMP/perf-base" "$base" \
+            || fallback "git worktree add of the parent $base failed"
+          echo "PERF_BASE_DIR=$RUNNER_TEMP/perf-base" >> "$GITHUB_ENV"
+          echo "PERF_BASE_SHA=$base" >> "$GITHUB_ENV"
       - name: Run benchmarks (plain + hooked; on PRs alternating base and head on this runner)
         run: |
           mkdir -p reports
@@ -213,7 +263,8 @@ jobs:
           # reports/bench-hooked.json (head), reports/base-bench.json, reports/base-bench-hooked.json (base),
           # plus reports/raw/ and reports/logs/ per run. A head import/script error or a missing JSON fails
           # here; a failing base run only warns and check_perf.py falls back to the absolute budgets.
-          # push to main / workflow_dispatch: no base, the head runs once, as before.
+          # push to main: the parent commit is the base (previous step), same ABBA rounds as a PR. If it could not
+          # be checked out, or on a plain workflow_dispatch: no base, the head runs once.
           # The benchmark's own exit code (its built-in 16.6 ms floor check) is ignored: check_perf.py is the gate.
           set -o pipefail
           args=(--out=reports --rounds=1)
@@ -237,7 +288,10 @@ jobs:
           #   * mode=slow-runner, per tier and count, ONLY when main's own raw p95 in this job also misses that bar:
           #     head bar = bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (check_perf.REFERENCE_PLAIN_FLOOR_P95_MS,
           #     main on a fast ubuntu-24.04 runner), clamped to >= 1.0. At most 24.9 ms plain, 33.0 ms hooked.
-          #   * no usable base (push to main, workflow_dispatch, a failed or NaN base run): mode=raw only.
+          #   * push to main: the base is the parent commit (the previous main tip) from this job, same rules
+          #     (--base-kind push-parent only changes the wording and adds a "perf base: ..." log line).
+          #   * no usable base (workflow_dispatch, a push whose parent is missing or cannot be benchmarked, a failed
+          #     or NaN base run): mode=raw only, i.e. the raw bars; push logs it as FALLBACK with the reason.
           #   The mode of every tier is printed in the log ("perf mode: ...") and the step summary.
           #   10k uses the same logic, warning-only.
           #
@@ -256,6 +310,12 @@ jobs:
           if [ -n "${PERF_BASE_DIR:-}" ]; then
             # Passed even if the base run failed: check_perf.py then warns and uses the absolute budgets.
             args+=(--base-report reports/base-bench.json --base-hooked-report reports/base-bench-hooked.json)
+          fi
+          if [ "${PERF_BASE_KIND:-}" = push-parent ]; then
+            args+=(--base-kind push-parent --base-sha "${PERF_BASE_SHA:-}")
+            if [ -n "${PERF_NO_BASE_REASON:-}" ]; then
+              args+=(--no-base-reason "$PERF_NO_BASE_REASON")
+            fi
           fi
           if [ -n "${PERF_BASELINE:-}" ]; then
             args+=(--baseline "$PERF_BASELINE")

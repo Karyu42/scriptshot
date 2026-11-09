@@ -36,6 +36,13 @@ Policy (agreed targets):
     No usable base (no file, unreadable, or a missing / NaN / short base plain FLOOR row) = mode=raw everywhere and no
     relative check, with a ::warning:: when a base was passed. The mode of every tier and count is printed in the
     log and in the comparison table (base, head, delta %, relative limit, mode, bar, verdict) in --summary.
+  * --base-kind: what the same-run base is. "pr" (default): the PR base (main); every message is as before.
+    "push-parent": a push to main, where the base is the parent commit (the previous main tip, CoS ruling of
+    2026-11-10), benchmarked in the same job exactly like a PR base. The rules above apply unchanged; only the
+    wording of the messages names the parent instead of main, and the log gets a "perf base: ..." line.
+    --no-base-reason TEXT (push-parent, when the parent could not be checked out or benchmarked at all): logs
+    "perf base: none (TEXT)" and the fallback, which is mode=raw everywhere with no relative check, i.e. only the
+    raw bars. A fallback can never pass a run that the raw bars would fail.
 
 "work" is the CPU time of one tick of bullet work on the headless dummy renderer. It is not a GPU
 or rendering measurement (see docs/qa/stress-test-plan.md). The full results table and verdict
@@ -51,6 +58,28 @@ import sys
 # 7.47 and 7.44 ms (PR #35 notes, 2026-11-09); the slow hosts of the same day printed 14-16 ms. Revisit when
 # main's plain cost really moves (a perf PR), otherwise every runner looks "slow" or "fast" by the wrong amount.
 REFERENCE_PLAIN_FLOOR_P95_MS = 7.5
+
+# Wording per --base-kind. "pr" is the original text, byte for byte (PR runs must not change).
+BASE_NAMES = {
+    "pr": {
+        "base": "base (main)",
+        "vs": "main",
+        "cmp_title": "PR head vs base (main)",
+        "none": "_No same-run base (main) benchmark (push to main or workflow_dispatch): mode=raw, "
+                "absolute budgets only._",
+        "unusable": "_The base (main) benchmark of this job was unusable: mode=raw, absolute budgets only, "
+                    "no relative check._",
+    },
+    "push-parent": {
+        "base": "base (parent)",
+        "vs": "the parent commit",
+        "cmp_title": "pushed head vs base (parent commit = previous main tip)",
+        "none": "_FALLBACK: no same-run base (the parent commit could not be benchmarked{reason}): mode=raw, "
+                "raw bars only (plain 5k and hooked 5k hard), no relative check._",
+        "unusable": "_FALLBACK: the base (parent commit) benchmark of this job was unusable: mode=raw, raw bars only, "
+                    "no relative check._",
+    },
+}
 
 
 def load(path):
@@ -255,7 +284,7 @@ def bar_modes(base, counts, bar, factor, cap):
     return out
 
 
-def relative(head, base, floor, target, tol_pct, label=""):
+def relative(head, base, floor, target, tol_pct, label="", names=BASE_NAMES["pr"]):
     """Same-runner regression check: head p95 <= base p95 * (1 + tol_pct/100), no absolute slack.
     Returns (errors, warnings, rows); FLOOR misses are errors, TARGET misses warnings.
     rows: [{"bullets", "role", "base", "head", "delta_pct", "limit", "ok"}] (None where not computable)."""
@@ -267,23 +296,23 @@ def relative(head, base, floor, target, tol_pct, label=""):
             hp = None
         row = {"bullets": n, "role": role, "base": bp, "head": hp, "delta_pct": None, "limit": None, "ok": None}
         if bp is None:
-            sink.append(f"{label}no valid base (main) result at {n} bullets ({role}), so the same-runner "
+            sink.append(f"{label}no valid {names['base']} result at {n} bullets ({role}), so the same-runner "
                         f"regression check could not run")
         elif hp is not None:  # an invalid head row is already reported by check()
             limit = bp * (1 + tol_pct / 100)
             row.update(delta_pct=(hp - bp) / bp * 100 if bp > 0 else None, limit=limit, ok=hp <= limit)
             if hp > limit:
-                sink.append(f"{label}p95 regressed vs main on the same runner at {n} bullets ({role}): "
+                sink.append(f"{label}p95 regressed vs {names['vs']} on the same runner at {n} bullets ({role}): "
                             f"{bp:.2f} -> {hp:.2f} ms, limit {limit:.2f} ms (+{tol_pct:g}%)")
         rows.append(row)
     return errors, warnings, rows
 
 
-def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct):
+def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct, names=BASE_NAMES["pr"]):
     """tiers: [(name, bar, rel_rows, head_results, modes)]. Markdown for the step summary."""
     def f(v, spec=".2f"):
         return "n/a" if v is None else format(v, spec)
-    lines = ["### Same-runner comparison: PR head vs base (main), measured in this job", "",
+    lines = [f"### Same-runner comparison: {names['cmp_title']}, measured in this job", "",
              f"Runner speed factor F = base plain p95 {base_p95:.2f} ms / reference {reference_ms:g} ms, "
              f"clamped to >= 1.0: **F = {factor:.2f}**. It is used only in mode=slow-runner, which applies to a tier "
              f"and count only when the base's own raw p95 there is over the bar; the head bar is then "
@@ -371,7 +400,17 @@ def main(argv=None):
                     help=f"reference machine's main plain floor p95 (default {REFERENCE_PLAIN_FLOOR_P95_MS})")
     ap.add_argument("--slow-runner-cap", type=cap_factor, default=1.5,
                     help="mode=slow-runner bar multiplier cap: bar * min(F, cap) (default 1.5)")
+    ap.add_argument("--base-kind", choices=sorted(BASE_NAMES), default="pr",
+                    help="what the same-run base is: pr (the PR base, main; default) or push-parent (a push to main: "
+                    "the parent commit, the previous main tip). Same rules; only the wording and log differ")
+    ap.add_argument("--base-sha", default="", help="commit of the same-run base, for the log only")
+    ap.add_argument("--no-base-reason", default=None,
+                    help="push-parent only: why there is no base report at all (logged as the fallback reason; "
+                    "the gate is then the raw bars only)")
     a = ap.parse_args(argv)
+    names = BASE_NAMES[a.base_kind]
+    if a.no_base_reason is not None and a.base_kind != "push-parent":
+        ap.error("--no-base-reason needs --base-kind push-parent")
 
     try:
         results = load(a.report)
@@ -393,7 +432,7 @@ def main(argv=None):
         try:
             base_plain = load(a.base_report)
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-            pre.append(f"::warning::cannot read base (main) results from {a.base_report}: {e}; "
+            pre.append(f"::warning::cannot read {names['base']} results from {a.base_report}: {e}; "
                        f"mode=raw (no usable base)")
     if a.base_hooked_report and base_plain is not None:
         try:
@@ -402,11 +441,11 @@ def main(argv=None):
                 raise ValueError(f"hooked_fraction = {bfrac!r}, expected 1.0")
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             base_hooked = None
-            pre.append(f"::warning::cannot use base (main) hooked results from {a.base_hooked_report}: {e}; "
+            pre.append(f"::warning::cannot use {names['base']} hooked results from {a.base_hooked_report}: {e}; "
                        f"hooked tier: mode=raw and no relative check")
     factor, base_p95 = speed_factor(base_plain, a.floor_bullets, a.reference_ms)
     if base_plain is not None and factor is None:
-        pre.append(f"::warning::the base (main) run has no valid plain {a.floor_bullets}-bullet p95; "
+        pre.append(f"::warning::the {names['base']} run has no valid plain {a.floor_bullets}-bullet p95; "
                    f"mode=raw (no usable base) and no relative check")
         base_plain = base_hooked = None
     counts = [a.floor_bullets, a.target_bullets]
@@ -417,6 +456,16 @@ def main(argv=None):
         if base_hooked is not None:
             hooked_modes = bar_modes(base_hooked, counts, hooked_budget, factor, a.slow_runner_cap)
     mode_lines = []
+    if a.base_kind == "push-parent":
+        sha = f" {a.base_sha}" if a.base_sha else ""
+        if a.no_base_reason is not None:
+            mode_lines.append(f"perf base: none (push to main; parent commit{sha} unavailable: {a.no_base_reason}) "
+                              f"-> FALLBACK mode=raw: raw bars only, no relative check")
+        elif base_plain is None:
+            mode_lines.append(f"perf base: parent commit{sha} (push to main), but its benchmark is unusable "
+                              f"-> FALLBACK mode=raw: raw bars only, no relative check")
+        else:
+            mode_lines.append(f"perf base: parent commit{sha} (push to main, previous main tip), same job, same runner")
     for name, modes in (("plain", plain_modes), ("hooked", hooked_modes if a.hooked_report else {})):
         if modes is None:
             mode_lines.append(f"perf mode: {name}: mode=raw (no usable same-run base)")
@@ -441,32 +490,32 @@ def main(argv=None):
             except OSError as e:  # informational output must never fail the gate
                 print(f"::warning::could not write {a.ratio_json}: {e}")
     if base_plain is not None:
-        errs, warns, rows = relative(results, base_plain, a.floor_bullets, a.target_bullets, a.rel_tolerance_pct)
+        errs, warns, rows = relative(results, base_plain, a.floor_bullets, a.target_bullets, a.rel_tolerance_pct,
+                                     names=names)
         tiers = [("plain", a.p95_ms, rows, results, plain_modes)]
         if a.hooked_report:
             if base_hooked is not None:
                 herrs, hwarns, hrows = relative(hresults, base_hooked, a.floor_bullets, a.target_bullets,
-                                                a.rel_tolerance_pct, label="[hooked] ")
+                                                a.rel_tolerance_pct, label="[hooked] ", names=names)
                 errs += herrs
                 warns += hwarns
                 tiers.append(("hooked", hooked_budget, hrows, hresults, hooked_modes))
             else:
-                warns.append("[hooked] no base (main) hooked report: hooked mode=raw, and the hooked same-runner "
+                warns.append(f"[hooked] no {names['base']} hooked report: hooked mode=raw, and the hooked same-runner "
                              "regression check did not run")
         annotations += [f"::error::{m}" for m in errs] + [f"::warning::{m}" for m in warns]
         if errs:
             code = 1
         cmp_lines = comparison_lines(tiers, factor, base_p95, a.reference_ms, a.slow_runner_cap,
-                                     a.rel_tolerance_pct)
+                                     a.rel_tolerance_pct, names)
         cmp_lines += [""] + [f"- :x: **FAIL** {m}" for m in errs] + [f"- :warning: **WARNING** {m}" for m in warns]
         summary = cmp_lines + [""] + summary
     elif a.base_report is None:
-        summary = ["_No same-run base (main) benchmark (push to main or workflow_dispatch): mode=raw, "
-                   "absolute budgets only._", ""] + summary
+        reason = f": {a.no_base_reason}" if a.no_base_reason else ""
+        summary = [names["none"].format(reason=reason), ""] + summary
     else:
-        summary = ["_The base (main) benchmark of this job was unusable: mode=raw, absolute budgets only, "
-                   "no relative check._", ""] + summary
-    if a.base_report or a.base_hooked_report:
+        summary = [names["unusable"], ""] + summary
+    if a.base_report or a.base_hooked_report or a.base_kind != "pr":
         print("\n".join(mode_lines))
     print("\n".join(summary))
     print("\n".join(annotations))
