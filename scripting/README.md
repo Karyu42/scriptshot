@@ -121,6 +121,34 @@ benchmark scene. Each of those three samples is a separate runner.
 The 20 ms figure is a soft bar. `check_perf.py` does not enforce it. The 22 ms
 figure is the hard gate on this job.
 
+**Same-runner baseline (pull requests).** The samples above show the runner, not
+the code, moving the numbers: plain 5k p95 from 6.29 to 14.93 ms on the same
+code, and a docs-only branch over 22 ms. On #35 (no sim change) slow hosts printed
+hooked 5k 22.2-23.5 ms while fast hosts printed 11.5 ms for the same sha. So on a
+`pull_request` the `perf` job also checks out main (the test-merge commit's first
+parent) and benchmarks it in the same job on the same runner, alternating
+base, head, head, base (`tools/ci/perf_ab.sh`, 2 rounds merged by
+`tools/ci/merge_bench.py`). `check_perf.py` then applies, at 5,000 bullets
+(hard) and 10,000 (warning only):
+
+- a relative check, always: head p95 <= base p95 x 1.10, plain and hooked, with
+  no millisecond slack (`--rel-tolerance-pct 10`);
+- the bars (plain 16.6 ms, hooked 22 ms) on the head's raw p95 (`mode=raw`).
+  Only when main's own p95 in the same job also misses a bar (the runner is
+  provably slow) does that tier switch to `mode=slow-runner`: the head bar
+  becomes bar x min(F, 1.5), where F = base plain 5k p95 / 7.5 ms, clamped to
+  >= 1.0, so at most 24.9 ms plain and 33.0 ms hooked
+  (`REFERENCE_PLAIN_FLOOR_P95_MS` in `check_perf.py`, main on a fast
+  ubuntu-24.04 runner; `--slow-runner-cap 1.5`). A runner on which main meets
+  the bar never gets a looser bar.
+
+A push to `main`, a `workflow_dispatch` run, or a PR whose base run failed or
+printed NaN has no usable base: `mode=raw` and the 16.6 / 22 ms bars only, as
+before. The log prints `perf mode: <tier> <count>: mode=...` for every tier, and
+the step summary starts with a table of base p95, head p95, delta %, the
+relative limit and verdict, the mode, the head bar and the bar check per tier
+and count.
+
 A short headless run on the follow-up machine (Godot 4.7.2, 20 warmup + 100
 measured frames) printed, at 5,000 bullets, plain work p95 7.93 ms with
 hooks+walls 1.74 ms, and hooked work p95 11.71 ms with hooks+walls 5.45 ms
