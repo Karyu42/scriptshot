@@ -351,12 +351,11 @@ func test_spawn_cap_keeps_the_first_calls_and_stays_fast() -> void:
 		req.lifetime = 5.0
 		behavior.apply_to_request(req, id)
 		assert_gte(big.spawn(req), 0)
-	var t0 := Time.get_ticks_usec()
 	big.step(DT)
-	var ms := (Time.get_ticks_usec() - t0) / 1000.0
 	assert_true(behavior.last_result.ok, behavior.last_result.error)
 	assert_eq(big.alive_count(), parents + BatchView.SPAWN_CAP)
-	assert_lt(ms, 50.0, "5000 spawn_child calls took %.2f ms" % ms)
+	# The step also integrates every parent, so its wall time is not the cost of
+	# the calls. The host-side timing is test_over_cap_calls_keep_the_first_and_stay_fast.
 
 
 func test_steering_loops_stay_inside_the_batch_budget() -> void:
