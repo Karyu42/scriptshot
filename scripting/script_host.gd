@@ -35,8 +35,18 @@ return function()
 	return 0
 end
 """
+## Returns true when every reachable Lua finalizer was cleared. A false return
+## means the walk stopped early: the caller pins the state instead of closing it.
+## The finalizer strip now covers all reachable tables.
 const _STRIP_FINALIZERS := """
-return function(env, weapon)
+return function(env, weapon, limit_s)
+	if type(limit_s) ~= "number" or limit_s <= 0 then
+		limit_s = 0.01
+	end
+	local t0 = os.clock()
+	local function timed_out()
+		return os.clock() - t0 >= limit_s
+	end
 	local function is_lua_fin(fin)
 		if type(fin) ~= "function" then
 			return false
@@ -46,60 +56,158 @@ return function(env, weapon)
 	end
 	local function disarm_mt(mt)
 		if type(mt) ~= "table" then
-			return 0
+			return
 		end
 		local fin = rawget(mt, "__gc")
 		if is_lua_fin(fin) then
 			rawset(mt, "__gc", nil)
-			return 1
 		end
-		return 0
-	end
-	local function disarm_obj(obj)
-		local ok, mt = pcall(debug.getmetatable, obj)
-		if not ok then
-			return 0
-		end
-		return disarm_mt(mt)
-	end
-	local n = 0
-	local pin = rawget(_G, "__scriptshot_pin")
-	if pin ~= nil then
-		n = n + disarm_obj(pin)
 	end
 	local seen = {}
-	local function walk(t, depth)
-		if type(t) ~= "table" or seen[t] or depth > 8 then
-			return
+	local queue = {}
+	local qh, qt = 1, 0
+	local incomplete = false
+	local function note(obj)
+		if timed_out() then
+			return true
 		end
-		seen[t] = true
-		n = n + disarm_obj(t)
-		local k = nil
-		while true do
-			local nk, v = next(t, k)
-			if nk == nil then
-				break
-			end
-			n = n + disarm_obj(nk)
-			n = n + disarm_obj(v)
-			if type(v) == "table" then
-				walk(v, depth + 1)
-			end
-			k = nk
+		if obj == nil then
+			return false
 		end
+		local ty = type(obj)
+		if (ty == "table" or ty == "function" or ty == "thread") and not seen[obj] then
+			seen[obj] = true
+			qt = qt + 1
+			queue[qt] = obj
+		end
+		local ok, mt = pcall(debug.getmetatable, obj)
+		if ok and type(mt) == "table" then
+			disarm_mt(mt)
+			if not seen[mt] then
+				seen[mt] = true
+				qt = qt + 1
+				queue[qt] = mt
+			end
+		end
+		return false
 	end
-	walk(_G, 0)
-	if type(env) == "table" then
-		walk(env, 0)
+	local function walk_function(fn)
+		local i = 1
+		while i <= 256 do
+			if timed_out() then
+				return true
+			end
+			local ok, name, val = pcall(debug.getupvalue, fn, i)
+			if not ok or name == nil then
+				return false
+			end
+			if note(val) then
+				return true
+			end
+			i = i + 1
+		end
+		incomplete = true
+		return false
 	end
-	if type(weapon) == "table" then
-		walk(weapon, 0)
+	local function walk_thread(th)
+		local ok, st = pcall(coroutine.status, th)
+		if not ok then
+			incomplete = true
+			return false
+		end
+		if st == "suspended" then
+			incomplete = true
+			return false
+		end
+		if st ~= "running" and st ~= "normal" and st ~= "dead" then
+			incomplete = true
+			return false
+		end
+		local level = 0
+		while level < 128 do
+			if timed_out() then
+				return true
+			end
+			local iok, info = pcall(debug.getinfo, th, level, "f")
+			if not iok then
+				incomplete = true
+				return false
+			end
+			if type(info) ~= "table" then
+				return false
+			end
+			if note(info.func) then
+				return true
+			end
+			local slot = 1
+			while slot <= 256 do
+				local lok, lname, lval = pcall(debug.getlocal, th, level, slot)
+				if not lok then
+					incomplete = true
+					break
+				end
+				if lname == nil then
+					break
+				end
+				if note(lval) then
+					return true
+				end
+				slot = slot + 1
+			end
+			if slot > 256 then
+				incomplete = true
+			end
+			level = level + 1
+		end
+		if level >= 128 then
+			incomplete = true
+		end
+		return false
+	end
+	if note(_G) or note(env) or note(weapon) then
+		return false
 	end
 	local reg_ok, reg = pcall(debug.getregistry)
-	if reg_ok and type(reg) == "table" then
-		walk(reg, 0)
+	if reg_ok and note(reg) then
+		return false
 	end
-	return n
+	while qh <= qt do
+		if timed_out() then
+			return false
+		end
+		local obj = queue[qh]
+		queue[qh] = nil
+		qh = qh + 1
+		local ty = type(obj)
+		if ty == "table" then
+			local k = nil
+			while true do
+				if timed_out() then
+					return false
+				end
+				local nk, v = next(obj, k)
+				if nk == nil then
+					break
+				end
+				if note(nk) or note(v) then
+					return false
+				end
+				k = nk
+			end
+		elseif ty == "function" then
+			if walk_function(obj) then
+				return false
+			end
+		elseif ty == "thread" then
+			if walk_thread(obj) then
+				return false
+			end
+		end
+	end
+	if incomplete then
+		return false
+	end
+	return true
 end
 """
 const _WIPE_TABLE := """
@@ -163,13 +271,15 @@ var wall_msec: int = WALL_MSEC
 
 ## Hosts stay pinned for the session. Freeing a LuaState while a Godot Variant
 ## or Callable it holds is still live aborts stock lua-gdextension, and freeing
-## a suspended coroutine from GDScript does too (lua-gdextension #240).
-## shutdown() drops host-table Callables, disarms Lua finalizers, then releases
-## retired states oldest first and the current state last.
+## a coroutine that stopped mid-call does too (lua-gdextension #240).
+## shutdown() disarms Lua finalizers and drops host-table Callables. It closes
+## a state only when no coroutine stopped mid-call and the finalizer strip
+## finishes. Anything else stays in _pinned for the process.
 static var _process_hosts: Array[ScriptHost] = []
 static var _shutdown_all_busy := false
-## Wrappers created while shutting down. Freeing them now crashes the binding.
-static var _kept: Array = []
+## Lua wrappers that must not be freed. Holds a state whose coroutine stopped
+## mid-call, and a state whose finalizer strip did not finish.
+static var _pinned: Array = []
 var _state: LuaState
 var _env: LuaTable
 var _host: LuaTable
@@ -183,9 +293,11 @@ var _names := PackedStringArray()
 var _callbacks: Dictionary = {}
 
 var _threads: Array[LuaThread] = []
-## Coroutines the budget stopped, kept so they are not freed while suspended
-## (lua-gdextension #240). shutdown() releases them without resuming.
+## Coroutines the budget stopped. shutdown() does not resume them and does not
+## free them (lua-gdextension #240).
 var _parked: Array[LuaThread] = []
+## Set when shutdown left at least one of this host's states in _pinned.
+var _keeps_lua_state := false
 ## States retired after three watchdog stops, oldest first. Each one still has
 ## its sandbox, so player code there still cannot install __gc.
 var _retired: Array[RetiredState] = []
@@ -233,7 +345,7 @@ class RunResult:
 
 
 ## One Lua state that has already stopped three times, plus the tables and
-## threads that still point into it. Kept so shutdown can drop them in order.
+## threads that still point into it. shutdown() pins these; it does not free them.
 class RetiredState:
 	extends RefCounted
 	var state: LuaState
@@ -339,12 +451,24 @@ func is_shutdown() -> bool:
 	return _closed
 
 
+## True when shutdown left a Lua state of this host alive for the process.
+## A coroutine that stopped mid-call, or a finalizer strip that did not
+## finish, keeps the state. A quiet state is closed and this stays false.
+func keeps_lua_state() -> bool:
+	return _keeps_lua_state
+
+
+## How many Lua wrappers shutdown has retained for the process.
+static func lifetime_pin_count() -> int:
+	return _pinned.size()
+
+
 func host_call_count() -> int:
 	return _host_calls
 
 
-## Closes every state this process still has pinned. Idempotent.
-## Oldest host first, and each host closes its retired states before its current one.
+## Closes every state this process still has pinned, when that close is safe.
+## Oldest host first, and each host handles retired states before its current one.
 static func shutdown_all() -> void:
 	if _shutdown_all_busy:
 		return
@@ -356,9 +480,10 @@ static func shutdown_all() -> void:
 	_shutdown_all_busy = false
 
 
-## Drops every Lua ref this host owns, then closes retired states oldest first
-## and the current state last. A coroutine that is suspended inside resumev is
-## left alone until that call returns; it is never resumed from here.
+## Disarms finalizers, then closes a state that has no coroutine stopped
+## mid-call. Any other state stays pinned for the process and is not freed.
+## A coroutine that is suspended inside resumev is left alone until that call
+## returns; it is never resumed from here.
 func shutdown() -> void:
 	if _closed:
 		return
@@ -397,10 +522,18 @@ func _mark_expired(host_table: LuaTable) -> void:
 
 
 func _release_retired(retired: RetiredState) -> void:
-	var state := retired.state
 	var threads: Array[LuaThread] = []
 	threads.assign(retired.threads)
-	_release_state(state, retired.host_table, retired.env_table, retired.weapon, threads)
+	var closed := _release_state(
+		retired.state, retired.host_table, retired.env_table, retired.weapon, threads
+	)
+	if not closed:
+		_retain(retired.state)
+		_retain(retired.host_table)
+		_retain(retired.env_table)
+		_retain(retired.weapon)
+		for i in threads.size():
+			_retain(threads[i])
 	retired.host_table = null
 	retired.env_table = null
 	retired.weapon = null
@@ -409,14 +542,25 @@ func _release_retired(retired: RetiredState) -> void:
 
 
 func _release_current() -> void:
-	var state := _state
 	var threads: Array[LuaThread] = []
 	threads.assign(_parked)
 	for i in _threads.size():
 		var th: LuaThread = _threads[i]
 		if th != null and not threads.has(th):
 			threads.append(th)
-	_release_state(state, _host, _env, _weapon, threads)
+	var closed := _release_state(_state, _host, _env, _weapon, threads)
+	if not closed:
+		_retain(_state)
+		_retain(_host)
+		_retain(_env)
+		_retain(_weapon)
+		_retain(_make_bullet)
+		_retain(_names_of)
+		var names: Array = _callbacks.keys()
+		for i in names.size():
+			_retain(_callbacks[names[i]])
+		for i in threads.size():
+			_retain(threads[i])
 	_callbacks.clear()
 	_make_bullet = null
 	_names_of = null
@@ -428,46 +572,103 @@ func _release_current() -> void:
 	_state = null
 
 
+func _retain(v: Variant) -> void:
+	if v == null:
+		return
+	_keeps_lua_state = true
+	_pinned.append(v)
+
+
+func _has_yielded_thread(threads: Array[LuaThread]) -> bool:
+	for i in threads.size():
+		var th: LuaThread = threads[i]
+		if th != null and th.status == LuaThread.STATUS_YIELD:
+			return true
+	return false
+
+
+func _is_true(v: Variant) -> bool:
+	return v == true
+
+
 ## lua-gdextension 0.8.2 has no close(). The state closes when its last Godot
-## ref dies, and that destructor runs lua_close. Callers drop the wrappers
-## after this returns. A coroutine yielded inside a call makes that unref abort;
-## see the batch-hook suite.
+## ref dies, and that destructor runs lua_close. Returns true only when the
+## caller may drop its wrappers. A coroutine that stopped mid-call, or a
+## finalizer strip that did not finish, returns false: the caller keeps every
+## wrapper in _pinned. `threads` is not passed to set_hook; a hook on a
+## stopped coroutine crashes.
 func _release_state(
 	state: LuaState,
 	host_table: LuaTable,
 	env_table: LuaTable,
 	weapon: LuaTable,
 	threads: Array[LuaThread]
-) -> void:
+) -> bool:
 	if state == null:
-		return
-	# Drop Callables out of the host table and disarm Lua __gc before the
-	# wrappers are released. Hooks do not run during finalizers. A stop-only
-	# hook on the main thread covers to-be-closed variables. `threads` is
-	# unused for set_hook: setting a hook on a stopped coroutine crashes.
+		return true
+	var hold: Array = []
+	var allow_close := not _has_yielded_thread(threads)
+	var closed := _disarm(state, host_table, env_table, weapon, hold, allow_close)
+	if not closed:
+		for i in hold.size():
+			_retain(hold[i])
+	return closed
+
+
+## Stop-only hook first, then the strip. collect_garbage runs only when the
+## strip finished and `allow_close` is set. Hooks do not run during finalizers.
+func _disarm(
+	state: LuaState,
+	host_table: LuaTable,
+	env_table: LuaTable,
+	weapon: LuaTable,
+	hold: Array,
+	allow_close: bool
+) -> bool:
 	state.stop_gc()
 	state.open_libraries(LuaState.LUA_DEBUG)
-	var strip_v: Variant = state.do_string(_STRIP_FINALIZERS, "@shutdown-strip.lua")
-	if strip_v is LuaFunction:
-		var strip := _as_function(strip_v)
-		strip.invoke(env_table, weapon)
-		_kept.append(strip)
-	var wipe_v: Variant = state.do_string(_WIPE_TABLE, "@shutdown-wipe.lua")
-	if wipe_v is LuaFunction:
-		var wipe := _as_function(wipe_v)
-		_wipe(wipe, host_table)
-		_kept.append(wipe)
 	var hook_src := _STOP_HOOK % SHUTDOWN_WALL_MSEC
 	var hook_v: Variant = state.do_string(hook_src, "@shutdown-hook.lua")
-	if hook_v is LuaFunction:
-		var hook := _as_function(hook_v)
-		_kept.append(hook)
-		var main := state.get_main_thread()
-		if main != null:
-			main.set_hook(hook, LuaThread.HOOK_MASK_COUNT, 1)
-			_kept.append(main)
+	if not hook_v is LuaFunction:
+		return false
+	var hook := _as_function(hook_v)
+	hold.append(hook)
+	var strip_v: Variant = state.do_string(_STRIP_FINALIZERS, "@shutdown-strip.lua")
+	if not strip_v is LuaFunction:
+		return false
+	var strip := _as_function(strip_v)
+	hold.append(strip)
+	var co: LuaCoroutine = LuaCoroutine.create(strip)
+	if co == null:
+		return false
+	hold.append(co)
+	# Count stride, not every instruction: the chunk also checks the wall.
+	# The hook is the backstop and is what stops a to-be-closed loop later.
+	co.set_hook(hook, LuaThread.HOOK_MASK_COUNT, HOOK_STRIDE)
+	var limit := float(SHUTDOWN_WALL_MSEC) / 1000.0
+	var resumed: Variant = co.resumev([env_table, weapon, limit])
+	if co.status == LuaThread.STATUS_YIELD:
+		return false
+	var stripped := _is_true(resumed)
+	var wipe_v: Variant = state.do_string(_WIPE_TABLE, "@shutdown-wipe.lua")
+	if not wipe_v is LuaFunction:
+		return false
+	var wipe := _as_function(wipe_v)
+	hold.append(wipe)
+	if host_table != null:
+		var wiped: Variant = wipe.invoke(host_table)
+		if wiped is LuaError:
+			return false
+	if not stripped or not allow_close:
+		return false
+	var main := state.get_main_thread()
+	if main == null:
+		return false
+	hold.append(main)
+	main.set_hook(hook, LuaThread.HOOK_MASK_COUNT, 1)
 	state.restart_gc()
 	state.collect_garbage()
+	return true
 
 
 func _wipe(wipe: LuaFunction, table: LuaTable) -> void:

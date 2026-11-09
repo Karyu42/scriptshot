@@ -181,16 +181,21 @@ cap is soft on this binary: the hook samples it every 1,000 instructions. A
 hard cap needs the source-built binding, which is behind the godot-cpp fork
 and is not part of M1.
 
-`ScriptHost` pins every Lua state for the session. `shutdown()` disarms Lua
-`__gc` reachable from the globals, the env, and the weapon (those finalizers
-run with hooks disabled), drops the host-table
-Callables, arms a stop-only count hook on the main thread, then releases
-retired states oldest first and the current state last. Destroying a
-`LuaTable` / `LuaFunction` still calls `luaL_unref`. On a state whose
-coroutine yielded inside a call, that aborts inside stock lua-gdextension, so
-process exit is not wired to `shutdown()` and `run_tests.sh` still tolerates
-that abort after a green suite. `can_hit` returns its boolean directly; the
-host is not freed during the session.
+`ScriptHost` pins every Lua state until `shutdown()`. `shutdown()` does not
+resume a coroutine. The finalizer strip now covers all reachable tables. It
+runs under a stop-only count hook with a short wall limit, then drops the
+Callables stored on the host table.
+
+A state whose coroutine stopped mid-call is not closed. Its wrappers,
+including the strip and the hook, stay in a process-lifetime pin. Freeing
+them aborts stock lua-gdextension. A state with no such coroutine is closed:
+those wrappers are released and the Lua state goes away. If the strip does
+not finish, that state is pinned instead of closed. `keeps_lua_state()`
+reports which one happened.
+
+`can_hit` returns its boolean directly. Process exit is not wired to
+`shutdown()`. `run_tests.sh` still tolerates an abort after a green suite
+when the log has no in-suite crash.
 
 ## Tests
 

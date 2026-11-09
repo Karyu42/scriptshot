@@ -1,6 +1,6 @@
 extends GutTest
-## ScriptHost.shutdown() closes the current state and any retired one.
-## A stopped batch coroutine is not resumed. A looping finalizer must not hang.
+## shutdown() closes a state only when no coroutine stopped mid-call.
+## A stopped batch coroutine is not resumed and its wrappers are not freed.
 
 
 func _is_int(v: Variant, n: int) -> bool:
@@ -99,21 +99,26 @@ func test_shutdown_releases_retired_state_stopped_batch_and_looping_finalizer() 
 	assert_gt(host._parked.size(), 0)
 	_plant_looping_finalizer(host._state)
 	_plant_looping_finalizer(retired.state)
-	# A finalizer that lives only in the env or the weapon table. Shutdown
-	# must walk both, or collectgarbage runs the loop.
+	# Holders in the env and the weapon stay reachable. Shutdown returning
+	# does not show that collectgarbage ran their finalizers.
 	_plant_finalizer_in(host._state, host._env)
 	_plant_finalizer_in(host._state, host._weapon)
 	_plant_finalizer_in(retired.state, retired.env_table)
 	_plant_finalizer_in(retired.state, retired.weapon)
 	var calls := host.host_call_count()
+	var pins := ScriptHost.lifetime_pin_count()
 	var started := Time.get_ticks_msec()
 	host.shutdown()
 	var elapsed := Time.get_ticks_msec() - started
 	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
 	assert_true(host.is_shutdown())
+	# Fields are cleared. The Lua state stays in the process pin because a
+	# coroutine stopped mid-call.
 	assert_null(host._state)
 	assert_eq(host._retired.size(), 0)
 	assert_eq(host._parked.size(), 0)
+	assert_true(host.keeps_lua_state())
+	assert_gt(ScriptHost.lifetime_pin_count(), pins)
 	assert_eq(host.host_call_count(), calls, "shutdown called back into the host")
 	var after := host.call_hook("on_spawn", 1, 0.0, 0.0)
 	assert_false(after.ok)
@@ -127,12 +132,69 @@ func test_another_host_runs_after_shutdown() -> void:
 	var first := _host()
 	var loaded := first.load_string("return { on_spawn = function(b) end }", "first.lua")
 	assert_true(loaded.ok, loaded.error)
+	var pins := ScriptHost.lifetime_pin_count()
 	first.shutdown()
+	assert_true(first.is_shutdown())
+	assert_false(first.keeps_lua_state())
+	assert_eq(ScriptHost.lifetime_pin_count(), pins)
 	var second := _host()
 	var again := second.load_string("return 2 + 2", "second.lua")
 	assert_true(again.ok, again.error)
 	assert_true(_is_int(again.value, 4), str(again.value))
 	var calls := second.host_call_count()
+	var second_pins := ScriptHost.lifetime_pin_count()
 	second.shutdown()
 	assert_true(second.is_shutdown())
+	assert_false(second.keeps_lua_state())
+	assert_eq(ScriptHost.lifetime_pin_count(), second_pins)
 	assert_eq(second.host_call_count(), calls)
+
+
+## Quiet state: nothing stopped mid-call, so shutdown closes it.
+## finalizer strip now covers all reachable tables.
+func test_shutdown_closes_a_quiet_state_after_the_finalizer_strip() -> void:
+	var host := _host()
+	var loaded := host.load_string("return { on_spawn = function(b) end }", "quiet.lua")
+	assert_true(loaded.ok, loaded.error)
+	var planted: Variant = host._state.do_string("""
+		local function spin()
+			while true do end
+		end
+		local function nest(n)
+			local head = {}
+			local cur = head
+			for i = 1, n do
+				local nxt = {}
+				cur[i] = nxt
+				cur = nxt
+			end
+			setmetatable(cur, {__gc = spin})
+			return head
+		end
+		_G.__scriptshot_pin = nest(12)
+		local left = {}
+		local right = {}
+		left[1] = right
+		right[1] = left
+		left[right] = setmetatable({}, {__gc = spin})
+		_G.__scriptshot_cycle = left
+		local held = setmetatable({}, {__gc = spin})
+		_G.__scriptshot_fn = function()
+			return held
+		end
+		return 1
+	""".dedent(), "@reachable.lua")
+	assert_true(_is_int(planted, 1), str(planted))
+	var pins := ScriptHost.lifetime_pin_count()
+	var calls := host.host_call_count()
+	var started := Time.get_ticks_msec()
+	host.shutdown()
+	var elapsed := Time.get_ticks_msec() - started
+	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
+	assert_true(host.is_shutdown())
+	assert_false(host.keeps_lua_state())
+	assert_null(host._state)
+	assert_eq(ScriptHost.lifetime_pin_count(), pins)
+	assert_eq(host.host_call_count(), calls, "shutdown called back into the host")
+	host.shutdown()
+	assert_eq(host.host_call_count(), calls)
