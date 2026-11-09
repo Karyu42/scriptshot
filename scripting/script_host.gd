@@ -14,7 +14,7 @@ extends RefCounted
 
 const INSTRUCTION_BUDGET := 100_000
 ## Extra instructions per batch row. Provisional; may change.
-const BATCH_ROW_BUDGET := 64
+const BATCH_ROW_BUDGET := 128
 ## Ceiling for one on_batch call. Provisional; may change.
 const BATCH_BUDGET_CEILING := 2_000_000
 const HOOK_STRIDE := 1_000
@@ -86,6 +86,13 @@ var _threads: Array[LuaThread] = []
 ## (lua-gdextension #240). The host itself is pinned for the process; see
 ## _process_hosts.
 var _parked: Array[LuaThread] = []
+## Old states and their stopped coroutines. Freed threads crash (lua-gdextension
+## #240), and this build cannot create a fourth coroutine after three stops.
+var _graveyard: Array = []
+var _source := ""
+var _chunk_name := "script.lua"
+## States abandoned after a watchdog stop. A stop inside pcall leaves the state
+## unsafe to create another coroutine on, and freeing it is unsafe too.
 var _instr := 0
 var _killed := false
 var _kill_reason := ""
@@ -103,6 +110,9 @@ var _batch: BatchView
 var _batch_token := -1
 var _batch_serial := 0
 var _row_value := -1
+## Watchdog samples (steps of HOOK_STRIDE) from the most recent on_batch call.
+var batch_instructions := 0
+var _cmd_nums := PackedFloat32Array()
 
 
 class RunResult:
@@ -119,6 +129,11 @@ class RunResult:
 
 func _init() -> void:
 	_pin()
+	_open_state()
+
+
+func _open_state() -> void:
+	_ready = false
 	_state = LuaState.new()
 	_state.open_libraries(LIBS)
 	var src := FileAccess.get_file_as_string(SANDBOX_PATH)
@@ -133,14 +148,15 @@ func _init() -> void:
 		_init_error = "sandbox did not return a builder"
 		return
 	_host = _state.create_table()
-	_host.set("print", Callable(self, "_lua_print"))
+	# Present so the trusted builder can lock the shared Variant metatable.
+	# Scripts never receive this value.
+	_host.set("_lock", Callable(self, "_lua_print"))
 	_host.set("reg_thread", Callable(self, "_lua_reg_thread"))
 	_host.set("dead", Callable(self, "_lua_dead"))
-	_host.set("set_velocity", Callable(self, "_lua_set_velocity"))
-	_host.set("spawn_child", Callable(self, "_lua_spawn_child"))
-	_host.set("batch_kill", Callable(self, "_lua_batch_kill"))
-	_host.set("batch_teleport", Callable(self, "_lua_batch_teleport"))
-	_host.set("batch_spawn", Callable(self, "_lua_batch_spawn"))
+	_host.set("batch_token", -1)
+	var buf := _state.create_table()
+	buf.set("n", 0)
+	_host.set("_output", buf)
 	var env_v: Variant = _as_function(built).invoke(_host)
 	if env_v is LuaError:
 		_init_error = "sandbox env: %s" % _lua_error_message(env_v)
@@ -163,6 +179,21 @@ func _init() -> void:
 
 
 ## Pins this host for the process. See `_process_hosts`.
+func _rotate_state_if_needed() -> void:
+	if _parked.size() < 3 or _source.is_empty():
+		return
+	if _state != null:
+		_graveyard.append(_state)
+	for thread in _parked:
+		_graveyard.append(thread)
+	_parked = []
+	var source := _source
+	var chunk := _chunk_name
+	_open_state()
+	if _ready:
+		load_string(source, chunk)
+
+
 func _pin() -> void:
 	if not _process_hosts.has(self):
 		_process_hosts.append(self)
@@ -218,6 +249,8 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		if not adopted.ok:
 			return adopted
 		adopted.value = result.value
+		_source = code
+		_chunk_name = chunk_name
 	return result
 
 
@@ -240,6 +273,7 @@ func call_hook(
 	arg: Variant = null,
 	pass_arg: bool = false
 ) -> RunResult:
+	_rotate_state_if_needed()
 	_clear_pending()
 	if not _ready:
 		return _fail(_init_error, name)
@@ -261,7 +295,13 @@ func call_hook(
 		args.append(arg)
 	var result := _run(_as_function(fn), args)
 	result.chunk_name = name
-	if not result.ok:
+	if result.ok:
+		var pending_err := _take_lua_bullet_pending()
+		if pending_err != "":
+			result.ok = false
+			result.error = pending_err
+			_clear_pending()
+	else:
 		_clear_pending()
 	return result
 
@@ -270,6 +310,7 @@ func call_hook(
 ## later zero-copy column object can replace them without a script change.
 ## On failure the view is marked `discard` and the caller commits nothing.
 func call_batch(batch: BatchView) -> RunResult:
+	_rotate_state_if_needed()
 	_clear_pending()
 	if not _ready:
 		batch.discard = true
@@ -290,8 +331,12 @@ func call_batch(batch: BatchView) -> RunResult:
 	_batch_serial += 1
 	_batch_token = _batch_serial
 	_batch = batch
+	if _cmd_nums.size() < BatchView.CMD_CAP * 5:
+		_cmd_nums.resize(BatchView.CMD_CAP * 5)
+	_host.set("_nums", _cmd_nums)
 	var view_v: Variant = _as_function(maker).invoke(
-		_batch_token, batch.n, batch.id, batch.px, batch.py, batch.vx, batch.vy, batch.age, batch.pa, batch.pb, batch.owner, batch.dt
+		_batch_token, batch.n, batch.id, batch.px, batch.py, batch.vx, batch.vy, batch.age, batch.pa, batch.pb, batch.owner, batch.dt,
+		BatchView.CMD_CAP, BatchView.SPAWN_CAP
 	)
 	if view_v is LuaError:
 		_end_batch()
@@ -304,8 +349,15 @@ func call_batch(batch: BatchView) -> RunResult:
 		batch_budget = BATCH_BUDGET_CEILING
 	instruction_budget = batch_budget
 	var result := _run(_as_function(fn), [view_v, batch.dt])
+	batch_instructions = _instr
 	instruction_budget = saved_budget
 	result.chunk_name = "on_batch"
+	# A stop or a Lua error commits nothing, and does not re-enter Lua.
+	if result.ok:
+		var flush_err := _flush_lua_commands()
+		if flush_err != "":
+			result.ok = false
+			result.error = flush_err
 	_end_batch()
 	if not result.ok:
 		batch.discard = true
@@ -313,10 +365,11 @@ func call_batch(batch: BatchView) -> RunResult:
 
 
 func _end_batch() -> void:
+	# Field write on a Lua table the closures already hold. Not a Lua call.
 	if _host != null:
-		var expire: Variant = _host.get("expire_batch")
-		if expire is LuaFunction:
-			_as_function(expire).invoke()
+		var flag_v: Variant = _host.get("_expired")
+		if flag_v is LuaTable:
+			_as_table(flag_v).set(1, true)
 	_batch = null
 	_batch_token = -1
 
@@ -384,6 +437,7 @@ func _strings_from(value: Variant) -> PackedStringArray:
 func _run(fn: LuaFunction, args: Array) -> RunResult:
 	var result := RunResult.new()
 	_reset_watchdog()
+	_reset_print_buffer()
 	var co := LuaCoroutine.create(fn)
 	_arm(co)
 	var resumed: Variant = co.resumev(args)
@@ -393,6 +447,7 @@ func _run(fn: LuaFunction, args: Array) -> RunResult:
 		extra += 1
 	if co.status == LuaThread.STATUS_YIELD:
 		_parked.append(co)
+	_drain_print_buffer()
 	result.output = _output.duplicate()
 	if _killed:
 		result.stopped = _kill_reason
@@ -459,6 +514,185 @@ func _fail(message: String, chunk_name: String) -> RunResult:
 
 func _lua_print(text: Variant = null) -> void:
 	_output.append(str(text))
+
+
+func _reset_print_buffer() -> void:
+	if _host == null:
+		return
+	var buf_v: Variant = _host.get("_output")
+	if buf_v is LuaTable:
+		_as_table(buf_v).set("n", 0)
+
+
+func _drain_print_buffer() -> void:
+	if _host == null:
+		return
+	var buf_v: Variant = _host.get("_output")
+	if not buf_v is LuaTable:
+		return
+	var buf := _as_table(buf_v)
+	var n_v: Variant = buf.get("n", 0)
+	if not _read_number(n_v) or not is_finite(_number) or _number < 0.0:
+		return
+	var n := int(_number)
+	for i in n:
+		_output.append(str(buf.get(i + 1, "")))
+
+
+## Reads the Lua-side velocity and child list. Empty string means they were
+## copied onto the pending fields. A bad record fails the hook and commits nothing.
+func _take_lua_bullet_pending() -> String:
+	if _host == null:
+		return ""
+	var vel_v: Variant = _host.get("_vel")
+	if vel_v is LuaTable:
+		var vel := _as_table(vel_v)
+		var armed: Variant = vel.get(3, false)
+		if armed == true:
+			var x: Variant = vel.get(1, null)
+			var y: Variant = vel.get(2, null)
+			if not _read_number(x):
+				return "set_velocity: expected two numbers"
+			var vx := _number
+			if not _read_number(y):
+				return "set_velocity: expected two numbers"
+			_pending_velocity_set = true
+			_pending_velocity = Vector2(vx, _number)
+	var kids_v: Variant = _host.get("_kids")
+	if not kids_v is LuaTable:
+		return ""
+	var kids := _as_table(kids_v)
+	var n_v: Variant = kids.get("n", 0)
+	if not _read_number(n_v) or not is_finite(_number) or _number < 0.0:
+		return "spawn_child: expected numbers (x, y, vx, vy, lifetime)"
+	var n := int(_number)
+	for i in n:
+		var rec_v: Variant = kids.get(i + 1, null)
+		if not rec_v is LuaTable:
+			return "spawn_child: expected numbers (x, y, vx, vy, lifetime)"
+		var rec := _as_table(rec_v)
+		var built := _shot_from_record(rec)
+		if built == null:
+			return "spawn_child: expected numbers (x, y, vx, vy, lifetime)"
+		_pending_children.append(built)
+	return ""
+
+
+func _shot_from_record(rec: LuaTable) -> ShotRequest:
+	var x: Variant = rec.get(1, null)
+	var y: Variant = rec.get(2, null)
+	var vx: Variant = rec.get(3, null)
+	var vy: Variant = rec.get(4, null)
+	var life: Variant = rec.get(5, null)
+	if not _read_number(x):
+		return null
+	var px := _number
+	if not _read_number(y):
+		return null
+	var py := _number
+	if not _read_number(vx):
+		return null
+	var pvx := _number
+	if not _read_number(vy):
+		return null
+	var pvy := _number
+	if not _read_number(life):
+		return null
+	var req := ShotRequest.with_velocity(Vector2(px, py), Vector2(pvx, pvy))
+	req.lifetime = _number
+	req.behavior_id = 0
+	return req
+
+
+## Applies the Lua command slots onto `_batch`. Empty string means they were
+## accepted. A record that fails validation fails the callback, so nothing commits.
+## Caps are applied again here: the table is not trusted.
+func _flush_lua_commands() -> String:
+	if _batch == null or _host == null:
+		return "view expired"
+	var tally_v: Variant = _host.get("_batch_tally")
+	if not tally_v is LuaTable:
+		return ""
+	var tally := _as_table(tally_v)
+	var packed_v: Variant = _host.get("_packed")
+	if not packed_v is LuaTable:
+		return "batch command was not a record"
+	var packed := _as_table(packed_v)
+	var extra_cmd := _nonneg_int(tally.get("cmd", 0))
+	var extra_spawn := _nonneg_int(tally.get("spawn", 0))
+	var n := _nonneg_int(tally.get("n", 0))
+	if n > BatchView.CMD_CAP:
+		extra_cmd += n - BatchView.CMD_CAP
+		n = BatchView.CMD_CAP
+	var seen_cmd := 0
+	var seen_spawn := 0
+	for i in n:
+		if not _integral(packed.get(i + 1, null)):
+			return "batch command was not a record"
+		var code := int(_number)
+		var op := code % 8
+		var row := int(code / 8.0)
+		if row < 0 or row >= _batch.n:
+			return "batch command: row must be an integer in 0..%d" % (_batch.n - 1)
+		if op == BatchView.CMD_SPAWN and seen_spawn >= BatchView.SPAWN_CAP:
+			extra_spawn += 1
+			continue
+		if seen_cmd >= BatchView.CMD_CAP:
+			extra_cmd += 1
+			continue
+		var base := i * 5
+		if op == BatchView.CMD_KILL:
+			_batch.kill(row)
+		elif op == BatchView.CMD_TELEPORT:
+			_batch.teleport(row, _cmd_nums[base], _cmd_nums[base + 1])
+		elif op == BatchView.CMD_SPAWN:
+			var req := ShotRequest.with_velocity(
+				Vector2(_cmd_nums[base], _cmd_nums[base + 1]),
+				Vector2(_cmd_nums[base + 2], _cmd_nums[base + 3])
+			)
+			req.lifetime = _cmd_nums[base + 4]
+			req.behavior_id = 0
+			_batch.spawn_child(row, req)
+			seen_spawn += 1
+		else:
+			return "batch command was not a record"
+		seen_cmd += 1
+	_batch.note_dropped_commands(extra_cmd)
+	_batch.note_dropped_spawns(extra_spawn)
+	return ""
+
+
+func _spawn_at(columns: Array[LuaTable], at: int) -> ShotRequest:
+	if not _read_number(columns[2].get(at, null)):
+		return null
+	var px := _number
+	if not _read_number(columns[3].get(at, null)):
+		return null
+	var py := _number
+	if not _read_number(columns[4].get(at, null)):
+		return null
+	var pvx := _number
+	if not _read_number(columns[5].get(at, null)):
+		return null
+	var pvy := _number
+	if not _read_number(columns[6].get(at, null)):
+		return null
+	var req := ShotRequest.with_velocity(Vector2(px, py), Vector2(pvx, pvy))
+	req.lifetime = _number
+	req.behavior_id = 0
+	return req
+
+
+func _integral(v: Variant) -> bool:
+	if not _read_number(v) or not is_finite(_number) or _number != floor(_number):
+		return false
+	return true
+
+
+func _nonneg_int(v: Variant) -> int:
+	if not _integral(v) or _number < 0.0:
+		return 0
+	return int(_number)
 
 
 func _lua_dead() -> bool:

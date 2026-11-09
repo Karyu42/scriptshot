@@ -107,7 +107,7 @@ move to C++.
   script change. That decision is not this slice. Scripts receive Lua tables,
   not the packed arrays. Per call, `BatchView.CMD_CAP` (4096) commands and
   `BatchView.SPAWN_CAP` (256) spawns are kept; the rest are dropped and one
-  warning is logged. The `on_batch` instruction budget is 100,000 plus 64 per
+  warning is logged. The `on_batch` instruction budget is 100,000 plus 128 per
   row, capped at 2,000,000 (`ScriptHost.BATCH_BUDGET_CEILING`). The 50 ms wall
   clock and the 64 MB memory cap are unchanged. Those limits are provisional
   and may change. A hot reload that adds `on_batch` does not move bullets that

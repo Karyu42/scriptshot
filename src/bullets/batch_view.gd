@@ -96,6 +96,30 @@ func spawn_child(i: int, request: ShotRequest) -> void:
 	_spawn_at[_count - 1] = request
 
 
+func note_dropped_commands(extra: int) -> void:
+	if extra <= 0:
+		return
+	dropped_commands += extra
+	if not _warned_cmd:
+		_warned_cmd = true
+		ScriptWarnings.warn(
+			"BatchView.command_cap",
+			"BatchView: command cap %d reached; further commands in this call are dropped" % CMD_CAP
+		)
+
+
+func note_dropped_spawns(extra: int) -> void:
+	if extra <= 0:
+		return
+	dropped_spawns += extra
+	if not _warned_spawn:
+		_warned_spawn = true
+		ScriptWarnings.warn(
+			"BatchView.spawn_cap",
+			"BatchView: spawn cap %d reached; further spawn_child calls in this call are dropped" % SPAWN_CAP
+		)
+
+
 func command_count() -> int:
 	return _count
 

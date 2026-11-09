@@ -601,7 +601,7 @@ by the Lua VM. So per-frame logic comes in three grades:
 | Grade | How | Cost (release, 4000 scripted bullets/tick) | Use for |
 |---|---|---|---|
 | **C declarative** | spawn fields (`spin`, `accel`, `homing`, ...) | 0 Lua | everything that can be data |
-| **B batch** | `on_batch(v, dt)` once per behaviour per tick | ~4.0 ms (slice) / ~4.9 ms (gather), **~1.0-1.2 us/bullet** | steering many bullets every tick (sine waves, orbits, flocking) |
+| **B batch** | `on_batch(v, dt)` once per behaviour per tick, every live bullet | one callback per tick | steering many bullets every tick (sine waves, orbits, flocking) |
 | **A per-bullet** | `on_tick(b, dt)` | ~6.2 ms, **~1.6-2.1 us/bullet** | rare, small counts, convenience |
 
 The spike measured throttling (`tick_every = 4`, `batch_slice = 4`). That is **not**
@@ -654,7 +654,7 @@ captured at gather still names that bullet. A script error commits nothing. A be
 
 Per call, at most `BatchView.CMD_CAP` (4096) commands and `BatchView.SPAWN_CAP` (256) `spawn_child` calls are kept, in
 call order. The rest are dropped, counted, and reported with one warning. They do not raise and they do not fail the
-callback. The instruction budget for `on_batch` is 100,000 plus 64 per row, capped at 2,000,000, then restored. The
+callback. The instruction budget for `on_batch` is 100,000 plus 128 per row, capped at 2,000,000, then restored. The
 50 ms wall-time limit and the 64 MB memory cap still apply. These numbers are provisional and may change.
 
 | Member | Meaning |

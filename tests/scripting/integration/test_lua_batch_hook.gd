@@ -345,7 +345,7 @@ func test_spawn_cap_keeps_the_first_calls_and_stays_fast() -> void:
 	var id := big.register_behavior(behavior)
 	# One row's budget is the 100_000 base. 5000 host calls need the per-row
 	# allowance, so the batch is wide enough for that allowance to cover them.
-	var parents := 1600
+	var parents := 8000
 	for i in parents:
 		var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(1, 0))
 		req.lifetime = 5.0
@@ -500,3 +500,256 @@ func test_hot_reload_on_batch_does_not_adopt_plain_bullets() -> void:
 	manager.step(DT)
 	assert_eq(manager.pool.vel[newbie], Vector2(99.0, 0.0))
 	assert_eq(manager.pool.vel[slot].x, 15.0)
+
+
+func _budget_script(call: String, times: int) -> String:
+	return """
+		local n = 0
+		return {
+			on_batch = function(v, dt)
+				n = n + 1
+				if n == 1 then
+					for k = 1, %d do
+						%s
+					end
+				else
+					v.vx[0] = 44
+				end
+			end,
+		}
+	""" % [times, call]
+
+
+func _run_budget_case(call: String, times: int) -> void:
+	for trial in 3:
+		var behavior := _behavior(_budget_script(call, times))
+		var slot := _arm(behavior, Vector2(30.0, 0.0))
+		var extra := ShotRequest.with_velocity(Vector2(4, 4), Vector2(30.0, 0.0))
+		extra.lifetime = 5.0
+		var other := manager.spawn(extra)
+		var before := manager.alive_count()
+		var origin := manager.pool.pos[slot]
+		manager.step(DT)
+		assert_false(behavior.last_result.ok)
+		assert_eq(behavior.last_result.stopped, "instruction budget")
+		assert_true("script timeout (instruction budget)" in behavior.last_result.error, behavior.last_result.error)
+		assert_eq(manager.pool.vel[slot], Vector2(30.0, 0.0))
+		assert_eq(manager.alive_count(), before)
+		assert_lt(manager.pool.pos[slot].distance_to(origin + Vector2(30.0, 0.0) * DT), 0.25)
+		manager.step(DT)
+		assert_true(behavior.last_result.ok, behavior.last_result.error)
+		assert_eq(manager.pool.vel[slot], Vector2(44.0, 0.0))
+		assert_eq(manager.pool.vel[other], Vector2(30.0, 0.0))
+		manager.queue_free()
+		manager = BulletManager.new()
+		manager.capacity = 64
+		manager.world_bounds = Rect2(-2000, -2000, 4000, 4000)
+		manager.render_enabled = false
+		manager.auto_step = false
+		add_child_autofree(manager)
+
+
+func test_kill_budget_loop_stops_cleanly() -> void:
+	_run_budget_case("v:kill(0)", 6000)
+	_run_budget_case("pcall(function() v:kill(0) end)", 6000)
+
+
+func test_spawn_budget_loop_stops_cleanly() -> void:
+	_run_budget_case("v:spawn_child(0, 0, 0, 1, 0, 1)", 6000)
+	_run_budget_case("pcall(function() v:spawn_child(0, 0, 0, 1, 0, 1) end)", 6000)
+
+
+func test_teleport_budget_loop_stops_cleanly() -> void:
+	_run_budget_case("v:teleport(0, 9, 9)", 5000)
+	_run_budget_case("pcall(function() v:teleport(0, 9, 9) end)", 5000)
+
+
+func test_batch_timeout_is_reported_and_rate_limited() -> void:
+	var behavior := _behavior("return { on_batch = function(v, dt) while true do end end }")
+	var slot := _arm(behavior, Vector2(9.0, 0.0))
+	for _i in 6:
+		manager.step(DT)
+		assert_false(behavior.last_result.ok)
+		assert_eq(behavior.last_result.stopped, "instruction budget")
+		assert_true("script timeout (instruction budget)" in behavior.last_result.error)
+	var key := "LuaBulletBehavior.error.on_batch"
+	var message := ScriptWarnings.last_message(key)
+	assert_true("script timeout (instruction budget)" in message, message)
+	assert_eq(ScriptWarnings.count(key), 6)
+	assert_eq(ScriptWarnings.printed_count(key), ScriptWarnings.LIMIT)
+	assert_eq(manager.pool.vel[slot], Vector2(9.0, 0.0))
+
+
+func test_sqrt_homing_loop_stays_inside_the_batch_budget() -> void:
+	var counts: Array[int] = [5000, 10000]
+	for count in counts:
+		var big := BulletManager.new()
+		big.capacity = count + 8
+		big.logical_cap = count + 8
+		big.enemy_reserve = 0
+		big.world_bounds = Rect2(-200000, -200000, 400000, 400000)
+		big.render_enabled = false
+		big.auto_step = false
+		add_child_autofree(big)
+		var behavior := LuaBulletBehavior.new()
+		_open.append(behavior)
+		behavior.host.wall_msec = 50
+		var loaded := behavior.load_source("""
+			return {
+				on_batch = function(v, dt)
+					local vx, vy, px, py = v.vx, v.vy, v.px, v.py
+					for i = 0, v.n - 1 do
+						local dx, dy = 100 - px[i], 100 - py[i]
+						local d = math.sqrt(dx * dx + dy * dy)
+						if d > 0 then
+							vx[i] = dx / d * 200
+							vy[i] = dy / d * 200
+						end
+					end
+				end,
+			}
+		""".dedent(), "weapon.lua", big, -1)
+		assert_true(loaded.ok, loaded.error)
+		var id := big.register_behavior(behavior)
+		for _i in count:
+			var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(30, 0))
+			req.lifetime = 5.0
+			behavior.apply_to_request(req, id)
+			assert_gte(big.spawn(req), 0)
+		big.step(DT)
+		assert_true(behavior.last_result.ok, behavior.last_result.error)
+		var budget := ScriptHost.INSTRUCTION_BUDGET + count * ScriptHost.BATCH_ROW_BUDGET
+		assert_lte(behavior.host.batch_instructions, budget)
+		assert_gt(big.pool.vel[0].x, 100.0)
+		assert_gt(big.pool.vel[0].y, 100.0)
+		print("SQRT_HOMING count=%d instructions=%d budget=%d" % [count, behavior.host.batch_instructions, budget])
+
+
+func test_a_forged_command_table_cannot_bypass_caps_or_validation() -> void:
+	var behavior := _behavior("""
+		return {
+			on_batch = function(v, dt)
+				local ok = pcall(function() rawset(v, "_batch_cmds", {}) end)
+				if ok then error("command table was writable") end
+				v.vx[0] = 15
+			end,
+		}
+	""".dedent())
+	var slot := _arm(behavior, Vector2(8.0, 0.0))
+	var id := manager.pool.behavior[slot]
+	manager.step(DT)
+	assert_true(behavior.last_result.ok, behavior.last_result.error)
+	assert_eq(manager.pool.vel[slot].x, 15.0)
+	var host := behavior.host
+	var view := manager.gather_batch(id, DT)
+	host._batch = view
+	var packed_v: Variant = host._host.get("_packed")
+	assert_true(packed_v is LuaTable)
+	var packed := host._as_table(packed_v)
+	packed.set(1, BatchView.CMD_KILL + 99 * 8)
+	var tally := host._state.create_table()
+	tally.set("cmd", 0)
+	tally.set("spawn", 0)
+	tally.set("n", 1)
+	host._host.set("_batch_tally", tally)
+	var err := host._flush_lua_commands()
+	assert_true("row" in err, err)
+	view.discard = true
+	manager.commit_batch(view)
+	assert_eq(manager.pool.vel[slot].x, 15.0)
+	for i in 300:
+		packed.set(i + 1, BatchView.CMD_SPAWN)
+		var base := i * 5
+		host._cmd_nums[base] = 1.0
+		host._cmd_nums[base + 1] = 2.0
+		host._cmd_nums[base + 2] = 6.0
+		host._cmd_nums[base + 3] = 0.0
+		host._cmd_nums[base + 4] = 1.5
+	var view2 := manager.gather_batch(id, DT)
+	host._batch = view2
+	tally.set("n", 300)
+	host._host.set("_batch_tally", tally)
+	assert_eq(host._flush_lua_commands(), "")
+	assert_eq(view2.dropped_spawns, 300 - BatchView.SPAWN_CAP)
+	manager.commit_batch(view2)
+	assert_gt(manager.alive_count(), 1)
+	var child_owner := Layers.PLAYER
+	for i in manager.pool.count:
+		if manager.pool.vel[i] == Vector2(6.0, 0.0):
+			child_owner = manager.pool.owner_layer[i]
+	assert_eq(child_owner, Layers.PLAYER)
+
+
+func test_per_bullet_velocity_loop_stops_cleanly() -> void:
+	var behavior := _behavior("""
+		local n = 0
+		return {
+			on_spawn = function(b)
+				n = n + 1
+				if n == 1 then
+					for k = 1, 20000 do
+						pcall(function() b:set_velocity(1, 0) end)
+					end
+				else
+					b:set_velocity(44, 0)
+				end
+			end,
+		}
+	""".dedent())
+	var slot := _arm(behavior, Vector2(12.0, 0.0))
+	assert_false(behavior.last_result.ok)
+	assert_eq(behavior.last_result.stopped, "instruction budget")
+	assert_eq(manager.pool.vel[slot], Vector2(12.0, 0.0))
+	var again := ShotRequest.with_velocity(Vector2.ZERO, Vector2(12.0, 0.0))
+	again.lifetime = 5.0
+	behavior.apply_to_request(again, manager.pool.behavior[slot])
+	var second := manager.spawn(again)
+	assert_true(behavior.last_result.ok, behavior.last_result.error)
+	assert_eq(manager.pool.vel[second], Vector2(44.0, 0.0))
+
+
+func test_native_batch_commands_use_the_captured_bullet() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var big := BulletManager.new()
+	big.backend_preference = "native"
+	big.capacity = 64
+	big.logical_cap = 64
+	big.enemy_reserve = 0
+	big.world_bounds = Rect2(-2000, -2000, 4000, 4000)
+	big.render_enabled = false
+	big.auto_step = false
+	add_child_autofree(big)
+	var behavior := LuaBulletBehavior.new()
+	_open.append(behavior)
+	behavior.host.wall_msec = 5000
+	var loaded := behavior.load_source("""
+		return {
+			on_batch = function(v, dt)
+				v.vx[1] = 70
+				v:teleport(1, 12, -4)
+				v:kill(0)
+				v:spawn_child(1, 0, 0, 9, 0, 2)
+			end,
+		}
+	""".dedent(), "weapon.lua", big, -1)
+	assert_true(loaded.ok, loaded.error)
+	var id := big.register_behavior(behavior)
+	for _i in 2:
+		var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(30, 0))
+		req.lifetime = 5.0
+		behavior.apply_to_request(req, id)
+		assert_true(big.is_native_id(big.spawn(req)))
+	big.step(DT)
+	assert_true(behavior.last_result.ok, behavior.last_result.error)
+	assert_eq(big.native.count(), 1)
+	var view := big.gather_batch(id, DT)
+	assert_eq(view.n, 1)
+	assert_almost_eq(view.px[0], 12.0, 0.05)
+	assert_almost_eq(view.py[0], -4.0, 0.05)
+	assert_almost_eq(view.vx[0], 70.0, 0.05)
+	assert_eq(big.pool.count, 1)
+	assert_eq(big.pool.vel[0], Vector2(9.0, 0.0))
+	assert_eq(big.pool.owner_layer[0], Layers.PLAYER)
+	assert_eq(big.pool.behavior[0], 0)

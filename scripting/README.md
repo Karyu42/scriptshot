@@ -44,7 +44,7 @@ A script error in `on_batch` commits nothing. Zero-copy is off; see
 Per call the engine keeps the first 4096 commands and the first 256
 `spawn_child` calls (`BatchView.CMD_CAP`, `BatchView.SPAWN_CAP`). The rest are
 dropped and one warning is logged. The `on_batch` instruction budget is
-100,000 plus 64 per row, capped at 2,000,000. The 50 ms wall clock and the
+100,000 plus 128 per row, capped at 2,000,000. The 50 ms wall clock and the
 64 MB memory cap still apply. These limits are provisional and may change.
 A hot reload that adds `on_batch` does not affect bullets already spawned
 with `behavior_id` 0.
