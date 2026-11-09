@@ -86,10 +86,17 @@ suite_is_green() {
 	grep -a -E -q -e '---- All tests passed! ----' -e '---- [0-9]+ pending/risky tests\. ----' -- "$log"
 }
 
+# junit_is_green <file>: the GUT junit XML exists, is non-empty, parses, and its testsuites/testsuite
+# failures= + errors= sum to 0 (tools/ci/junit_green.py). The console summary alone is not enough to
+# accept an abnormal exit: the banner prints before the junit file is written (gut.gd _end_run).
+junit_is_green() {
+	python3 tools/ci/junit_green.py "$1"
+}
+
 tolerate_lua_shutdown() {
-	local status="$1" log="$2"
-	if [ "$status" -eq 134 ] && suite_is_green "$log"; then
-		echo "run_tests.sh: godot aborted while releasing Lua at exit after a green suite"
+	local status="$1" log="$2" junit="$3"
+	if [ "$status" -eq 134 ] && suite_is_green "$log" && junit_is_green "$junit"; then
+		echo "run_tests.sh: godot aborted while releasing Lua at exit after a green suite (console and junit)"
 		return 0
 	fi
 	return "$status"
@@ -98,26 +105,59 @@ tolerate_lua_shutdown() {
 # Exit-after-results guard (issue #41). The same Lua-state release at exit sometimes hangs instead of
 # aborting (about 1 run in 20, on main too), so the job sat until its timeout with every test green.
 # Once GUT has printed its end-of-run summary ("---- ... ----" grand total) or "Results saved to", godot gets
-# GUT_EXIT_GRACE_S seconds (default 60) to exit. After that it is killed (TERM, then KILL after 5 s):
-#   green summary -> success, with a ::warning:: annotation pointing at #41
-#   anything else -> failure
+# GUT_EXIT_GRACE_S seconds (default 60, measured with EPOCHREALTIME, so not rounded down to whole seconds)
+# to exit. After that it is killed (TERM, then KILL after 5 s):
+#   green console summary AND green junit XML -> success, with a ::warning:: annotation pointing at #41
+#   anything else (red summary, junit missing, malformed, failures or errors) -> failure
+# A hang before any results is not killed here; the CI job timeout still applies.
 results_written() {
 	grep -a -E -q -e '^Results saved to ' -e '---- (All tests passed!|[0-9]+ pending/risky tests\.|[0-9]+ failing tests|[0-9]+ assert\(s\) in before_all/after_all methods failed) ----' -- "$1"
 }
 
+now_ms() {
+	local t="${EPOCHREALTIME//[.,]/}"
+	echo $((10#$t / 1000))
+}
+
+# junit_path <gut args...>: the file GUT will write, from -gjunit_xml_file=PATH (res:// -> project dir).
+# Empty if there is none, so run_gut asks for one in LOG_DIR. -gjunit_xml_timestamp renames the file at
+# write time; it cannot be predicted, so it is reported as unusable ("-") and an abnormal exit stays red.
+junit_path() {
+	local arg path=""
+	for arg in "$@"; do
+		case "$arg" in
+			-gjunit_xml_timestamp*) echo "-"; return ;;
+			-gjunit_xml_file=*) path="${arg#-gjunit_xml_file=}" ;;
+		esac
+	done
+	case "$path" in
+		res://*) path="$PWD/${path#res://}" ;;
+	esac
+	echo "$path"
+}
+
 run_gut() {
-	local log="$LOG_DIR/gut.log" grace="${GUT_EXIT_GRACE_S:-60}" pid tail_pid status seen=0 hung=0 i
+	local log="$LOG_DIR/gut.log" grace="${GUT_EXIT_GRACE_S:-60}" pid tail_pid status
+	local results_seen=0 seen_at=0 hung=0 i junit extra=()
+	junit="$(junit_path "$@")"
+	if [ -z "$junit" ]; then
+		junit="$LOG_DIR/gut-junit.xml"
+		extra=(-gjunit_xml_file="$junit")
+	fi
+	# A file left by an earlier process (the split suite writes the same path twice) must not count.
+	[ "$junit" = "-" ] || rm -f "$junit"
 	: >"$log"
-	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" >"$log" 2>&1 &
+	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" "${extra[@]}" >"$log" 2>&1 &
 	pid=$!
 	# Stream the output live (the CI step tees this script's stdout into reports/gut.log).
 	tail -n +1 -f --pid="$pid" "$log" &
 	tail_pid=$!
 	while kill -0 "$pid" 2>/dev/null; do
-		if [ "$seen" -eq 0 ] && results_written "$log"; then
-			seen=$SECONDS
+		if [ "$results_seen" -eq 0 ] && results_written "$log"; then
+			results_seen=1
+			seen_at=$(now_ms)
 		fi
-		if [ "$seen" -ne 0 ] && [ $((SECONDS - seen)) -ge "$grace" ]; then
+		if [ "$results_seen" -eq 1 ] && [ $(($(now_ms) - seen_at)) -ge $((grace * 1000)) ]; then
 			hung=1
 			kill -TERM "$pid" 2>/dev/null
 			for ((i = 0; i < 5; i++)); do
@@ -133,14 +173,14 @@ run_gut() {
 	status=$?
 	wait "$tail_pid" 2>/dev/null
 	if [ "$hung" -eq 1 ]; then
-		if suite_is_green "$log"; then
-			echo "::warning::godot did not exit after results (teardown hang, see #41); killed after ${grace}s, suite was green"
+		if suite_is_green "$log" && junit_is_green "$junit"; then
+			echo "::warning::godot did not exit after results (teardown hang, see #41); killed after ${grace}s, suite and junit were green"
 			return 0
 		fi
-		echo "run_tests.sh: godot did not exit ${grace}s after results and the suite was not green; killed" >&2
+		echo "run_tests.sh: godot did not exit ${grace}s after results and the suite or its junit XML was not green; killed" >&2
 		return 1
 	fi
-	tolerate_lua_shutdown "$status" "$log"
+	tolerate_lua_shutdown "$status" "$log" "$junit"
 }
 
 if [ "$split" -eq 1 ]; then
