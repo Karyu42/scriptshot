@@ -326,6 +326,8 @@ var _strip_ok := false
 ## States retired after three watchdog stops, oldest first. Each one still has
 ## its sandbox, so player code there still cannot install __gc.
 var _retired: Array[RetiredState] = []
+## Coroutines a kept wrapper may still be bound to. See _run.
+var _value_threads: Array[LuaThread] = []
 var _source := ""
 var _chunk_name := "script.lua"
 var _closed := false
@@ -987,6 +989,27 @@ func _run(fn: LuaFunction, args: Array) -> RunResult:
 	if yielded:
 		_parked.append(co)
 	_in_lua = false
+	# lua-gdextension 0.8.2 binds each LuaTable / LuaFunction it
+	# hands out to the lua_State of the thread the value was read from, and uses
+	# that thread on every later call on the wrapper (get, set, invoke,
+	# LuaCoroutine.create, and its destructor). A value returned by `co` is bound
+	# to `co`'s thread, which Lua may collect once the run is over, while the
+	# weapon table and its callbacks are kept for the life of the state. So the
+	# value is passed through `_host` (a main-thread table) and read back as a
+	# wrapper bound to the main thread. The old wrapper is released first, since
+	# the binding reuses a live wrapper for the same Lua value. If something else
+	# still holds it, `co` is kept with the state instead.
+	if resumed is LuaObject and _host != null:
+		# `resumed` is the only holder of the old wrapper here.
+		var old_id := _instance_id(resumed)
+		_host.rawset("_rebind", resumed)
+		resumed = null
+		resumed = _host.rawget("_rebind")
+		_host.rawset("_rebind", null)
+		if _instance_id(resumed) == old_id:
+			_value_threads.append(co)
+	elif resumed is LuaObject:
+		_value_threads.append(co)
 	_drain_print_buffer()
 	result.output = _output.duplicate()
 	if _killed:
@@ -1041,6 +1064,13 @@ func _hook(_debug: Variant) -> int:
 				th.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, 1)
 		return int(LuaThread.HOOK_YIELD)
 	return int(LuaThread.HOOK_OK)
+
+
+func _instance_id(v: Variant) -> int:
+	if v is Object:
+		@warning_ignore("unsafe_cast")
+		return (v as Object).get_instance_id()
+	return 0
 
 
 func _clear_pending() -> void:
