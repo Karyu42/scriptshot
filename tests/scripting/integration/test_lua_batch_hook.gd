@@ -211,9 +211,7 @@ func test_gc_finalizer_is_refused_and_does_not_hang() -> void:
 	assert_true("__gc" in err, err)
 
 
-func test_gc_added_after_setmetatable_never_runs() -> void:
-	# Lua 5.4 marks an object for finalization only when setmetatable sees __gc.
-	# A field added later is inert, and reusing that metatable is refused.
+func test_metatable_fields_set_later_are_inert() -> void:
 	var behavior := _behavior("""
 		local ran = false
 		local kept = {}

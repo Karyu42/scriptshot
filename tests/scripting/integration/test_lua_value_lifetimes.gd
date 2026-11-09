@@ -1,7 +1,5 @@
 extends GutTest
-## Player scripts on the normal path (LuaBulletBehavior, sandbox, manager step)
-## keep working across Lua collector cycles, and bad input raises an ordinary
-## Lua error that commits nothing.
+## Value lifetime cases for Lua weapons on the normal path.
 
 const DT := 1.0 / 60.0
 
@@ -52,7 +50,7 @@ func _steps(n: int) -> void:
 		manager.step(DT)
 
 
-func test_on_batch_survives_a_full_collect_every_tick() -> void:
+func test_value_lifetime_case_1() -> void:
 	var behavior := _behavior("""
 		return {
 			on_batch = function(v, dt)
@@ -69,7 +67,7 @@ func test_on_batch_survives_a_full_collect_every_tick() -> void:
 	assert_eq(behavior.dispatches("on_batch"), 30)
 
 
-func test_on_batch_survives_incremental_collect_steps() -> void:
+func test_value_lifetime_case_2() -> void:
 	var behavior := _behavior("""
 		return {
 			on_batch = function(v, dt)
@@ -83,7 +81,7 @@ func test_on_batch_survives_incremental_collect_steps() -> void:
 		assert_true(behavior.last_result.ok, behavior.last_result.error)
 
 
-func test_allocation_churn_without_explicit_collect() -> void:
+func test_value_lifetime_case_3() -> void:
 	var behavior := _behavior("""
 		local keep = {}
 		return {
@@ -100,7 +98,7 @@ func test_allocation_churn_without_explicit_collect() -> void:
 		assert_true(behavior.last_result.ok, behavior.last_result.error)
 
 
-func test_event_hooks_survive_a_collect_between_calls() -> void:
+func test_value_lifetime_case_4() -> void:
 	var behavior := _behavior("""
 		return {
 			on_spawn = function(b)
@@ -120,7 +118,7 @@ func test_event_hooks_survive_a_collect_between_calls() -> void:
 	assert_eq(behavior.dispatches("on_spawn"), 20)
 
 
-func test_bad_rows_after_a_collect_raise_lua_errors() -> void:
+func test_value_lifetime_case_5() -> void:
 	var cases := {
 		"v.vx[99] = 1": "row must be an integer",
 		"v.vx[-1] = 1": "row must be an integer",
@@ -152,7 +150,7 @@ func test_bad_rows_after_a_collect_raise_lua_errors() -> void:
 		_new_manager()
 
 
-func test_errors_inside_pcall_and_coroutines_after_a_collect() -> void:
+func test_value_lifetime_case_6() -> void:
 	var behavior := _behavior("""
 		return {
 			on_batch = function(v, dt)
@@ -175,7 +173,7 @@ func test_errors_inside_pcall_and_coroutines_after_a_collect() -> void:
 	assert_eq(manager.pool.vel[slot].x, 3.0)
 
 
-func test_reload_after_a_collect_keeps_the_new_callbacks() -> void:
+func test_value_lifetime_case_7() -> void:
 	var behavior := _behavior("return { on_batch = function(v, dt) collectgarbage('collect'); v.vx[0] = 1 end }")
 	var slot := _arm(behavior, Vector2(5.0, 0.0))
 	_steps(3)
@@ -189,7 +187,7 @@ func test_reload_after_a_collect_keeps_the_new_callbacks() -> void:
 	assert_eq(manager.pool.vel[slot].x, 2.0)
 
 
-func test_non_number_column_writes_raise_a_lua_error() -> void:
+func test_value_lifetime_case_8() -> void:
 	for value: String in ["'abc'", "'12'", "{}", "nil", "true", "print", "coroutine.create(print)", "v", "v.vx"]:
 		var code := "return { on_batch = function(v, dt) collectgarbage('collect'); v.vx[0] = %s end }" % value
 		var behavior := _behavior(code)

@@ -1007,16 +1007,11 @@ func _run(fn: LuaFunction, args: Array) -> RunResult:
 	if yielded:
 		_parked.append(co)
 	_in_lua = false
-	# lua-gdextension 0.8.2 binds each LuaTable / LuaFunction it
-	# hands out to the lua_State of the thread the value was read from, and uses
-	# that thread on every later call on the wrapper (get, set, invoke,
-	# LuaCoroutine.create, and its destructor). A value returned by `co` is bound
-	# to `co`'s thread, which Lua may collect once the run is over, while the
-	# weapon table and its callbacks are kept for the life of the state. So the
-	# value is passed through `_host` (a main-thread table) and read back as a
-	# wrapper bound to the main thread. The old wrapper is released first, since
-	# the binding reuses a live wrapper for the same Lua value. If something else
-	# still holds it, `co` is kept with the state instead.
+	# lua-gdextension 0.8.2 ties each LuaTable / LuaFunction wrapper to the Lua
+	# thread it was read from. A returned value is re-read through `_host` so the
+	# wrapper the host keeps is tied to the main thread. The binding reuses a live
+	# wrapper for the same value, so the old one is released first; if something
+	# else still holds it, `co` is kept with the state instead.
 	if resumed is LuaObject and _host != null:
 		# `resumed` is the only holder of the old wrapper here.
 		var old_id := _instance_id(resumed)
