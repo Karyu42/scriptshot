@@ -341,6 +341,23 @@ keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
 same machine measured work p50/p95 of 13.97/14.20 ms on GDScript and 0.95/1.04 ms
 native, with every bullet still in the sim (pool count 0).
 
+## Web export
+
+The library is **not shipped on web** for now (CoS ruling on #36, which tracks
+native-on-web). The Web preset turns on `variant/extensions_support` (dlink
+no-threads template) because lua-gdextension is a GDExtension, and lists
+`scriptshot_native.gdextension, bin/*` in its `exclude_filter`. Note that in
+Godot 4.7.2 `extensions_support=false` does **not** keep a GDExtension out of a
+web export: every exported `.gdextension` wasm is copied and listed in
+`GODOT_CONFIG.gdextensionLibs`, and the no-dlink template then refuses to boot
+(issue #40). The exclude filter is what keeps this library out. With it, the
+`.gdextension` file, its wasm and its `extension_list.cfg` line are all left out
+of the export, whether or not the file has `web.*` keys. The web build runs the
+GDScript pool; `--bullet-backend=native` logs the single fallback warning.
+`tools/ci/web_smoke.sh` checks both (docs/qa/release-builds.md section 4.1).
+Shipping native on web means removing that filter entry and passing the #36
+smoke (side module loads, backend resolves to native).
+
 ## Out of scope
 
 Left for later PRs, on purpose:
