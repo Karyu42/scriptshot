@@ -1,6 +1,6 @@
 extends GutTest
-## shutdown() closes a state only when no coroutine stopped mid-call.
-## A stopped batch coroutine is not resumed and its wrappers are not freed.
+## shutdown() pins every Lua state and frees no wrappers.
+## A stopped batch coroutine is not resumed.
 
 
 func _is_int(v: Variant, n: int) -> bool:
@@ -112,8 +112,7 @@ func test_shutdown_releases_retired_state_stopped_batch_and_looping_finalizer() 
 	var elapsed := Time.get_ticks_msec() - started
 	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
 	assert_true(host.is_shutdown())
-	# Fields are cleared. The Lua state stays in the process pin because a
-	# coroutine stopped mid-call.
+	# Fields are cleared. The Lua state stays in the process pin.
 	assert_null(host._state)
 	assert_eq(host._retired.size(), 0)
 	assert_eq(host._parked.size(), 0)
@@ -135,8 +134,8 @@ func test_another_host_runs_after_shutdown() -> void:
 	var pins := ScriptHost.lifetime_pin_count()
 	first.shutdown()
 	assert_true(first.is_shutdown())
-	assert_false(first.keeps_lua_state())
-	assert_eq(ScriptHost.lifetime_pin_count(), pins)
+	assert_true(first.keeps_lua_state())
+	assert_gt(ScriptHost.lifetime_pin_count(), pins)
 	var second := _host()
 	var again := second.load_string("return 2 + 2", "second.lua")
 	assert_true(again.ok, again.error)
@@ -145,14 +144,13 @@ func test_another_host_runs_after_shutdown() -> void:
 	var second_pins := ScriptHost.lifetime_pin_count()
 	second.shutdown()
 	assert_true(second.is_shutdown())
-	assert_false(second.keeps_lua_state())
-	assert_eq(ScriptHost.lifetime_pin_count(), second_pins)
+	assert_true(second.keeps_lua_state())
+	assert_gt(ScriptHost.lifetime_pin_count(), second_pins)
 	assert_eq(second.host_call_count(), calls)
 
 
-## Quiet state: nothing stopped mid-call, so shutdown closes it.
-## finalizer strip now covers all reachable tables.
-func test_shutdown_closes_a_quiet_state_after_the_finalizer_strip() -> void:
+## Quiet state: shutdown still pins it and frees nothing.
+func test_shutdown_pins_a_quiet_state() -> void:
 	var host := _host()
 	var loaded := host.load_string("return { on_spawn = function(b) end }", "quiet.lua")
 	assert_true(loaded.ok, loaded.error)
@@ -192,9 +190,58 @@ func test_shutdown_closes_a_quiet_state_after_the_finalizer_strip() -> void:
 	var elapsed := Time.get_ticks_msec() - started
 	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
 	assert_true(host.is_shutdown())
-	assert_false(host.keeps_lua_state())
+	assert_true(host.keeps_lua_state())
 	assert_null(host._state)
-	assert_eq(ScriptHost.lifetime_pin_count(), pins)
+	assert_gt(ScriptHost.lifetime_pin_count(), pins)
 	assert_eq(host.host_call_count(), calls, "shutdown called back into the host")
 	host.shutdown()
+	assert_eq(host.host_call_count(), calls)
+
+
+func test_a_non_bool_value_is_not_treated_as_true() -> void:
+	var host := _host()
+	assert_true(host._is_true(true))
+	assert_false(host._is_true(false))
+	assert_false(host._is_true(1))
+	assert_false(host._is_true("true"))
+	assert_false(host._is_true(host._state))
+	host.shutdown()
+
+
+func test_shutdown_pins_a_large_graph() -> void:
+	var host := _host()
+	var planted: Variant = host._state.do_string("""
+		local t = {}
+		local fin = function() end
+		for i = 1, 30000 do
+			t[i] = setmetatable({}, {__gc = fin})
+		end
+		_G.__scriptshot_pin = t
+		return 1
+	""".dedent(), "@large.lua")
+	assert_true(_is_int(planted, 1), str(planted))
+	var calls := host.host_call_count()
+	var started := Time.get_ticks_msec()
+	host.shutdown()
+	var elapsed := Time.get_ticks_msec() - started
+	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
+	assert_true(host.is_shutdown())
+	assert_true(host.keeps_lua_state())
+	assert_eq(host.host_call_count(), calls)
+
+
+func test_shutdown_pins_when_preparation_raises() -> void:
+	var host := _host()
+	var planted: Variant = host._state.do_string("""
+		_G.__scriptshot_pin = {__strip_error = true}
+		return 1
+	""".dedent(), "@raise.lua")
+	assert_true(_is_int(planted, 1), str(planted))
+	var calls := host.host_call_count()
+	var started := Time.get_ticks_msec()
+	host.shutdown()
+	var elapsed := Time.get_ticks_msec() - started
+	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
+	assert_true(host.is_shutdown())
+	assert_true(host.keeps_lua_state())
 	assert_eq(host.host_call_count(), calls)
