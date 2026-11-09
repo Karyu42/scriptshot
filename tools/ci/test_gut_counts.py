@@ -59,6 +59,11 @@ class GutCounts(unittest.TestCase):
         one = BUILT.split("run_tests.sh: unit")[0]
         self.assertEqual(self.run_main(one, "--expect-native"), 1)
 
+    def test_zero_tests_process_fails_expect_native(self):
+        empty = BUILT.replace("Tests                10\nPassing Tests        10", "Tests                 0\nPassing Tests         0")
+        self.assertEqual(gut_counts.parse(empty)["Lua host guards"]["tests"], 0)
+        self.assertEqual(self.run_main(empty, "--expect-native"), 1)
+
     def test_crlf_log(self):
         self.assertEqual(self.run_main(BUILT.replace("\n", "\r\n"), "--expect-native"), 0)
 

@@ -8,7 +8,7 @@ unit + bullet hooks"). Each prints a totals block (Scripts / Tests / Passing Tes
 [Risky/Pending] / Asserts / Time). This reads the last block of each process and prints tests, passing, failing
 and pending per process and in total.
 
---expect-native: exit 1 unless every process printed its totals, nothing failed, and Risky/Pending is 0. The
+--expect-native: exit 1 unless every process printed its totals and ran at least one test, nothing failed, and Risky/Pending is 0. The
 native-only GUT tests (test_native_backend, test_native_reflection, test_native_parity, the native half of
 test_batch_hook) are pending when NativeBulletSim is not registered, so pending > 0 means the library did not load.
 Linux reference: built 10 host + 1088 unit, 0 pending; unbuilt 10 + 1014 passing, 74 pending.
@@ -86,6 +86,9 @@ def main(argv=None):
         if total["pending"]:
             problems.append(f"{total['pending']} pending test(s): the native library did not load "
                             "(the native GUT tests are pending without NativeBulletSim)")
+        for name, sec in sections.items():
+            if sec["tests"] < 1:
+                problems.append(f"GUT process '{name}' ran 0 tests")
         if total["tests"] and total["passing"] != total["tests"]:
             problems.append(f"passing {total['passing']} != tests {total['tests']}")
     if a.json:
