@@ -112,6 +112,13 @@ var _declared_scripts: Array[Script] = [null]
 ## mask. on_update is not a hook_mask bit; an override still keeps the bullet
 ## on the GDScript pool.
 var _update_override := PackedByteArray([0])
+## Behavior ids that are batch-only (no per-bullet hook). Rebuilt when hooks change.
+var _batch_only_ids: Array[int] = []
+var _batch_ids_dirty := true
+## > 0 while a batch hook runs. Spawns in that window stay on the pool, the same
+## rule as a spawn from on_update: the native step would otherwise move a child
+## born this tick.
+var _batch_depth := 0
 ## How many times an explicit hook_mask was looked at against its script (tests).
 var _declared_checks := 0
 var _sim_time := 0.0
@@ -280,6 +287,7 @@ func _refresh_hooks(id: int, b: BulletBehavior) -> void:
 	_hook_scripts[id] = b.get_script()
 	_hook_cache[id] = BulletBehavior.detect_hooks(b)
 	_update_override[id] = 1 if BulletBehavior.overrides_on_update(b) else 0
+	_sync_batch_routing(id)
 
 
 ## The hooks of behaviour `id` that exist (BulletBehavior.HOOK_* bits). An explicit
@@ -365,13 +373,19 @@ func collect_walls() -> int:
 ##
 ## A hook-free bullet spawned outside a hook goes to NativeBulletSim when native
 ## is selected: behavior_id 0, or a behaviour whose mask calls nothing and whose
-## script does not override on_update (declarative kinematics). Any unmasked
-## event hook, or an on_update override, stays in the pool. spawn() then returns
-## that bullet's stable native id (bit 62 set), not a pool slot. Only >= 0
-## means the spawn succeeded.
+## script does not override on_update (declarative kinematics, including a
+## batch-only behaviour). Any unmasked event hook, or an on_update override,
+## stays in the pool. spawn() then returns that bullet's stable native id
+## (bit 62 set), not a pool slot. Only >= 0 means the spawn succeeded.
 func spawn(request: ShotRequest) -> int:
 	if pool.hook_owner >= 0:
 		return _spawn_inheriting(pool.hook_owner, request, "BulletManager.spawn", "a hook")
+	# A batch hook is not one bullet, so there is no single owner to inherit.
+	# The spawn still stays on the pool: native integrate has already run, and
+	# a child handed to the sim would be swept this tick. spawn_child(row)
+	# inherits that row's owner; a direct spawn() keeps the request's owner.
+	if _batch_depth > 0:
+		return _spawn_checked(request)
 	if _wants_native(request):
 		return _spawn_native(request)
 	return _spawn_checked(request)
@@ -399,6 +413,55 @@ func _has_per_bullet_hooks(behavior_id: int) -> bool:
 	if b.get_script() != _hook_scripts[behavior_id]:
 		_refresh_hooks(behavior_id, b)
 	return _update_override[behavior_id] != 0
+
+
+## True when this behaviour's only scripted update is the batch hook.
+## Those bullets live in the native sim when native is selected. A per-bullet
+## hook (event mask or on_update) keeps them on the pool instead.
+func _is_batch_only(behavior_id: int) -> bool:
+	var b := _get_behavior(behavior_id)
+	if b == null or b.update_mode == BulletBehavior.UpdateMode.PER_BULLET:
+		return false
+	if _has_per_bullet_hooks(behavior_id):
+		return false
+	return _wants_batch_callback(b)
+
+
+## True when the batch callback should run for this behaviour.
+## AUTO does not run it on top of on_update (that would steer twice).
+## An explicit BATCH does, over whichever store holds the bullets.
+func _wants_batch_callback(b: BulletBehavior) -> bool:
+	if b.update_mode == BulletBehavior.UpdateMode.PER_BULLET:
+		return false
+	if b.update_mode == BulletBehavior.UpdateMode.BATCH:
+		return true
+	return BulletBehavior.overrides_on_update_batch(b)
+
+
+func _sync_batch_routing(id: int) -> void:
+	if pool != null:
+		pool.set_batch_only(id, _is_batch_only(id))
+	_batch_ids_dirty = true
+
+
+func _ensure_batch_ids() -> void:
+	if not _batch_ids_dirty:
+		return
+	_batch_only_ids.clear()
+	for id in range(1, _behaviors.size()):
+		if _is_batch_only(id):
+			_batch_only_ids.append(id)
+	_batch_ids_dirty = false
+
+
+func _has_live_native_batch() -> bool:
+	if native == null:
+		return false
+	_ensure_batch_ids()
+	for id in _batch_only_ids:
+		if native.count_with_behavior(id) > 0:
+			return true
+	return false
 
 
 func _spawn_native(request: ShotRequest) -> int:
@@ -697,6 +760,199 @@ func _flush_native_reflects() -> void:
 		)
 
 
+## Packed copy of one behaviour's live bullets. Batch-only behaviours are read
+## from the native sim when it is selected, and from the pool otherwise
+## (including every batch bullet on the GDScript backend).
+func gather_batch(behavior_id: int, delta: float) -> BatchView:
+	var view := BatchView.new()
+	view.dt = delta
+	# Batch-only bullets spawned outside a hook are native. Ones spawned from a
+	# hook stayed on the pool; they are appended so the callback still sees them.
+	if _is_batch_only(behavior_id) and native != null:
+		_fill_native_batch(view, behavior_id)
+		view.native_rows = view.n
+	_append_pool_batch(view, behavior_id)
+	view.native = view.native_rows > 0 and view.native_rows == view.n
+	return view
+
+
+## Applies a view from gather_batch. Column writes first, then commands in the
+## order the callback recorded them. A stale id is skipped.
+func commit_batch(view: BatchView) -> void:
+	if view == null or view.discard or view.n == 0 and view.command_count() == 0:
+		return
+	if view.native_rows > 0 and native != null:
+		native.apply_batch(view.id, view.vx, view.vy, view.pa, view.pb)
+	if view.n > view.native_rows:
+		_commit_pool_columns(view)
+	_commit_batch_commands(view)
+
+
+func _append_pool_batch(view: BatchView, behavior_id: int) -> void:
+	var extra := 0
+	for i in pool.count:
+		if pool.dead_reason[i] == 0 and pool.behavior[i] == behavior_id:
+			extra += 1
+	if extra == 0:
+		return
+	var base := view.n
+	var n := base + extra
+	view.id.resize(n)
+	view.px.resize(n)
+	view.py.resize(n)
+	view.vx.resize(n)
+	view.vy.resize(n)
+	view.age.resize(n)
+	view.pa.resize(n)
+	view.pb.resize(n)
+	view.owner.resize(n)
+	var w := base
+	for i in pool.count:
+		if pool.dead_reason[i] != 0 or pool.behavior[i] != behavior_id:
+			continue
+		view.id[w] = pool.id_of(i)
+		var p := pool.pos[i]
+		var v := pool.vel[i]
+		view.px[w] = p.x
+		view.py[w] = p.y
+		view.vx[w] = v.x
+		view.vy[w] = v.y
+		view.age[w] = pool.age[i]
+		view.pa[w] = pool.param_a[i]
+		view.pb[w] = pool.param_b[i]
+		view.owner[w] = pool.owner_layer[i]
+		w += 1
+	view.n = n
+
+
+func _fill_native_batch(view: BatchView, behavior_id: int) -> void:
+	var d := native.gather_batch(behavior_id)
+	var count: int = d["n"]
+	view.n = count
+	view.id = d["id"]
+	view.px = d["px"]
+	view.py = d["py"]
+	view.vx = d["vx"]
+	view.vy = d["vy"]
+	view.age = d["age"]
+	view.pa = d["pa"]
+	view.pb = d["pb"]
+	view.owner = d["owner"]
+
+
+func _commit_pool_columns(view: BatchView) -> void:
+	var rows := mini(view.n, view.id.size())
+	for i in rows:
+		var bullet_id := view.id[i]
+		var slot := pool.slot_of(bullet_id)
+		if slot < 0 or pool.dead_reason[slot] != 0 or pool.id_of(slot) != bullet_id:
+			continue
+		if i >= view.vx.size() or i >= view.vy.size():
+			break
+		# set_velocity clamps, and a non-finite value kills as INVALID.
+		if not pool.set_velocity(slot, Vector2(view.vx[i], view.vy[i])):
+			continue
+		if i >= view.pa.size() or i >= view.pb.size():
+			continue
+		pool.param_a[slot] = view.pa[i]
+		pool.param_b[slot] = view.pb[i]
+		pool.sanitize(slot)
+
+
+func _commit_batch_commands(view: BatchView) -> void:
+	var killed := PackedByteArray()
+	killed.resize(view.n)
+	for c in view.command_count():
+		var row := view.command_row(c)
+		var op := view.command_op(c)
+		if op != BatchView.CMD_SPAWN and row >= 0 and row < killed.size() and killed[row] != 0:
+			continue
+		var bullet_id := -1
+		if row >= 0 and row < view.id.size():
+			bullet_id = view.id[row]
+		match op:
+			BatchView.CMD_KILL:
+				if _batch_kill(view, bullet_id) and row >= 0 and row < killed.size():
+					killed[row] = 1
+			BatchView.CMD_TELEPORT:
+				_batch_teleport(view, bullet_id, view.command_x(c), view.command_y(c))
+			BatchView.CMD_SPAWN:
+				# A kill earlier in this callback does not drop the child. The
+				# owner was copied at gather. A reused id does.
+				if row >= 0 and (row >= view.n or not _batch_id_current(bullet_id)):
+					continue
+				var request := view.spawn_request(c)
+				if request == null:
+					continue
+				_batch_spawn(view, row, request)
+
+
+func _batch_id_current(bullet_id: int) -> bool:
+	if bullet_id <= 0:
+		return false
+	if native != null and (bullet_id & NativeBackend.ID_FLAG) != 0:
+		return native.has_id(bullet_id)
+	var slot := pool.slot_of(bullet_id)
+	return slot >= 0 and pool.id_of(slot) == bullet_id
+
+
+func _batch_kill(view: BatchView, bullet_id: int) -> bool:
+	if native != null and (bullet_id & NativeBackend.ID_FLAG) != 0:
+		return native.kill(bullet_id)
+	var slot := pool.slot_of(bullet_id)
+	if slot < 0 or pool.dead_reason[slot] != 0 or pool.id_of(slot) != bullet_id:
+		return false
+	pool.mark_dead(slot, BulletPool.DespawnReason.MANUAL)
+	return true
+
+
+func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> void:
+	if native != null and (bullet_id & NativeBackend.ID_FLAG) != 0:
+		native.teleport_id(bullet_id, x, y)
+		return
+	var slot := pool.slot_of(bullet_id)
+	if slot < 0 or pool.dead_reason[slot] != 0 or pool.id_of(slot) != bullet_id:
+		return
+	if not is_finite(x + y):
+		pool.invalid_total += 1
+		ScriptWarnings.warn("BatchView.teleport", "BatchView.teleport: a non-finite position, the bullet was removed (DespawnReason.INVALID)")
+		pool.vel[slot] = Vector2.ZERO
+		pool.mark_dead(slot, BulletPool.DespawnReason.INVALID)
+		return
+	pool.teleport(slot, Vector2(x, y))
+
+
+func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
+	if row >= 0 and row < view.owner.size():
+		var owner: int = view.owner[row]
+		var outer := pool.hook_owner
+		pool.hook_owner = owner
+		_spawn_inheriting(owner, request, "BatchView.spawn_child", "a batch hook")
+		pool.hook_owner = outer
+		return
+	_spawn_checked(request)
+
+
+func _run_batch_hooks(delta: float) -> void:
+	_batch_depth += 1
+	for id in range(1, _behaviors.size()):
+		var b := _behaviors[id]
+		if b == null or not _wants_batch_callback(b):
+			continue
+		# AUTO batch on a per-bullet behaviour is not invoked (see _wants_batch_callback).
+		if b.update_mode != BulletBehavior.UpdateMode.BATCH and _has_per_bullet_hooks(id):
+			continue
+		var view := gather_batch(id, delta)
+		if view.n == 0:
+			continue
+		if view.native_rows < view.n:
+			pool.hook_ran = true
+		b.on_update_batch(view)
+		if not view.discard:
+			commit_batch(view)
+	_batch_depth -= 1
+
+
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
 	# Hook-free bullets stay in the native sim when reflectors are registered.
@@ -723,6 +979,19 @@ func step(delta: float) -> void:
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
 	pool.run_update_hooks(_behaviors, delta)
+
+	# Batch-only native bullets integrate here, before the batch callback and
+	# before pool collision, so the callback sees the post-move position and a
+	# child it spawns is still in this tick's pool sweep. The write itself is
+	# applied before native.collide(), which is the same window as a deferred
+	# script reflect: after the move, before the sweeps. No live batch bullet
+	# keeps the single native.step() pass below.
+	var native_batch := _has_live_native_batch()
+	if native_batch:
+		native.integrate(delta)
+		_flush_native_reflects()
+		_defer_native_reflect = false
+	_run_batch_hooks(delta)
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -754,10 +1023,13 @@ func step(delta: float) -> void:
 	var stepped_native := false
 	var native_zone_hits := 0
 	if native != null and native.count() > 0:
-		# No queued script reflect: one pass, same as before. A queued reflect
-		# is applied after the move and before the sweeps, which is where
-		# on_update sits on the GDScript pool (advance, then the call, then collision).
-		if _native_reflect_queue.is_empty():
+		# No queued script reflect and no batch integrate: one pass, same as before.
+		# A queued reflect is applied after the move and before the sweeps, which
+		# is where on_update sits on the GDScript pool. A batch integrate already
+		# happened above; collide() is the rest of that tick.
+		if native_batch:
+			native_queued = native.collide()
+		elif _native_reflect_queue.is_empty():
 			native_queued = native.step(delta)
 		else:
 			native.integrate(delta)

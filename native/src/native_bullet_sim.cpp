@@ -37,8 +37,14 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("deliver_hits"), &NativeBulletSim::deliver_hits);
 	ClassDB::bind_method(D_METHOD("upload", "multimesh", "allocated", "interpolate", "stretch"), &NativeBulletSim::upload);
 	ClassDB::bind_method(D_METHOD("spawn", "position", "velocity", "angle", "lifetime", "radius", "damage", "hit_mask", "color",
-								"acceleration", "turn_rate", "pierce", "collide_world", "owner_layer", "source_flags", "seq"),
+								"acceleration", "turn_rate", "pierce", "collide_world", "owner_layer", "source_flags", "seq",
+								"behavior", "param_a", "param_b"),
 			&NativeBulletSim::spawn);
+	ClassDB::bind_method(D_METHOD("gather_batch", "behavior"), &NativeBulletSim::gather_batch);
+	ClassDB::bind_method(D_METHOD("apply_batch", "ids", "vx", "vy", "pa", "pb"), &NativeBulletSim::apply_batch);
+	ClassDB::bind_method(D_METHOD("teleport_id", "id", "x", "y"), &NativeBulletSim::teleport_id);
+	ClassDB::bind_method(D_METHOD("count_with_behavior", "behavior"), &NativeBulletSim::count_with_behavior);
+	ClassDB::bind_method(D_METHOD("get_invalid_total"), &NativeBulletSim::get_invalid_total);
 	ClassDB::bind_method(D_METHOD("set_retire_callback", "callback"), &NativeBulletSim::set_retire_callback);
 	ClassDB::bind_method(D_METHOD("get_pending_hit_count"), &NativeBulletSim::get_pending_hit_count);
 	ClassDB::bind_method(D_METHOD("get_pending_hit_seqs"), &NativeBulletSim::get_pending_hit_seqs);
@@ -101,6 +107,7 @@ void NativeBulletSim::_bind_methods() {
 	BIND_ENUM_CONSTANT(REASON_MANUAL);
 	BIND_ENUM_CONSTANT(REASON_CLEARED);
 	BIND_ENUM_CONSTANT(REASON_WALL);
+	BIND_ENUM_CONSTANT(REASON_INVALID);
 }
 
 // ---------------------------------------------------------------------------
@@ -119,7 +126,7 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 	cols = std::max(1, (int)std::ceil(bounds.size.x * inv_cell));
 	rows = std::max(1, (int)std::ceil(bounds.size.y * inv_cell));
 	const size_t n = (size_t)capacity;
-	for (auto *v : { &px, &py, &qx, &qy, &vx, &vy, &rx, &ry, &radius, &age, &lifetime, &accel, &turn, &damage }) {
+	for (auto *v : { &px, &py, &qx, &qy, &vx, &vy, &rx, &ry, &radius, &age, &lifetime, &accel, &turn, &damage, &param_a, &param_b }) {
 		v->assign(n, 0.0f);
 	}
 	col.assign(n * 4, 1.0f);
@@ -127,6 +134,7 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 	pierce.assign(n, 0);
 	owner_layer.assign(n, 0);
 	seq.assign(n, 0);
+	behavior.assign(n, 0);
 	collide_world.assign(n, 1);
 	dead.assign(n, 0);
 	source_flags.assign(n, 0);
@@ -158,7 +166,7 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 		cur_buf[s].clear();
 		prev_buf[s].clear();
 	}
-	spawned_total = dropped_total = 0;
+	spawned_total = dropped_total = invalid_total = 0;
 	logical_cap = capacity;
 	enemy_reserve = 0;
 	other_limit = capacity;
@@ -647,11 +655,12 @@ double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double d
 
 int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_velocity, float p_angle, float p_lifetime,
 		float p_radius, float p_damage, int p_hit_mask, const Color &p_color, float p_acceleration, float p_turn_rate,
-		int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq) {
+		int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq, int p_behavior,
+		float p_param_a, float p_param_b) {
 	const bool finite = std::isfinite(p_position.x) && std::isfinite(p_position.y) && std::isfinite(p_velocity.x)
 			&& std::isfinite(p_velocity.y) && std::isfinite(p_radius) && std::isfinite(p_lifetime)
 			&& std::isfinite(p_damage) && std::isfinite(p_acceleration) && std::isfinite(p_turn_rate)
-			&& !std::isinf(p_angle);
+			&& std::isfinite(p_param_a) && std::isfinite(p_param_b) && !std::isinf(p_angle);
 	if (!finite) {
 		// Same rule as BulletPool.spawn: a non-finite shot is refused. Not a capacity drop.
 		return -1;
@@ -697,6 +706,9 @@ int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_veloc
 	pierce[i] = p_pierce;
 	owner_layer[i] = p_owner_layer;
 	seq[i] = p_seq;
+	behavior[i] = p_behavior;
+	param_a[i] = p_param_a;
+	param_b[i] = p_param_b;
 	collide_world[i] = p_collide_world ? 1 : 0;
 	source_flags[i] = (uint8_t)p_source_flags;
 	reflect_count[i] = 0;
@@ -750,6 +762,146 @@ bool NativeBulletSim::kill(int64_t p_id) {
 	return true;
 }
 
+int NativeBulletSim::count_with_behavior(int p_behavior) const {
+	int n = 0;
+	for (int i = 0; i < count; i++) {
+		if (dead[i] == 0 && behavior[i] == p_behavior) {
+			n++;
+		}
+	}
+	return n;
+}
+
+Dictionary NativeBulletSim::gather_batch(int p_behavior) const {
+	int n = 0;
+	for (int i = 0; i < count; i++) {
+		if (dead[i] == 0 && behavior[i] == p_behavior) {
+			n++;
+		}
+	}
+	PackedInt64Array ids;
+	PackedInt32Array owners;
+	PackedFloat32Array pxa, pya, vxa, vya, agea, paa, pba;
+	ids.resize(n);
+	owners.resize(n);
+	pxa.resize(n);
+	pya.resize(n);
+	vxa.resize(n);
+	vya.resize(n);
+	agea.resize(n);
+	paa.resize(n);
+	pba.resize(n);
+	int w = 0;
+	for (int i = 0; i < count; i++) {
+		if (dead[i] != 0 || behavior[i] != p_behavior) {
+			continue;
+		}
+		ids[w] = id_of(i);
+		owners[w] = owner_layer[i];
+		pxa[w] = px[i];
+		pya[w] = py[i];
+		vxa[w] = vx[i];
+		vya[w] = vy[i];
+		agea[w] = age[i];
+		paa[w] = param_a[i];
+		pba[w] = param_b[i];
+		w++;
+	}
+	Dictionary d;
+	d["n"] = n;
+	d["id"] = ids;
+	d["owner"] = owners;
+	d["px"] = pxa;
+	d["py"] = pya;
+	d["vx"] = vxa;
+	d["vy"] = vya;
+	d["age"] = agea;
+	d["pa"] = paa;
+	d["pb"] = pba;
+	return d;
+}
+
+static void clamp_speed(float &x, float &y, float cap) {
+	if (!(cap > 0.0f)) {
+		return;
+	}
+	float ax = std::fabs(x);
+	float ay = std::fabs(y);
+	float m = ax > ay ? ax : ay;
+	if (m > 1.0e20f) {
+		x /= m;
+		y /= m;
+	}
+	const float sp = std::sqrt(x * x + y * y);
+	if (sp > cap && sp > 0.0f) {
+		const float k = cap / sp;
+		x *= k;
+		y *= k;
+	}
+}
+
+int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
+		const PackedFloat32Array &p_pa, const PackedFloat32Array &p_pb) {
+	int n = (int)p_ids.size();
+	n = std::min(n, (int)p_vx.size());
+	n = std::min(n, (int)p_vy.size());
+	n = std::min(n, (int)p_pa.size());
+	n = std::min(n, (int)p_pb.size());
+	if (n <= 0) {
+		return 0;
+	}
+	const int64_t *ids = p_ids.ptr();
+	const float *wvx = p_vx.ptr();
+	const float *wvy = p_vy.ptr();
+	const float *wpa = p_pa.ptr();
+	const float *wpb = p_pb.ptr();
+	int killed = 0;
+	for (int i = 0; i < n; i++) {
+		const int s = slot_of(ids[i]);
+		// slot_of fails when the generation changed, so a reused slot is not written.
+		if (s < 0 || dead[s] != 0) {
+			continue;
+		}
+		float nvx = wvx[i];
+		float nvy = wvy[i];
+		const float npa = wpa[i];
+		const float npb = wpb[i];
+		if (!std::isfinite(nvx) || !std::isfinite(nvy) || !std::isfinite(npa) || !std::isfinite(npb)) {
+			vx[s] = 0.0f;
+			vy[s] = 0.0f;
+			mark_dead(s, REASON_INVALID);
+			invalid_total++;
+			killed++;
+			continue;
+		}
+		clamp_speed(nvx, nvy, max_speed);
+		vx[s] = nvx;
+		vy[s] = nvy;
+		param_a[s] = npa;
+		param_b[s] = npb;
+	}
+	return killed;
+}
+
+bool NativeBulletSim::teleport_id(int64_t p_id, float p_x, float p_y) {
+	const int s = slot_of(p_id);
+	if (s < 0 || dead[s] != 0) {
+		return false;
+	}
+	if (!std::isfinite(p_x) || !std::isfinite(p_y)) {
+		vx[s] = 0.0f;
+		vy[s] = 0.0f;
+		mark_dead(s, REASON_INVALID);
+		invalid_total++;
+		return false;
+	}
+	px[s] = p_x;
+	py[s] = p_y;
+	qx[s] = p_x;
+	qy[s] = p_y;
+	return true;
+}
+
 void NativeBulletSim::mark_dead(int slot, int reason) {
 	if (dead[slot] != 0) {
 		return;
@@ -761,7 +913,7 @@ void NativeBulletSim::mark_dead(int slot, int reason) {
 void NativeBulletSim::remove_at(int i) {
 	const int last = count - 1;
 	const int reason = dead[i] - 1;
-	if (reason >= 0 && reason < 6) {
+	if (reason >= 0 && reason < 7) {
 		despawn_counts[reason]++;
 	}
 	if (wall_report[i] != 0) {
@@ -808,6 +960,9 @@ void NativeBulletSim::remove_at(int i) {
 		pierce[i] = pierce[last];
 		owner_layer[i] = owner_layer[last];
 		seq[i] = seq[last];
+		behavior[i] = behavior[last];
+		param_a[i] = param_a[last];
+		param_b[i] = param_b[last];
 		collide_world[i] = collide_world[last];
 		source_flags[i] = source_flags[last];
 		reflect_count[i] = reflect_count[last];
@@ -1130,11 +1285,19 @@ void NativeBulletSim::integrate(double delta) {
 }
 
 int NativeBulletSim::collide() {
+	// integrate() hashed the targets it saw. A hook between the two can move a
+	// hurtbox or change the list; rebuild so the sweep matches set_targets().
+	rebuild_hash();
 	const bool have_walls = !wall_lo_x.empty();
 	const bool have_targets = target_count > 0;
 	const int n = std::min(count, (int)collide_mark.size());
 	for (int i = 0; i < n; i++) {
 		if (collide_mark[i] == 0) {
+			continue;
+		}
+		// A batch kill between integrate and collide must not still sweep.
+		// Bounds deaths stay: that segment is tested, same as the one-pass step.
+		if (dead[i] != 0 && dead[i] != (uint8_t)(REASON_BOUNDS + 1)) {
 			continue;
 		}
 		collide_one(i, have_walls, have_targets);
@@ -1343,8 +1506,8 @@ int NativeBulletSim::upload(const RID &p_multimesh, int p_allocated, bool p_inte
 
 PackedInt32Array NativeBulletSim::get_despawn_counts() const {
 	PackedInt32Array out;
-	out.resize(6);
-	for (int k = 0; k < 6; k++) {
+	out.resize(7);
+	for (int k = 0; k < 7; k++) {
 		out[k] = (int32_t)despawn_counts[k];
 	}
 	return out;

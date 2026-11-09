@@ -24,6 +24,10 @@ func _init() -> void:
 	# HOOK_AUTO would see these four overrides and call all of them.
 	hook_mask = 0
 	hook_mask_exact = true
+	# This class overrides on_update_batch so it can forward on_batch. AUTO would
+	# treat that override as a batch behavior for every Lua weapon. PER_BULLET
+	# until the script actually defines on_batch.
+	update_mode = UpdateMode.PER_BULLET
 	host = ScriptHost.new()
 
 
@@ -60,16 +64,31 @@ func load_file(path: String, manager: BulletManager = null, behavior_id: int = -
 	return result
 
 
-## Puts `behavior_id` on `request` only when the script defines an event hook.
-## Defines `can_hit` turns on ShotRequest.can_hit_veto, which is what makes the
-## manager ask. A declarative script is left as a plain bullet.
+## Puts `behavior_id` on `request` when the script defines an event hook or
+## `on_batch`. Defines `can_hit` turns on ShotRequest.can_hit_veto, which is
+## what makes the manager ask. A declarative script is left as a plain bullet.
 func apply_to_request(request: ShotRequest, behavior_id: int) -> void:
-	if hook_mask == 0:
+	var batch := update_mode == UpdateMode.BATCH
+	if hook_mask == 0 and not batch:
 		request.behavior_id = 0
 		return
 	request.behavior_id = behavior_id
 	if host.has_callback("can_hit"):
 		request.can_hit_veto = true
+
+
+func on_update_batch(batch: BatchView) -> void:
+	if not host.has_callback("on_batch"):
+		return
+	_dispatches["on_batch"] = _count_of("on_batch") + 1
+	var result := host.call_batch(batch)
+	last_result = result
+	if not result.ok:
+		batch.discard = true
+		ScriptWarnings.warn(
+			"LuaBulletBehavior.error.on_batch",
+			"LuaBulletBehavior: %s: %s" % [result.chunk_name, result.error]
+		)
 
 
 func on_spawn(pool: BulletPool, index: int) -> void:
@@ -112,6 +131,7 @@ func _apply_mask(result: ScriptHost.RunResult, manager: BulletManager, behavior_
 		return
 	hook_mask = BulletBehavior.mask_from_names(host.defined_names())
 	hook_mask_exact = true
+	update_mode = UpdateMode.BATCH if host.has_callback("on_batch") else UpdateMode.PER_BULLET
 	if manager != null and behavior_id >= 0:
 		manager.refresh_behavior(behavior_id)
 

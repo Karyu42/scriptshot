@@ -1064,11 +1064,12 @@ Bullet-side calls for scripts: `ShotEmitter.reflect_bullet()`, plus everything i
 3. **Overflow policy.** A pool at its limit still drops new shots, observably (see
    "Saturation model"). Alternative: recycle the oldest bullet. Drop is predictable for
    scripts; recycle never loses the newest shot.
-4. **Lua hook granularity.** Per-bullet `on_update` callbacks from Lua will be the
-   dominant cost beyond a few hundred hooked bullets. Prefer declarative
-   kinematics (`acceleration`, `turn_rate`, params) plus occasional hooks, or add
-   a batch hook (`on_update_batch(pool, indices)`)? Needs input from the
-   Scripting Engineer.
+4. **Lua hook granularity.** Answered for the engine: declarative bullets and
+   batch-only behaviours (`on_update_batch` / Lua `on_batch`) can live in the
+   native sim; per-bullet hooks stay on the pool. The batch view is packed
+   copies (`BatchView`). A zero-copy column can replace those copies later
+   without a script change. Slicing and `reflect` on the view are still open.
+   See `docs/native.md`.
 5. **Weapon timing ownership.** `ShotPattern.update()` now exists, so scripts can
    run charge / channel / burst weapons. Open: should cooldown ownership move
    entirely into scripts (drop `fire_interval`), and should `update()` also be

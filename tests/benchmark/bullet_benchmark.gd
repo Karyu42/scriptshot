@@ -22,6 +22,11 @@ extends Node
 ##   --hooked=0.3           share (0..1) of the bullets that carry a no-op on_update hook
 ##                          (default 0 = no hooked bullets, the original workload; the same
 ##                          bullet trajectories are simulated at every fraction)
+##   --batch=1              every bullet is steered by one on_update_batch callback
+##                          (vx += cos(age * 6) * 40 * dt). 0 (default) is the original
+##                          workload. This is separate from --hooked; the 22 ms gate stays
+##                          on the per-bullet no-op. On the native backend these bullets
+##                          live in the sim. On GDScript they stay in the pool.
 ##   --backend=native       bullet backend: auto (default), gdscript or native.
 ##                          auto is the native opt-in: --bullet-backend=, then
 ##                          SCRIPTSHOT_BULLET_BACKEND, then project setting
@@ -66,6 +71,8 @@ var target_ms := 16.6
 var json_path := ""
 ## Share of the bullets spawned with a no-op on_update hook (see --hooked).
 var hooked_fraction := 0.0
+## 1 when every bullet is driven by one batch hook (see --batch).
+var batch_mode := 0
 ## "auto", "gdscript" or "native". auto follows SCRIPTSHOT_BULLET_BACKEND.
 var backend_preference := "auto"
 ## Reflector zones added on top of the wall field. 0 leaves the original workload.
@@ -81,6 +88,7 @@ var _hook_rng := RandomNumberGenerator.new()
 ## Separate stream for the pierce / plain choice, same reason as _hook_rng.
 var _pierce_rng := RandomNumberGenerator.new()
 var _noop_behavior_id := 0
+var _batch_behavior_id := 0
 var _request := ShotRequest.new()
 var _results: Array[Dictionary] = []
 var _walls: Array[Rect2] = []
@@ -104,6 +112,22 @@ class NoopHook:
 		pass
 
 
+## One callback for every bullet. The body is the steering kernel the batch
+## API is for: read age, write velocity. Not a per-bullet hook.
+class BatchSteer:
+	extends BulletBehavior
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+
+	func on_update_batch(batch: BatchView) -> void:
+		var vx := batch.vx
+		var age := batch.age
+		var dt := batch.dt
+		for i in batch.n:
+			vx[i] = vx[i] + cos(age[i] * 6.0) * 40.0 * dt
+
+
 func _ready() -> void:
 	var arg_error := _parse_args()
 	if arg_error != "":
@@ -125,6 +149,10 @@ func _ready() -> void:
 	_manager.backend_preference = backend_preference
 	add_child(_manager)
 	_noop_behavior_id = _manager.register_behavior(NoopHook.new())
+	# Only when measuring the batch path. Registering it would mark the pool as
+	# having a batch-only behavior and add a check to every hooked bullet.
+	if batch_mode > 0:
+		_batch_behavior_id = _manager.register_behavior(BatchSteer.new())
 	_build_walls()
 	_build_mirrors()
 	for i in TARGET_COUNT:
@@ -133,8 +161,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | pierce fraction %.2f (pierce %d)"
-		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, PIERCE_FRACTION, PIERCE_EXTRA])
+	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | pierce fraction %.2f (pierce %d)"
+		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, PIERCE_FRACTION, PIERCE_EXTRA])
 	_next_count()
 
 
@@ -223,7 +251,9 @@ func _top_up(n: int) -> void:
 		_request.hit_mask = Layers.ENEMY
 		if _pierce_rng.randf() < PIERCE_FRACTION:
 			_request.pierce = PIERCE_EXTRA
-		if hooked_fraction > 0.0 and _hook_rng.randf() < hooked_fraction:
+		if batch_mode > 0:
+			_request.behavior_id = _batch_behavior_id
+		elif hooked_fraction > 0.0 and _hook_rng.randf() < hooked_fraction:
 			_request.behavior_id = _noop_behavior_id
 		if not _manager.emitter.request_shot(_request):
 			break
@@ -248,6 +278,7 @@ func _finish_count() -> void:
 	var result := {
 		"bullets": _current_count,
 		"hooked_fraction": hooked_fraction,
+		"batch": batch_mode,
 		"hooked_alive_at_end": _hooked_alive(),
 		"frames": _work_ms.size(),
 		"alive_at_end": _manager.alive_count(),
@@ -330,7 +361,7 @@ func _report() -> void:
 				"backend": _manager.backend,
 				"floor": floor_text, "floor_bullets": floor_bullets,
 				"target": target_text, "target_bullets": target_bullets,
-				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "mirrors": mirror_count,
+				"target_ms": target_ms, "hooked_fraction": hooked_fraction, "batch": batch_mode, "mirrors": mirror_count,
 				"pierce_fraction": PIERCE_FRACTION, "pierce": PIERCE_EXTRA, "results": _results,
 			}, "\t"))
 	get_tree().quit(exit_code)
@@ -360,6 +391,10 @@ func _parse_args() -> String:
 				if not parsed.ok:
 					return parsed.error
 				hooked_fraction = parsed.value
+			"batch":
+				batch_mode = int(kv[1])
+				if batch_mode != 0 and batch_mode != 1:
+					return "--batch must be 0 or 1, got '%s'" % kv[1]
 			"backend":
 				if not kv[1] in ["auto", "gdscript", "native"]:
 					return "--backend must be auto, gdscript or native, got '%s'" % kv[1]

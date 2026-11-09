@@ -194,19 +194,21 @@ func spawn(r: ShotRequest, seq: int) -> int:
 	var acc := clampf(r.acceleration, -BulletLimits.MAX_ACCELERATION, BulletLimits.MAX_ACCELERATION)
 	var turn := clampf(r.turn_rate, -BulletLimits.MAX_TURN_RATE, BulletLimits.MAX_TURN_RATE)
 	var dmg := clampf(r.damage, 0.0, BulletLimits.MAX_DAMAGE)
+	var pa := clampf(r.param_a, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	var pb := clampf(r.param_b, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
 	var mask := r.hit_mask
 	if r.owner_layer != 0:
 		mask &= ~r.owner_layer
 	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if r.pierces_script_invuln else 0
 	var id: int = sim.spawn(r.position, velocity, r.angle, life, radius, dmg, mask, r.color, acc, turn, r.pierce,
-		r.collide_world, r.owner_layer, flags, seq)
+		r.collide_world, r.owner_layer, flags, seq, r.behavior_id, pa, pb)
 	return id
 
 
 func _non_finite_field(r: ShotRequest) -> String:
 	var p := r.position
 	var v := r.velocity
-	if is_finite(p.x + p.y + v.x + v.y + r.radius + r.lifetime + r.acceleration + r.turn_rate + r.damage) and not is_inf(r.angle):
+	if is_finite(p.x + p.y + v.x + v.y + r.radius + r.lifetime + r.acceleration + r.turn_rate + r.damage + r.param_a + r.param_b) and not is_inf(r.angle):
 		return ""
 	if not p.is_finite():
 		return "position"
@@ -222,7 +224,11 @@ func _non_finite_field(r: ShotRequest) -> String:
 		return "acceleration"
 	if not is_finite(r.turn_rate):
 		return "turn_rate"
-	return "damage"
+	if not is_finite(r.damage):
+		return "damage"
+	if not is_finite(r.param_a):
+		return "param_a"
+	return "param_b"
 
 
 func set_targets(pos: PackedVector2Array, radius: PackedFloat32Array, layer: PackedInt32Array, ids: PackedInt64Array, count: int) -> void:
@@ -360,6 +366,38 @@ func integrate(delta: float) -> void:
 func collide() -> int:
 	var hits: int = sim.collide()
 	return hits
+
+
+func gather_batch(behavior_id: int) -> Dictionary:
+	var d: Dictionary = sim.gather_batch(behavior_id)
+	return d
+
+
+func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> int:
+	var n: int = sim.apply_batch(ids, vx, vy, pa, pb)
+	return n
+
+
+func teleport_id(id: int, x: float, y: float) -> bool:
+	var ok: bool = sim.teleport_id(id, x, y)
+	return ok
+
+
+## True while this generation still owns a slot, including a bullet marked dead
+## and not yet compacted. A reused slot is a different id and returns false.
+func has_id(id: int) -> bool:
+	var slot: int = sim.slot_of(id)
+	return slot >= 0
+
+
+func count_with_behavior(behavior_id: int) -> int:
+	var n: int = sim.count_with_behavior(behavior_id)
+	return n
+
+
+func invalid_total() -> int:
+	var n: int = sim.get_invalid_total()
+	return n
 
 
 ## True when this tick's integrate would already have killed `id` (lifetime or

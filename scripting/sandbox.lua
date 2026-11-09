@@ -178,5 +178,42 @@ return function(host)
 	end
 	host.make_bullet = make_bullet
 
+	-- Batch view. Columns are whatever the host passed (packed copies today,
+	-- a zero-copy column object later). Scripts only see v.vx[i] and the methods.
+	local function make_batch(n, id, px, py, vx, vy, age, pa, pb, owner, dt)
+		return {
+			n = n,
+			dt = dt,
+			id = id,
+			px = px,
+			py = py,
+			vx = vx,
+			vy = vy,
+			age = age,
+			pa = pa,
+			pb = pb,
+			owner = owner,
+			kill = function(self, i)
+				local err = host.batch_kill(i)
+				if err ~= nil then
+					error(err, 2)
+				end
+			end,
+			teleport = function(self, i, x, y)
+				local err = host.batch_teleport(i, x, y)
+				if err ~= nil then
+					error(err, 2)
+				end
+			end,
+			spawn_child = function(self, i, x, y, vx, vy, life)
+				local err = host.batch_spawn(i, x, y, vx, vy, life)
+				if err ~= nil then
+					error(err, 2)
+				end
+			end,
+		}
+	end
+	host.make_batch = make_batch
+
 	return env
 end

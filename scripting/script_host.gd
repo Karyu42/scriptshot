@@ -30,6 +30,9 @@ const LIBS := (
 	| LuaState.LUA_MATH
 	| LuaState.LUA_TABLE
 	| LuaState.LUA_UTF8
+	# Packed-array columns (`v.vx[i]`) need the variant library. It does not
+	# open Godot classes; the script environment still has no engine API.
+	| LuaState.GODOT_VARIANT
 )
 
 const _NAMES_OF := """
@@ -89,6 +92,8 @@ var _pending_velocity_set := false
 var _pending_velocity := Vector2.ZERO
 var _pending_children: Array[ShotRequest] = []
 var _number := 0.0
+## The BatchView whose Lua callback is running, or null.
+var _batch: BatchView
 
 
 class RunResult:
@@ -124,6 +129,9 @@ func _init() -> void:
 	_host.set("dead", Callable(self, "_lua_dead"))
 	_host.set("set_velocity", Callable(self, "_lua_set_velocity"))
 	_host.set("spawn_child", Callable(self, "_lua_spawn_child"))
+	_host.set("batch_kill", Callable(self, "_lua_batch_kill"))
+	_host.set("batch_teleport", Callable(self, "_lua_batch_teleport"))
+	_host.set("batch_spawn", Callable(self, "_lua_batch_spawn"))
 	var env_v: Variant = _as_function(built).invoke(_host)
 	if env_v is LuaError:
 		_init_error = "sandbox env: %s" % _lua_error_message(env_v)
@@ -246,6 +254,43 @@ func call_hook(
 	result.chunk_name = name
 	if not result.ok:
 		_clear_pending()
+	return result
+
+
+## Calls `on_batch(v, dt)`. `v`'s columns are the view's packed copies, so a
+## later zero-copy column object can replace them without a script change.
+## On failure the view is marked `discard` and the caller commits nothing.
+func call_batch(batch: BatchView) -> RunResult:
+	_clear_pending()
+	if not _ready:
+		batch.discard = true
+		return _fail(_init_error, "on_batch")
+	if not _callbacks.has("on_batch"):
+		var missing := RunResult.new()
+		missing.ok = true
+		missing.chunk_name = "on_batch"
+		return missing
+	var fn: Variant = _callbacks["on_batch"]
+	if not fn is LuaFunction:
+		batch.discard = true
+		return _fail("callback 'on_batch' is not a function", "on_batch")
+	var maker: Variant = _host.get("make_batch")
+	if not maker is LuaFunction:
+		batch.discard = true
+		return _fail("sandbox did not install make_batch", "on_batch")
+	_batch = batch
+	var view_v: Variant = _as_function(maker).invoke(
+		batch.n, batch.id, batch.px, batch.py, batch.vx, batch.vy, batch.age, batch.pa, batch.pb, batch.owner, batch.dt
+	)
+	if view_v is LuaError:
+		_batch = null
+		batch.discard = true
+		return _fail(_lua_error_message(view_v), "on_batch")
+	var result := _run(_as_function(fn), [view_v, batch.dt])
+	result.chunk_name = "on_batch"
+	_batch = null
+	if not result.ok:
+		batch.discard = true
 	return result
 
 
@@ -461,6 +506,59 @@ func _lua_set_velocity(x: Variant, y: Variant) -> Variant:
 		return "set_velocity: expected two numbers"
 	_pending_velocity_set = true
 	_pending_velocity = Vector2(vx, _number)
+	return null
+
+
+func _lua_batch_kill(i: Variant) -> Variant:
+	if _batch == null:
+		return "kill: no batch is running"
+	if not _read_number(i):
+		return "kill: expected a row index"
+	_batch.kill(int(_number))
+	return null
+
+
+func _lua_batch_teleport(i: Variant, x: Variant, y: Variant) -> Variant:
+	if _batch == null:
+		return "teleport: no batch is running"
+	if not _read_number(i):
+		return "teleport: expected (row, x, y)"
+	var row := int(_number)
+	if not _read_number(x):
+		return "teleport: expected (row, x, y)"
+	var px := _number
+	if not _read_number(y):
+		return "teleport: expected (row, x, y)"
+	_batch.teleport(row, px, _number)
+	return null
+
+
+func _lua_batch_spawn(i: Variant, x: Variant, y: Variant, vx: Variant, vy: Variant, life: Variant) -> Variant:
+	if _batch == null:
+		return "spawn_child: no batch is running"
+	if not _read_number(i):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var row := int(_number)
+	if not _read_number(x):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var px := _number
+	if not _read_number(y):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var py := _number
+	if not _read_number(vx):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var pvx := _number
+	if not _read_number(vy):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var pvy := _number
+	if not _read_number(life):
+		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
+	var req := ShotRequest.with_velocity(Vector2(px, py), Vector2(pvx, pvy))
+	req.lifetime = _number
+	# Same as the per-bullet helper: the child is declarative, so it does not
+	# re-enter Lua from inside this callback.
+	req.behavior_id = 0
+	_batch.spawn_child(row, req)
 	return null
 
 
