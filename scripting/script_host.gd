@@ -478,8 +478,10 @@ func _rotate_state_if_needed() -> void:
 	retired.debug_fns = _debug_fns
 	retired.strip_fn = _strip_fn
 	retired.threads.assign(_parked)
+	retired.threads.append_array(_value_threads)
 	_retired.append(retired)
 	_parked = []
+	_value_threads = []
 	_callbacks = {}
 	_weapon = null
 	_debug_fns = null
@@ -612,6 +614,10 @@ func _release_current() -> void:
 		var th: LuaThread = _threads[i]
 		if th != null and not threads.has(th):
 			threads.append(th)
+	for i in _value_threads.size():
+		var vt: LuaThread = _value_threads[i]
+		if vt != null and not threads.has(vt):
+			threads.append(vt)
 	_release_state(_state, _host, _env, _weapon, _debug_fns, _strip_fn, threads)
 	var names: Array = _callbacks.keys()
 	for i in names.size():
@@ -628,6 +634,7 @@ func _release_current() -> void:
 	_strip_fn = null
 	_parked.clear()
 	_threads.clear()
+	_value_threads.clear()
 	_state = null
 
 
@@ -770,7 +777,7 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		return _fail(_lua_error_message(loaded), chunk_name)
 	if not loaded is LuaFunction:
 		return _fail("load did not return a function", chunk_name)
-	var result := _run(_as_function(loaded), [])
+	var result := _run(_as_function(loaded), [], true)
 	result.chunk_name = chunk_name
 	if not result.ok:
 		return result
@@ -937,7 +944,7 @@ func make_hit(damage: float, x: float, y: float) -> LuaTable:
 
 
 func _adopt_weapon(weapon: LuaTable) -> RunResult:
-	var extracted := _run(_names_of, [weapon])
+	var extracted := _run(_names_of, [weapon], true)
 	if not extracted.ok:
 		return extracted
 	var names := _strings_from(extracted.value)
@@ -971,7 +978,9 @@ func _strings_from(value: Variant) -> PackedStringArray:
 	return names
 
 
-func _run(fn: LuaFunction, args: Array) -> RunResult:
+## `keep_value` is true only for runs whose returned table the host keeps (the
+## weapon and the names list). Other runs drop a returned table or function.
+func _run(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
 	if _closed:
 		return _fail("script host shut down", "")
 	var result := RunResult.new()
@@ -990,21 +999,23 @@ func _run(fn: LuaFunction, args: Array) -> RunResult:
 		_parked.append(co)
 	_in_lua = false
 	# lua-gdextension 0.8.2 ties each LuaTable / LuaFunction wrapper to the Lua
-	# thread it was read from. A returned value is re-read through `_host` so the
-	# wrapper the host keeps is tied to the main thread. The binding reuses a live
+	# thread it was read from. A value the host keeps is re-read through `_host`
+	# so its wrapper is tied to the main thread. The binding reuses a live
 	# wrapper for the same value, so the old one is released first; if something
-	# else still holds it, `co` is kept with the state instead.
-	if resumed is LuaObject and _host != null:
-		# `resumed` is the only holder of the old wrapper here.
-		var old_id := _instance_id(resumed)
-		_host.rawset("_rebind", resumed)
-		resumed = null
-		resumed = _host.rawget("_rebind")
-		_host.rawset("_rebind", null)
-		if _instance_id(resumed) == old_id:
-			_value_threads.append(co)
-	elif resumed is LuaObject:
-		_value_threads.append(co)
+	# else still holds it, `co` is kept with the state instead (once per load).
+	# Any other returned table or function is dropped here, while `co` is alive.
+	if resumed is LuaObject:
+		if keep_value and _host != null:
+			# `resumed` is the only holder of the old wrapper here.
+			var old_id := _instance_id(resumed)
+			_host.rawset("_rebind", resumed)
+			resumed = null
+			resumed = _host.rawget("_rebind")
+			_host.rawset("_rebind", null)
+			if _instance_id(resumed) == old_id and not _value_threads.has(co):
+				_value_threads.append(co)
+		else:
+			resumed = null
 	_drain_print_buffer()
 	result.output = _output.duplicate()
 	if _killed:
