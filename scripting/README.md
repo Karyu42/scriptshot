@@ -121,6 +121,29 @@ benchmark scene. Each of those three samples is a separate runner.
 The 20 ms figure is a soft bar. `check_perf.py` does not enforce it. The 22 ms
 figure is the hard gate on this job.
 
+**Same-runner baseline (pull requests).** The samples above show the runner, not
+the code, moving the numbers: plain 5k p95 from 6.29 to 14.93 ms on the same
+code, and a docs-only branch over 22 ms. On #35 (no sim change) slow hosts printed
+hooked 5k 22.2-23.5 ms while fast hosts printed 11.5 ms for the same sha. So on a
+`pull_request` the `perf` job also checks out main (the test-merge commit's first
+parent) and benchmarks it in the same job on the same runner, alternating
+base, head, head, base (`tools/ci/perf_ab.sh`, 2 rounds merged by
+`tools/ci/merge_bench.py`). `check_perf.py` then applies, at 5,000 bullets
+(hard) and 10,000 (warning only):
+
+- a relative gate: head p95 <= base p95 x 1.10 + 0.5 ms, plain and hooked
+  (`--rel-tolerance-pct 10 --rel-slack-ms 0.5`);
+- the absolute budgets (plain 16.6 ms, hooked 22 ms) on head p95 / F, where the
+  runner speed factor F = base plain 5k p95 / 7.5 ms, clamped to [1.0, 3.0]
+  (`REFERENCE_PLAIN_FLOOR_P95_MS` in `check_perf.py`, main on a fast
+  ubuntu-24.04 runner; `--max-speed-factor 3.0`). F never goes below 1.0, so a
+  fast runner never loosens the budgets.
+
+A push to `main`, a `workflow_dispatch` run, or a PR whose base run failed has no
+base: F = 1.0 and only the absolute 16.6 / 22 ms gates apply, as before. The
+step summary starts with a table of base p95, head p95, delta %, the relative
+limit, the normalized head p95, the budget and the verdict per tier and count.
+
 A short headless run on the follow-up machine (Godot 4.7.2, 20 warmup + 100
 measured frames) printed, at 5,000 bullets, plain work p95 7.93 ms with
 hooks+walls 1.74 ms, and hooked work p95 11.71 ms with hooks+walls 5.45 ms
