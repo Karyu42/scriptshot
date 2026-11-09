@@ -8,11 +8,25 @@ from contextlib import redirect_stdout
 import check_export_preset as c
 
 
-def cfg(platform, name, exclude_filter="", **opts):
+def cfg(platform, name, exclude_filter="src/qa/*", index=0, custom_features="", **opts):
     body = "".join(f'{k.replace("__", "/")}={v}\n' for k, v in opts.items())
-    return (f'[preset.0]\n\nname="{name}"\nplatform="{platform}"\nrunnable=false\n'
+    return (f'[preset.{index}]\n\nname="{name}"\nplatform="{platform}"\nrunnable=false\n'
+            f'custom_features="{custom_features}"\n'
             f'exclude_filter="{exclude_filter}"\n'
-            f'[preset.0.options]\n\n{body}')
+            f'[preset.{index}.options]\n\n{body}')
+
+
+WEB_EXCLUDES = "*.md, src/qa/*, scriptshot_native.gdextension, bin/*"
+SMOKE_EXCLUDES = "*.md, scriptshot_native.gdextension, bin/*"
+WEB_OPTS = {"variant__extensions_support": "true", "variant__thread_support": "false"}
+
+
+def web_pair(smoke_excludes=SMOKE_EXCLUDES, smoke_features="web_smoke", **smoke_opts):
+    opts = dict(WEB_OPTS)
+    opts.update(smoke_opts)
+    return (cfg("Web", "Web", exclude_filter=WEB_EXCLUDES, **WEB_OPTS) + "\n"
+            + cfg("Web", "Web (smoke)", exclude_filter=smoke_excludes, index=1,
+                  custom_features=smoke_features, **opts))
 
 
 def run(text, name):
@@ -90,7 +104,7 @@ class CheckExportPresetTest(unittest.TestCase):
         self.assertEqual(run(t, "macOS")[0], 1)
 
     def test_web_threads_warns_not_fails(self):
-        t = cfg("Web", "Web", exclude_filter="*.md, scriptshot_native.gdextension, bin/*",
+        t = cfg("Web", "Web", exclude_filter="*.md, src/qa/*, scriptshot_native.gdextension, bin/*",
                 variant__extensions_support="true", variant__thread_support="true")
         rc, out = run(t, "Web")
         self.assertEqual(rc, 0, out)
@@ -110,6 +124,46 @@ class CheckExportPresetTest(unittest.TestCase):
         self.assertEqual(rc, 1)
         self.assertIn("scriptshot_native.gdextension", out)
 
+    def test_shipping_preset_must_exclude_qa_files(self):
+        t = cfg("Linux", "Linux", exclude_filter="tests/*, *.md")
+        rc, out = run(t, "Linux")
+        self.assertEqual(rc, 1)
+        self.assertIn("src/qa/*", out)
+
+    def test_qa_glob_alternative_is_accepted(self):
+        self.assertEqual(run(cfg("Linux", "Linux", exclude_filter="src/qa/web_smoke*"), "Linux")[0], 0)
+
+    def test_shipping_preset_must_not_set_the_smoke_feature(self):
+        t = cfg("Linux", "Linux", custom_features="web_smoke")
+        rc, out = run(t, "Linux")
+        self.assertEqual(rc, 1)
+        self.assertIn("web_smoke", out)
+
+    def test_smoke_preset_matching_web_passes(self):
+        rc, out = run(web_pair(), "Web (smoke)")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(run(web_pair(), "Web")[0], 0)
+
+    def test_smoke_preset_must_not_exclude_qa(self):
+        rc, out = run(web_pair(smoke_excludes=WEB_EXCLUDES), "Web (smoke)")
+        self.assertEqual(rc, 1)
+        self.assertIn("must not exclude src/qa/", out)
+
+    def test_smoke_preset_needs_the_feature(self):
+        rc, out = run(web_pair(smoke_features=""), "Web (smoke)")
+        self.assertEqual(rc, 1)
+        self.assertIn("custom_features", out)
+
+    def test_smoke_preset_options_must_match_web(self):
+        rc, out = run(web_pair(variant__thread_support="true"), "Web (smoke)")
+        self.assertEqual(rc, 1)
+        self.assertIn("variant/thread_support differs", out)
+
+    def test_smoke_preset_must_keep_the_native_exclusion(self):
+        rc, out = run(web_pair(smoke_excludes="*.md, bin/*"), "Web (smoke)")
+        self.assertEqual(rc, 1)
+        self.assertIn("scriptshot_native.gdextension", out)
+
     def test_ios_rejected(self):
         self.assertEqual(run(cfg("iOS", "iOS"), "iOS")[0], 1)
 
@@ -119,7 +173,7 @@ class CommittedPresetsTest(unittest.TestCase):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         path = os.path.join(root, "export_presets.cfg")
         self.assertTrue(os.path.isfile(path), path)
-        for name in ("Windows Desktop", "macOS", "Linux", "Web", "Android"):
+        for name in ("Windows Desktop", "macOS", "Linux", "Web", "Android", "Web (smoke)"):
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = c.main(["x", path, name])

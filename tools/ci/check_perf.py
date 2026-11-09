@@ -322,28 +322,54 @@ def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct):
     return lines
 
 
+def _finite_float(text, minimum, inclusive, what):
+    try:
+        v = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"must be a number, got {text!r}") from None
+    if not math.isfinite(v) or v < minimum or (v == minimum and not inclusive):
+        raise argparse.ArgumentTypeError(f"must be a finite number {what}, got {text!r}")
+    return v
+
+
+def positive_ms(text):
+    """A budget or reference time in ms: finite and > 0."""
+    return _finite_float(text, 0.0, False, "> 0")
+
+
+def percent(text):
+    """A tolerance in %: finite and >= 0 (0 means no slack)."""
+    return _finite_float(text, 0.0, True, ">= 0")
+
+
+def cap_factor(text):
+    """The slow-runner multiplier cap: finite and >= 1. Below 1 it would make the
+    slow-runner bar stricter than the raw bar; 1 turns the allowance off."""
+    return _finite_float(text, 1.0, True, ">= 1 (1 disables the slow-runner allowance)")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("report")
-    ap.add_argument("--p95-ms", type=float, default=16.6, help="p95 budget in ms (default 16.6)")
+    ap.add_argument("--p95-ms", type=positive_ms, default=16.6, help="p95 budget in ms (default 16.6)")
     ap.add_argument("--floor-bullets", type=int, default=5000, help="hard-fail count (default 5000)")
     ap.add_argument("--target-bullets", type=int, default=10000, help="warn-only count (default 10000)")
     ap.add_argument("--baseline", help="earlier bench.json to compare against")
     ap.add_argument("--hooked-report", help="bench.json from `run_benchmark.sh --hooked=1.0`, checked strictly "
                     "with the same counts (see above)")
-    ap.add_argument("--hooked-target-ms", type=float, default=None,
+    ap.add_argument("--hooked-target-ms", type=positive_ms, default=None,
                     help="hooked p95 budget in ms (default: --p95-ms). CI passes a runner-calibrated value")
     ap.add_argument("--ratio-json", help="write the hooked/plain p95 ratios (informational) to this JSON file")
-    ap.add_argument("--regression-pct", type=float, default=25.0)
+    ap.add_argument("--regression-pct", type=percent, default=25.0)
     ap.add_argument("--summary", help="append the markdown summary here (e.g. $GITHUB_STEP_SUMMARY)")
     ap.add_argument("--base-report", help="plain bench.json of the PR base (main), measured in the same job on the "
                     "same runner. Enables the relative check and mode=slow-runner (see above)")
     ap.add_argument("--base-hooked-report", help="hooked bench.json of the PR base, same job (relative hooked gate)")
-    ap.add_argument("--rel-tolerance-pct", type=float, default=10.0,
+    ap.add_argument("--rel-tolerance-pct", type=percent, default=10.0,
                     help="relative check: allowed head-over-base p95 growth in %% (default 10, no absolute slack)")
-    ap.add_argument("--reference-ms", type=float, default=REFERENCE_PLAIN_FLOOR_P95_MS,
+    ap.add_argument("--reference-ms", type=positive_ms, default=REFERENCE_PLAIN_FLOOR_P95_MS,
                     help=f"reference machine's main plain floor p95 (default {REFERENCE_PLAIN_FLOOR_P95_MS})")
-    ap.add_argument("--slow-runner-cap", type=float, default=1.5,
+    ap.add_argument("--slow-runner-cap", type=cap_factor, default=1.5,
                     help="mode=slow-runner bar multiplier cap: bar * min(F, cap) (default 1.5)")
     a = ap.parse_args(argv)
 

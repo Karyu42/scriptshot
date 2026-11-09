@@ -14,6 +14,10 @@ Decisions encoded here (docs/qa/release-builds.md):
     no-dlink 4.7.2 template refuses to start with any GDExtension in the export (issue #40).
     exclude_filter must list scriptshot_native.gdextension, so web runs on the GDScript bullet
     pool and never packages the native bullet wasm (CoS ruling on #36). Threads on is a WARNING.
+  * QA smoke files stay out of normal builds: every preset except "Web (smoke)" must list src/qa/*
+    (or src/qa/web_smoke*) in exclude_filter and must not set the web_smoke custom feature.
+    "Web (smoke)" (tools/ci/web_smoke.sh) must be the Web preset plus the web_smoke feature: same
+    options, same meta, and the same exclude_filter minus the src/qa entry.
 Exit code 0 = ok, 1 = policy violation or preset not found. Warnings do not fail.
 """
 import configparser
@@ -23,6 +27,11 @@ import sys
 SECRET_SUFFIX = re.compile(r"password$")
 ANDROID_ABIS = ("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
 NATIVE_GDEXTENSION = "scriptshot_native.gdextension"
+SMOKE_PRESET = "Web (smoke)"
+SMOKE_FEATURE = "web_smoke"
+QA_EXCLUDES = ("src/qa/*", "src/qa/web_smoke*")
+# Meta keys the smoke preset may differ in from the shipping Web preset.
+SMOKE_META_DIFF = ("name", "custom_features", "exclude_filter", "export_path", "runnable")
 
 
 def parse(path):
@@ -46,6 +55,43 @@ def find_preset(cp, name):
     return None, None
 
 
+def split_list(value):
+    return [x.strip() for x in unquote(value).split(",") if x.strip()]
+
+
+def check_qa_files(cp, name, meta, opts):
+    """src/qa/ (the web smoke scene) ships only in the smoke preset."""
+    errors = []
+    excludes = split_list(meta.get("exclude_filter", ""))
+    features = split_list(meta.get("custom_features", ""))
+    if name != SMOKE_PRESET:
+        if not any(x in excludes for x in QA_EXCLUDES):
+            errors.append("exclude_filter must list src/qa/* (the web smoke scene is not part of normal builds)")
+        if SMOKE_FEATURE in features:
+            errors.append(f"custom_features must not contain {SMOKE_FEATURE} (it makes the smoke scene the main scene)")
+        return errors
+    if unquote(meta.get("platform", "")) != "Web":
+        errors.append(f"{SMOKE_PRESET} must be a Web preset")
+    if SMOKE_FEATURE not in features:
+        errors.append(f"{SMOKE_PRESET} must set custom_features to include {SMOKE_FEATURE}")
+    if any(x in excludes for x in QA_EXCLUDES):
+        errors.append(f"{SMOKE_PRESET} must not exclude src/qa/ (that is the smoke scene)")
+    web_meta, web_opts = find_preset(cp, "Web")
+    if web_meta is None:
+        errors.append(f"{SMOKE_PRESET} needs the shipping Web preset to compare against")
+        return errors
+    want = [x for x in split_list(web_meta.get("exclude_filter", "")) if x not in QA_EXCLUDES]
+    if excludes != want:
+        errors.append(f"{SMOKE_PRESET} exclude_filter must be Web's without src/qa/*: want {want}, got {excludes}")
+    for k in sorted(set(web_meta) | set(meta)):
+        if k not in SMOKE_META_DIFF and web_meta.get(k) != meta.get(k):
+            errors.append(f"{SMOKE_PRESET} {k} differs from Web ({web_meta.get(k)!r} vs {meta.get(k)!r})")
+    for k in sorted(set(web_opts) | set(opts)):
+        if web_opts.get(k) != opts.get(k):
+            errors.append(f"{SMOKE_PRESET} option {k} differs from Web ({web_opts.get(k)!r} vs {opts.get(k)!r})")
+    return errors
+
+
 def check(cp, name):
     """Returns (errors, warnings)."""
     errors, warnings = [], []
@@ -57,6 +103,7 @@ def check(cp, name):
         if SECRET_SUFFIX.search(k.split("/")[-1]) and v != "":
             errors.append(f"{k} is set in the committed file; secrets belong in env/export_credentials.cfg")
 
+    errors.extend(check_qa_files(cp, name, meta, opts))
     platform = unquote(meta.get("platform", ""))
     if platform == "Android":
         for k in ("keystore/debug", "keystore/debug_user", "keystore/release", "keystore/release_user"):
