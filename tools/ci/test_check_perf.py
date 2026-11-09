@@ -681,3 +681,39 @@ class SameRunBaseTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FloatFlagTest(unittest.TestCase):
+    """Float flags are validated by argparse: a bad value exits 2 with a message naming the flag."""
+
+    def _rejects(self, flag, value):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit) as cm:
+            # flag=value so argparse does not read "-inf" or "-3" as an option.
+            run([row(5000, 3.5, 5.0, 6.2)], f"{flag}={value}")
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn(flag, err.getvalue())
+        self.assertIn("must be a", err.getvalue())
+
+    def test_slow_runner_cap_rejects_non_finite_and_non_positive(self):
+        for v in ("nan", "inf", "-inf", "0", "-1.5", "0.5", "abc"):
+            with self.subTest(value=v):
+                self._rejects("--slow-runner-cap", v)
+
+    def test_ms_flags_reject_non_finite_and_non_positive(self):
+        for flag in ("--p95-ms", "--hooked-target-ms", "--reference-ms"):
+            for v in ("nan", "inf", "0", "-3"):
+                with self.subTest(flag=flag, value=v):
+                    self._rejects(flag, v)
+
+    def test_percent_flags_reject_non_finite_and_negative(self):
+        for flag in ("--regression-pct", "--rel-tolerance-pct"):
+            for v in ("nan", "inf", "-1"):
+                with self.subTest(flag=flag, value=v):
+                    self._rejects(flag, v)
+
+    def test_valid_values_are_accepted(self):
+        code, _, _ = run([row(5000, 3.5, 5.0, 6.2), row(10000, 7.0, 8.0, 10.0)],
+                         "--slow-runner-cap", "1", "--rel-tolerance-pct", "0", "--regression-pct", "0",
+                         "--p95-ms", "16.6", "--reference-ms", "7.5")
+        self.assertEqual(code, 0)

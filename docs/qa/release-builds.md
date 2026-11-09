@@ -30,20 +30,24 @@ with the message "ETC2/ASTC texture compression is required".
 The release Android artifact above is **arm64-v8a only** (phones). GitHub-hosted runners are x86_64, so CI emulator smoke uses the **Lua spike** dual-ABI APK instead — see `.github/workflows/android-emulator-smoke.yml` and `docs/scripting/testing.md` §2.4. Dispatch it from Actions; it does not run on PRs.
 
 `tools/ci/check_export_preset.py` runs in the `test` job on every pull request and push, once per preset
-(Windows Desktop, macOS, Linux, Web, Android), and again before each manual export. It fails on: any password
+(Windows Desktop, macOS, Linux, Web, Android, Web (smoke)), and again before each manual export. It fails on: any password
 in the committed `export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only
 or uses Gradle, a macOS preset whose `codesign/codesign` is not `1` or that enables notarization, and an iOS preset.
 `codesign/codesign=3` (Xcode codesign) is rejected: that mode exists only on a macOS editor host, and CI exports
 from Linux, where the only ad-hoc value is `1`. For the Web preset it fails when `extensions_support` is off (the no-dlink
 template refuses to boot with the Lua GDExtension, issue #40) or when `exclude_filter` does not list
-`scriptshot_native.gdextension`, and warns when threads are on (needs COOP/COEP).
+`scriptshot_native.gdextension`, and warns when threads are on (needs COOP/COEP). Every preset except `Web (smoke)` must
+list `src/qa/*` in `exclude_filter` and must not set the `web_smoke` custom feature, and `Web (smoke)` must match the Web
+preset except for its name, export path, `web_smoke` feature and the missing `src/qa/*` exclude (section 4.1).
 
 After a successful export the same job checks the artifact, because Godot can exit 0 on a failed ad-hoc sign
 (it is only an export warning):
 
 * macOS: the zip listing must contain `_CodeSignature/CodeResources`.
 * Android: `apksigner verify` on the APK (build-tools from the Android matrix entry).
-* Linux: `timeout 60s ./Scriptshot.x86_64 --headless --quit`. The official template targets an older glibc, so the `ubuntu-24.04` runner can launch it. Windows has no equivalent cheap smoke here. Web has the browser smoke in section 4.1 (`tools/ci/web_smoke.sh`).
+* Linux: `timeout 60s ./Scriptshot.x86_64 --headless --quit`. The official template targets an older glibc, so the `ubuntu-24.04` runner can launch it. Windows has no equivalent cheap smoke here.
+* Web: `tools/ci/web_smoke.py check-export build/web` (dlink template used, only the Lua side module in `gdextensionLibs`,
+  no native bullet wasm, no `src/qa/` file). The browser smoke is the separate `web-smoke` job (section 4.1).
 
 ## 2. macOS: unsigned first launch
 
@@ -90,38 +94,53 @@ Notarization (no warning at all) needs a paid Apple developer account and is out
   `exclude_filter` lists `scriptshot_native.gdextension, bin/*`. Godot 4.7.2 honours that for GDExtensions: an excluded
   `.gdextension` file is not exported, its libraries are not copied or listed in `gdextensionLibs`, and the exported
   `.godot/extension_list.cfg` drops it, so the engine never tries to load it (no "No GDExtension library found" errors). This works
-  with or without web keys in `scriptshot_native.gdextension` (main has none; #35 adds them). Web therefore runs on the
+  with or without web keys in `scriptshot_native.gdextension`: main has had `web.*.wasm32` keys and the `bin/web.wasm32/`
+  layout since #35, and the exclusion was also checked on the tree before #35, which had none. Web therefore runs on the
   GDScript bullet pool; selecting native (`--bullet-backend=native`) logs the usual single fallback warning.
 * Size: the dlink no-threads release export is about **49.2 MiB** on disk (`index.side.wasm` 44.1 MB, `index.wasm` 1.5 MB,
   Lua side module 2.65 MB, `index.js` 2.9 MB, `index.pck` 0.4 MB), versus 42.07 MiB for the old no-dlink export that did not boot.
   Gzipped, the three wasm files are about 11.7 MB. On a local server in headless Chromium (SwiftShader) the engine starts about
   1.7-2.0 s after navigation.
 
-### 4.1 Browser smoke (`tools/ci/web_smoke.sh`)
+### 4.1 Browser smoke (`tools/ci/web_smoke.sh`, CI job "Web smoke (headless Chromium)")
 
-`./tools/ci/web_smoke.sh` exports the Web preset (release, then debug), checks the export without a browser, then serves it
-over plain HTTP (no COOP/COEP; the no-threads build needs none) and loads it in headless Chromium with Playwright
-(`tools/ci/web_smoke.py`). It needs the Godot 4.7.2 editor, the `web_dlink_nothreads_*.zip` templates, and
-`pip install playwright` plus `python -m playwright install chromium` (or `CHROME_PATH` pointing at Chrome).
-Exit code is non-zero on any failure.
+`./tools/ci/web_smoke.sh` runs on every pull request and push to `main` (`web-smoke` job). For release, then debug, it
+exports two presets, checks each export without a browser, then serves it over plain HTTP (no COOP/COEP; the no-threads
+build needs none) and loads it in headless Chromium with Playwright (`tools/ci/web_smoke.py`). It needs the Godot 4.7.2
+editor, the `web_dlink_nothreads_*.zip` templates, and `pip install playwright` plus `python -m playwright install chromium`
+(or `CHROME_PATH` pointing at Chrome). `WEB_SMOKE_MODES=release` runs one mode. Exit code is non-zero on any failure.
 
-* **Export check:** `gdextensionLibs` is exactly the lua-gdextension no-threads side module, `index.side.wasm` exists, no
-  `scriptshot_native` file is exported, and `index.pck` holds no `scriptshot_native.gdextension` or `bin/` file, and its
-  `extension_list.cfg` lists only lua-gdextension.
-* **`boot`:** the page as shipped. The engine starts and the main scene runs for 6 s with no console error.
-* **`lua`:** `GODOT_CONFIG.args = ["--", "--web-smoke"]`. The `WebSmoke` autoload (`src/qa/web_smoke.gd`) waits for the
-  main scene, loads `src/qa/web_smoke_shot.lua` through `ScriptHost` (`LuaBulletBehavior.load_file`), spawns 8 shots on the
-  main scene's `BulletManager`, and prints `SMOKE_LUA_OK bullets=16 backend=gdscript ...` (each shot splits off a child from
-  Lua). Without `--web-smoke` the autoload frees itself in `_ready()`; the shipped page passes no arguments. Release web
-  templates refuse a scene path on the command line (`disable_path_overrides`), which is why this is a gated autoload and not
-  a separate scene.
-* **`native`:** the same plus `--bullet-backend=native`. Exactly one fallback warning, bullets still on `gdscript`.
+The smoke scene never ships. `src/qa/` (`web_smoke.tscn`, `web_smoke.gd`, `web_smoke_shot.lua`) is in the `exclude_filter`
+of every shipping preset, and there is no autoload. The `Web (smoke)` preset is the Web preset plus the custom feature
+`web_smoke`, without the `src/qa/*` exclude. project.godot's `application/run/main_scene.web_smoke` override makes
+`src/qa/web_smoke.tscn` the main scene only when that feature is set. Release web templates refuse a scene path on the
+command line (`disable_path_overrides`), so a feature override is the way to pick the scene. A feature-tagged autoload
+(`autoload/Name.feature`) does not work: Godot 4.7.2 registers it on every platform. The override key itself is still in
+every project.binary, pointing at a file that is not exported; without the feature it is never read.
+`check_export_preset.py` enforces both presets (section 1).
+
+* **Export check, shipping `Web` (`build/web`):** `gdextensionLibs` is exactly the lua-gdextension no-threads side module,
+  `index.side.wasm` exists, no `scriptshot_native` file is exported, and `index.pck` holds no
+  `scriptshot_native.gdextension`, no `bin/` and no `src/qa/` file. Its `extension_list.cfg` lists only lua-gdextension,
+  and its project.binary has no `WebSmoke` autoload and no `web_smoke` feature.
+* **Export check, `Web (smoke)` (`build/web-smoke-export`):** the same, except that the `src/qa/` files and the `web_smoke`
+  feature must be present.
+* **`boot`** (shipping export): the engine starts and the main scene runs for 6 s with no console error. It fails if the
+  6 s window does not finish before the scenario timeout.
+* **`lua`** (smoke export): `web_smoke.tscn` instances `scenes/main.tscn` and loads `src/qa/web_smoke_shot.lua` through
+  `ScriptHost` (`LuaBulletBehavior.load_file`). It spawns 8 shots on the main scene's `BulletManager`, and each one
+  splits off a child from Lua. It needs exactly one `SMOKE_DONE ok`, `SMOKE_LUA_OK bullets=<n> backend=gdscript`, and
+  `SMOKE_BACKEND backend=gdscript ... fallback_warnings=0`. Marker fields are compared exactly, not as substrings.
+* **`native`** (smoke export, `GODOT_CONFIG.args = ["--", "--bullet-backend=native"]`): exactly one fallback warning and
+  `fallback_warnings=1`, with bullets still on `gdscript`.
 
 Every scenario fails on a page error, a console error that is not allowlisted, or a request for any `scriptshot_native` wasm.
 The allowlist (`ALLOWLIST` in `web_smoke.py`) holds one entry: lua-gdextension's
 `Property not found: 'lua_gdextension/lua_script_language/script_import_map'` warning, which it also prints on desktop.
-Artifacts go to `build/web-smoke/<mode>/`: `<scenario>.png`, `<scenario>.console.log`, `<scenario>.requests.log`,
-`summary.json`, `check-export.txt` and `export.log`.
+Artifacts go to `build/web-smoke/<mode>/` and are uploaded as `web-smoke`: `<scenario>.png`, `<scenario>.console.log`,
+`<scenario>.requests.log`, `summary-<scenarios>.json`, `check-export-web.txt`, `check-export-web-smoke.txt`, and both
+export logs. The job caches the dlink templates (key `...-web-dlink-nothreads`) and Playwright's Chromium.
+
 * Local test with the right headers (stdlib only):
   ```python
   # serve.py: python3 serve.py build/web 8080
@@ -186,12 +205,11 @@ kept so the directory matches an official install):
 | `version.txt` | install marker |
 
 Not cached, on purpose: other CPU architectures, iOS, threaded web, `android_source.zip`, and the no-dlink
-`web_nothreads_*.zip` (the Web preset has `extensions_support=true`, so the exporter never opens them; until the
-`export` job's extract list in `ci.yml` is updated it still extracts and checks those two and must also extract
-`templates/web_dlink_nothreads_*.zip`). The Windows console
+`web_nothreads_*.zip` (the Web preset has `extensions_support=true`, so the exporter never opens them). The Windows console
 wrappers (`windows_*_x86_64_console.exe`) are also omitted: `debug/export_console_wrapper=1` is "Debug Only"
 and the matrix exports Windows as release, so the exporter does not copy a console exe. The cache key ends in
-`-slim` so an older full-template cache is not restored.
+`-slim-dlink`, so neither an older full-template cache nor the earlier `-slim` cache (which had `web_nothreads_*.zip` and no
+dlink zips) is restored. The `web-smoke` job keeps its own smaller cache with only `version.txt` and the two dlink zips.
 
 ## 8. Native library artifact layout (`bin/<platform>/`)
 

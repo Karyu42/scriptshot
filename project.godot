@@ -13,6 +13,7 @@ config_version=5
 config/name="Scriptshot"
 config/description="Top-down 2D twin-stick shooter where you script your own shots in Lua."
 run/main_scene="res://scenes/main.tscn"
+run/main_scene.web_smoke="res://src/qa/web_smoke.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 
@@ -20,7 +21,6 @@ config/icon="res://icon.svg"
 
 InputDevice="*res://src/core/input_device.gd"
 RespawnPoints="*res://src/core/respawn_points.gd"
-WebSmoke="*res://src/qa/web_smoke.gd"
 
 [debug]
 

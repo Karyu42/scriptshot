@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Headless-browser smoke test for the Web export (issue #40, #36).
+"""Headless-browser smoke test for the Web export (issues #40, #36).
 
 Usage:
-  web_smoke.py check-export <export_dir>
+  web_smoke.py check-export <export_dir> [--smoke]
   web_smoke.py run <export_dir> <artifact_dir> [--timeout S] [--scenarios boot,lua,native]
 
 check-export inspects the exported files without a browser:
@@ -11,22 +11,28 @@ check-export inspects the exported files without a browser:
   * no libscriptshot_native* file sits next to index.html,
   * index.pck holds no scriptshot_native.gdextension, no bin/ file, and its
     .godot/extension_list.cfg lists only exported extensions,
-  * index.side.wasm is present (the dlink template was used).
+  * index.side.wasm is present (the dlink template was used),
+  * shipping export (default): no src/qa/ file in the pck, no WebSmoke
+    autoload and no `web_smoke` custom feature in project.binary;
+    --smoke ("Web (smoke)" preset): the smoke scene, script and Lua shot are in
+    the pck and project.binary carries the `web_smoke` feature.
 
 run serves <export_dir> over plain HTTP (no COOP/COEP: the no-threads template
 does not need cross-origin isolation), opens it in headless Chromium with
-Playwright and checks three scenarios:
-  boot    the shipped page as a player gets it: the engine starts and the main
-          scene runs for a few seconds with no console error.
-  lua     GODOT_CONFIG.args = ["--", "--web-smoke"] (src/qa/web_smoke.gd autoload): main scene plus a
-          Lua shot through ScriptHost. Needs SMOKE_LUA_OK ... backend=gdscript
-          and zero native fallback warnings.
-  native  the same plus `--bullet-backend=native`: exactly one fallback
-          warning, bullets still spawn on gdscript.
+Playwright and runs the named scenarios:
+  boot    meant for the shipping export: the engine starts and the main scene
+          runs for 6 s with no console error. Fails if that window does not
+          complete before the timeout.
+  lua     meant for the "Web (smoke)" export, whose main scene is
+          src/qa/web_smoke.tscn (feature override). Needs SMOKE_DONE ok,
+          SMOKE_LUA_OK with backend=gdscript, and exactly
+          SMOKE_BACKEND backend=gdscript ... fallback_warnings=0.
+  native  the smoke export with GODOT_CONFIG.args = ["--", "--bullet-backend=native"]:
+          exactly one fallback warning, bullets still spawn on gdscript.
 Every scenario fails on a page error, a console error that is not allowlisted,
 or any request for a scriptshot_native wasm. Each scenario writes
-<scenario>.png, <scenario>.console.log and <scenario>.requests.log; summary.json
-holds the timings. Exit code is non-zero on any failure.
+<scenario>.png, <scenario>.console.log and <scenario>.requests.log; summary-<scenarios>.json
+holds the timings (summary-<scenarios>.json). Exit code is non-zero on any failure.
 
 Chromium: CHROME_PATH if set, else Playwright's bundled Chromium
 (`python -m playwright install chromium`).
@@ -45,7 +51,8 @@ import threading
 import time
 from pathlib import Path
 
-SMOKE_FLAG = "--web-smoke"
+SMOKE_FILES = ("src/qa/web_smoke.tscn", "src/qa/web_smoke.gd", "src/qa/web_smoke_shot.lua")
+SMOKE_FEATURE = b"web_smoke"
 NATIVE_MARK = "scriptshot_native"
 LUA_LIB = re.compile(r"^libluagdextension\.web\.template_(debug|release)\.wasm32\.nothreads\.wasm$")
 FALLBACK = "BulletManager: native bullets were requested but NativeBulletSim is not available"
@@ -59,8 +66,8 @@ ALLOWLIST = [
 ]
 SCENARIOS = {
     "boot": {"args": [], "markers": False, "fallback": 0},
-    "lua": {"args": ["--", SMOKE_FLAG], "markers": True, "fallback": 0},
-    "native": {"args": ["--", SMOKE_FLAG, "--bullet-backend=native"], "markers": True, "fallback": 1},
+    "lua": {"args": [], "markers": True, "fallback": 0},
+    "native": {"args": ["--", "--bullet-backend=native"], "markers": True, "fallback": 1},
 }
 BOOT_SETTLE_S = 6.0
 
@@ -104,7 +111,7 @@ def pck_files(path: Path) -> dict[str, bytes]:
     return out
 
 
-def check_export(export_dir: Path) -> bool:
+def check_export(export_dir: Path, smoke: bool = False) -> bool:
     ok = True
     html = (export_dir / "index.html").read_text()
     cfg = godot_config(html)
@@ -139,9 +146,26 @@ def check_export(export_dir: Path) -> bool:
         fail("pck extension_list.cfg still lists scriptshot_native.gdextension"); ok = False
     if "res://addons/lua-gdextension/luagdextension.gdextension" not in ext_list:
         fail("pck extension_list.cfg does not list lua-gdextension"); ok = False
-    for need in ("scripting/sandbox.lua", "src/qa/web_smoke_shot.lua"):
-        if need not in pck:
-            fail(f"pck is missing {need}"); ok = False
+    if "scripting/sandbox.lua" not in pck:
+        fail("pck is missing scripting/sandbox.lua"); ok = False
+    qa = sorted(p for p in pck if p.startswith("src/qa/"))
+    binary = pck.get("project.binary", b"")
+    has_feature = b"_custom_features" in binary and SMOKE_FEATURE in binary.split(b"_custom_features", 1)[1][:64]
+    print(f"pck src/qa/ entries = {qa}")
+    print(f"project.binary: WebSmoke autoload={b'autoload/WebSmoke' in binary}, web_smoke custom feature={has_feature}")
+    if b"autoload/WebSmoke" in binary:
+        fail("project.binary registers a WebSmoke autoload"); ok = False
+    if smoke:
+        for need in SMOKE_FILES:
+            if need not in pck and need + ".remap" not in pck:
+                fail(f"smoke export is missing {need}"); ok = False
+        if not has_feature:
+            fail("smoke export does not carry the web_smoke custom feature"); ok = False
+    else:
+        if qa:
+            fail(f"shipping export contains QA files: {qa}"); ok = False
+        if has_feature:
+            fail("shipping export carries the web_smoke custom feature"); ok = False
     print("check-export:", "ok" if ok else "FAILED")
     return ok
 
@@ -198,6 +222,38 @@ def classify(console: list[tuple[str, str]]) -> tuple[list[str], int]:
         prev_allowed = False
         bad.append(text)
     return bad, fallback
+
+
+def window_problems(spec: dict, started_s: float | None, done_s: float | None, timeout: float) -> list[str]:
+    """The engine must start, and a marker-less (boot) scenario must also finish
+    its BOOT_SETTLE_S window before the timeout."""
+    if started_s is None:
+        return [f"engine did not start within {timeout:.0f}s (status overlay still shown)"]
+    if not spec["markers"] and done_s is None:
+        return [f"the main scene did not run for {BOOT_SETTLE_S:.0f}s after the engine started "
+                f"(started at {started_s}s, timeout {timeout:.0f}s)"]
+    return []
+
+
+def marker_fields(line: str) -> dict[str, str]:
+    """`SMOKE_X a=1 b=two` -> {"a": "1", "b": "two"}."""
+    return dict(tok.split("=", 1) for tok in line.split()[1:] if "=" in tok)
+
+
+def check_markers(markers: list[str], fallback: int) -> list[str]:
+    """Exact checks on the smoke scene's marker lines."""
+    problems: list[str] = []
+    if markers.count("SMOKE_DONE ok") != 1 or any(m.startswith("SMOKE_DONE") and m != "SMOKE_DONE ok" for m in markers):
+        problems.append(f"expected exactly one 'SMOKE_DONE ok' (markers: {markers})")
+    lua = [marker_fields(m) for m in markers if m.split(" ", 1)[0] == "SMOKE_LUA_OK"]
+    if len(lua) != 1 or lua[0].get("backend") != "gdscript" or not lua[0].get("bullets", "").isdigit() \
+            or int(lua[0]["bullets"]) <= 0:
+        problems.append(f"expected one 'SMOKE_LUA_OK bullets=<n> backend=gdscript' marker, got {lua}")
+    backend = [marker_fields(m) for m in markers if m.split(" ", 1)[0] == "SMOKE_BACKEND"]
+    if len(backend) != 1 or backend[0].get("backend") != "gdscript" \
+            or backend[0].get("fallback_warnings") != str(fallback):
+        problems.append(f"expected one 'SMOKE_BACKEND backend=gdscript ... fallback_warnings={fallback}', got {backend}")
+    return problems
 
 
 def run_scenario(pw, chrome: str | None, url: str, name: str, spec: dict, outdir: Path, timeout: float) -> dict:
@@ -267,8 +323,7 @@ def run_scenario(pw, chrome: str | None, url: str, name: str, spec: dict, outdir
     problems: list[str] = []
     if page_errors:
         problems.append(f"page errors: {page_errors}")
-    if result["engine_started_s"] is None:
-        problems.append(f"engine did not start within {timeout:.0f}s (status overlay still shown)")
+    problems.extend(window_problems(spec, result["engine_started_s"], result["done_s"], timeout))
     # Chromium can report ERR_ABORTED for a wasm it then loads from a second
     # fetch; what matters is that every engine file arrived with a 2xx.
     for need in ("index.wasm", "index.side.wasm", "index.pck"):
@@ -285,14 +340,7 @@ def run_scenario(pw, chrome: str | None, url: str, name: str, spec: dict, outdir
     if fallback != spec["fallback"]:
         problems.append(f"expected {spec['fallback']} native fallback warning(s), saw {fallback}")
     if spec["markers"]:
-        lua_ok = [m for m in markers if m.startswith("SMOKE_LUA_OK")]
-        if "SMOKE_DONE ok" not in markers:
-            problems.append(f"no 'SMOKE_DONE ok' (markers: {markers})")
-        if not lua_ok or "backend=gdscript" not in lua_ok[0]:
-            problems.append("no 'SMOKE_LUA_OK ... backend=gdscript' marker")
-        if not any(m.startswith("SMOKE_BACKEND backend=gdscript") and f"fallback_warnings={spec['fallback']}" in m
-                   for m in markers):
-            problems.append(f"SMOKE_BACKEND marker does not say gdscript with fallback_warnings={spec['fallback']}")
+        problems.extend(check_markers(markers, spec["fallback"]))
     result["problems"] = problems
     result["ok"] = not problems
     return result
@@ -300,7 +348,11 @@ def run_scenario(pw, chrome: str | None, url: str, name: str, spec: dict, outdir
 
 def main(argv: list[str]) -> int:
     if len(argv) >= 2 and argv[0] == "check-export":
-        return 0 if check_export(Path(argv[1])) else 1
+        extra = argv[2:]
+        if extra not in ([], ["--smoke"]):
+            print(__doc__)
+            return 2
+        return 0 if check_export(Path(argv[1]), smoke=bool(extra)) else 1
     if len(argv) < 3 or argv[0] != "run":
         print(__doc__)
         return 2
@@ -337,7 +389,7 @@ def main(argv: list[str]) -> int:
                     print(f"    problem: {p}")
     finally:
         srv.shutdown()
-    (outdir / "summary.json").write_text(json.dumps(results, indent=2) + "\n")
+    (outdir / f"summary-{'-'.join(names)}.json").write_text(json.dumps(results, indent=2) + "\n")
     ok = all(r["ok"] for r in results)
     print("web_smoke:", "ok" if ok else "FAILED", f"(artifacts in {outdir})")
     return 0 if ok else 1

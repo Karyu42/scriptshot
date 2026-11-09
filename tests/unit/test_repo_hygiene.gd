@@ -37,6 +37,9 @@ func test_build_output_directory_is_ignored() -> void:
 
 
 const REQUIRED_PRESETS: Array[String] = ["Windows Desktop", "macOS", "Linux", "Web", "Android"]
+## Not release targets: "Web (smoke)" is the browser smoke build (tools/ci/web_smoke.sh). The release
+## export matrix never lists it, and tools/ci/check_export_preset.py ties it to the Web preset.
+const QA_PRESETS: Array[String] = ["Web (smoke)"]
 
 
 func _preset_names(cfg: ConfigFile) -> Array[String]:
@@ -54,7 +57,9 @@ func test_export_presets_file_exists_with_the_five_ci_presets() -> void:
 	var names := _preset_names(cfg)
 	for required in REQUIRED_PRESETS:
 		assert_has(names, required, "CI exports a preset named '%s'" % required)
-	assert_eq(names.size(), REQUIRED_PRESETS.size(), "no unexpected extra presets (CI matrix is keyed on these names)")
+	for qa in QA_PRESETS:
+		assert_has(names, qa, "the web-smoke job exports a preset named '%s'" % qa)
+	assert_eq(names.size(), REQUIRED_PRESETS.size() + QA_PRESETS.size(), "no unexpected extra presets (CI matrix is keyed on these names)")
 
 
 func test_export_presets_write_into_build_and_hold_no_credentials() -> void:
