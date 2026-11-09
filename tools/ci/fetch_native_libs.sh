@@ -38,10 +38,26 @@ if [ -f "$DEST/.pinned-$VERSION" ]; then
 	exit 0
 fi
 
+# GitHub's /releases/download URL has been answering GET with HTTP 504 while a
+# HEAD still redirects to a signed release-assets URL that serves the zip.
+# Resolve that redirect and download the target. Fall back to the original URL.
+download_release_zip() {
+	local url="$1" dest="$2" attempt loc
+	for attempt in 1 2 3 4 5; do
+		loc=$(curl -sI --max-time 30 "$url" | tr -d '\r' | awk 'tolower($1)=="location:" {print $2; exit}')
+		if [ -n "$loc" ] && curl -fL --retry 3 --retry-delay 2 --retry-all-errors --max-time 180 -o "$dest" "$loc"; then
+			return 0
+		fi
+		echo "fetch_native_libs.sh: download attempt ${attempt} failed" >&2
+		sleep $((attempt * 2))
+	done
+	curl -fL --retry 5 --retry-delay 2 --retry-all-errors --max-time 180 -o "$dest" "$url"
+}
+
 echo "fetch_native_libs.sh: downloading lua-gdextension ${VERSION} (${platform})"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL --retry 3 "$URL" -o "$tmp/lua.zip"
+download_release_zip "$URL" "$tmp/lua.zip"
 echo "$SHA256  $tmp/lua.zip" | sha256sum -c -
 unzip -q "$tmp/lua.zip" -d "$tmp/x"
 if [ ! -f "$tmp/x/addons/lua-gdextension/luagdextension.gdextension" ]; then
