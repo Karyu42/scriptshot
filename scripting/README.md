@@ -131,18 +131,23 @@ base, head, head, base (`tools/ci/perf_ab.sh`, 2 rounds merged by
 `tools/ci/merge_bench.py`). `check_perf.py` then applies, at 5,000 bullets
 (hard) and 10,000 (warning only):
 
-- a relative gate: head p95 <= base p95 x 1.10 + 0.5 ms, plain and hooked
-  (`--rel-tolerance-pct 10 --rel-slack-ms 0.5`);
-- the absolute budgets (plain 16.6 ms, hooked 22 ms) on head p95 / F, where the
-  runner speed factor F = base plain 5k p95 / 7.5 ms, clamped to [1.0, 3.0]
+- a relative check, always: head p95 <= base p95 x 1.10, plain and hooked, with
+  no millisecond slack (`--rel-tolerance-pct 10`);
+- the bars (plain 16.6 ms, hooked 22 ms) on the head's raw p95 (`mode=raw`).
+  Only when main's own p95 in the same job also misses a bar (the runner is
+  provably slow) does that tier switch to `mode=slow-runner`: the head bar
+  becomes bar x min(F, 1.5), where F = base plain 5k p95 / 7.5 ms, clamped to
+  >= 1.0, so at most 24.9 ms plain and 33.0 ms hooked
   (`REFERENCE_PLAIN_FLOOR_P95_MS` in `check_perf.py`, main on a fast
-  ubuntu-24.04 runner; `--max-speed-factor 3.0`). F never goes below 1.0, so a
-  fast runner never loosens the budgets.
+  ubuntu-24.04 runner; `--slow-runner-cap 1.5`). A runner on which main meets
+  the bar never gets a looser bar.
 
-A push to `main`, a `workflow_dispatch` run, or a PR whose base run failed has no
-base: F = 1.0 and only the absolute 16.6 / 22 ms gates apply, as before. The
-step summary starts with a table of base p95, head p95, delta %, the relative
-limit, the normalized head p95, the budget and the verdict per tier and count.
+A push to `main`, a `workflow_dispatch` run, or a PR whose base run failed or
+printed NaN has no usable base: `mode=raw` and the 16.6 / 22 ms bars only, as
+before. The log prints `perf mode: <tier> <count>: mode=...` for every tier, and
+the step summary starts with a table of base p95, head p95, delta %, the
+relative limit and verdict, the mode, the head bar and the bar check per tier
+and count.
 
 A short headless run on the follow-up machine (Godot 4.7.2, 20 warmup + 100
 measured frames) printed, at 5,000 bullets, plain work p95 7.93 ms with

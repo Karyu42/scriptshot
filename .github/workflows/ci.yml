@@ -3,10 +3,10 @@
 #            (tools/ci/check_export_preset.py, all five presets) on every PR and push to main.
 #   perf   : headless bullet benchmark (tools/ci/perf_ab.sh -> ./tools/run_benchmark.sh, plain + hooked) on every PR
 #            and push to main, gated by tools/ci/check_perf.py. On a PR, main is benchmarked in the same job on the
-#            same runner (ABBA rounds): head 5k p95 may not exceed base x 1.10 + 0.5 ms, and the absolute budgets
-#            (plain 16.6 ms, hooked 22.0 ms at 5,000 bullets; HARD) apply to head p95 / runner speed factor
-#            (base plain 5k p95 / 7.5 ms reference, clamped to [1.0, 3.0]). 10,000 bullets is warning-only.
-#            Push/dispatch (no base): absolute budgets unscaled.
+#            same runner (ABBA rounds): head 5k p95 may not exceed base x 1.10, and head raw p95 must meet the bar
+#            (plain 16.6 ms, hooked 22.0 ms at 5,000 bullets; HARD). Only if main's own p95 on this runner also misses
+#            a bar (slow runner) does that bar become bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (>= 1.0).
+#            10,000 bullets is warning-only. Push/dispatch (no base): the raw bars only.
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
 #   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
 # Checkout does not enable Git LFS or submodules: this repo has neither. If native-libs starts
@@ -225,11 +225,14 @@ jobs:
           # stored file fails, 10k warns.
           #
           # SAME-RUN BASE (pull_request; motivation: #35 failed the 22 ms gate on slow hosts with no sim change):
-          #   * relative gate: head 5k p95 > base 5k p95 x 1.10 + 0.5 ms FAILS (plain and hooked); 10k only warns.
-          #   * runner normalization: F = base plain 5k p95 / 7.5 ms (check_perf.REFERENCE_PLAIN_FLOOR_P95_MS:
-          #     main on a fast ubuntu-24.04 runner), clamped to [1.0, 3.0]. The absolute budgets below are
-          #     applied to head p95 / F. F >= 1.0, so a fast runner never loosens them.
-          #   * no usable base (push to main, workflow_dispatch, a failed base run): F = 1.0, absolute gates only.
+          #   * relative check, always: head 5k p95 > base 5k p95 x 1.10 FAILS (plain and hooked; no ms slack).
+          #   * mode=raw (default): head raw p95 <= the bar below.
+          #   * mode=slow-runner, per tier and count, ONLY when main's own raw p95 in this job also misses that bar:
+          #     head bar = bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (check_perf.REFERENCE_PLAIN_FLOOR_P95_MS,
+          #     main on a fast ubuntu-24.04 runner), clamped to >= 1.0. At most 24.9 ms plain, 33.0 ms hooked.
+          #   * no usable base (push to main, workflow_dispatch, a failed or NaN base run): mode=raw only.
+          #   The mode of every tier is printed in the log ("perf mode: ...") and the step summary.
+          #   10k uses the same logic, warning-only.
           #
           # ABSOLUTE BUDGETS: plain 5k p95 <= 16.6 ms (the real-device target) and hooked 5k p95 <= 22.0 ms
           # (--hooked-target-ms), both hard; 10k warn-only. 22.0 is wider than 16.6 for the per-bullet hook
@@ -239,7 +242,7 @@ jobs:
             python3 tools/ci/check_perf.py reports/bench.json
             --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25
             --hooked-report reports/bench-hooked.json --hooked-target-ms 22.0
-            --rel-tolerance-pct 10 --rel-slack-ms 0.5 --max-speed-factor 3.0
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5
             --ratio-json reports/hooked-ratio.json
             --summary "$GITHUB_STEP_SUMMARY"
           )
