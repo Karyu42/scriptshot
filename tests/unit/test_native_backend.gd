@@ -10,6 +10,7 @@ var manager: BulletManager
 
 
 func before_each() -> void:
+	NativeBackend.force_unavailable = false
 	manager = BulletManager.new()
 	manager.backend_preference = "native" if NativeBackend.is_available() else "gdscript"
 	manager.capacity = 256
@@ -317,17 +318,69 @@ func test_auto_follows_project_setting_unless_env_says_otherwise() -> void:
 
 func test_missing_extension_warns_once_and_stays_on_gdscript() -> void:
 	if NativeBackend.is_available():
-		# The library is loaded in this process; the fallback is covered by the unbuilt run.
 		var forced := _bare_manager("native")
 		assert_eq(forced.backend, "native")
-		return
+	else:
+		NativeBackend.missing_warned = false
+		NativeBackend.missing_warnings = 0
+		var first := _bare_manager("native")
+		var second := _bare_manager("native")
+		assert_eq(first.backend, "gdscript")
+		assert_eq(second.backend, "gdscript")
+		assert_eq(NativeBackend.missing_warnings, 1, "one warning for the process, not one per manager")
+
+
+## The class is absent: the library was never built, it failed to load, or (web)
+## the wasm side module did not register NativeBulletSim. force_unavailable is
+## that state even in a process where the class is registered, so the built and
+## unbuilt suites both run this path.
+func test_unregistered_class_falls_back_once_and_keeps_pool_semantics() -> void:
+	var saved_setting: String = str(ProjectSettings.get_setting(NativeBackend.SETTING, "gdscript"))
+	var saved_env := OS.get_environment(NativeBackend.ENV_VAR)
+	NativeBackend.force_unavailable = true
 	NativeBackend.missing_warned = false
 	NativeBackend.missing_warnings = 0
-	var first := _bare_manager("native")
-	var second := _bare_manager("native")
-	assert_eq(first.backend, "gdscript")
-	assert_eq(second.backend, "gdscript")
-	assert_eq(NativeBackend.missing_warnings, 1, "one warning for the process, not one per manager")
+	ProjectSettings.set_setting(NativeBackend.SETTING, "native")
+	OS.set_environment(NativeBackend.ENV_VAR, "")
+	var native_mgr := _bare_manager("native")
+	var auto_mgr := _bare_manager("auto")
+	var gd_mgr := _bare_manager("gdscript")
+	var native_backend := native_mgr.backend
+	var auto_backend := auto_mgr.backend
+	var gd_backend := gd_mgr.backend
+	var warnings := NativeBackend.missing_warnings
+	var req := _shot(Vector2.ZERO, Vector2(60, 0))
+	req.pierces_script_invuln = true
+	var id := native_mgr.spawn(req)
+	native_mgr.step(DT)
+	var pool_count := native_mgr.pool.count
+	var flag: int = native_mgr.pool.pierces_script_invuln[id]
+	var pos_x: float = native_mgr.pool.pos[id].x
+	var again := _bare_manager("native")
+	var again_backend := again.backend
+	var warnings_after := NativeBackend.missing_warnings
+	ProjectSettings.set_setting(NativeBackend.SETTING, "gdscript")
+	OS.set_environment(NativeBackend.ENV_VAR, "")
+	NativeBackend.missing_warned = false
+	NativeBackend.missing_warnings = 0
+	var quiet := _bare_manager("auto")
+	var quiet_backend := quiet.backend
+	var warnings_quiet := NativeBackend.missing_warnings
+	ProjectSettings.set_setting(NativeBackend.SETTING, saved_setting)
+	OS.set_environment(NativeBackend.ENV_VAR, saved_env)
+	NativeBackend.force_unavailable = false
+	assert_eq(native_backend, "gdscript")
+	assert_eq(auto_backend, "gdscript", "auto that resolved to native still uses the pool")
+	assert_eq(gd_backend, "gdscript")
+	assert_eq(warnings, 1, "native and auto share one warning; an explicit gdscript preference does not warn")
+	assert_false(native_mgr.is_native_id(id))
+	assert_eq(pool_count, 1)
+	assert_eq(flag, 1, "script invulnerability pierce stays on the pool bullet")
+	assert_almost_eq(pos_x, 1.0, 0.001, "the pool integrates the bullet")
+	assert_eq(again_backend, "gdscript")
+	assert_eq(warnings_after, 1, "a later manager does not warn again")
+	assert_eq(quiet_backend, "gdscript")
+	assert_eq(warnings_quiet, 0, "auto that resolves to gdscript does not warn")
 
 
 func test_declarative_bullets_go_native_and_unmasked_hooks_stay_in_the_pool() -> void:

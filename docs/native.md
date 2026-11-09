@@ -6,9 +6,12 @@ only, no per-bullet hook), and **batch-hook** bullets. Bullets with a
 per-bullet hook stay in the GDScript `BulletPool`, and that pool remains the
 default and the fallback.
 
-**Status: opt-in, Linux x86_64.** Not wired into CI. The game does not move
-bullets unless native is opted in and the library loaded. Hooked bullets never
-move to C++.
+**Status: opt-in.** The library can be built for Linux x86_64, Windows x86_64,
+macOS universal, web wasm32 (no threads, matching the export preset), and
+Android arm64. It is not wired into CI. The game does not move bullets unless
+native is opted in and that platform's library loaded. Hooked bullets never
+move to C++. A missing or failed library logs one warning and stays on the
+GDScript pool.
 
 ## What this PR does
 
@@ -183,10 +186,47 @@ and no flag, they stay on the pool. To try native locally: build the library,
 then either set `scriptshot/bullets/backend` to `native` or launch with
 `--bullet-backend=native`.
 
-`bin/` is gitignored. `scriptshot_native.gdextension` lists only the Linux
-x86_64 release library (editor and debug point at it too). Without that
-library Godot logs that the GDExtension binary is missing and the game keeps
-using GDScript. Native tests report as pending; the rest of the suite still runs.
+`bin/` is gitignored. `scriptshot_native.gdextension` lists debug, editor, and
+release for each release target. Editor and debug both point at the
+`template_debug` binary, because the editor binary has both feature tags and
+Godot keeps the first equally-specific match. Without the library Godot logs
+that the GDExtension binary is missing and the game keeps using GDScript.
+Native tests report as pending; the rest of the suite still runs.
+
+## Platforms
+
+Output layout matches `docs/qa/release-builds.md` section 8. Debug and release
+are both `./tools/build_native.sh <platform>` (the default target word is
+`both`). `release` or `debug` builds one.
+
+| Platform | Library | How to build | Built / ran / fallback |
+|---|---|---|---|
+| Linux x86_64 | `bin/linux.x86_64/libscriptshot_native.linux.template_{debug,release}.x86_64.so` | `./tools/build_native.sh linux` | Debug and release built. GUT ran on the debug library (the editor binary loads it). Fallback covered by the unregistered-class test. |
+| Windows x86_64 | `bin/windows.x86_64/libscriptshot_native.windows.template_{debug,release}.x86_64.dll` | Linux: MinGW cross. The script prefers `x86_64-w64-mingw32-g++-posix` (the win32 thread model has no `std::thread`). Windows: MSVC if installed, otherwise MinGW. `use_static_cpp=yes`. The `lib` prefix is forced so both compilers write the same filename. | Debug and release cross-built (MinGW posix, static libgcc/libstdc++). DLL exports `scriptshot_native_init` and links `KERNEL32.dll` and `msvcrt.dll`. Not run on Windows. |
+| macOS universal | `bin/macos.universal/libscriptshot_native.macos.template_{debug,release}.universal.dylib` | `./tools/build_native.sh macos` on macOS. `arch=universal`, deployment target 10.13 (Godot 4.7.2's x86_64 floor; arm64 Godot is 11.0 and loads that dylib). Unsigned. The exporter ad-hoc signs it with the app. | Not built (no Apple SDK in this environment). Not run. |
+| Web, no threads | `bin/web.wasm32/libscriptshot_native.web.template_{debug,release}.wasm32.nothreads.wasm` | Emscripten **4.0.20**, `threads=no`. `./tools/build_native.sh web` | Debug and release built (`dylink` side modules, no pthread import). Not loaded in a browser. |
+| Web, threads | `bin/web.wasm32/libscriptshot_native.web.template_{debug,release}.wasm32.wasm` | `scons platform=web arch=wasm32 threads=yes` | Not built. The `.threads.` gdextension keys exist so a threads export does not load the no-threads wasm. A missing file fails the load and the pool is used. |
+| Android arm64 | `bin/android.arm64/libscriptshot_native.android.template_{debug,release}.arm64.so` | `./tools/build_native.sh android` with NDK **29.0.14206865** (`ndk_version=29.0.14206865`, API 24). godot-cpp's own default NDK is r28b; this script passes r29. | Not built. Device runs stay deferred. |
+
+The shipping Web preset is `variant/thread_support=false` and
+`variant/extensions_support=false`. The no-threads wasm matches that thread
+mode. Godot only packages a GDExtension on web when `extensions_support` is
+on, which switches the export to the `web_dlink_nothreads` template. Until
+that flag is turned on, a web export does not load this library. Selecting
+native (or `auto` that resolves to native) still logs one warning and runs
+the GDScript pool.
+
+Fallback is the same on every platform: `NativeBulletSim` is not registered,
+so `BulletManager` logs one warning per process and spawns into the pool.
+That includes a wasm side module that fails to load. Script invulnerability
+(`pierces_script_invuln` / `SOURCE_PIERCES_SCRIPT_INVULN`) stays the pool's
+flag. The default preference remains `gdscript`.
+
+The libraries in the table were built with `SCRIPTSHOT_NATIVE_LTO=none`
+(godot-cpp's `lto=auto` is full on Linux, MinGW, and web). GUT on this
+machine is two processes. Unbuilt: host guards 10 passing, unit and
+integration 1014 passing and 74 pending. Built, on the Linux debug library:
+host guards 10 passing, unit and integration 1088 passing and 0 pending.
 
 ## Build pins
 
@@ -195,14 +235,24 @@ using GDScript. Native tests report as pending; the rest of the suite still runs
 | godot-cpp | `10.0.0-stable` (`507ed9d`), submodule `native/godot-cpp`, `api_version=4.7` |
 | Godot | 4.7.2 |
 | SCons | 4.10.1 |
-| Emscripten (web, not built here) | 4.0.11 |
-| Android NDK (not built here) | r29 (`29.0.14206865`), matching Godot 4.7.2 |
+| Emscripten | **4.0.20**, the build-container pin for the official 4.7.2 web export templates. The engine workflow's `EM_VERSION` 4.0.11 is the CI file only. |
+| Android NDK | r29 (`29.0.14206865`), matching Godot 4.7.2. Not r28b. |
+| macOS min | 10.13 universal dylib |
 
 ```
 pip install scons==4.10.1
-./tools/build_native.sh            # -> bin/linux/libscriptshot_native.linux.template_release.x86_64.so
-./tools/check_extension_api.sh     # godot-cpp API json == this Godot binary's dump
+./tools/build_native.sh                 # linux debug + release
+./tools/build_native.sh linux release   # -> bin/linux.x86_64/libscriptshot_native.linux.template_release.x86_64.so
+./tools/build_native.sh windows         # MinGW cross on Linux, or MSVC on Windows
+./tools/build_native.sh macos           # macOS host, universal
+source /path/to/emsdk/emsdk_env.sh      # Emscripten 4.0.20
+./tools/build_native.sh web             # wasm32, threads=no
+./tools/build_native.sh android         # NDK r29, arm64
+./tools/check_extension_api.sh          # godot-cpp API json == this Godot binary's dump
 ```
+
+`SCRIPTSHOT_NATIVE_LTO` overrides godot-cpp's `lto=auto` (full on Linux, MinGW,
+and web). `SCRIPTSHOT_NATIVE_JOBS` overrides the job count.
 
 ## Tests
 
@@ -211,6 +261,11 @@ pip install scons==4.10.1
   routing, hook spawns staying in the pool, the shared cap and enemy reserve,
   walls, swept hits, speed clamp, despawn, snapshot. Pending when the extension
   is not built (the missing-library warning test runs either way).
+  `test_unregistered_class_falls_back_once_and_keeps_pool_semantics` also runs
+  either way: it forces the class to look unregistered, checks native and auto
+  share one warning, checks an explicit gdscript preference and an auto that
+  resolves to gdscript do not warn, and checks the bullet stays in the pool
+  with `pierces_script_invuln` set.
 - `tests/unit/test_native_reflection.gd`: wall normals (faces, corners, grazing,
   inside, index ties), per-tick reflection parity, `max_reflections` including
   0, pierce plus reflect, mixed-store hit order, dynamic zones, script
@@ -301,7 +356,12 @@ Left for later PRs, on purpose:
   `spawn{}` form, writable position columns, batch-calling an `on_update`
   bullet without `update_mode = BATCH`, or moving a hook-spawned bullet into
   the sim. Current behaviour is the list in the batch-hook bullet.
-- Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
+- CI build wiring for these libraries (the job in `.github/workflows/ci.yml`
+  is still a disabled stub). Turning on `variant/extensions_support` for the
+  Web preset, and running the native library on Windows, macOS, web, or an
+  Android device.
+- The threaded web side module. The preset is no-threads; the `.threads.`
+  gdextension keys are present so that export does not load the no-threads wasm.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
   stays on the GDScript pool, and so does every other per-bullet hook.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
