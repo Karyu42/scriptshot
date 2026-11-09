@@ -10,7 +10,10 @@ Decisions encoded here (docs/qa/release-builds.md):
   * Android: arm64-v8a only, no Gradle build (the plain template export needs no Gradle/NDK).
   * macOS: ad-hoc signing only ("Built-in (ad-hoc only)" = 1), no notarization, no Apple account.
     Value 3 (Xcode codesign) is rejected: the export runner is Linux, where that mode does not exist.
-  * Web: extensions_support is a WARNING when off (required once the Lua binding is a GDExtension).
+  * Web: extensions_support must be on (dlink template). The Lua binding is a GDExtension and the
+    no-dlink 4.7.2 template refuses to start with any GDExtension in the export (issue #40).
+    exclude_filter must list scriptshot_native.gdextension, so web runs on the GDScript bullet
+    pool and never packages the native bullet wasm (CoS ruling on #36). Threads on is a WARNING.
 Exit code 0 = ok, 1 = policy violation or preset not found. Warnings do not fail.
 """
 import configparser
@@ -19,6 +22,7 @@ import sys
 
 SECRET_SUFFIX = re.compile(r"password$")
 ANDROID_ABIS = ("armeabi-v7a", "arm64-v8a", "x86", "x86_64")
+NATIVE_GDEXTENSION = "scriptshot_native.gdextension"
 
 
 def parse(path):
@@ -78,7 +82,12 @@ def check(cp, name):
             errors.append("binary_format/architecture must be universal")
     elif platform == "Web":
         if opts.get("variant/extensions_support", "false") != "true":
-            warnings.append("variant/extensions_support is off: required as soon as the Lua binding is a GDExtension")
+            errors.append("variant/extensions_support must be true: the Lua binding is a GDExtension and the "
+                          "no-dlink template refuses to boot with one (issue #40)")
+        excludes = [x.strip() for x in unquote(meta.get("exclude_filter", "")).split(",")]
+        if NATIVE_GDEXTENSION not in excludes:
+            errors.append(f"exclude_filter must list {NATIVE_GDEXTENSION}: web ships on the GDScript bullet "
+                          "pool without the native wasm (issue #36)")
         if opts.get("variant/thread_support", "false") == "true":
             warnings.append("variant/thread_support is on: the host needs COOP/COEP headers (docs/qa/release-builds.md)")
     elif platform == "iOS":

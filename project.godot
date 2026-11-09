@@ -20,6 +20,7 @@ config/icon="res://icon.svg"
 
 InputDevice="*res://src/core/input_device.gd"
 RespawnPoints="*res://src/core/respawn_points.gd"
+WebSmoke="*res://src/qa/web_smoke.gd"
 
 [debug]
 
