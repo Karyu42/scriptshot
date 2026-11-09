@@ -13,9 +13,11 @@
 #            Chromium (boot; a Lua shot through ScriptHost; one fallback warning when native is requested).
 #            docs/qa/release-builds.md section 4.1.
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
-#   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
-# Checkout does not enable Git LFS or submodules: this repo has neither. If native-libs starts
-# building godot-cpp from a submodule, turn submodules back on for that job only.
+#   native-linux / native-web / gut-windows / gut-macos ("Native libs (linux)", "Native libs (web)",
+#            "GUT (windows, native)", "GUT (macos, native)"): on every PR and push to main, build the native bullet core
+#            (tools/build_native.sh, native/godot-cpp submodule) and, except web, run the full GUT suite with it loaded
+#            and 0 pending (tools/ci/gut_counts.py --expect-native). Issue #38; see the comment above those jobs.
+# Checkout does not enable Git LFS. Submodules (native/godot-cpp) are checked out only by the native jobs.
 # Headless numbers use the dummy renderer: they measure CPU simulation cost, not GPU/rendering.
 # See docs/qa/stress-test-plan.md.
 name: CI
@@ -53,18 +55,18 @@ env:
   # .github/workflows/web_builds.yml (EM_VERSION 4.0.11). Update them together with GODOT_VERSION.
   # NDK stays 29.0.14206865. r28b (28.1.13356709) is not the pin: docs/scripting/spike-results.md
   # section 12 and docs/qa/release-builds.md chose Godot's own NDK for the shared pipeline.
-  # EMSCRIPTEN_VERSION is that engine CI pin. docs/scripting/testing.md uses 4.0.20 when building
-  # Scriptshot's own extension against the official web template; leave 4.0.11 until native-libs
-  # is actually enabled and that pin is reconciled on purpose.
+  # EMSCRIPTEN_VERSION is NOT the engine workflow's EM_VERSION (4.0.11, CI file only): it is 4.0.20, the
+  # build-container pin of the official 4.7.2 web export templates, which a side module must match
+  # (docs/native.md "Build pins", docs/scripting/testing.md). Used by the Native libs (web) job.
   JAVA_VERSION: "17"
   ANDROID_COMPILE_SDK: "36"
   ANDROID_BUILD_TOOLS: "36.1.0"
   ANDROID_NDK_VERSION: "29.0.14206865"
-  # godot-cpp 10.0.0-stable (2026-09-15), api_version 4.7. The disabled native-libs job must use
-  # this commit if it is turned on. Not lua-gdextension 0.8.2's 58d1de7 (10.0.0-rc1, 4.6 API).
+  # godot-cpp 10.0.0-stable (2026-09-15), api_version 4.7. The native jobs check that the
+  # native/godot-cpp submodule is this commit. Not lua-gdextension 0.8.2's 58d1de7 (10.0.0-rc1, 4.6 API).
   GODOT_CPP_COMMIT: "507ed9d840c01a3c5b2a39af8bb4000bfac30bf5"
   SCONS_VERSION: "4.10.1"
-  EMSCRIPTEN_VERSION: "4.0.11"
+  EMSCRIPTEN_VERSION: "4.0.20"
 
 jobs:
   test:
@@ -356,8 +358,13 @@ jobs:
     # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
     # DEBUG apk signed with a throwaway debug keystore generated below. Release signing for Android needs a
     # keystore secret (GODOT_ANDROID_KEYSTORE_RELEASE_*), which is Karyu's call and is not wired up.
-    if: github.event_name == 'workflow_dispatch' && inputs.run_export
-    needs: test
+    # Native bullet core (#38): scriptshot_native.gdextension lists a library for every desktop platform, and an export
+    # without bin/<platform>/ fails (dispatch 42696143148: Windows and Linux). Each cell restores the libraries from the
+    # native jobs of this run: linux.x86_64 always (the Linux editor host loads it during import/export), plus its own
+    # platform's. Linux and Windows cells need their library uploaded; the macOS cell needs GUT (macos, native) green.
+    # macOS ships native, unsigned. Android stays without it (deferred, #39); Web excludes it by preset (#36).
+    if: ${{ !cancelled() && needs.test.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_export }}
+    needs: [test, native-linux, gut-windows, gut-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -498,6 +505,41 @@ jobs:
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
+      - name: Native bullet libraries built and tested in this run
+        env:
+          LINUX_BUILT: ${{ needs.native-linux.outputs.built }}
+          WINDOWS_BUILT: ${{ needs.gut-windows.outputs.built }}
+          GUT_MACOS: ${{ needs.gut-macos.result }}
+          PRESET: ${{ matrix.preset }}
+        run: |
+          set -euo pipefail
+          # Linux and Windows need their library built and uploaded (exports fail without it). macOS ships native
+          # only once GUT (macos, native) is green (CoS ruling, #38).
+          test "$LINUX_BUILT" = true || { echo "::error::Native libs (linux) did not upload native-libs-linux.x86_64"; exit 1; }
+          case "$PRESET" in
+            "Windows Desktop")
+              test "$WINDOWS_BUILT" = true \
+                || { echo "::error::GUT (windows, native) did not upload native-libs-windows.x86_64"; exit 1; } ;;
+            macOS)
+              test "$GUT_MACOS" = success \
+                || { echo "::error::GUT (macos, native) is '$GUT_MACOS'; macOS ships native only once it is green"; exit 1; } ;;
+          esac
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-libs-linux.x86_64
+          path: bin/linux.x86_64/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.preset == 'Windows Desktop'
+        with:
+          name: native-libs-windows.x86_64
+          path: bin/windows.x86_64/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.preset == 'macOS'
+        with:
+          name: native-libs-macos.universal
+          path: bin/macos.universal/
+      - name: List native libraries
+        run: ls -la bin/*/
       - name: Export (${{ matrix.preset }})
         run: |
           set -euo pipefail
@@ -527,6 +569,9 @@ jobs:
               unzip -l "$out" > "$list"
               grep -q '_CodeSignature/CodeResources' "$list" \
                 || { echo "::error::macOS zip has no _CodeSignature/CodeResources (ad-hoc sign did not run)"; exit 1; }
+              grep -q 'libscriptshot_native.macos.template_release.universal.dylib' "$list" \
+                || { echo "::error::macOS zip does not contain the native bullet dylib (#38: macOS ships native)"; exit 1; }
+              grep 'libscriptshot_native' "$list"
               ;;
             Android)
               apksigner="${ANDROID_SDK_DIR}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
@@ -538,10 +583,17 @@ jobs:
               python3 tools/ci/web_smoke.py check-export "$(dirname "$out")"
               ;;
             Linux)
+              # The native bullet .so is copied next to the binary (#38).
+              test -s build/linux/libscriptshot_native.linux.template_release.x86_64.so \
+                || { echo "::error::Linux export has no native bullet .so next to the binary (#38)"; exit 1; }
               # Official templates target an older glibc, so ubuntu-24.04 can run them.
               # Bound the run so a hang fails this step instead of the job timeout.
               chmod +x "$out"
               timeout 60s "$out" --headless --quit
+              ;;
+            "Windows Desktop")
+              test -s build/windows/libscriptshot_native.windows.template_release.x86_64.dll \
+                || { echo "::error::Windows export has no native bullet DLL next to the exe (#38)"; exit 1; }
               ;;
           esac
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -549,61 +601,416 @@ jobs:
           name: scriptshot-${{ matrix.preset }}
           path: build/
 
-  # DISABLED stub (runs only when vars.ENABLE_NATIVE_LIBS == 'true'). Native builds of GDExtension libraries on GitHub-hosted runners, one per
-  # platform, each uploading bin/<platform>/. Enable (set the variable) only when the binding decision
-  # needs it and tools/ci/build_native_libs.sh exists. Toolchain pins come from the env block:
-  # NDK 29.0.14206865 (not r28b 28.1.13356709) and godot-cpp 507ed9d840c01a3c5b2a39af8bb4000bfac30bf5 (10.0.0-stable).
-  # Note: upstream Godot 4.7.2 builds macOS on macos-26; this project decided macos-14 (Apple Silicon).
-  native-libs:
-    # Static name. A ${{ }} conditional in name: is shown verbatim when the job is skipped.
-    # Platform is on the Build step.
-    name: Native libs
-    # Off until the repository variable ENABLE_NATIVE_LIBS is set to 'true'.
-    if: ${{ vars.ENABLE_NATIVE_LIBS == 'true' }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { platform: "linux.x86_64",    runner: ubuntu-24.04,    target: linux }
-          - { platform: "windows.x86_64",  runner: windows-latest,  target: windows }  # MSVC (preinstalled VS Build Tools)
-          - { platform: "macos.universal", runner: macos-14,        target: macos }
-          - { platform: "web.wasm32",      runner: ubuntu-24.04,    target: web }       # threads and nothreads variants
-          - { platform: "android.arm64",   runner: ubuntu-24.04,    target: android }
-          # - { platform: "ios.universal", runner: macos-14, target: ios }  # not a release target; optional compile check only
+  # ---- Native bullet core (issue #38; docs/native.md) -------------------------------------------------------------
+  # Four jobs with stable names, on every PR and push to main and on workflow_dispatch. Not required checks (yet).
+  #   Native libs (linux)      ubuntu-24.04: builds bin/linux.x86_64 (debug + release), then runs GUT with it loaded.
+  #   Native libs (web)        ubuntu-24.04: builds bin/web.wasm32 (threads=no, Emscripten 4.0.20) as an artifact
+  #                            only. NOT shipped: the Web presets keep "scriptshot_native.gdextension, bin/*" in their
+  #                            exclude_filter (#36, #43) and web runs the GDScript pool.
+  #   GUT (windows, native)    windows-latest, MSVC: builds bin/windows.x86_64, runs GUT under Git Bash with it loaded.
+  #   GUT (macos, native)      macos-latest: builds the universal (arm64 + x86_64) dylib, runs GUT under macOS's
+  #                            /bin/bash 3.2 with it loaded. macOS ships native (unsigned) from this artifact: the
+  #                            manual export job packs it into the macOS cell only when this job passed.
+  # Each GUT job fails unless tools/ci/gut_counts.py --expect-native sees 0 pending (the native GUT tests are pending
+  # when NativeBulletSim is not registered; Linux reference: 10 host + 1088 unit, 0 pending).
+  # Caches: SCons CacheDir ($SCONS_CACHE, honoured by native/godot-cpp/SConstruct) for the godot-cpp and native
+  # objects, keyed by the godot-cpp commit, SCons version, platform, targets and threads; emsdk via setup-emsdk's
+  # actions-cache-folder. bin/ is never cached (the libraries themselves are NoCache).
+  # TODO(#39, deferred): Android arm64 (JDK 17, sdkmanager "ndk;29.0.14206865", NDK at
+  # $ANDROID_HOME/ndk/29.0.14206865 because godot-cpp ignores ANDROID_NDK_ROOT when ANDROID_HOME is set; then
+  # ./tools/build_native.sh android). Device or arm64-emulator run needed before it ships; not built here.
+  native-linux:
+    name: Native libs (linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    outputs:
+      # "true" once native-libs-linux.x86_64 is uploaded (the export job needs the library, not the GUT verdict).
+      built: ${{ steps.libs.outputs.built }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Check the godot-cpp pin
+        run: |
+          got="$(git -C native/godot-cpp rev-parse HEAD)"
+          test "$got" = "$GODOT_CPP_COMMIT" || { echo "::error::native/godot-cpp is $got, expected GODOT_CPP_COMMIT=$GODOT_CPP_COMMIT"; exit 1; }
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.x"
       - name: Install SCons ${{ env.SCONS_VERSION }}
+        run: python -m pip install "scons==${SCONS_VERSION}"
+      - name: SCons cache directory (outside the Godot project)
         shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
+          restore-keys: |
+            scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
+      - name: Build (linux.x86_64, debug + release)
+        id: build
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          ./tools/build_native.sh linux
+          ls -la bin/linux.x86_64/
+          echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-libs-linux.x86_64
+          path: bin/linux.x86_64/
+          if-no-files-found: error
+      - name: Library uploaded
+        id: libs
+        shell: bash
+        run: echo "built=true" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+      - name: Run GUT tests with the native library (headless)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
+          exit "${PIPESTATUS[0]}"
+      - name: Native backend ran (0 pending)
+        if: always()
+        run: python3 tools/ci/gut_counts.py reports/gut.log --expect-native --label linux --json reports/gut-counts.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gut-reports-linux-native
+          path: reports/
+          if-no-files-found: ignore
+
+  native-web:
+    name: Native libs (web)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Check the godot-cpp pin
+        run: |
+          got="$(git -C native/godot-cpp rev-parse HEAD)"
+          test "$got" = "$GODOT_CPP_COMMIT" || { echo "::error::native/godot-cpp is $got, expected GODOT_CPP_COMMIT=$GODOT_CPP_COMMIT"; exit 1; }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.x"
+      - name: Install SCons ${{ env.SCONS_VERSION }}
         run: python -m pip install "scons==${SCONS_VERSION}"
       - name: Set up Emscripten ${{ env.EMSCRIPTEN_VERSION }}
-        if: matrix.target == 'web'
         uses: emscripten-core/setup-emsdk@4528d102f7230f0e7b276855c01ea1159be0e984 # v16
         with:
           version: ${{ env.EMSCRIPTEN_VERSION }}
-          no-cache: true
-      - name: Set up JDK ${{ env.JAVA_VERSION }} and NDK ${{ env.ANDROID_NDK_VERSION }}
-        if: matrix.target == 'android'
-        uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+          # Cached with actions/cache under the workspace (key: workflow, version, OS, arch).
+          actions-cache-folder: .emsdk-cache
+      - name: Check the Emscripten pin
+        run: |
+          emcc --version | head -1
+          emcc --version | head -1 | grep -qF " ${EMSCRIPTEN_VERSION} " \
+            || { echo "::error::emcc is not ${EMSCRIPTEN_VERSION} (the official Godot ${GODOT_VERSION} web template build)"; exit 1; }
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          distribution: temurin
-          java-version: ${{ env.JAVA_VERSION }}
-      - name: Install Android NDK
-        if: matrix.target == 'android'
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
+          restore-keys: |
+            scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
+      - name: Build (web.wasm32, threads=no, debug + release)
+        id: build
         run: |
           set -euo pipefail
-          sdk="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          "$sdk/cmdline-tools/latest/bin/sdkmanager" "ndk;${ANDROID_NDK_VERSION}"
-          echo "ANDROID_NDK_ROOT=$sdk/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-      - name: Build (${{ matrix.platform }})
-        shell: bash
-        run: bash tools/ci/build_native_libs.sh "${{ matrix.platform }}"
+          start=$SECONDS
+          ./tools/build_native.sh web
+          ls -la bin/web.wasm32/
+          for t in debug release; do
+            f="bin/web.wasm32/libscriptshot_native.web.template_${t}.wasm32.nothreads.wasm"
+            test -s "$f" || { echo "::error::missing $f (the name scriptshot_native.gdextension lists)"; exit 1; }
+          done
+          echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: The shipping Web presets still exclude the native library
+        run: |
+          set -euo pipefail
+          # Built for #36 only. Shipping it on web means removing these entries (docs/native.md "Web export").
+          python3 - <<'PY'
+          import configparser, sys
+          cp = configparser.ConfigParser(interpolation=None, strict=False)
+          cp.read("export_presets.cfg")
+          bad = []
+          for sec in cp.sections():
+              if sec.count(".") != 1 or cp.get(sec, "platform", fallback="").strip('"') != "Web":
+                  continue
+              flt = [x.strip() for x in cp.get(sec, "exclude_filter", fallback="").strip('"').split(",")]
+              name = cp.get(sec, "name").strip('"')
+              print(f"{name}: exclude_filter {flt}")
+              if "scriptshot_native.gdextension" not in flt or "bin/*" not in flt:
+                  bad.append(name)
+          if bad:
+              print(f"::error::Web preset(s) {bad} no longer exclude scriptshot_native.gdextension and bin/* (#36)")
+              sys.exit(1)
+          PY
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: native-libs-${{ matrix.platform }}
-          path: bin/${{ matrix.platform }}/
+          # Artifact only, not shipped (see the job comment above).
+          name: native-libs-web.wasm32
+          path: bin/web.wasm32/
           if-no-files-found: error
+
+  gut-windows:
+    name: GUT (windows, native)
+    runs-on: windows-latest
+    timeout-minutes: 50
+    outputs:
+      built: ${{ steps.libs.outputs.built }}
+    defaults:
+      run:
+        # Git Bash, the same shell run_tests.sh is written for.
+        shell: bash
+    env:
+      GODOT: ${{ github.workspace }}/.godot-bin/Godot_v4.7.2-stable_win64.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Check the godot-cpp pin
+        run: |
+          got="$(git -C native/godot-cpp rev-parse HEAD)"
+          test "$got" = "$GODOT_CPP_COMMIT" || { echo "::error::native/godot-cpp is $got, expected GODOT_CPP_COMMIT=$GODOT_CPP_COMMIT"; exit 1; }
+          case "$GODOT" in *"Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_win64.exe") ;; *) echo "::error::GODOT ($GODOT) does not match GODOT_VERSION"; exit 1 ;; esac
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.x"
+      - name: python3 on PATH (the scripts call python3; Windows Python is python.exe)
+        run: |
+          set -euo pipefail
+          shim="$RUNNER_TEMP/python3-shim"
+          mkdir -p "$shim"
+          printf '#!/bin/sh\nexec python "$@"\n' >"$shim/python3"
+          chmod +x "$shim/python3"
+          cygpath -w "$shim" >>"$GITHUB_PATH"
+      - name: Install SCons ${{ env.SCONS_VERSION }}
+        run: |
+          python -m pip install "scons==${SCONS_VERSION}"
+          python3 --version
+          bash --version | head -1
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
+          restore-keys: |
+            scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
+      - name: Build (windows.x86_64, MSVC, debug + release)
+        id: build
+        run: |
+          set -euo pipefail
+          start=$SECONDS
+          # On a Windows host build_native.sh leaves the compiler to godot-cpp: MSVC (no use_mingw).
+          ./tools/build_native.sh windows
+          ls -la bin/windows.x86_64/
+          echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-libs-windows.x86_64
+          # The .dll files only (MSVC also writes .lib/.exp/.pdb next to them).
+          path: bin/windows.x86_64/*.dll
+          if-no-files-found: error
+      - name: Library uploaded
+        id: libs
+        shell: bash
+        run: echo "built=true" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_win64.exe.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip" SHA512-SUMS.txt
+          ls -la
+      - name: Godot version
+        run: |
+          "$GODOT" --headless --version
+      - name: run_tests.sh guard cases (fake godot, Git Bash)
+        run: |
+          RUN_TESTS_BASH="$(cygpath -w "$(command -v bash)")" python -m unittest tools/ci/test_run_tests_guard.py -v
+      - name: Run GUT tests with the native library (headless, Git Bash)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
+          exit "${PIPESTATUS[0]}"
+      - name: Native backend ran (0 pending)
+        if: always()
+        run: python tools/ci/gut_counts.py reports/gut.log --expect-native --label windows --json reports/gut-counts.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gut-reports-windows-native
+          path: reports/
+          if-no-files-found: ignore
+
+  gut-macos:
+    name: GUT (macos, native)
+    runs-on: macos-latest
+    timeout-minutes: 50
+    env:
+      GODOT: ${{ github.workspace }}/.godot-bin/Godot.app/Contents/MacOS/Godot
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: true
+      - name: Check the godot-cpp pin
+        run: |
+          got="$(git -C native/godot-cpp rev-parse HEAD)"
+          test "$got" = "$GODOT_CPP_COMMIT" || { echo "::error::native/godot-cpp is $got, expected GODOT_CPP_COMMIT=$GODOT_CPP_COMMIT"; exit 1; }
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.x"
+      - name: Install SCons ${{ env.SCONS_VERSION }}
+        run: python -m pip install "scons==${SCONS_VERSION}"
+      - name: bash 3.2 first on PATH (macOS /bin/bash; the runner image also has a Homebrew bash 5)
+        run: |
+          set -euo pipefail
+          d="$RUNNER_TEMP/bash32"
+          mkdir -p "$d"
+          ln -sf /bin/bash "$d/bash"
+          echo "$d" >>"$GITHUB_PATH"
+          /bin/bash --version | head -1
+          /bin/bash -c 'case "$BASH_VERSION" in 3.2.*) ;; *) echo "::error::/bin/bash is $BASH_VERSION, not 3.2"; exit 1 ;; esac'
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
+          restore-keys: |
+            scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
+      - name: Build (macos.universal, debug + release)
+        id: build
+        shell: /bin/bash -eo pipefail {0}
+        run: |
+          bash --version | head -1
+          start=$SECONDS
+          /bin/bash ./tools/build_native.sh macos
+          ls -la bin/macos.universal/
+          for t in debug release; do
+            f="bin/macos.universal/libscriptshot_native.macos.template_${t}.universal.dylib"
+            archs="$(lipo -archs "$f")"
+            echo "$f: $archs"
+            case " $archs " in *" arm64 "*) ;; *) echo "::error::$f has no arm64 slice"; exit 1 ;; esac
+            case " $archs " in *" x86_64 "*) ;; *) echo "::error::$f has no x86_64 slice"; exit 1 ;; esac
+            vtool -show-build "$f" | grep -E 'architecture|minos' || true
+          done
+          echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          # Shipped: the manual export job packs this into the macOS export (unsigned).
+          name: native-libs-macos.universal
+          path: bin/macos.universal/*.dylib
+          if-no-files-found: error
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_macos.universal.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | shasum -a 512 -c -
+          unzip -q "$zip" && rm "$zip" SHA512-SUMS.txt
+          ls -la
+      - name: Godot version
+        run: |
+          "$GODOT" --headless --version
+      - name: run_tests.sh guard cases (fake godot, /bin/bash 3.2)
+        run: RUN_TESTS_BASH=/bin/bash python3 -m unittest tools/ci/test_run_tests_guard.py -v
+      - name: Run GUT tests with the native library (headless, /bin/bash 3.2)
+        shell: /bin/bash -o pipefail {0}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p reports
+          /bin/bash ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
+          exit "${PIPESTATUS[0]}"
+      - name: Native backend ran (0 pending)
+        if: always()
+        run: python3 tools/ci/gut_counts.py reports/gut.log --expect-native --label macos --json reports/gut-counts.json --summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: gut-reports-macos-native
+          path: reports/
+          if-no-files-found: ignore
