@@ -7,6 +7,10 @@ func _is_int(v: Variant, n: int) -> bool:
 	return v == n
 
 
+func _present(v: Variant) -> bool:
+	return v != null
+
+
 func _host() -> ScriptHost:
 	var host := ScriptHost.new()
 	host.wall_msec = 5000
@@ -44,6 +48,22 @@ func _plant_looping_finalizer(state: LuaState) -> void:
 	assert_true(_is_int(planted, 1), str(planted))
 
 
+## Stores a looping finalizer only in `table`, using the real setmetatable.
+## The sandbox env refuses __gc, so this chunk runs in the trusted global env.
+func _plant_finalizer_in(state: LuaState, table: LuaTable) -> void:
+	assert_not_null(table)
+	var built: Variant = state.do_string("""
+		return function(t)
+			rawset(t, "__gc_holder", setmetatable({}, {__gc = function() while true do end end}))
+			return 1
+		end
+	""".dedent(), "@plant.lua")
+	assert_true(built is LuaFunction, str(built))
+	var planted: Variant = _as_fn(built).invoke(table)
+	assert_true(_is_int(planted, 1), str(planted))
+	assert_true(_present(table.get("__gc_holder")), "finalizer was not stored")
+
+
 func test_shutdown_releases_retired_state_stopped_batch_and_looping_finalizer() -> void:
 	var host := _host()
 	var loaded := host.load_string("""
@@ -79,6 +99,12 @@ func test_shutdown_releases_retired_state_stopped_batch_and_looping_finalizer() 
 	assert_gt(host._parked.size(), 0)
 	_plant_looping_finalizer(host._state)
 	_plant_looping_finalizer(retired.state)
+	# A finalizer that lives only in the env or the weapon table. Shutdown
+	# must walk both, or collectgarbage runs the loop.
+	_plant_finalizer_in(host._state, host._env)
+	_plant_finalizer_in(host._state, host._weapon)
+	_plant_finalizer_in(retired.state, retired.env_table)
+	_plant_finalizer_in(retired.state, retired.weapon)
 	var calls := host.host_call_count()
 	var started := Time.get_ticks_msec()
 	host.shutdown()

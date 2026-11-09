@@ -182,7 +182,8 @@ hard cap needs the source-built binding, which is behind the godot-cpp fork
 and is not part of M1.
 
 `ScriptHost` pins every Lua state for the session. `shutdown()` disarms Lua
-`__gc` (those finalizers run with hooks disabled), drops the host-table
+`__gc` reachable from the globals, the env, and the weapon (those finalizers
+run with hooks disabled), drops the host-table
 Callables, arms a stop-only count hook on the main thread, then releases
 retired states oldest first and the current state last. Destroying a
 `LuaTable` / `LuaFunction` still calls `luaL_unref`. On a state whose

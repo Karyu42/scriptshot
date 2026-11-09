@@ -36,63 +36,71 @@ return function()
 end
 """
 const _STRIP_FINALIZERS := """
-local function is_lua_fin(fin)
-	if type(fin) ~= "function" then
-		return false
+return function(env, weapon)
+	local function is_lua_fin(fin)
+		if type(fin) ~= "function" then
+			return false
+		end
+		local info = debug.getinfo(fin, "S")
+		return info ~= nil and info.what ~= "C"
 	end
-	local info = debug.getinfo(fin, "S")
-	return info ~= nil and info.what ~= "C"
-end
-local function disarm_mt(mt)
-	if type(mt) ~= "table" then
+	local function disarm_mt(mt)
+		if type(mt) ~= "table" then
+			return 0
+		end
+		local fin = rawget(mt, "__gc")
+		if is_lua_fin(fin) then
+			rawset(mt, "__gc", nil)
+			return 1
+		end
 		return 0
 	end
-	local fin = rawget(mt, "__gc")
-	if is_lua_fin(fin) then
-		rawset(mt, "__gc", nil)
-		return 1
-	end
-	return 0
-end
-local function disarm_obj(obj)
-	local ok, mt = pcall(debug.getmetatable, obj)
-	if not ok then
-		return 0
-	end
-	return disarm_mt(mt)
-end
-local n = 0
-local pin = rawget(_G, "__scriptshot_pin")
-if pin ~= nil then
-	n = n + disarm_obj(pin)
-end
-local seen = {}
-local function walk(t, depth)
-	if type(t) ~= "table" or seen[t] or depth > 8 then
-		return
-	end
-	seen[t] = true
-	n = n + disarm_obj(t)
-	local k = nil
-	while true do
-		local nk, v = next(t, k)
-		if nk == nil then
-			break
+	local function disarm_obj(obj)
+		local ok, mt = pcall(debug.getmetatable, obj)
+		if not ok then
+			return 0
 		end
-		n = n + disarm_obj(nk)
-		n = n + disarm_obj(v)
-		if type(v) == "table" then
-			walk(v, depth + 1)
-		end
-		k = nk
+		return disarm_mt(mt)
 	end
+	local n = 0
+	local pin = rawget(_G, "__scriptshot_pin")
+	if pin ~= nil then
+		n = n + disarm_obj(pin)
+	end
+	local seen = {}
+	local function walk(t, depth)
+		if type(t) ~= "table" or seen[t] or depth > 8 then
+			return
+		end
+		seen[t] = true
+		n = n + disarm_obj(t)
+		local k = nil
+		while true do
+			local nk, v = next(t, k)
+			if nk == nil then
+				break
+			end
+			n = n + disarm_obj(nk)
+			n = n + disarm_obj(v)
+			if type(v) == "table" then
+				walk(v, depth + 1)
+			end
+			k = nk
+		end
+	end
+	walk(_G, 0)
+	if type(env) == "table" then
+		walk(env, 0)
+	end
+	if type(weapon) == "table" then
+		walk(weapon, 0)
+	end
+	local reg_ok, reg = pcall(debug.getregistry)
+	if reg_ok and type(reg) == "table" then
+		walk(reg, 0)
+	end
+	return n
 end
-walk(_G, 0)
-local reg_ok, reg = pcall(debug.getregistry)
-if reg_ok and type(reg) == "table" then
-	walk(reg, 0)
-end
-return n
 """
 const _WIPE_TABLE := """
 return function(t)
@@ -439,7 +447,11 @@ func _release_state(
 	# unused for set_hook: setting a hook on a stopped coroutine crashes.
 	state.stop_gc()
 	state.open_libraries(LuaState.LUA_DEBUG)
-	state.do_string(_STRIP_FINALIZERS, "@shutdown-strip.lua")
+	var strip_v: Variant = state.do_string(_STRIP_FINALIZERS, "@shutdown-strip.lua")
+	if strip_v is LuaFunction:
+		var strip := _as_function(strip_v)
+		strip.invoke(env_table, weapon)
+		_kept.append(strip)
 	var wipe_v: Variant = state.do_string(_WIPE_TABLE, "@shutdown-wipe.lua")
 	if wipe_v is LuaFunction:
 		var wipe := _as_function(wipe_v)
