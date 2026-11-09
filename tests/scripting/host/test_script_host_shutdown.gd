@@ -227,6 +227,28 @@ func test_shutdown_pins_a_large_graph() -> void:
 	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
 	assert_true(host.is_shutdown())
 	assert_true(host.keeps_lua_state())
+	assert_false(host._strip_ok)
+	assert_eq(host.host_call_count(), calls)
+
+
+func test_shutdown_uses_captured_helpers() -> void:
+	var host := _host()
+	var planted: Variant = host._state.do_string("""
+		_G.__scriptshot_pin = setmetatable({}, {__gc = function() while true do end end})
+		debug = nil
+		next = function() error("replaced") end
+		rawget = function() error("replaced") end
+		return 1
+	""".dedent(), "@helpers.lua")
+	assert_true(_is_int(planted, 1), str(planted))
+	var calls := host.host_call_count()
+	var started := Time.get_ticks_msec()
+	host.shutdown()
+	var elapsed := Time.get_ticks_msec() - started
+	assert_lt(elapsed, 1000, "shutdown took %d ms" % elapsed)
+	assert_true(host.is_shutdown())
+	assert_true(host.keeps_lua_state())
+	assert_true(host._strip_ok)
 	assert_eq(host.host_call_count(), calls)
 
 
