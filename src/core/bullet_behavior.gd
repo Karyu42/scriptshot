@@ -21,6 +21,15 @@ const HOOK_ALL := 15
 ## Value of `hook_mask` that means "work it out from the script".
 const HOOK_AUTO := -1
 
+## How this behaviour wants its per-tick update. AUTO follows the script:
+## an `on_update_batch` override with no per-bullet hook is a batch behavior,
+## and an `on_update` override stays per-bullet. BATCH forces the batch
+## callback even when the script also has per-bullet hooks; those bullets stay
+## on the pool (per-bullet storage wins) and the batch callback still runs
+## over them. PER_BULLET never calls `on_update_batch`.
+enum UpdateMode { AUTO, PER_BULLET, BATCH }
+var update_mode := UpdateMode.AUTO
+
 ## Normally leave this alone: the manager detects which hooks the script overrides (when the
 ## behaviour is registered, again by `BulletManager.refresh_behavior()`, and by itself
 ## whenever it sees `set_script()` has given the object a different script). Set an
@@ -55,6 +64,16 @@ func on_spawn(_pool: BulletPool, _index: int) -> void:
 ## Once per physics tick after integration, while the bullet is alive.
 ## Changes to velocity / heading take effect on the next tick.
 func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+	pass
+
+
+## Once per physics tick, after integration and before collision, with every
+## bullet of this behaviour that is on the batch path. Writes on `batch` are
+## copies; the sim applies them when this returns. See BatchView.
+## A behavior that also overrides `on_update` is not called here unless
+## `update_mode` is BATCH (both would steer). Per-bullet hooks keep the
+## bullet on the GDScript pool either way.
+func on_update_batch(_batch: BatchView) -> void:
 	pass
 
 
@@ -98,9 +117,28 @@ static func overrides_on_update(b: BulletBehavior) -> bool:
 static func script_overrides_on_update(s: Script) -> bool:
 	if s == null or not s is GDScript:
 		return true
+	return _method_overridden(s, "on_update")
+
+
+## True when `b`'s script overrides `on_update_batch`. Same rule as
+## overrides_on_update: a script that cannot be inspected counts as overriding,
+## so a real batch hook is not missed. The manager still requires the absence
+## of per-bullet hooks before it stores those bullets natively.
+static func overrides_on_update_batch(b: BulletBehavior) -> bool:
+	var s: Script = b.get_script()
+	return script_overrides_on_update_batch(s)
+
+
+static func script_overrides_on_update_batch(s: Script) -> bool:
+	if s == null or not s is GDScript:
+		return true
+	return _method_overridden(s, "on_update_batch")
+
+
+static func _method_overridden(s: Script, method: String) -> bool:
 	var count := 0
 	for d: Dictionary in s.get_script_method_list():
-		if str(d["name"]) == "on_update":
+		if str(d["name"]) == method:
 			count += 1
 	return count > 1
 

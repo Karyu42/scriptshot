@@ -227,8 +227,27 @@ var _free_count := 0
 var pending := PackedInt32Array()
 var pending_count := 0
 ## Slots of alive bullets with behavior != 0, filled by advance().
+## Batch-only behaviors are left out: they are one callback, not one call per bullet.
 var hooked := PackedInt32Array()
 var hooked_count := 0
+## 1 at a behavior id whose bullets skip the per-bullet on_update list.
+var batch_only := PackedByteArray()
+## False when no behavior is batch-only, so advance() does not touch batch_only.
+var any_batch_only := false
+
+
+## Marks behavior `id` as batch-only (its bullets are not listed for on_update).
+func set_batch_only(id: int, on: bool) -> void:
+	if id < 0:
+		return
+	if batch_only.size() <= id:
+		batch_only.resize(id + 1)
+	batch_only[id] = 1 if on else 0
+	any_batch_only = false
+	for flag in batch_only:
+		if flag != 0:
+			any_batch_only = true
+			return
 
 
 func _init(p_capacity: int = 16384) -> void:
@@ -486,7 +505,8 @@ func advance(delta: float, bounds: Rect2) -> void:
 			else:
 				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
 			continue
-		if behavior[i] != 0:
+		var bid := behavior[i]
+		if bid != 0 and (not any_batch_only or bid >= batch_only.size() or batch_only[bid] == 0):
 			hooked[hooked_count] = i
 			hooked_count += 1
 

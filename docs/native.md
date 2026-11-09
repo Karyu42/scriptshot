@@ -1,9 +1,10 @@
 # Native bullet core
 
 Hybrid C++ migration. A small GDExtension (`NativeBulletSim`, `native/`)
-advances **hook-free** bullets: plain shots and declarative ones (kinematics
-only, no per-bullet hook). Bullets with a per-bullet hook stay in the GDScript
-`BulletPool`, and that pool remains the default and the fallback.
+advances **hook-free** bullets: plain shots, declarative ones (kinematics
+only, no per-bullet hook), and **batch-hook** bullets. Bullets with a
+per-bullet hook stay in the GDScript `BulletPool`, and that pool remains the
+default and the fallback.
 
 **Status: opt-in, Linux x86_64.** Not wired into CI. The game does not move
 bullets unless native is opted in and the library loaded. Hooked bullets never
@@ -20,11 +21,14 @@ move to C++.
   selected **and** the spawn is not inside a hook. A bullet is hook-free when
   `behavior_id` is 0, or its behaviour's mask calls no event hook (`on_spawn`,
   `on_hit`, `can_hit`, `on_despawn`) and the script does not override
-  `on_update`. Any unmasked event hook, or an `on_update` override, stays in
-  the pool. `spawn_child()` and spawns made while a hook is running stay in
-  the pool too: the native step runs later in the same tick, so a child born
-  during a hook would move a tick early, and owner inheritance already lives
-  on the pool. That split is a reversible default.
+  `on_update`. A **batch-only** behaviour (an `on_update_batch` override, or
+  `update_mode = BATCH`, and no per-bullet hook) is hook-free: its bullets
+  live in the sim. Any unmasked event hook, or an `on_update` override, stays
+  in the pool. `spawn_child()` and spawns made while a hook is running stay in
+  the pool too, including a spawn from `on_update_batch`: native integrate has
+  already run, so a child handed to the sim would be swept a tick early, and
+  owner inheritance already lives on the pool. The next batch still includes
+  a pool bullet of that behaviour. That split is a reversible default.
 - **Hook-free bullets stay native when reflectors are registered.** The sim
   sweeps the same active `Reflector` circles the pool does (registry order,
   after `on_update`) and asks `Reflector.evaluate()` for the guard, the arc
@@ -66,6 +70,57 @@ move to C++.
   show the post-advance, post-reflect bullet. After `step()` returns, position,
   velocity and owner match. No queued reflect means the single `step()` pass,
   unchanged.
+- **Batch hook.** `BulletBehavior.on_update_batch(batch)` runs once per tick
+  for a behaviour, after that store's integrate and before collision — the
+  same window as a deferred script reflect. The argument is a `BatchView`:
+  packed copies of `id`, `px`, `py`, `vx`, `vy`, `age`, `pa`, `pb`, `owner`
+  (0-based, `n` rows). Writable columns are `vx`, `vy`, `pa`, `pb`. `kill`,
+  `teleport` and `spawn_child` are commands. All of it is applied when the
+  callback returns, and only if the stable id still names that bullet. A
+  despawn, or a slot reused under a new generation, drops the write. A script
+  error sets `discard` and commits nothing. An empty behaviour (no live
+  bullets) does not enter the callback. With the GDScript backend the same
+  view is filled from the pool and the semantics match. Lua `on_batch(v, dt)`
+  is that object. The six defaults below are current behaviour. Each may be
+  extended later; none of them is a zero-copy change.
+  1. **Every-tick cadence.** Every live bullet of the behaviour is in the view
+     every tick. No `update_interval` and no `update_slice`.
+  2. **No view reflect.** The view has no reflect command. Call
+     `reflect_bullet()`. After the sim has moved, that call applies immediately.
+  3. **`spawn_child` only.** It creates a declarative child (`behavior_id` 0).
+     There is no `spawn{}` / `spawn_polar` on the view.
+  4. **Read-only columns.** `px`, `py`, `age`, `id` and `owner` are read-only.
+     Writing one raises. A position change goes through `teleport`.
+  5. **`on_update` stays per-bullet.** Overriding `on_update` keeps the bullet
+     on the pool and does not also run the batch hook, unless `update_mode`
+     is `BATCH`. Explicit `BATCH` plus `on_update` still lives on the pool,
+     and both run.
+  6. **Hook spawns stay on the pool for life.** A bullet spawned inside a hook,
+     including `on_update_batch`, is born on the GDScript pool and is not
+     migrated into the sim later.
+  **Zero-copy stays off.** The columns are packed copies through stock
+  lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
+  Packed copies are the backing that was measured. Native batch work p95 on the
+  machines sampled so far is about **1.5–2.3 ms at 5,000** and about **4 ms at
+  10,000** (single runs have reported 1.51 ms and 2.25 ms at 5,000; the table
+  below is one of those machines). That is inside the budget, so the copy is
+  not the thing to remove next. These samples are provisional and may change. A later
+  zero-copy column could replace the arrays inside `BatchView` without a
+  script change. That decision is not this slice. Scripts receive Lua tables,
+  not the packed arrays. Per call, `BatchView.CMD_CAP` (4096) commands and
+  `BatchView.SPAWN_CAP` (256) spawns are kept; the rest are dropped and one
+  warning is logged. The `on_batch` instruction budget is 100,000 plus 128 per
+  row, capped at 2,000,000 (`ScriptHost.BATCH_BUDGET_CEILING`). The 50 ms wall
+  clock and the 64 MB memory cap are unchanged. Those limits are provisional
+  and may change. A hot reload that adds `on_batch` does not move bullets that
+  already have `behavior_id` 0 into the batch.
+  **Default backend cost (provisional).** With the default GDScript backend,
+  `on_batch` bullets stay on the GD pool. That path is about 21–25 ms p95 at
+  5,000 and about 41–47 ms at 10,000 on the machines sampled so far (single
+  runs have reported 20.7 / 40.9 ms and 24.8 / 47.0 ms), over the 16.6 ms frame
+  budget at 5,000. Routing them to native by default belongs to the
+  default-backend decision, tracked in
+  [#34](https://github.com/Karyu42/scriptshot/issues/34).
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -113,6 +168,9 @@ environment variable. The native tests set `"native"` themselves.
 ./tools/run_benchmark.sh --backend=gdscript --hooked=1
 ./tools/run_benchmark.sh --backend=native --hooked=0
 ./tools/run_benchmark.sh --backend=native --hooked=1
+# One batch hook steering every bullet (GD pool vs native sim). Not the hooked gate.
+./tools/run_benchmark.sh --backend=gdscript --batch=1 --bullets=5000,10000
+./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000
 # Same opt-in as the game, because the benchmark's default preference is auto:
 ./tools/run_benchmark.sh --bullet-backend=native
 # Reflection workload (default --mirrors=0 is the original bench):
@@ -169,6 +227,15 @@ pip install scons==4.10.1
 - `tests/unit/test_bullet_manager.gd` forces `"gdscript"` and still inspects
   the pool. Hook masks, `sweep_cross_writes()`, and the speed clamp on that
   path are untouched.
+- `tests/unit/test_batch_hook.gd`: GD batch reads and writes, owner, empty
+  batches, kill and spawn, stale-id reuse, non-finite writes, the speed clamp,
+  teleport, and mixed per-bullet plus batch scripts. The native cases (same
+  pos/vel/owner, stale ids, hook spawns staying on the pool, mixed routing)
+  are pending when the extension is not built.
+- `tests/scripting/integration/test_lua_batch_hook.gd`: Lua `on_batch` over the
+  packed columns, a script error that commits nothing, an empty batch, kill
+  and `spawn_child`, `on_tick` still not a hook, and `on_batch` next to
+  `on_hit` staying on the pool.
 
 Short non-piercing paths use the pool's endpoint test, so a bullet that is
 already overlapping a target is reported at its end position on both sides.
@@ -198,6 +265,22 @@ runs were entirely in the pool (native count 0). The default-backend hooked 5k
 sample is under the 20 ms soft bar and the 22 ms hard gate. 10k hooked only
 warns. These are one machine, not a CI gate.
 
+Batch rows are one `on_update_batch` doing `vx += cos(age * 6) * 40 * dt` for
+every bullet (120 warmup + 600 frames, same scene). GDScript keeps them in the
+pool. Native keeps them in the sim (pool count 0). This is not the hooked gate.
+A separate hooked-5k run on this machine after the change was 13.03 ms p95,
+still under the 20 ms soft bar and the 22 ms hard gate, and still entirely in
+the pool.
+
+| bullets | batch | gdscript | native |
+| ---: | --- | ---: | ---: |
+| 5,000 | one hook | 24.77 ms | 2.25 ms |
+| 10,000 | one hook | 47.02 ms | 4.25 ms |
+
+That table is one machine. Across the machines sampled so far the same native
+batch is about 1.5–2.3 ms at 5,000, and the GD pool path is about 21–25 ms at
+5,000 and about 41–47 ms at 10,000. Provisional; may change.
+
 `--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
 keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
 same machine measured work p50/p95 of 13.97/14.20 ms on GDScript and 0.95/1.04 ms
@@ -207,10 +290,17 @@ native, with every bullet still in the sim (pool count 0).
 
 Left for later PRs, on purpose:
 
-- Batch-hook API refactor, and moving per-bullet hooks into C++. Hooks stay
-  GDScript.
-- The narrow zero-copy Lua view. M1, when it happens, uses packed copies
-  through stock lua-gdextension. This PR does not fork Lua.
+- Moving per-bullet hooks (`on_update`, `on_hit`, `can_hit`, `on_despawn`)
+  into C++. Those bullets stay on the GDScript pool.
+- Zero-copy stays off. Packed copies measured about 1.5–2.3 ms at 5k and about
+  4 ms at 10k native batch on the machines sampled so far, which is inside the
+  budget. A later column could
+  replace the copies without a script change. This tree does not fork Lua.
+- The six batch defaults above, if a later slice extends one of them:
+  `update_interval` / `update_slice`, a reflect command on the view, a
+  `spawn{}` form, writable position columns, batch-calling an `on_update`
+  bullet without `update_mode = BATCH`, or moving a hook-spawned bullet into
+  the sim. Current behaviour is the list in the batch-hook bullet.
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
   stays on the GDScript pool, and so does every other per-bullet hook.

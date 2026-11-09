@@ -43,6 +43,7 @@ public:
 		REASON_MANUAL,
 		REASON_CLEARED,
 		REASON_WALL,
+		REASON_INVALID,
 	};
 
 	static constexpr int FLOATS_PER_INSTANCE = 12;
@@ -161,7 +162,19 @@ public:
 	// resolution sorts by when bullets live in both stores.
 	int64_t spawn(const godot::Vector2 &p_position, const godot::Vector2 &p_velocity, float p_angle, float p_lifetime,
 			float p_radius, float p_damage, int p_hit_mask, const godot::Color &p_color, float p_acceleration,
-			float p_turn_rate, int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq);
+			float p_turn_rate, int p_pierce, bool p_collide_world, int p_owner_layer, int p_source_flags, int p_seq,
+			int p_behavior, float p_param_a, float p_param_b);
+	// Packed copies of every alive bullet with this behavior id, in slot order.
+	// The id column is the stable id. A later write is applied only if it still matches.
+	godot::Dictionary gather_batch(int p_behavior) const;
+	// Writes velocity and params for each id. A stale generation, a dead bullet,
+	// or a non-finite value does not land on a replacement. Non-finite kills as
+	// INVALID. Returns how many of those kills happened.
+	int apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
+			const godot::PackedFloat32Array &p_vy, const godot::PackedFloat32Array &p_pa,
+			const godot::PackedFloat32Array &p_pb);
+	bool teleport_id(int64_t p_id, float p_x, float p_y);
+	int count_with_behavior(int p_behavior) const;
 	// Called with the removed bullet's seq before the slot is overwritten, so the
 	// manager can hand that seq to the global tail (unified swap-remove).
 	void set_retire_callback(const godot::Callable &p_cb) { retire_order = p_cb; }
@@ -179,6 +192,7 @@ public:
 	int get_enemy_reserve() const { return enemy_reserve; }
 	int64_t get_spawned_total() const { return spawned_total; }
 	int64_t get_dropped_total() const { return dropped_total; }
+	int64_t get_invalid_total() const { return invalid_total; }
 	int get_owner_count(int p_layer) const;
 	godot::PackedInt32Array get_owner_counts() const;
 	godot::PackedInt32Array get_dropped_by_owner() const;
@@ -234,9 +248,9 @@ private:
 	int capacity = 0;
 	int count = 0;
 	std::vector<float> px, py, qx, qy, vx, vy, rx, ry;
-	std::vector<float> radius, age, lifetime, accel, turn, damage;
+	std::vector<float> radius, age, lifetime, accel, turn, damage, param_a, param_b;
 	std::vector<float> col; // 4 per bullet
-	std::vector<int32_t> hit_mask, pierce, owner_layer, seq;
+	std::vector<int32_t> hit_mask, pierce, owner_layer, seq, behavior;
 	std::vector<uint8_t> collide_world, dead, source_flags, reflect_count;
 	// Per-step wall bookkeeping. wall_clip is the fraction of the tick the
 	// outbound path survived (1 = no wall). wall_suppress drops that hit when
@@ -270,7 +284,8 @@ private:
 	float min_target_radius = 0.0f;
 	int last_hit_count = 0;
 	int last_wall_hit_count = 0;
-	int64_t despawn_counts[6] = { 0, 0, 0, 0, 0, 0 };
+	int64_t despawn_counts[7] = { 0, 0, 0, 0, 0, 0, 0 };
+	int64_t invalid_total = 0;
 
 	// ---- world ----
 	godot::Rect2 bounds;
