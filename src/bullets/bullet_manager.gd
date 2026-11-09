@@ -147,6 +147,14 @@ var _wall_hit_index := PackedInt32Array()
 var _reflector_count := 0
 ## Delta of the step in progress. Return legs fly for the unused fraction of it.
 var _step_delta := 0.0
+## True from the start of step() until the native move has been applied. Script
+## reflect_bullet() on a native id in that window is queued and run after the
+## move, before collision. Outside the window it applies immediately.
+var _defer_native_reflect := false
+var _native_reflect_queue: Array[Dictionary] = []
+## Accepted script reflects not yet written, per native id. The next call in
+## the same tick sees them, the way BulletPool.reflect sees its own count.
+var _native_reflect_pending := {}
 ## Active zones this tick, same order as the native zone sweep and the pool grid.
 var _native_zones: Array[Reflector] = []
 var _nz_pos := PackedVector2Array()
@@ -610,6 +618,11 @@ func _spawn_checked(request: ShotRequest) -> int:
 ## faction colour, deals `new_damage` and (unless `keep_script`) stops being
 ## scripted. See BulletPool.reflect(). Returns false for a stale id, an invalid
 ## owner, or a bullet that has used up its reflections.
+##
+## On a native id during step(), before that sim has moved, the call is queued
+## and applied after the move (before collision) so this tick's travel stays on
+## the pre-reflect velocity. The bool is the one BulletPool.reflect would return
+## at this moment on the GDScript pool. Outside that window the change is immediate.
 func reflect(
 	id: int,
 	new_owner_layer: int,
@@ -617,15 +630,71 @@ func reflect(
 	new_damage: float = BulletPool.REFLECTED_DAMAGE,
 	keep_script: bool = false
 ) -> bool:
-	# Zone reflection of a hook-free bullet happens in the sim. A script calling
-	# reflect_bullet() on a native id still gets false: doing it from on_update
-	# would integrate that bullet on a different phase than the pool (the sim
-	# has not moved yet). See docs/native.md.
 	if is_native_id(id):
-		return false
+		return _reflect_native(id, new_owner_layer, reverse, new_damage, keep_script)
 	if not pool.is_alive(id):
 		return false
 	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse, new_damage, keep_script)
+
+
+func _reflect_native(
+	id: int,
+	new_owner_layer: int,
+	reverse: bool,
+	new_damage: float,
+	keep_script: bool
+) -> bool:
+	if native == null or not native.is_alive(id):
+		return false
+	if new_owner_layer != Layers.PLAYER and new_owner_layer != Layers.ENEMY:
+		return false
+	var limit := pool.max_reflections
+	if _defer_native_reflect:
+		# advance() has already killed a GD bullet that expires or leaves the
+		# world this tick, and on_update sees that. The sim has not moved yet.
+		if native.integrate_would_die(id, _step_delta):
+			return false
+		var already: int = _native_reflect_pending.get(id, 0)
+		var count := native.reflect_count_of(id)
+		if limit > 0 and count + already >= limit:
+			return false
+		_native_reflect_queue.append({
+			"id": id,
+			"owner": new_owner_layer,
+			"reverse": reverse,
+			"damage": new_damage,
+			"keep": keep_script,
+			"limit": limit,
+		})
+		_native_reflect_pending[id] = already + 1
+		return true
+	return native.apply_script_reflect(
+		id, new_owner_layer, Layers.hostile_to(new_owner_layer), Layers.bullet_color(new_owner_layer),
+		new_damage, keep_script, reverse, limit
+	)
+
+
+func _flush_native_reflects() -> void:
+	if _native_reflect_queue.is_empty() or native == null:
+		_native_reflect_queue.clear()
+		_native_reflect_pending.clear()
+		return
+	var queued: Array[Dictionary] = []
+	queued.assign(_native_reflect_queue)
+	_native_reflect_queue.clear()
+	_native_reflect_pending.clear()
+	for op: Dictionary in queued:
+		var owner: int = op["owner"]
+		var bullet_id: int = op["id"]
+		var damage: float = op["damage"]
+		var keep: bool = op["keep"]
+		var reverse: bool = op["reverse"]
+		var limit: int = op["limit"]
+		# Stale generation, or a bullet that died in the move, is a no-op.
+		native.apply_script_reflect(
+			bullet_id, owner, Layers.hostile_to(owner), Layers.bullet_color(owner),
+			damage, keep, reverse, limit
+		)
 
 
 ## Advances the whole bullet simulation by `delta` seconds.
@@ -634,6 +703,7 @@ func step(delta: float) -> void:
 	# A zone that appears in on_update is in this tick's sweep (zones are
 	# collected after the hooks). One that appears during hit delivery is not.
 	_step_delta = delta
+	_defer_native_reflect = native != null
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -684,9 +754,20 @@ func step(delta: float) -> void:
 	var stepped_native := false
 	var native_zone_hits := 0
 	if native != null and native.count() > 0:
-		native_queued = native.step(delta)
+		# No queued script reflect: one pass, same as before. A queued reflect
+		# is applied after the move and before the sweeps, which is where
+		# on_update sits on the GDScript pool (advance, then the call, then collision).
+		if _native_reflect_queue.is_empty():
+			native_queued = native.step(delta)
+		else:
+			native.integrate(delta)
+			_flush_native_reflects()
+			native_queued = native.collide()
 		stepped_native = true
 		native_zone_hits = native.zone_hit_count()
+	else:
+		_flush_native_reflects()
+	_defer_native_reflect = false
 	if zone_hits == 0 and native_zone_hits == 0:
 		# stepped_native: both stores may hold bullets, so pool slot order is not
 		# the all-GD order. Seq is that order. No native bullets: the old loop.
@@ -832,6 +913,8 @@ func wall_normal_of(slot: int) -> Vector2:
 
 ## Removes all bullets (no hooks are called).
 func clear_bullets() -> void:
+	_native_reflect_queue.clear()
+	_native_reflect_pending.clear()
 	pool.clear()
 	if _renderer != null:
 		_renderer.update_from(pool)

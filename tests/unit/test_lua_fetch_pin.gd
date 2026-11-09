@@ -7,7 +7,9 @@ func test_fetch_script_pins_stock_lua_gdextension_082() -> void:
 	var text := FileAccess.get_file_as_string("res://tools/ci/fetch_native_libs.sh")
 	assert_true(text.contains("0.8.2"))
 	assert_true(text.contains("51f012dd8f53b2c8e44c6910a5d675614e3151f85f61055d24a9dce9eb0f2443"))
-	assert_true(text.contains("https://github.com/gilzoide/lua-gdextension/releases/download/"))
+	# The zip is the official 0.8.2 release. CI downloads it through the release
+	# API because github.com/.../releases/download has been returning HTTP 504.
+	assert_true(text.contains("https://api.github.com/repos/gilzoide/lua-gdextension/releases/tags/"))
 	assert_false(text.contains("godot-cpp"), "M1 does not build the godot-cpp fork")
 
 

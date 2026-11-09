@@ -351,6 +351,36 @@ func step(delta: float) -> int:
 	return hits
 
 
+## Move only. Pair with collide() when a script reflect must land between them.
+func integrate(delta: float) -> void:
+	sim.integrate(delta)
+
+
+## Sweeps of the bullets integrate() just moved. Returns the hurtbox hit count.
+func collide() -> int:
+	var hits: int = sim.collide()
+	return hits
+
+
+## True when this tick's integrate would already have killed `id` (lifetime or
+## bounds), which is what on_update sees on the GDScript pool.
+func integrate_would_die(id: int, delta: float) -> bool:
+	var dying: bool = sim.integrate_would_die(id, delta)
+	return dying
+
+
+func reflect_count_of(id: int) -> int:
+	var n: int = sim.get_reflect_count_of(id)
+	return n
+
+
+## BulletPool.reflect for a native id. Does not move the bullet. A stale id,
+## including one whose slot was reused, returns false.
+func apply_script_reflect(id: int, new_owner: int, new_mask: int, color: Color, new_damage: float, keep_script: bool, reverse: bool, limit: int) -> bool:
+	var ok: bool = sim.apply_script_reflect(id, new_owner, new_mask, color, new_damage, keep_script, reverse, limit)
+	return ok
+
+
 ## Delivers the hits queued by the last step() (Hurtbox.receive_hit, including
 ## the native bullet id). Call once after the GDScript collision pass.
 func deliver_hits() -> void:

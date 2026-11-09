@@ -39,14 +39,33 @@ move to C++.
   tick's sweep. One that appears during hit delivery is not, same as the
   pool, and the bullets are not migrated. Per-bullet hooks, including
   `can_hit`, stay on the pool.
-- **UNSUPPORTED: `reflect_bullet()` on a native id.**
-  `ShotEmitter.reflect_bullet()` / `BulletManager.reflect()` returns false and
-  does not change that bullet's position, velocity, owner, or reflection
-  count, from `on_update` or from outside a hook. This is hook-free zone and
-  wall-normal parity only. It is not scripting parity, and no script path that
-  depends on reflecting a native id runs on the sim. Queuing that call so it
-  lands on the pool's phase is the deferred-op follow-up. That slice is not
-  in this PR.
+- **Script `reflect_bullet()` on a native id is deferred until after the move.**
+  Measured on the GDScript pool: `BulletPool.reflect` runs inside the call.
+  `advance()` has already moved the bullet, so this tick's position is the
+  pre-reflect travel, while velocity, owner, mask, colour, damage and
+  `reflect_count` change immediately. The same tick's wall, zone and hurtbox
+  sweeps then see that new state (a hurtbox hit reports the reflected damage
+  and velocity). A second call in the same tick sees the updated count, so the
+  default cap of 1 makes it return false and change nothing; with
+  `max_reflections == 0` both calls apply, in order. A call outside
+  `on_update` — before any step, between steps, or from `on_despawn` — also
+  applies immediately, and the next `advance` is what travels on the new
+  velocity. A bullet `advance` already killed this tick (lifetime, or it left
+  the world) returns false. A wall or hurtbox death happens later, so the call
+  still returns true and the bullet then dies.
+  Native `on_update` runs before `NativeBulletSim` moves. Applying there would
+  integrate the new velocity in the same tick. The call is queued instead. The
+  bool is decided at the call (the same checks, plus reflects already queued
+  this tick, plus whether this tick's integrate will kill it for lifetime or
+  bounds). The mutation runs after that move and before the sweeps, and it
+  does not change position. The bullet stays in the sim and its id does not
+  change. If it dies in the move, or the slot is reused (the queued id's
+  generation no longer matches), the op is dropped. Calls after the move, and
+  calls outside `step()`, apply immediately. A read of the native bullet still
+  inside that `on_update` sees the pre-move fields; the pool would already
+  show the post-advance, post-reflect bullet. After `step()` returns, position,
+  velocity and owner match. No queued reflect means the single `step()` pass,
+  unchanged.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -136,8 +155,12 @@ pip install scons==4.10.1
   is not built (the missing-library warning test runs either way).
 - `tests/unit/test_native_reflection.gd`: wall normals (faces, corners, grazing,
   inside, index ties), per-tick reflection parity, `max_reflections` including
-  0, pierce plus reflect, mixed-store hit order, dynamic zones, and script
-  invulnerability flags. Pending when the extension is not built.
+  0, pierce plus reflect, mixed-store hit order, dynamic zones, script
+  invulnerability flags, and script `reflect_bullet()` on a native id (same-tick
+  position / velocity / owner, repeated calls, a despawn or a reused slot
+  before the deferred op, calls outside `on_update`, return values). The
+  GDScript timing test runs either way. The native half is pending when the
+  extension is not built.
 - `tests/unit/test_native_parity.gd`: the same scenarios on both backends.
   Seeded positions within 0.01 and velocities within 0.05, hit signatures,
   kinematics after 90 ticks, slow-overlap impact, pierce hit-memory, wall and
@@ -191,12 +214,6 @@ Left for later PRs, on purpose:
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
   stays on the GDScript pool, and so does every other per-bullet hook.
-- **UNSUPPORTED** script `reflect_bullet()` / `BulletManager.reflect()` on a
-  native id (outside a hook and inside `on_update`). The call returns false
-  and changes nothing. This is not scripting parity. The deferred-op
-  follow-up is the later slice that would queue the call; it is not here, and
-  this PR does not enable that script path on native. Zone reflection of
-  hook-free bullets is separate and does not go through `reflect_bullet()`.
 - Clamp warnings. The pool warns when it clamps a shot; the native facade
   clamps silently to the same limits.
 - A shared id space. Native ids use bit 62.

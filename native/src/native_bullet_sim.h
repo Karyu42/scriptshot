@@ -84,6 +84,18 @@ public:
 	void set_targets(const godot::PackedVector2Array &p_pos, const godot::PackedFloat32Array &p_radius,
 			const godot::PackedInt32Array &p_layer, const godot::PackedInt64Array &p_ids, int p_count);
 	int step(double p_delta);
+	// Move only. collide() runs the sweeps, so a script reflect queued during
+	// on_update can land after this tick's travel and before collision.
+	void integrate(double p_delta);
+	int collide();
+	// True when advance would already have killed this id (lifetime or bounds),
+	// which is the state BulletPool.reflect sees from on_update.
+	bool integrate_would_die(int64_t p_id, double p_delta) const;
+	int get_reflect_count_of(int64_t p_id) const;
+	// BulletPool.reflect for a stable id. Does not move the bullet. A stale
+	// generation (the slot was reused) returns false and writes nothing.
+	bool apply_script_reflect(int64_t p_id, int p_new_owner, int p_new_mask, const godot::Color &p_color,
+			float p_new_damage, bool p_keep_script, bool p_reverse, int p_limit);
 	// Sends the hits queued by the last step() to Hurtbox.receive_hit. Separate from
 	// step() so BulletManager can deliver them after the GDScript collision pass:
 	// a callback that spawns is not swept until the next tick, same as on_hit.
@@ -322,6 +334,22 @@ private:
 	godot::PackedFloat32Array prev_buf[2];
 	int buf_set = 0;
 
+	struct IntegratedMotion {
+		float vx = 0.0f;
+		float vy = 0.0f;
+		float rx = 1.0f;
+		float ry = 0.0f;
+		float nx = 0.0f;
+		float ny = 0.0f;
+		bool expired = false;
+		bool out_of_bounds = false;
+	};
+	// 1 when integrate() left this slot for collide(). The fast step() does not use it.
+	std::vector<uint8_t> collide_mark;
+	void begin_step();
+	IntegratedMotion compute_motion(int i, double delta, float fdelta, float min_x, float min_y, float max_x, float max_y) const;
+	bool integrate_one(int i, double delta, float fdelta, float min_x, float min_y, float max_x, float max_y);
+	void collide_one(int i, bool have_walls, bool have_targets);
 	void rebuild_hash();
 	void rebuild_walls();
 	void mark_dead(int slot, int reason);
