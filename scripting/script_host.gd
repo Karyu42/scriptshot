@@ -485,6 +485,15 @@ func _capture_debug() -> void:
 			rawset = rawset,
 			getmetatable = getmetatable,
 			debug = debug,
+			type = type,
+			pcall = pcall,
+			error = error,
+			getinfo = debug.getinfo,
+			dbg_getmetatable = debug.getmetatable,
+			getupvalue = debug.getupvalue,
+			getlocal = debug.getlocal,
+			getregistry = debug.getregistry,
+			_G = _G,
 		}
 		return 1
 	""".dedent(), "@capture-debug.lua")
