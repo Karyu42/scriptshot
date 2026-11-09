@@ -19,6 +19,94 @@ const BATCH_ROW_BUDGET := 128
 const BATCH_BUDGET_CEILING := 2_000_000
 const HOOK_STRIDE := 1_000
 const WALL_MSEC := 50
+## Stop-only watchdog during shutdown. Short on purpose: a to-be-closed loop
+## must die quickly, and our own cleanup chunk finishes well inside it.
+const SHUTDOWN_WALL_MSEC := 10
+## -1 is LuaThread.HOOK_YIELD. The hook stays installed through GC and lua_close.
+## It never calls back into Godot. Past the wall it yields, which stops a
+## to-be-closed loop. __gc runs with hooks disabled, so those are stripped first.
+const _STOP_HOOK := """
+local t0 = os.clock()
+local limit = %d / 1000.0
+return function()
+	if os.clock() - t0 >= limit then
+		return -1
+	end
+	return 0
+end
+"""
+const _STRIP_FINALIZERS := """
+local function is_lua_fin(fin)
+	if type(fin) ~= "function" then
+		return false
+	end
+	local info = debug.getinfo(fin, "S")
+	return info ~= nil and info.what ~= "C"
+end
+local function disarm_mt(mt)
+	if type(mt) ~= "table" then
+		return 0
+	end
+	local fin = rawget(mt, "__gc")
+	if is_lua_fin(fin) then
+		rawset(mt, "__gc", nil)
+		return 1
+	end
+	return 0
+end
+local function disarm_obj(obj)
+	local ok, mt = pcall(debug.getmetatable, obj)
+	if not ok then
+		return 0
+	end
+	return disarm_mt(mt)
+end
+local n = 0
+local pin = rawget(_G, "__scriptshot_pin")
+if pin ~= nil then
+	n = n + disarm_obj(pin)
+end
+local seen = {}
+local function walk(t, depth)
+	if type(t) ~= "table" or seen[t] or depth > 8 then
+		return
+	end
+	seen[t] = true
+	n = n + disarm_obj(t)
+	local k = nil
+	while true do
+		local nk, v = next(t, k)
+		if nk == nil then
+			break
+		end
+		n = n + disarm_obj(nk)
+		n = n + disarm_obj(v)
+		if type(v) == "table" then
+			walk(v, depth + 1)
+		end
+		k = nk
+	end
+end
+walk(_G, 0)
+local reg_ok, reg = pcall(debug.getregistry)
+if reg_ok and type(reg) == "table" then
+	walk(reg, 0)
+end
+return n
+"""
+const _WIPE_TABLE := """
+return function(t)
+	if type(t) ~= "table" then
+		return
+	end
+	for _, k in ipairs({
+		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
+		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired",
+	}) do
+		rawset(t, k, nil)
+	end
+end
+"""
 const MEMORY_CAP := 64 * 1024 * 1024
 const MAX_WEAPON_KEYS := 256
 ## A script that yields on purpose (wait) is not in this slice. A few resumes
@@ -65,10 +153,15 @@ end
 var instruction_budget: int = INSTRUCTION_BUDGET
 var wall_msec: int = WALL_MSEC
 
-## Stock lua-gdextension crashes if a second LuaState that has hosted a Godot
-## Callable is freed after another state was already freed. Hosts live until
-## process exit. One state per weapon for a session is the M1 budget.
+## Hosts stay pinned for the session. Freeing a LuaState while a Godot Variant
+## or Callable it holds is still live aborts stock lua-gdextension, and freeing
+## a suspended coroutine from GDScript does too (lua-gdextension #240).
+## shutdown() drops host-table Callables, disarms Lua finalizers, then releases
+## retired states oldest first and the current state last.
 static var _process_hosts: Array[ScriptHost] = []
+static var _shutdown_all_busy := false
+## Wrappers created while shutting down. Freeing them now crashes the binding.
+static var _kept: Array = []
 var _state: LuaState
 var _env: LuaTable
 var _host: LuaTable
@@ -83,16 +176,20 @@ var _callbacks: Dictionary = {}
 
 var _threads: Array[LuaThread] = []
 ## Coroutines the budget stopped, kept so they are not freed while suspended
-## (lua-gdextension #240). The host itself is pinned for the process; see
-## _process_hosts.
+## (lua-gdextension #240). shutdown() releases them without resuming.
 var _parked: Array[LuaThread] = []
-## Old states and their stopped coroutines. Freed threads crash (lua-gdextension
-## #240), and this build cannot create a fourth coroutine after three stops.
-var _graveyard: Array = []
+## States retired after three watchdog stops, oldest first. Each one still has
+## its sandbox, so player code there still cannot install __gc.
+var _retired: Array[RetiredState] = []
 var _source := ""
 var _chunk_name := "script.lua"
-## States abandoned after a watchdog stop. A stop inside pcall leaves the state
-## unsafe to create another coroutine on, and freeing it is unsafe too.
+var _closed := false
+var _stop_only := false
+## True while resumev has not returned. shutdown() waits; freeing the state
+## from inside that call is the crash #33 avoids.
+var _in_lua := false
+var _shutdown_after := false
+var _host_calls := 0
 var _instr := 0
 var _killed := false
 var _kill_reason := ""
@@ -125,6 +222,17 @@ class RunResult:
 	var value: Variant = null
 	var chunk_name := ""
 	var output := PackedStringArray()
+
+
+## One Lua state that has already stopped three times, plus the tables and
+## threads that still point into it. Kept so shutdown can drop them in order.
+class RetiredState:
+	extends RefCounted
+	var state: LuaState
+	var host_table: LuaTable
+	var env_table: LuaTable
+	var weapon: LuaTable
+	var threads: Array[LuaThread] = []
 
 
 func _init() -> void:
@@ -178,15 +286,25 @@ func _open_state() -> void:
 	_ready = true
 
 
-## Pins this host for the process. See `_process_hosts`.
+## After three stopped coroutines the state cannot host another one. The old
+## state stays alive (see shutdown) and a fresh sandbox is opened.
 func _rotate_state_if_needed() -> void:
-	if _parked.size() < 3 or _source.is_empty():
+	if _closed or _parked.size() < 3 or _source.is_empty():
 		return
-	if _state != null:
-		_graveyard.append(_state)
-	for thread in _parked:
-		_graveyard.append(thread)
+	var retired := RetiredState.new()
+	retired.state = _state
+	retired.host_table = _host
+	retired.env_table = _env
+	retired.weapon = _weapon
+	retired.threads.assign(_parked)
+	_retired.append(retired)
 	_parked = []
+	_callbacks = {}
+	_weapon = null
+	_host = null
+	_env = null
+	_make_bullet = null
+	_names_of = null
 	var source := _source
 	var chunk := _chunk_name
 	_open_state()
@@ -195,12 +313,159 @@ func _rotate_state_if_needed() -> void:
 
 
 func _pin() -> void:
+	if _closed:
+		return
 	if not _process_hosts.has(self):
 		_process_hosts.append(self)
 
 
+func _unpin() -> void:
+	_process_hosts.erase(self)
+
+
 func is_ready() -> bool:
-	return _ready
+	return _ready and not _closed
+
+
+func is_shutdown() -> bool:
+	return _closed
+
+
+func host_call_count() -> int:
+	return _host_calls
+
+
+## Closes every state this process still has pinned. Idempotent.
+## Oldest host first, and each host closes its retired states before its current one.
+static func shutdown_all() -> void:
+	if _shutdown_all_busy:
+		return
+	_shutdown_all_busy = true
+	var hosts: Array[ScriptHost] = []
+	hosts.assign(_process_hosts)
+	for i in hosts.size():
+		hosts[i].shutdown()
+	_shutdown_all_busy = false
+
+
+## Drops every Lua ref this host owns, then closes retired states oldest first
+## and the current state last. A coroutine that is suspended inside resumev is
+## left alone until that call returns; it is never resumed from here.
+func shutdown() -> void:
+	if _closed:
+		return
+	if _in_lua:
+		_shutdown_after = true
+		_stop_only = true
+		_expire_views()
+		return
+	_closed = true
+	_stop_only = true
+	_ready = false
+	_expire_views()
+	for i in _retired.size():
+		_release_retired(_retired[i])
+	_release_current()
+	_retired.clear()
+	_unpin()
+
+
+func _expire_views() -> void:
+	_batch_token = -1
+	if _batch != null:
+		_batch.discard = true
+		_batch = null
+	_mark_expired(_host)
+	for i in _retired.size():
+		_mark_expired(_retired[i].host_table)
+
+
+func _mark_expired(host_table: LuaTable) -> void:
+	if host_table == null:
+		return
+	var flag_v: Variant = host_table.get("_expired")
+	if flag_v is LuaTable:
+		_as_table(flag_v).set(1, true)
+
+
+func _release_retired(retired: RetiredState) -> void:
+	var state := retired.state
+	var threads: Array[LuaThread] = []
+	threads.assign(retired.threads)
+	_release_state(state, retired.host_table, retired.env_table, retired.weapon, threads)
+	retired.host_table = null
+	retired.env_table = null
+	retired.weapon = null
+	retired.threads.clear()
+	retired.state = null
+
+
+func _release_current() -> void:
+	var state := _state
+	var threads: Array[LuaThread] = []
+	threads.assign(_parked)
+	for i in _threads.size():
+		var th: LuaThread = _threads[i]
+		if th != null and not threads.has(th):
+			threads.append(th)
+	_release_state(state, _host, _env, _weapon, threads)
+	_callbacks.clear()
+	_make_bullet = null
+	_names_of = null
+	_host = null
+	_env = null
+	_weapon = null
+	_parked.clear()
+	_threads.clear()
+	_state = null
+
+
+## lua-gdextension 0.8.2 has no close(). The state closes when its last Godot
+## ref dies, and that destructor runs lua_close. Callers drop the wrappers
+## after this returns. A coroutine yielded inside a call makes that unref abort;
+## see the batch-hook suite.
+func _release_state(
+	state: LuaState,
+	host_table: LuaTable,
+	env_table: LuaTable,
+	weapon: LuaTable,
+	threads: Array[LuaThread]
+) -> void:
+	if state == null:
+		return
+	# Drop Callables out of the host table and disarm Lua __gc before the
+	# wrappers are released. Hooks do not run during finalizers. A stop-only
+	# hook on the main thread covers to-be-closed variables. `threads` is
+	# unused for set_hook: setting a hook on a stopped coroutine crashes.
+	state.stop_gc()
+	state.open_libraries(LuaState.LUA_DEBUG)
+	state.do_string(_STRIP_FINALIZERS, "@shutdown-strip.lua")
+	var wipe_v: Variant = state.do_string(_WIPE_TABLE, "@shutdown-wipe.lua")
+	if wipe_v is LuaFunction:
+		var wipe := _as_function(wipe_v)
+		_wipe(wipe, host_table)
+		_kept.append(wipe)
+	var hook_src := _STOP_HOOK % SHUTDOWN_WALL_MSEC
+	var hook_v: Variant = state.do_string(hook_src, "@shutdown-hook.lua")
+	if hook_v is LuaFunction:
+		var hook := _as_function(hook_v)
+		_kept.append(hook)
+		var main := state.get_main_thread()
+		if main != null:
+			main.set_hook(hook, LuaThread.HOOK_MASK_COUNT, 1)
+			_kept.append(main)
+	state.restart_gc()
+	state.collect_garbage()
+
+
+func _wipe(wipe: LuaFunction, table: LuaTable) -> void:
+	if table == null:
+		return
+	wipe.invoke(table)
+
+
+func _note_host_call() -> void:
+	_host_calls += 1
 
 
 ## Highest Lua heap seen by the count hook. The memory cap is soft: a script
@@ -231,6 +496,8 @@ func hook_mask() -> int:
 ## previous one. A compile error, a runtime error or a budget stop leaves the
 ## previous weapon in place. The chunk name is what Lua prints in errors.
 func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
+	if _closed:
+		return _fail("script host shut down", chunk_name)
 	if not _ready:
 		return _fail(_init_error, chunk_name)
 	var loaded: Variant = _state.load_string(code, "@" + chunk_name, _env)
@@ -273,6 +540,8 @@ func call_hook(
 	arg: Variant = null,
 	pass_arg: bool = false
 ) -> RunResult:
+	if _closed:
+		return _fail("script host shut down", name)
 	_rotate_state_if_needed()
 	_clear_pending()
 	if not _ready:
@@ -310,6 +579,9 @@ func call_hook(
 ## later zero-copy column object can replace them without a script change.
 ## On failure the view is marked `discard` and the caller commits nothing.
 func call_batch(batch: BatchView) -> RunResult:
+	if _closed:
+		batch.discard = true
+		return _fail("script host shut down", "on_batch")
 	_rotate_state_if_needed()
 	_clear_pending()
 	if not _ready:
@@ -435,32 +707,38 @@ func _strings_from(value: Variant) -> PackedStringArray:
 
 
 func _run(fn: LuaFunction, args: Array) -> RunResult:
+	if _closed:
+		return _fail("script host shut down", "")
 	var result := RunResult.new()
 	_reset_watchdog()
 	_reset_print_buffer()
-	var co := LuaCoroutine.create(fn)
+	var co: LuaCoroutine = LuaCoroutine.create(fn)
 	_arm(co)
+	_in_lua = true
 	var resumed: Variant = co.resumev(args)
 	var extra := 0
-	while co.status == LuaThread.STATUS_YIELD and not _killed and extra < MAX_EXTRA_RESUMES:
+	while co.status == LuaThread.STATUS_YIELD and not _killed and not _shutdown_after and extra < MAX_EXTRA_RESUMES:
 		resumed = co.resumev([])
 		extra += 1
-	if co.status == LuaThread.STATUS_YIELD:
+	var yielded := co.status == LuaThread.STATUS_YIELD
+	if yielded:
 		_parked.append(co)
+	_in_lua = false
 	_drain_print_buffer()
 	result.output = _output.duplicate()
 	if _killed:
 		result.stopped = _kill_reason
 		result.error = "script timeout (%s)" % _kill_reason
-		return result
-	if co.status == LuaThread.STATUS_YIELD:
+	elif yielded:
 		result.error = "script yielded (wait() is not in this slice)"
-		return result
-	if resumed is LuaError:
+	elif resumed is LuaError:
 		result.error = _lua_error_message(resumed)
-		return result
-	result.ok = true
-	result.value = resumed
+	else:
+		result.ok = true
+		result.value = resumed
+	if _shutdown_after:
+		_shutdown_after = false
+		shutdown()
 	return result
 
 
@@ -479,6 +757,9 @@ func _arm(co: LuaThread) -> void:
 
 
 func _hook(_debug: Variant) -> int:
+	_note_host_call()
+	if _stop_only or _closed:
+		return int(LuaThread.HOOK_YIELD)
 	_instr += HOOK_STRIDE
 	var mem := int(_state.get_memory_used())
 	if mem > _mem_peak:
@@ -513,6 +794,9 @@ func _fail(message: String, chunk_name: String) -> RunResult:
 
 
 func _lua_print(text: Variant = null) -> void:
+	_note_host_call()
+	if _stop_only or _closed:
+		return
 	_output.append(str(text))
 
 
@@ -696,10 +980,16 @@ func _nonneg_int(v: Variant) -> int:
 
 
 func _lua_dead() -> bool:
+	_note_host_call()
+	if _stop_only or _closed:
+		return true
 	return _killed
 
 
 func _lua_reg_thread(co: Variant) -> void:
+	_note_host_call()
+	if _stop_only or _closed:
+		return
 	if not co is LuaThread:
 		return
 	var th := _as_thread(co)
@@ -760,6 +1050,9 @@ func _as_float(v: Variant) -> float:
 
 
 func _lua_set_velocity(x: Variant, y: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
 	if not _read_number(x):
 		return "set_velocity: expected two numbers"
 	var vx := _number
@@ -797,6 +1090,9 @@ func _read_row(cmd: String, v: Variant) -> String:
 
 
 func _lua_batch_kill(token: Variant, i: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "view expired"
 	var gate := _batch_gate(token)
 	if gate != "":
 		return gate
@@ -808,6 +1104,9 @@ func _lua_batch_kill(token: Variant, i: Variant) -> Variant:
 
 
 func _lua_batch_teleport(token: Variant, i: Variant, x: Variant, y: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "view expired"
 	var gate := _batch_gate(token)
 	if gate != "":
 		return gate
@@ -825,6 +1124,9 @@ func _lua_batch_teleport(token: Variant, i: Variant, x: Variant, y: Variant) -> 
 
 
 func _lua_batch_spawn(token: Variant, i: Variant, x: Variant, y: Variant, vx: Variant, vy: Variant, life: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "view expired"
 	var gate := _batch_gate(token)
 	if gate != "":
 		return gate
@@ -855,6 +1157,9 @@ func _lua_batch_spawn(token: Variant, i: Variant, x: Variant, y: Variant, vx: Va
 
 
 func _lua_spawn_child(x: Variant, y: Variant, vx: Variant, vy: Variant, life: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
 	if not _read_number(x):
 		return "spawn_child: expected numbers (x, y, vx, vy, lifetime)"
 	var px := _number
