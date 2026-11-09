@@ -8,9 +8,10 @@ from contextlib import redirect_stdout
 import check_export_preset as c
 
 
-def cfg(platform, name, **opts):
+def cfg(platform, name, exclude_filter="", **opts):
     body = "".join(f'{k.replace("__", "/")}={v}\n' for k, v in opts.items())
     return (f'[preset.0]\n\nname="{name}"\nplatform="{platform}"\nrunnable=false\n'
+            f'exclude_filter="{exclude_filter}"\n'
             f'[preset.0.options]\n\n{body}')
 
 
@@ -88,11 +89,26 @@ class CheckExportPresetTest(unittest.TestCase):
         t = cfg("macOS", "macOS", codesign__codesign="1", notarization__notarization="2")
         self.assertEqual(run(t, "macOS")[0], 1)
 
-    def test_web_warns_not_fails(self):
-        t = cfg("Web", "Web", variant__extensions_support="false", variant__thread_support="true")
+    def test_web_threads_warns_not_fails(self):
+        t = cfg("Web", "Web", exclude_filter="*.md, scriptshot_native.gdextension, bin/*",
+                variant__extensions_support="true", variant__thread_support="true")
         rc, out = run(t, "Web")
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 0, out)
         self.assertIn("::warning::", out)
+
+    def test_web_without_extensions_support_fails(self):
+        t = cfg("Web", "Web", exclude_filter="scriptshot_native.gdextension",
+                variant__extensions_support="false", variant__thread_support="false")
+        rc, out = run(t, "Web")
+        self.assertEqual(rc, 1)
+        self.assertIn("extensions_support", out)
+
+    def test_web_must_exclude_the_native_bullet_lib(self):
+        t = cfg("Web", "Web", exclude_filter="tests/*, *.md",
+                variant__extensions_support="true", variant__thread_support="false")
+        rc, out = run(t, "Web")
+        self.assertEqual(rc, 1)
+        self.assertIn("scriptshot_native.gdextension", out)
 
     def test_ios_rejected(self):
         self.assertEqual(run(cfg("iOS", "iOS"), "iOS")[0], 1)

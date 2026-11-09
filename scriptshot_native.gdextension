@@ -11,9 +11,9 @@ reloadable = false
 ; Web: the shipping preset is no-threads (variant/thread_support=false), so the
 ; plain wasm32 entries are the .nothreads side modules. The .threads. keys are
 ; the threaded side modules. Godot picks the key with the most matching tags,
-; so a threads export does not load the no-threads wasm. extensions_support
-; stays off in export_presets.cfg; until that is on, a web export does not
-; package this library.
+; so a threads export does not load the no-threads wasm. The Web preset lists
+; this file in its exclude_filter, so web exports do not package this library
+; yet and run the GDScript pool (#36; docs/native.md "Web export").
 ;
 ; macOS reports the "universal" feature on both arm64 and x86_64, so one
 ; universal dylib covers the desktop preset. Editor and debug entries share the

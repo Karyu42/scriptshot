@@ -17,7 +17,7 @@ All five exports run on `ubuntu-24.04` with the pinned headless Godot 4.7.2 and 
 | Windows Desktop | `build/windows/Scriptshot.exe` | single x86_64 exe (`embed_pck=true`) plus a console wrapper if the preset enables it | none (SmartScreen warns on first run) |
 | macOS | `build/macos/Scriptshot.zip` | `Scriptshot.app`, universal (x86_64 + arm64) | ad-hoc (`codesign/codesign=1`), not notarized |
 | Linux | `build/linux/Scriptshot.x86_64` | single x86_64 executable (`embed_pck=true`) | none |
-| Web | `build/web/index.html` + `index.js`, `index.wasm`, `index.pck`, audio worklets, icons (`index.side.wasm` too when `extensions_support` is on) | static site | n/a |
+| Web | `build/web/index.html` + `index.js`, `index.wasm` (dlink main module), `index.side.wasm` (engine side module), `libluagdextension.web.template_release.wasm32.nothreads.wasm` (Lua), `index.pck`, audio worklets, icons. No native bullet wasm (see section 4) | static site | n/a |
 | Android | `build/android/Scriptshot-debug.apk` (+ `.idsig`) | arm64-v8a only, minSdk 24, targetSdk 36 | debug keystore generated in CI |
 
 The macOS and Android exports need **Import ETC2 ASTC** enabled in `project.godot`
@@ -34,15 +34,16 @@ The release Android artifact above is **arm64-v8a only** (phones). GitHub-hosted
 in the committed `export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only
 or uses Gradle, a macOS preset whose `codesign/codesign` is not `1` or that enables notarization, and an iOS preset.
 `codesign/codesign=3` (Xcode codesign) is rejected: that mode exists only on a macOS editor host, and CI exports
-from Linux, where the only ad-hoc value is `1`. It warns about the Web preset having `extensions_support` off
-(needed once the Lua binding is a GDExtension) or threads on (needs COOP/COEP).
+from Linux, where the only ad-hoc value is `1`. For the Web preset it fails when `extensions_support` is off (the no-dlink
+template refuses to boot with the Lua GDExtension, issue #40) or when `exclude_filter` does not list
+`scriptshot_native.gdextension`, and warns when threads are on (needs COOP/COEP).
 
 After a successful export the same job checks the artifact, because Godot can exit 0 on a failed ad-hoc sign
 (it is only an export warning):
 
 * macOS: the zip listing must contain `_CodeSignature/CodeResources`.
 * Android: `apksigner verify` on the APK (build-tools from the Android matrix entry).
-* Linux: `timeout 60s ./Scriptshot.x86_64 --headless --quit`. The official template targets an older glibc, so the `ubuntu-24.04` runner can launch it. Windows and Web have no equivalent cheap smoke here.
+* Linux: `timeout 60s ./Scriptshot.x86_64 --headless --quit`. The official template targets an older glibc, so the `ubuntu-24.04` runner can launch it. Windows has no equivalent cheap smoke here. Web has the browser smoke in section 4.1 (`tools/ci/web_smoke.sh`).
 
 ## 2. macOS: unsigned first launch
 
@@ -78,9 +79,49 @@ Notarization (no warning at all) needs a paid Apple developer account and is out
   `Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp` (or `credentialless`).
   The preset option `progressive_web_app/ensure_cross_origin_isolation_headers` can emulate this via a service worker, which needs HTTPS and a
   second load. itch.io has a "SharedArrayBuffer support" checkbox.
-* **`variant/extensions_support=true`** is required as soon as any GDExtension (for example the Lua binding) is used. It switches the export to the `web_dlink_*`
-  templates and adds `index.side.wasm`. The extension's wasm must match the thread mode: a
-  `web.release.threads.wasm32` library for threads, `web.release.wasm32` (no-threads) otherwise. The Lua spike ran both variants on 4.7.2 in a browser.
+* The Web preset has **`variant/extensions_support=true`** and `thread_support=false`, so it exports with
+  `web_dlink_nothreads_{debug,release}.zip`. This is required, not optional: the Lua binding (lua-gdextension 0.8.2) is a
+  GDExtension. Godot 4.7.2 copies every exported `.gdextension` wasm into the export and lists it in
+  `GODOT_CONFIG.gdextensionLibs` **even when `extensions_support` is off**, and the no-dlink template's `index.js` then refuses to
+  start ("GDExtension libraries are not supported by this engine version", issue #40). The extension's wasm must match the
+  thread mode: lua-gdextension's `web.release.wasm32` key is the `.nothreads.wasm` side module (no shared memory, no atomics,
+  `dylink.0`), which matches the 4.7.2 template build (Emscripten 4.0.20, "single-threaded, GDExtension support").
+* **The native bullet library is not shipped on web** (CoS ruling on #36; native-on-web is tracked there). The Web preset's
+  `exclude_filter` lists `scriptshot_native.gdextension, bin/*`. Godot 4.7.2 honours that for GDExtensions: an excluded
+  `.gdextension` file is not exported, its libraries are not copied or listed in `gdextensionLibs`, and the exported
+  `.godot/extension_list.cfg` drops it, so the engine never tries to load it (no "No GDExtension library found" errors). This works
+  with or without web keys in `scriptshot_native.gdextension` (main has none; #35 adds them). Web therefore runs on the
+  GDScript bullet pool; selecting native (`--bullet-backend=native`) logs the usual single fallback warning.
+* Size: the dlink no-threads release export is about **49.2 MiB** on disk (`index.side.wasm` 44.1 MB, `index.wasm` 1.5 MB,
+  Lua side module 2.65 MB, `index.js` 2.9 MB, `index.pck` 0.4 MB), versus 42.07 MiB for the old no-dlink export that did not boot.
+  Gzipped, the three wasm files are about 11.7 MB. On a local server in headless Chromium (SwiftShader) the engine starts about
+  1.7-2.0 s after navigation.
+
+### 4.1 Browser smoke (`tools/ci/web_smoke.sh`)
+
+`./tools/ci/web_smoke.sh` exports the Web preset (release, then debug), checks the export without a browser, then serves it
+over plain HTTP (no COOP/COEP; the no-threads build needs none) and loads it in headless Chromium with Playwright
+(`tools/ci/web_smoke.py`). It needs the Godot 4.7.2 editor, the `web_dlink_nothreads_*.zip` templates, and
+`pip install playwright` plus `python -m playwright install chromium` (or `CHROME_PATH` pointing at Chrome).
+Exit code is non-zero on any failure.
+
+* **Export check:** `gdextensionLibs` is exactly the lua-gdextension no-threads side module, `index.side.wasm` exists, no
+  `scriptshot_native` file is exported, and `index.pck` holds no `scriptshot_native.gdextension` or `bin/` file, and its
+  `extension_list.cfg` lists only lua-gdextension.
+* **`boot`:** the page as shipped. The engine starts and the main scene runs for 6 s with no console error.
+* **`lua`:** `GODOT_CONFIG.args = ["--", "--web-smoke"]`. The `WebSmoke` autoload (`src/qa/web_smoke.gd`) waits for the
+  main scene, loads `src/qa/web_smoke_shot.lua` through `ScriptHost` (`LuaBulletBehavior.load_file`), spawns 8 shots on the
+  main scene's `BulletManager`, and prints `SMOKE_LUA_OK bullets=16 backend=gdscript ...` (each shot splits off a child from
+  Lua). Without `--web-smoke` the autoload frees itself in `_ready()`; the shipped page passes no arguments. Release web
+  templates refuse a scene path on the command line (`disable_path_overrides`), which is why this is a gated autoload and not
+  a separate scene.
+* **`native`:** the same plus `--bullet-backend=native`. Exactly one fallback warning, bullets still on `gdscript`.
+
+Every scenario fails on a page error, a console error that is not allowlisted, or a request for any `scriptshot_native` wasm.
+The allowlist (`ALLOWLIST` in `web_smoke.py`) holds one entry: lua-gdextension's
+`Property not found: 'lua_gdextension/lua_script_language/script_import_map'` warning, which it also prints on desktop.
+Artifacts go to `build/web-smoke/<mode>/`: `<scenario>.png`, `<scenario>.console.log`, `<scenario>.requests.log`,
+`summary.json`, `check-export.txt` and `export.log`.
 * Local test with the right headers (stdlib only):
   ```python
   # serve.py: python3 serve.py build/web 8080
@@ -141,12 +182,13 @@ kept so the directory matches an official install):
 | `macos.zip` | macOS |
 | `windows_debug_x86_64.exe`, `windows_release_x86_64.exe` | Windows Desktop, x86_64 |
 | `linux_debug.x86_64`, `linux_release.x86_64` | Linux. The archive name uses a dot (`linux_release.x86_64`), not an underscore |
-| `web_nothreads_debug.zip`, `web_nothreads_release.zip` | Web (`thread_support=false`, `extensions_support=false`) |
+| `web_dlink_nothreads_debug.zip`, `web_dlink_nothreads_release.zip` | Web (`thread_support=false`, `extensions_support=true`) |
 | `version.txt` | install marker |
 
-Not cached, on purpose: other CPU architectures, iOS, threaded web, `android_source.zip`, and
-`web_dlink_nothreads_*.zip`. Add the dlink nothreads zips when `variant/extensions_support` is turned on
-(GDExtension / Lua); that switches the Web export onto `web_dlink_nothreads_release.zip`. The Windows console
+Not cached, on purpose: other CPU architectures, iOS, threaded web, `android_source.zip`, and the no-dlink
+`web_nothreads_*.zip` (the Web preset has `extensions_support=true`, so the exporter never opens them; until the
+`export` job's extract list in `ci.yml` is updated it still extracts and checks those two and must also extract
+`templates/web_dlink_nothreads_*.zip`). The Windows console
 wrappers (`windows_*_x86_64_console.exe`) are also omitted: `debug/export_console_wrapper=1` is "Debug Only"
 and the matrix exports Windows as release, so the exporter does not copy a console exe. The cache key ends in
 `-slim` so an older full-template cache is not restored.
@@ -186,6 +228,6 @@ a 53 MB zip should not be committed. The macOS dylib is ad-hoc signed by the exp
 ## 9. Verified locally, and what was not
 
 Checked on this box with Godot 4.7.2 and the official templates, a clean copy of the repo, and the real `export_presets.cfg`: all five exports
-succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm, Android debug APK 28 MB with arm64-v8a libs only, macOS zip 61 MB
+succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm (before #40; the dlink export is in section 4), Android debug APK 28 MB with arm64-v8a libs only, macOS zip 61 MB
 containing a code-signed universal `.app`), with the debug keystore and editor settings generated exactly as the job does. Not verified locally:
 Android with build-tools 36.1.0 (the box has 35.0.1), the first-launch steps on real macOS, running the APK on a device, and the `native-libs` job.
