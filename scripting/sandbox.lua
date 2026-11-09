@@ -272,6 +272,10 @@ return function(host)
 					if not writable then
 						error("column '" .. name .. "' is read-only", 2)
 					end
+					-- Checked here so the store below never raises from native code.
+					if type(value) ~= "number" then
+						error("column '" .. name .. "': value must be a number", 2)
+					end
 					arr[i] = value
 				end,
 				__metatable = false,
