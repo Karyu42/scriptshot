@@ -28,6 +28,12 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_wall_count"), &NativeBulletSim::get_wall_count);
 	ClassDB::bind_method(D_METHOD("set_targets", "pos", "radius", "layer", "ids", "count"), &NativeBulletSim::set_targets);
 	ClassDB::bind_method(D_METHOD("step", "delta"), &NativeBulletSim::step);
+	ClassDB::bind_method(D_METHOD("integrate", "delta"), &NativeBulletSim::integrate);
+	ClassDB::bind_method(D_METHOD("collide"), &NativeBulletSim::collide);
+	ClassDB::bind_method(D_METHOD("integrate_would_die", "id", "delta"), &NativeBulletSim::integrate_would_die);
+	ClassDB::bind_method(D_METHOD("get_reflect_count_of", "id"), &NativeBulletSim::get_reflect_count_of);
+	ClassDB::bind_method(D_METHOD("apply_script_reflect", "id", "new_owner", "new_mask", "color", "new_damage", "keep_script", "reverse", "limit"),
+			&NativeBulletSim::apply_script_reflect);
 	ClassDB::bind_method(D_METHOD("deliver_hits"), &NativeBulletSim::deliver_hits);
 	ClassDB::bind_method(D_METHOD("upload", "multimesh", "allocated", "interpolate", "stretch"), &NativeBulletSim::upload);
 	ClassDB::bind_method(D_METHOD("spawn", "position", "velocity", "angle", "lifetime", "radius", "damage", "hit_mask", "color",
@@ -911,7 +917,7 @@ void NativeBulletSim::copy_hit_memory(int src, int dst) {
 // the tick
 // ---------------------------------------------------------------------------
 
-int NativeBulletSim::step(double delta) {
+void NativeBulletSim::begin_step() {
 	hit_events.clear();
 	wall_slots.clear();
 	zone_events.clear();
@@ -927,148 +933,234 @@ int NativeBulletSim::step(double delta) {
 		rebuild_walls();
 	}
 	rebuild_hash();
+}
 
+NativeBulletSim::IntegratedMotion NativeBulletSim::compute_motion(int i, double delta, float fdelta, float min_x, float min_y, float max_x, float max_y) const {
+	IntegratedMotion m;
+	m.vx = vx[i];
+	m.vy = vy[i];
+	m.rx = rx[i];
+	m.ry = ry[i];
+	m.nx = px[i];
+	m.ny = py[i];
+	const double a = (double)age[i] + delta;
+	if (a >= (double)lifetime[i]) {
+		m.expired = true;
+		return m;
+	}
+	float vxi = m.vx, vyi = m.vy;
+	const float tr = turn[i], ac = accel[i];
+	if (tr != 0.0f || ac != 0.0f) {
+		if (tr != 0.0f) {
+			const float ang = (float)((double)tr * delta);
+			const float s = std::sin(ang), c = std::cos(ang);
+			const float nvx = vxi * c - vyi * s, nvy = vxi * s + vyi * c;
+			vxi = nvx;
+			vyi = nvy;
+			const float nrx = m.rx * c - m.ry * s, nry = m.rx * s + m.ry * c;
+			m.rx = nrx;
+			m.ry = nry;
+		}
+		if (ac != 0.0f) {
+			const float speed = std::sqrt(vxi * vxi + vyi * vyi);
+			if (speed > 0.0f) {
+				// Same as BulletPool.advance: acceleration cannot push past the ceiling.
+				double grown = std::max((double)speed + (double)ac * delta, 0.0);
+				if (max_speed > 0.0f) {
+					grown = std::min(grown, (double)max_speed);
+				}
+				const float k = (float)(grown / (double)speed);
+				vxi *= k;
+				vyi *= k;
+			}
+		}
+	}
+	m.vx = vxi;
+	m.vy = vyi;
+	m.nx = px[i] + vxi * fdelta;
+	m.ny = py[i] + vyi * fdelta;
+	m.out_of_bounds = m.nx < min_x || m.nx > max_x || m.ny < min_y || m.ny > max_y;
+	return m;
+}
+
+bool NativeBulletSim::integrate_one(int i, double delta, float fdelta, float min_x, float min_y, float max_x, float max_y) {
+	if (dead[i] != 0) {
+		return false;
+	}
+	qx[i] = px[i];
+	qy[i] = py[i];
+	wall_clip[i] = 1.0f;
+	wall_suppress[i] = 0;
+	wall_report[i] = 0;
+	return_wall_pending[i] = 0;
+	wall_nx[i] = 0.0f;
+	wall_ny[i] = 0.0f;
+	const IntegratedMotion m = compute_motion(i, delta, fdelta, min_x, min_y, max_x, max_y);
+	age[i] = (float)((double)age[i] + delta);
+	if (m.expired) {
+		mark_dead(i, REASON_LIFETIME);
+		return false;
+	}
+	vx[i] = m.vx;
+	vy[i] = m.vy;
+	rx[i] = m.rx;
+	ry[i] = m.ry;
+	// A bullet that leaves the world still tests its final segment. Marked
+	// now, before collision, so a later hit or wall can relabel it (the
+	// pool's claim_from_bounds). The stored position stays the end of the
+	// path until a killing hit snaps it.
+	if (m.out_of_bounds) {
+		mark_dead(i, REASON_BOUNDS);
+	}
+	px[i] = m.nx;
+	py[i] = m.ny;
+	return true;
+}
+
+void NativeBulletSim::collide_one(int i, bool have_walls, bool have_targets) {
+	const float old_x = qx[i], old_y = qy[i];
+	float nx = px[i], ny = py[i];
+	const float vxi = vx[i], vyi = vy[i];
+	const double r = radius[i];
+	// Walls first: the bullet is clipped to the impact point. The kill is
+	// applied in deliver_hits(), after hurtboxes, so a target in front of
+	// the wall wins the reason. The segment is the integrated path, not the
+	// velocity: a script reflect may already have reversed vx/vy.
+	if (have_walls && collide_world[i]) {
+		const WallContact hit = query_wall(old_x, old_y, (double)nx - old_x, (double)ny - old_y, r);
+		if (hit.t >= 0.0) {
+			wall_slots.push_back(i);
+			wall_clip[i] = (float)hit.t;
+			wall_nx[i] = hit.nx;
+			wall_ny[i] = hit.ny;
+			wall_report[i] = 1;
+			nx = (float)(old_x + ((double)nx - old_x) * hit.t);
+			ny = (float)(old_y + ((double)ny - old_y) * hit.t);
+		}
+	}
+
+	// Hurtboxes. Pierce consumption and the killing snap wait until
+	// deliver_hits(), which skips a target that was turned off this tick.
+	// A short non-piercing path uses the pool's endpoint test (impact at
+	// the end position). Anything else is swept, up to pierce + 1 hits.
+	const int mask = hit_mask[i];
+	if (have_targets && mask != 0) {
+		const double dx = (double)nx - old_x;
+		const double dy = (double)ny - old_y;
+		const double reach = (double)min_target_radius + r;
+		const bool short_path = pierce[i] == 0 && (dx * dx + dy * dy) <= reach * reach;
+		if (short_path) {
+			int ti = -1;
+			if (point_hit(nx, ny, r, mask, i, ti)) {
+				hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i], seq[i], 1.0f });
+			}
+		} else {
+			double sx = old_x, sy = old_y;
+			int left = pierce[i];
+			excl_buf.clear();
+			for (;;) {
+				double t;
+				const int ti = sweep_targets(sx, sy, (double)nx - sx, (double)ny - sy, r, mask, i, excl_buf.data(),
+						(int)excl_buf.size(), t);
+				if (ti < 0) {
+					break;
+				}
+				const double ix = sx + ((double)nx - sx) * t;
+				const double iy = sy + ((double)ny - sy) * t;
+				float path_t = 0.0f;
+				const float sdx = nx - old_x;
+				const float sdy = ny - old_y;
+				if (std::fabs(sdx) >= std::fabs(sdy)) {
+					path_t = std::fabs(sdx) > 1e-8f ? (float)((ix - old_x) / (double)sdx) : 0.0f;
+				} else {
+					path_t = std::fabs(sdy) > 1e-8f ? (float)((iy - old_y) / (double)sdy) : 0.0f;
+				}
+				hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), (float)ix, (float)iy, vxi, vyi, damage[i],
+						source_flags[i], seq[i], path_t });
+				if (left > 0) {
+					left--;
+					excl_buf.push_back(ti);
+					sx = ix;
+					sy = iy;
+					continue;
+				}
+				break;
+			}
+		}
+	}
+
+	if (zone_count > 0 && owner_layer[i] != 0 && (dead[i] == 0 || dead[i] == REASON_BOUNDS + 1)) {
+		sweep_zones_for(i, old_x, old_y, nx - old_x, ny - old_y, (float)r, owner_layer[i]);
+	}
+
+	px[i] = nx;
+	py[i] = ny;
+}
+
+int NativeBulletSim::step(double delta) {
+	begin_step();
 	const float min_x = bounds.position.x, min_y = bounds.position.y;
 	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
 	const bool have_walls = !wall_lo_x.empty();
 	const bool have_targets = target_count > 0;
 	const float fdelta = (float)delta;
-
 	for (int i = 0; i < count; i++) {
-		if (dead[i] != 0) {
+		if (!integrate_one(i, delta, fdelta, min_x, min_y, max_x, max_y)) {
 			continue;
 		}
-		const float old_x = px[i], old_y = py[i];
-		qx[i] = old_x;
-		qy[i] = old_y;
-		wall_clip[i] = 1.0f;
-		wall_suppress[i] = 0;
-		wall_report[i] = 0;
-		return_wall_pending[i] = 0;
-		wall_nx[i] = 0.0f;
-		wall_ny[i] = 0.0f;
-		const double a = (double)age[i] + delta;
-		age[i] = (float)a;
-		if (a >= (double)lifetime[i]) {
-			mark_dead(i, REASON_LIFETIME);
-			continue;
-		}
-		float vxi = vx[i], vyi = vy[i];
-		const float tr = turn[i], ac = accel[i];
-		if (tr != 0.0f || ac != 0.0f) {
-			if (tr != 0.0f) {
-				const float ang = (float)((double)tr * delta);
-				const float s = std::sin(ang), c = std::cos(ang);
-				const float nvx = vxi * c - vyi * s, nvy = vxi * s + vyi * c;
-				vxi = nvx;
-				vyi = nvy;
-				const float nrx = rx[i] * c - ry[i] * s, nry = rx[i] * s + ry[i] * c;
-				rx[i] = nrx;
-				ry[i] = nry;
-			}
-			if (ac != 0.0f) {
-				const float speed = std::sqrt(vxi * vxi + vyi * vyi);
-				if (speed > 0.0f) {
-					// Same as BulletPool.advance: acceleration cannot push past the ceiling.
-					double grown = std::max((double)speed + (double)ac * delta, 0.0);
-					if (max_speed > 0.0f) {
-						grown = std::min(grown, (double)max_speed);
-					}
-					const float k = (float)(grown / (double)speed);
-					vxi *= k;
-					vyi *= k;
-				}
-			}
-			vx[i] = vxi;
-			vy[i] = vyi;
-		}
-		float nx = old_x + vxi * fdelta, ny = old_y + vyi * fdelta;
-		// A bullet that leaves the world still tests its final segment. Marked
-		// now, before collision, so a later hit or wall can relabel it (the
-		// pool's claim_from_bounds). The stored position stays the end of the
-		// path until a killing hit snaps it.
-		const bool out_of_bounds = nx < min_x || nx > max_x || ny < min_y || ny > max_y;
-		const double r = radius[i];
-		if (out_of_bounds) {
-			mark_dead(i, REASON_BOUNDS);
-		}
-
-		// Walls first: the bullet is clipped to the impact point. The kill is
-		// applied in deliver_hits(), after hurtboxes, so a target in front of
-		// the wall wins the reason.
-		if (have_walls && collide_world[i]) {
-			const WallContact hit = query_wall(old_x, old_y, (double)nx - old_x, (double)ny - old_y, r);
-			if (hit.t >= 0.0) {
-				wall_slots.push_back(i);
-				wall_clip[i] = (float)hit.t;
-				wall_nx[i] = hit.nx;
-				wall_ny[i] = hit.ny;
-				wall_report[i] = 1;
-				nx = (float)(old_x + ((double)nx - old_x) * hit.t);
-				ny = (float)(old_y + ((double)ny - old_y) * hit.t);
-			}
-		}
-
-		// Hurtboxes. Pierce consumption and the killing snap wait until
-		// deliver_hits(), which skips a target that was turned off this tick.
-		// A short non-piercing path uses the pool's endpoint test (impact at
-		// the end position). Anything else is swept, up to pierce + 1 hits.
-		const int mask = hit_mask[i];
-		if (have_targets && mask != 0) {
-			const double dx = (double)nx - old_x;
-			const double dy = (double)ny - old_y;
-			const double reach = (double)min_target_radius + r;
-			const bool short_path = pierce[i] == 0 && (dx * dx + dy * dy) <= reach * reach;
-			if (short_path) {
-				int ti = -1;
-				if (point_hit(nx, ny, r, mask, i, ti)) {
-					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i], seq[i], 1.0f });
-				}
-			} else {
-				double sx = old_x, sy = old_y;
-				int left = pierce[i];
-				excl_buf.clear();
-				for (;;) {
-					double t;
-					const int ti = sweep_targets(sx, sy, (double)nx - sx, (double)ny - sy, r, mask, i, excl_buf.data(),
-							(int)excl_buf.size(), t);
-					if (ti < 0) {
-						break;
-					}
-					const double ix = sx + ((double)nx - sx) * t;
-					const double iy = sy + ((double)ny - sy) * t;
-					float path_t = 0.0f;
-					const float sdx = nx - old_x;
-					const float sdy = ny - old_y;
-					if (std::fabs(sdx) >= std::fabs(sdy)) {
-						path_t = std::fabs(sdx) > 1e-8f ? (float)((ix - old_x) / (double)sdx) : 0.0f;
-					} else {
-						path_t = std::fabs(sdy) > 1e-8f ? (float)((iy - old_y) / (double)sdy) : 0.0f;
-					}
-					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), (float)ix, (float)iy, vxi, vyi, damage[i],
-							source_flags[i], seq[i], path_t });
-					if (left > 0) {
-						left--;
-						excl_buf.push_back(ti);
-						sx = ix;
-						sy = iy;
-						continue;
-					}
-					break;
-				}
-			}
-		}
-
-		if (zone_count > 0 && owner_layer[i] != 0 && (dead[i] == 0 || dead[i] == REASON_BOUNDS + 1)) {
-			sweep_zones_for(i, old_x, old_y, nx - old_x, ny - old_y, (float)r, owner_layer[i]);
-		}
-
-		px[i] = nx;
-		py[i] = ny;
+		collide_one(i, have_walls, have_targets);
 	}
 	last_hit_count = (int)hit_events.size();
 	last_wall_hit_count = (int)wall_slots.size();
 	return last_hit_count;
+}
+
+void NativeBulletSim::integrate(double delta) {
+	begin_step();
+	const float min_x = bounds.position.x, min_y = bounds.position.y;
+	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
+	const float fdelta = (float)delta;
+	const int n = count;
+	if ((int)collide_mark.size() < n) {
+		collide_mark.resize(n);
+	}
+	for (int i = 0; i < n; i++) {
+		collide_mark[i] = integrate_one(i, delta, fdelta, min_x, min_y, max_x, max_y) ? 1 : 0;
+	}
+}
+
+int NativeBulletSim::collide() {
+	const bool have_walls = !wall_lo_x.empty();
+	const bool have_targets = target_count > 0;
+	const int n = std::min(count, (int)collide_mark.size());
+	for (int i = 0; i < n; i++) {
+		if (collide_mark[i] == 0) {
+			continue;
+		}
+		collide_one(i, have_walls, have_targets);
+	}
+	last_hit_count = (int)hit_events.size();
+	last_wall_hit_count = (int)wall_slots.size();
+	return last_hit_count;
+}
+
+bool NativeBulletSim::integrate_would_die(int64_t p_id, double p_delta) const {
+	const int s = slot_of(p_id);
+	if (s < 0 || dead[s] != 0) {
+		return true;
+	}
+	const float min_x = bounds.position.x, min_y = bounds.position.y;
+	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
+	const IntegratedMotion m = compute_motion(s, p_delta, (float)p_delta, min_x, min_y, max_x, max_y);
+	return m.expired || m.out_of_bounds;
+}
+
+int NativeBulletSim::get_reflect_count_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	if (s < 0 || dead[s] != 0) {
+		return -1;
+	}
+	return reflect_count[s];
 }
 
 void NativeBulletSim::commit_hit(const HitEvent &h) {
@@ -1744,6 +1836,48 @@ bool NativeBulletSim::apply_reflect(int p_slot, int p_new_owner, int p_new_mask,
 	py[p_slot] = p_impact.y;
 	qx[p_slot] = p_impact.x;
 	qy[p_slot] = p_impact.y;
+	return true;
+}
+
+bool NativeBulletSim::apply_script_reflect(int64_t p_id, int p_new_owner, int p_new_mask, const Color &p_color, float p_new_damage, bool p_keep_script, bool p_reverse, int p_limit) {
+	const int s = slot_of(p_id);
+	if (s < 0 || dead[s] != 0) {
+		return false;
+	}
+	if (p_new_owner != LAYER_PLAYER && p_new_owner != LAYER_ENEMY) {
+		return false;
+	}
+	if (p_limit > 0 && reflect_count[s] >= p_limit) {
+		return false;
+	}
+	const int old_owner = owner_slot_of(owner_layer[s]);
+	const int new_slot = owner_slot_of(p_new_owner);
+	if (old_owner != new_slot) {
+		owner_counts[old_owner]--;
+		owner_counts[new_slot]++;
+	}
+	owner_layer[s] = p_new_owner;
+	if (reflect_count[s] < 255) {
+		reflect_count[s]++;
+	}
+	hit_mask[s] = p_new_mask;
+	col[4 * s] = p_color.r;
+	col[4 * s + 1] = p_color.g;
+	col[4 * s + 2] = p_color.b;
+	col[4 * s + 3] = p_color.a;
+	clear_hit_memory(s);
+	if (p_new_damage >= 0.0f) {
+		damage[s] = p_new_damage;
+	}
+	if (!p_keep_script) {
+		source_flags[s] = 0;
+	}
+	if (p_reverse) {
+		vx[s] = -vx[s];
+		vy[s] = -vy[s];
+		rx[s] = -rx[s];
+		ry[s] = -ry[s];
+	}
 	return true;
 }
 
