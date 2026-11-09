@@ -381,8 +381,9 @@ Artifacts: `native-libs-linux.x86_64`, `native-libs-windows.x86_64` (DLLs only),
 `native-libs-macos.universal`, `native-libs-web.wasm32` (not shipped). The
 manual export job restores them from the same run: every cell gets the Linux
 libraries (the headless editor host loads the extension), Windows and macOS
-also get their own, and a cell fails if the job that built and tested its
-library did not pass. macOS ships native, unsigned. Android exports without the
+also get their own. The Linux and Windows cells need their library uploaded
+(an export without it fails); the macOS cell also needs `GUT (macos, native)`
+green, because macOS ships native, unsigned, only once that job passes. Android exports without the
 library (deferred, #39).
 
 Caches: SCons `CacheDir` (`$SCONS_CACHE`, honoured by godot-cpp's SConstruct)

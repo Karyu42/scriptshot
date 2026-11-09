@@ -361,7 +361,7 @@ jobs:
     # Native bullet core (#38): scriptshot_native.gdextension lists a library for every desktop platform, and an export
     # without bin/<platform>/ fails (dispatch 42696143148: Windows and Linux). Each cell restores the libraries from the
     # native jobs of this run: linux.x86_64 always (the Linux editor host loads it during import/export), plus its own
-    # platform's. A cell fails if the job that built and tested its library did not pass; the other cells still run.
+    # platform's. Linux and Windows cells need their library uploaded; the macOS cell needs GUT (macos, native) green.
     # macOS ships native, unsigned. Android stays without it (deferred, #39); Web excludes it by preset (#36).
     if: ${{ !cancelled() && needs.test.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_export }}
     needs: [test, native-linux, gut-windows, gut-macos]
@@ -507,19 +507,22 @@ jobs:
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
       - name: Native bullet libraries built and tested in this run
         env:
-          NATIVE_LINUX: ${{ needs.native-linux.result }}
-          GUT_WINDOWS: ${{ needs.gut-windows.result }}
+          LINUX_BUILT: ${{ needs.native-linux.outputs.built }}
+          WINDOWS_BUILT: ${{ needs.gut-windows.outputs.built }}
           GUT_MACOS: ${{ needs.gut-macos.result }}
           PRESET: ${{ matrix.preset }}
         run: |
           set -euo pipefail
-          check() {
-            test "$2" = success || { echo "::error::$1 is '$2'; the $PRESET export needs its native library (#38)"; exit 1; }
-          }
-          check "Native libs (linux)" "$NATIVE_LINUX"
+          # Linux and Windows need their library built and uploaded (exports fail without it). macOS ships native
+          # only once GUT (macos, native) is green (CoS ruling, #38).
+          test "$LINUX_BUILT" = true || { echo "::error::Native libs (linux) did not upload native-libs-linux.x86_64"; exit 1; }
           case "$PRESET" in
-            "Windows Desktop") check "GUT (windows, native)" "$GUT_WINDOWS" ;;
-            macOS) check "GUT (macos, native)" "$GUT_MACOS" ;;
+            "Windows Desktop")
+              test "$WINDOWS_BUILT" = true \
+                || { echo "::error::GUT (windows, native) did not upload native-libs-windows.x86_64"; exit 1; } ;;
+            macOS)
+              test "$GUT_MACOS" = success \
+                || { echo "::error::GUT (macos, native) is '$GUT_MACOS'; macOS ships native only once it is green"; exit 1; } ;;
           esac
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -620,6 +623,9 @@ jobs:
     name: Native libs (linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
+    outputs:
+      # "true" once native-libs-linux.x86_64 is uploaded (the export job needs the library, not the GUT verdict).
+      built: ${{ steps.libs.outputs.built }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -636,25 +642,38 @@ jobs:
       - name: SCons cache directory (outside the Godot project)
         shell: bash
         run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
-      - name: Cache SCons objects
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
       - name: Build (linux.x86_64, debug + release)
+        id: build
         run: |
           set -euo pipefail
           start=$SECONDS
           ./tools/build_native.sh linux
           ls -la bin/linux.x86_64/
           echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-libs-linux.x86_64
           path: bin/linux.x86_64/
           if-no-files-found: error
+      - name: Library uploaded
+        id: libs
+        shell: bash
+        run: echo "built=true" >>"$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-godot
         with:
@@ -720,14 +739,16 @@ jobs:
       - name: SCons cache directory (outside the Godot project)
         shell: bash
         run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
-      - name: Cache SCons objects
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
       - name: Build (web.wasm32, threads=no, debug + release)
+        id: build
         run: |
           set -euo pipefail
           start=$SECONDS
@@ -759,6 +780,13 @@ jobs:
               print(f"::error::Web preset(s) {bad} no longer exclude scriptshot_native.gdextension and bin/* (#36)")
               sys.exit(1)
           PY
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Artifact only, not shipped (see the job comment above).
@@ -770,6 +798,8 @@ jobs:
     name: GUT (windows, native)
     runs-on: windows-latest
     timeout-minutes: 50
+    outputs:
+      built: ${{ steps.libs.outputs.built }}
     defaults:
       run:
         # Git Bash, the same shell run_tests.sh is written for.
@@ -804,14 +834,16 @@ jobs:
       - name: SCons cache directory (outside the Godot project)
         shell: bash
         run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
-      - name: Cache SCons objects
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
       - name: Build (windows.x86_64, MSVC, debug + release)
+        id: build
         run: |
           set -euo pipefail
           start=$SECONDS
@@ -819,12 +851,23 @@ jobs:
           ./tools/build_native.sh windows
           ls -la bin/windows.x86_64/
           echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-libs-windows.x86_64
           # The .dll files only (MSVC also writes .lib/.exp/.pdb next to them).
           path: bin/windows.x86_64/*.dll
           if-no-files-found: error
+      - name: Library uploaded
+        id: libs
+        shell: bash
+        run: echo "built=true" >>"$GITHUB_OUTPUT"
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-godot
         with:
@@ -895,14 +938,16 @@ jobs:
       - name: SCons cache directory (outside the Godot project)
         shell: bash
         run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
-      - name: Cache SCons objects
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Restore SCons objects
+        id: scons-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
       - name: Build (macos.universal, debug + release)
+        id: build
         shell: /bin/bash -eo pipefail {0}
         run: |
           bash --version | head -1
@@ -918,6 +963,13 @@ jobs:
             vtool -show-build "$f" | grep -E 'architecture|minos' || true
           done
           echo "native build: $((SECONDS - start)) s" | tee -a "$GITHUB_STEP_SUMMARY"
+      # Saved even when a later step (GUT) fails, so the next run does not rebuild godot-cpp from scratch.
+      - name: Save SCons objects
+        if: always() && steps.build.outcome == 'success' && steps.scons-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: ${{ steps.scons-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           # Shipped: the manual export job packs this into the macOS export (unsigned).
