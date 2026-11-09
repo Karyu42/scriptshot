@@ -112,6 +112,11 @@ move to C++.
   clock and the 64 MB memory cap are unchanged. Those limits are provisional
   and may change. A hot reload that adds `on_batch` does not move bullets that
   already have `behavior_id` 0 into the batch.
+  **Default backend cost (provisional).** With the default GDScript backend,
+  `on_batch` bullets stay on the GD pool, which measured about 20.7 ms p95 at
+  5,000 and 40.9 ms at 10,000, over the 16.6 ms frame budget at 5,000. Routing
+  them to native by default belongs to the default-backend decision, tracked in
+  [#34](https://github.com/Karyu42/scriptshot/issues/34).
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
