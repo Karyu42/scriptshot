@@ -209,12 +209,11 @@ are both `./tools/build_native.sh <platform>` (the default target word is
 | Android arm64 | `bin/android.arm64/libscriptshot_native.android.template_{debug,release}.arm64.so` | `./tools/build_native.sh android` with NDK **29.0.14206865** (`ndk_version=29.0.14206865`, API 24). godot-cpp's own default NDK is r28b; this script passes r29. | Not built. Device runs stay deferred. |
 
 The shipping Web preset is `variant/thread_support=false` and
-`variant/extensions_support=false`. The no-threads wasm matches that thread
-mode. Godot only packages a GDExtension on web when `extensions_support` is
-on, which switches the export to the `web_dlink_nothreads` template. Until
-that flag is turned on, a web export does not load this library. Selecting
-native (or `auto` that resolves to native) still logs one warning and runs
-the GDScript pool.
+`variant/extensions_support=true` (the `web_dlink_nothreads` template, needed
+for the Lua GDExtension). The no-threads wasm matches that thread mode, but the
+preset's `exclude_filter` keeps this library out of web exports for now (see
+[Web export](#web-export)). Selecting native (or `auto` that resolves to
+native) on web logs one warning and runs the GDScript pool.
 
 Fallback is the same on every platform: `NativeBulletSim` is not registered,
 so `BulletManager` logs one warning per process and spawns into the pool.
@@ -374,9 +373,9 @@ Left for later PRs, on purpose:
   bullet without `update_mode = BATCH`, or moving a hook-spawned bullet into
   the sim. Current behaviour is the list in the batch-hook bullet.
 - CI build wiring for these libraries (the job in `.github/workflows/ci.yml`
-  is still a disabled stub). Turning on `variant/extensions_support` for the
-  Web preset, and running the native library on Windows, macOS, web, or an
-  Android device.
+  is still a disabled stub). Shipping the library on web (#36: drop the Web
+  preset's exclude entry once the browser smoke passes with it), and running
+  the native library on Windows, macOS, web, or an Android device.
 - The threaded web side module. The preset is no-threads; the `.threads.`
   gdextension keys are present so that export does not load the no-threads wasm.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
