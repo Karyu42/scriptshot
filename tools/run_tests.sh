@@ -95,9 +95,52 @@ tolerate_lua_shutdown() {
 	return "$status"
 }
 
+# Exit-after-results guard (issue #41). The same Lua-state release at exit sometimes hangs instead of
+# aborting (about 1 run in 20, on main too), so the job sat until its timeout with every test green.
+# Once GUT has printed its end-of-run summary ("---- ... ----" grand total) or "Results saved to", godot gets
+# GUT_EXIT_GRACE_S seconds (default 60) to exit. After that it is killed (TERM, then KILL after 5 s):
+#   green summary -> success, with a ::warning:: annotation pointing at #41
+#   anything else -> failure
+results_written() {
+	grep -a -E -q -e '^Results saved to ' -e '---- (All tests passed!|[0-9]+ pending/risky tests\.|[0-9]+ failing tests|[0-9]+ assert\(s\) in before_all/after_all methods failed) ----' -- "$1"
+}
+
 run_gut() {
-	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" 2>&1 | tee "$LOG_DIR/gut.log"
-	tolerate_lua_shutdown "${PIPESTATUS[0]}" "$LOG_DIR/gut.log"
+	local log="$LOG_DIR/gut.log" grace="${GUT_EXIT_GRACE_S:-60}" pid tail_pid status seen=0 hung=0 i
+	: >"$log"
+	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" >"$log" 2>&1 &
+	pid=$!
+	# Stream the output live (the CI step tees this script's stdout into reports/gut.log).
+	tail -n +1 -f --pid="$pid" "$log" &
+	tail_pid=$!
+	while kill -0 "$pid" 2>/dev/null; do
+		if [ "$seen" -eq 0 ] && results_written "$log"; then
+			seen=$SECONDS
+		fi
+		if [ "$seen" -ne 0 ] && [ $((SECONDS - seen)) -ge "$grace" ]; then
+			hung=1
+			kill -TERM "$pid" 2>/dev/null
+			for ((i = 0; i < 5; i++)); do
+				kill -0 "$pid" 2>/dev/null || break
+				sleep 1
+			done
+			kill -KILL "$pid" 2>/dev/null
+			break
+		fi
+		sleep 1
+	done
+	wait "$pid"
+	status=$?
+	wait "$tail_pid" 2>/dev/null
+	if [ "$hung" -eq 1 ]; then
+		if suite_is_green "$log"; then
+			echo "::warning::godot did not exit after results (teardown hang, see #41); killed after ${grace}s, suite was green"
+			return 0
+		fi
+		echo "run_tests.sh: godot did not exit ${grace}s after results and the suite was not green; killed" >&2
+		return 1
+	fi
+	tolerate_lua_shutdown "$status" "$log"
 }
 
 if [ "$split" -eq 1 ]; then
