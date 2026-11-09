@@ -7,6 +7,11 @@
 #            (plain 16.6 ms, hooked 22.0 ms at 5,000 bullets; HARD). Only if main's own p95 on this runner also misses
 #            a bar (slow runner) does that bar become bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (>= 1.0).
 #            10,000 bullets is warning-only. Push/dispatch (no base): the raw bars only.
+#   web-smoke : on every PR and push to main, tools/ci/web_smoke.sh: exports the shipping "Web" preset and the
+#            "Web (smoke)" preset (release and debug, web_dlink_nothreads templates), checks the files (Lua side
+#            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
+#            Chromium (boot; a Lua shot through ScriptHost; one fallback warning when native is requested).
+#            docs/qa/release-builds.md section 4.1.
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
 #   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
 # Checkout does not enable Git LFS or submodules: this repo has neither. If native-libs starts
@@ -75,7 +80,7 @@ jobs:
           test -f export_presets.cfg || { echo "::error::export_presets.cfg is not committed"; exit 1; }
           # Same checker the manual export job runs. Pure Python, so a bad codesign / ABI /
           # keystore flag fails the PR instead of waiting for a workflow_dispatch export.
-          for preset in "Windows Desktop" "macOS" "Linux" "Web" "Android"; do
+          for preset in "Windows Desktop" "macOS" "Linux" "Web" "Android" "Web (smoke)"; do
             python3 tools/ci/check_export_preset.py export_presets.cfg "$preset"
           done
 
@@ -261,6 +266,87 @@ jobs:
           path: reports/
           if-no-files-found: ignore
 
+  web-smoke:
+    # Static name: meant to become a required check once it has landed (QA sets that).
+    name: Web smoke (headless Chromium)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      PLAYWRIGHT_VERSION: "1.64.1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+      - name: Cache web export templates
+        id: cache-web-templates
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.${{ env.GODOT_CHANNEL }}
+          # Only version.txt and the two dlink no-threads zips (about 24 MB), not the 1.2 GB tpz.
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}-web-dlink-nothreads
+      - name: Download web export templates
+        if: steps.cache-web-templates.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          tpz="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_export_templates.tpz"
+          curl -fsSL --retry 3 -O "$base/$tpz" -O "$base/SHA512-SUMS.txt"
+          grep -F " $tpz" SHA512-SUMS.txt | sha512sum -c -
+          dest="$HOME/.local/share/godot/export_templates/${GODOT_VERSION}.${GODOT_CHANNEL}"
+          mkdir -p "$dest"
+          unzip -q "$tpz" -d tpl "templates/version.txt" "templates/web_dlink_nothreads_*.zip"
+          mv tpl/templates/* "$dest/"
+          rm -rf tpl "$tpz" SHA512-SUMS.txt
+          for f in version.txt web_dlink_nothreads_debug.zip web_dlink_nothreads_release.zip; do
+            test -s "$dest/$f" || { echo "::error::export template missing after extract: $f"; exit 1; }
+          done
+          ls -lh "$dest"
+      - name: Cache Playwright browsers
+        id: cache-playwright
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ env.PLAYWRIGHT_VERSION }}-chromium
+      - name: Install Playwright + Chromium
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv-web"
+          "$RUNNER_TEMP/venv-web/bin/pip" install --quiet "playwright==${PLAYWRIGHT_VERSION}"
+          # System libraries are not cached; the browser download is skipped on a cache hit.
+          if [ "${{ steps.cache-playwright.outputs.cache-hit }}" = "true" ]; then
+            "$RUNNER_TEMP/venv-web/bin/python" -m playwright install-deps chromium
+          else
+            "$RUNNER_TEMP/venv-web/bin/python" -m playwright install --with-deps chromium
+          fi
+      - name: Web export + browser smoke (release, debug)
+        env:
+          PYTHON: ${{ runner.temp }}/venv-web/bin/python
+          WEB_SMOKE_MODES: release debug
+          # fetch_native_libs.sh uses it for the GitHub release API (rate limit).
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./tools/ci/web_smoke.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: web-smoke
+          path: build/web-smoke/
+          if-no-files-found: ignore
+
   export:
     # Static name. GitHub does not evaluate ${{ }} in a skipped job's name, so a conditional
     # shows up as the raw expression in the checks list. The preset is on the Export and Verify steps.
@@ -313,7 +399,9 @@ jobs:
           path: ~/.local/share/godot/export_templates/${{ env.GODOT_VERSION }}.${{ env.GODOT_CHANNEL }}
           # "slim" drops the previous full-tpz cache (about 2 GB). Godot finds templates by this
           # versioned directory, so a restore of only the files below is enough for the five presets.
-          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}-slim
+          # "-dlink": the Web preset needs web_dlink_nothreads_*.zip (#40); an older "-slim" cache has
+          # only web_nothreads_*.zip and must not be restored.
+          key: godot-templates-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}-slim-dlink
       - name: Download export templates
         if: steps.cache-templates.outputs.cache-hit != 'true'
         run: |
@@ -326,18 +414,18 @@ jobs:
           mkdir -p "$dest"
           # The release is one tpz (still downloaded whole). Cache only what the matrix needs.
           # Archive names (Godot 4.7.2): android_*.apk, macos.zip, windows_*_x86_64.exe,
-          # linux_*.x86_64 (dot, not underscore), web_nothreads_*.zip, plus version.txt.
+          # linux_*.x86_64 (dot, not underscore), web_dlink_nothreads_*.zip, plus version.txt.
           # windows_*_x86_64_console.exe is not required: export_console_wrapper=1 is "Debug Only"
           # and this matrix exports Windows as release.
-          # Add web_dlink_nothreads_*.zip when variant/extensions_support is turned on
-          # (GDExtension / Lua). Do not add it before then.
+          # Web uses the dlink no-threads template (variant/extensions_support=true, issue #40), so the
+          # plain web_nothreads_*.zip is not needed.
           unzip -q "$tpz" -d tpl \
             "templates/version.txt" \
             "templates/android_*.apk" \
             "templates/macos.zip" \
             "templates/windows_*_x86_64.exe" \
             "templates/linux_*.x86_64" \
-            "templates/web_nothreads_*.zip"
+            "templates/web_dlink_nothreads_*.zip"
           mv tpl/templates/* "$dest/"
           rm -rf tpl "$tpz" SHA512-SUMS.txt
           missing=0
@@ -347,7 +435,7 @@ jobs:
             macos.zip \
             windows_debug_x86_64.exe windows_release_x86_64.exe \
             linux_debug.x86_64 linux_release.x86_64 \
-            web_nothreads_debug.zip web_nothreads_release.zip
+            web_dlink_nothreads_debug.zip web_dlink_nothreads_release.zip
           do
             if [ ! -s "$dest/$f" ]; then
               echo "::error::export template missing after extract: $f"
@@ -444,6 +532,10 @@ jobs:
               apksigner="${ANDROID_SDK_DIR}/build-tools/${ANDROID_BUILD_TOOLS}/apksigner"
               test -x "$apksigner" || { echo "::error::apksigner not found at $apksigner"; exit 1; }
               "$apksigner" verify "$out"
+              ;;
+            Web)
+              # dlink template used, Lua side module in, native bullet wasm and src/qa/ out.
+              python3 tools/ci/web_smoke.py check-export "$(dirname "$out")"
               ;;
             Linux)
               # Official templates target an older glibc, so ubuntu-24.04 can run them.

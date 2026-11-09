@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Web export browser smoke (issues #40, #36). Exports the "Web" preset with the
-# official 4.7.2 web_dlink_nothreads templates, checks the exported files
-# (lua-gdextension in, native bullet lib out), then loads the export in headless
-# Chromium and runs the boot / lua / native scenarios of tools/ci/web_smoke.py.
+# Web export browser smoke (issues #40, #36). For each mode it exports the
+# shipping "Web" preset and the "Web (smoke)" preset with the official 4.7.2
+# web_dlink_nothreads templates, checks the exported files (lua-gdextension in,
+# native bullet lib out, QA files only in the smoke export), then loads them in
+# headless Chromium: "boot" on the shipping export, "lua" and "native" on the
+# smoke export (tools/ci/web_smoke.py).
 #
 #   ./tools/ci/web_smoke.sh                 # release, then debug
 #   WEB_SMOKE_MODES=release ./tools/ci/web_smoke.sh
@@ -42,28 +44,51 @@ if [ ! -d .godot/imported ]; then
 	timeout 600 "$GODOT" --headless --path . --import >/dev/null 2>&1 || true
 fi
 
+export_web() { # preset mode dir log
+	rm -rf "$3" && mkdir -p "$3"
+	local t0
+	t0=$(date +%s)
+	if ! timeout 600 "$GODOT" --headless --path . "--export-$2" "$1" "$3/index.html" >"$4" 2>&1; then
+		echo "::error::$1 $2 export failed (see $4)"
+		tail -n 40 "$4"
+		return 1
+	fi
+	echo "$1 $2 export took $(( $(date +%s) - t0 ))s"
+}
+
 rc=0
 for mode in $MODES; do
-	dir="build/web"
-	[ "$mode" = release ] || dir="build/web-$mode"
-	rm -rf "$dir" "$OUT/$mode" && mkdir -p "$dir" "$OUT/$mode"
-	echo "::group::export Web ($mode) -> $dir"
-	t0=$(date +%s)
-	if ! timeout 600 "$GODOT" --headless --path . "--export-$mode" Web "$dir/index.html" >"$OUT/$mode/export.log" 2>&1; then
-		echo "::endgroup::"
-		echo "::error::Web $mode export failed (see $OUT/$mode/export.log)"
-		tail -n 40 "$OUT/$mode/export.log"
-		exit 1
+	ship="build/web"
+	smoke="build/web-smoke-export"
+	if [ "$mode" != release ]; then
+		ship="build/web-$mode"
+		smoke="build/web-smoke-export-$mode"
 	fi
-	echo "export took $(( $(date +%s) - t0 ))s"
+	art="$OUT/$mode"
+	rm -rf "$art" && mkdir -p "$art"
+
+	# The shipping preset: what players get. Export check plus the boot scenario.
+	echo "::group::Web ($mode): shipping preset -> $ship"
+	export_web Web "$mode" "$ship" "$art/export-web.log" || exit 1
 	echo "::endgroup::"
-	if ! "$PYTHON" tools/ci/web_smoke.py check-export "$dir" | tee "$OUT/$mode/check-export.txt"; then
+	if ! "$PYTHON" tools/ci/web_smoke.py check-export "$ship" | tee "$art/check-export-web.txt"; then
 		echo "::error::Web $mode export check failed"
 		rc=1
-		continue
+	elif ! "$PYTHON" tools/ci/web_smoke.py run "$ship" "$art" --timeout "$TIMEOUT" --scenarios boot; then
+		echo "::error::Web $mode boot smoke failed (artifacts in $art)"
+		rc=1
 	fi
-	if ! "$PYTHON" tools/ci/web_smoke.py run "$dir" "$OUT/$mode" --timeout "$TIMEOUT"; then
-		echo "::error::Web $mode browser smoke failed (artifacts in $OUT/$mode)"
+
+	# "Web (smoke)": same options plus src/qa/ and the web_smoke feature, which
+	# makes src/qa/web_smoke.tscn the main scene. Lua and native-request scenarios.
+	echo "::group::Web ($mode): smoke preset -> $smoke"
+	export_web "Web (smoke)" "$mode" "$smoke" "$art/export-web-smoke.log" || exit 1
+	echo "::endgroup::"
+	if ! "$PYTHON" tools/ci/web_smoke.py check-export "$smoke" --smoke | tee "$art/check-export-web-smoke.txt"; then
+		echo "::error::Web (smoke) $mode export check failed"
+		rc=1
+	elif ! "$PYTHON" tools/ci/web_smoke.py run "$smoke" "$art" --timeout "$TIMEOUT" --scenarios lua,native; then
+		echo "::error::Web (smoke) $mode browser smoke failed (artifacts in $art)"
 		rc=1
 	fi
 done

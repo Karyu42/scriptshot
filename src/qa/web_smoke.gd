@@ -1,43 +1,43 @@
 extends Node
-## Browser smoke for the Web export (tools/ci/web_smoke.sh, issue #40). Autoload
-## that is inert in normal play: unless the user argument `--web-smoke` is
-## present it frees itself in _ready() and does nothing else. On the web the only
-## way to pass that argument is GODOT_CONFIG.args in index.html, which the
-## shipped page leaves empty. (Release web templates refuse a scene path on the
-## command line, so a separate smoke scene cannot be used.)
+## Browser smoke for the Web export (tools/ci/web_smoke.sh, issue #40).
 ##
-## With the flag it waits for the real main scene, loads a Lua shot through
-## ScriptHost (LuaBulletBehavior.load_file), spawns bullets from it on the main
-## scene's BulletManager and prints one marker line per check. The harness
-## greps for SMOKE_LUA_OK and SMOKE_DONE, or fails on SMOKE_FAIL / a timeout.
+## Only the "Web (smoke)" export preset ships this file. That preset sets the
+## custom feature `web_smoke`, and project.godot's
+## `application/run/main_scene.web_smoke` override then makes this scene the
+## main scene. Every shipping preset excludes src/qa/* (tools/ci/
+## check_export_preset.py enforces it), so normal builds neither contain nor
+## run it. Release web templates refuse a scene path on the command line, which
+## is why the override is a feature tag and not an argument.
+##
+## It instantiates the real main scene, loads a Lua shot through ScriptHost
+## (LuaBulletBehavior.load_file), spawns bullets from it on the main scene's
+## BulletManager and prints one marker line per check. The harness greps for
+## SMOKE_LUA_OK and SMOKE_DONE, or fails on SMOKE_FAIL / a timeout. User args
+## (for example `--bullet-backend=native`) reach BulletManager as usual.
 
-const FLAG := "--web-smoke"
+const MAIN_SCENE := "res://scenes/main.tscn"
 const SHOT_PATH := "res://src/qa/web_smoke_shot.lua"
 const SHOTS := 8
 ## Physics ticks to run after spawning, so the shots move and stay alive.
 const TICKS := 10
-## Frames to wait for the main scene before giving up.
-const WAIT_FRAMES := 600
 
 
 func _ready() -> void:
-	if not FLAG in OS.get_cmdline_user_args():
-		queue_free()
-		return
-	print("SMOKE_START platform=%s args=%s" % [OS.get_name(), " ".join(OS.get_cmdline_user_args())])
+	print("SMOKE_START platform=%s feature=%s args=%s" % [OS.get_name(), OS.has_feature("web_smoke"), " ".join(OS.get_cmdline_user_args())])
 	_run.call_deferred()
 
 
 func _run() -> void:
-	var main: Main = null
-	for i in WAIT_FRAMES:
-		main = get_tree().current_scene as Main
-		if main != null and main.is_node_ready():
-			break
-		await get_tree().process_frame
-	if main == null:
-		_fail("the main scene (Main) did not start")
+	var packed := load(MAIN_SCENE) as PackedScene
+	if packed == null:
+		_fail("cannot load %s" % MAIN_SCENE)
 		return
+	var main := packed.instantiate() as Main
+	if main == null:
+		_fail("%s is not a Main scene" % MAIN_SCENE)
+		return
+	add_child(main)
+	await get_tree().process_frame
 	await get_tree().process_frame
 	var manager := main.get_node_or_null("BulletManager") as BulletManager
 	if manager == null:
