@@ -8,7 +8,9 @@ default and the fallback.
 
 **Status: opt-in.** The library can be built for Linux x86_64, Windows x86_64,
 macOS universal, web wasm32 (no threads, matching the export preset), and
-Android arm64. It is not wired into CI. The game does not move bullets unless
+Android arm64. CI builds Linux, Windows (MSVC), macOS universal and web on
+every PR and runs the full GUT suite with the library loaded on Linux, Windows
+and macOS (see [CI](#ci)); Android is not built in CI yet. The game does not move bullets unless
 native is opted in and that platform's library loaded. Hooked bullets never
 move to C++. A missing or failed library logs one warning and stays on the
 GDScript pool.
@@ -357,6 +359,43 @@ GDScript pool; `--bullet-backend=native` logs the single fallback warning.
 Shipping native on web means removing that filter entry and passing the #36
 smoke (side module loads, backend resolves to native).
 
+## CI
+
+`.github/workflows/ci.yml` (issue #38) runs four jobs on every PR, push to main
+and `workflow_dispatch`. None is a required check yet.
+
+| Job | Runner | Does |
+|---|---|---|
+| `Native libs (linux)` | ubuntu-24.04 | `./tools/build_native.sh linux`, then `./tools/run_tests.sh` with the library loaded |
+| `Native libs (web)` | ubuntu-24.04 | `./tools/build_native.sh web` with Emscripten 4.0.20. **Artifact only, not shipped**: the Web presets keep `scriptshot_native.gdextension, bin/*` excluded (#36) and the job fails if that changes |
+| `GUT (windows, native)` | windows-latest | MSVC build, then `run_tests.sh` under Git Bash with the DLL loaded |
+| `GUT (macos, native)` | macos-latest | universal (arm64 + x86_64, checked with `lipo`) build, then `run_tests.sh` under macOS's `/bin/bash` 3.2 with the dylib loaded |
+
+Every GUT job then runs `tools/ci/gut_counts.py --expect-native`, which fails
+unless both GUT processes printed their totals, nothing failed and nothing is
+pending. The native tests are pending when `NativeBulletSim` is not registered,
+so 0 pending proves the library loaded (Linux: 10 host + 1088 unit, 0 pending;
+unbuilt it is 1014 passing and 74 pending).
+
+Artifacts: `native-libs-linux.x86_64`, `native-libs-windows.x86_64` (DLLs only),
+`native-libs-macos.universal`, `native-libs-web.wasm32` (not shipped). The
+manual export job restores them from the same run: every cell gets the Linux
+libraries (the headless editor host loads the extension), Windows and macOS
+also get their own, and a cell fails if the job that built and tested its
+library did not pass. macOS ships native, unsigned. Android exports without the
+library (deferred, #39).
+
+Caches: SCons `CacheDir` (`$SCONS_CACHE`, honoured by godot-cpp's SConstruct)
+keyed by the godot-cpp commit, SCons version, platform, targets and threads;
+emsdk through `setup-emsdk`'s `actions-cache-folder`. `bin/` is never cached.
+
+`tools/run_tests.sh` and `tools/ci/fetch_native_libs.sh` run under bash 3.2
+(macOS `/bin/bash`) and Git Bash: the exit-after-results guard measures time
+with `EPOCHREALTIME` on bash 5 and perl's `Time::HiRes` otherwise, output is
+streamed without `tail --pid`, and empty arrays are expanded with
+`${a[@]+"${a[@]}"}`. `tools/ci/test_run_tests_guard.py` runs the guard cases
+against a fake godot under any bash (`RUN_TESTS_BASH=/bin/bash`).
+
 ## Out of scope
 
 Left for later PRs, on purpose:
@@ -372,10 +411,9 @@ Left for later PRs, on purpose:
   `spawn{}` form, writable position columns, batch-calling an `on_update`
   bullet without `update_mode = BATCH`, or moving a hook-spawned bullet into
   the sim. Current behaviour is the list in the batch-hook bullet.
-- CI build wiring for these libraries (the job in `.github/workflows/ci.yml`
-  is still a disabled stub). Shipping the library on web (#36: drop the Web
-  preset's exclude entry once the browser smoke passes with it), and running
-  the native library on Windows, macOS, web, or an Android device.
+- Shipping the library on web (#36: drop the Web preset's exclude entry once
+  the browser smoke passes with it), the Android arm64 CI build and a device
+  run (#39), and a real-machine Windows play test (#39).
 - The threaded web side module. The preset is no-threads; the `.threads.`
   gdextension keys are present so that export does not load the no-threads wasm.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`

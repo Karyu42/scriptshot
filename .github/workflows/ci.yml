@@ -358,10 +358,13 @@ jobs:
     # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
     # DEBUG apk signed with a throwaway debug keystore generated below. Release signing for Android needs a
     # keystore secret (GODOT_ANDROID_KEYSTORE_RELEASE_*), which is Karyu's call and is not wired up.
-    # needs gut-macos: macOS ships the native bullet dylib (unsigned) built and tested there (#38). The other cells
-    # do not wait for its result; the macOS cell fails if it did not pass.
+    # Native bullet core (#38): scriptshot_native.gdextension lists a library for every desktop platform, and an export
+    # without bin/<platform>/ fails (dispatch 42696143148: Windows and Linux). Each cell restores the libraries from the
+    # native jobs of this run: linux.x86_64 always (the Linux editor host loads it during import/export), plus its own
+    # platform's. A cell fails if the job that built and tested its library did not pass; the other cells still run.
+    # macOS ships native, unsigned. Android stays without it (deferred, #39); Web excludes it by preset (#36).
     if: ${{ !cancelled() && needs.test.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_export }}
-    needs: [test, gut-macos]
+    needs: [test, native-linux, gut-windows, gut-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -502,21 +505,38 @@ jobs:
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
-      # macOS ships native, unsigned (#38): the universal dylib from GUT (macos, native) in this run goes to
-      # bin/macos.universal/, where scriptshot_native.gdextension points. Windows, Linux and Android export
-      # without bin/ (GDScript pool with one warning) until their own rulings; Web excludes it by preset (#36).
-      - name: Native bullet dylib from GUT (macos, native) (macOS)
-        if: matrix.preset == 'macOS'
+      - name: Native bullet libraries built and tested in this run
         env:
+          NATIVE_LINUX: ${{ needs.native-linux.result }}
+          GUT_WINDOWS: ${{ needs.gut-windows.result }}
           GUT_MACOS: ${{ needs.gut-macos.result }}
+          PRESET: ${{ matrix.preset }}
         run: |
-          test "$GUT_MACOS" = success \
-            || { echo "::error::GUT (macos, native) is '$GUT_MACOS'; macOS ships native only once it is green"; exit 1; }
+          set -euo pipefail
+          check() {
+            test "$2" = success || { echo "::error::$1 is '$2'; the $PRESET export needs its native library (#38)"; exit 1; }
+          }
+          check "Native libs (linux)" "$NATIVE_LINUX"
+          case "$PRESET" in
+            "Windows Desktop") check "GUT (windows, native)" "$GUT_WINDOWS" ;;
+            macOS) check "GUT (macos, native)" "$GUT_MACOS" ;;
+          esac
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-libs-linux.x86_64
+          path: bin/linux.x86_64/
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        if: matrix.preset == 'Windows Desktop'
+        with:
+          name: native-libs-windows.x86_64
+          path: bin/windows.x86_64/
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         if: matrix.preset == 'macOS'
         with:
           name: native-libs-macos.universal
           path: bin/macos.universal/
+      - name: List native libraries
+        run: ls -la bin/*/
       - name: Export (${{ matrix.preset }})
         run: |
           set -euo pipefail
@@ -560,10 +580,17 @@ jobs:
               python3 tools/ci/web_smoke.py check-export "$(dirname "$out")"
               ;;
             Linux)
+              # The native bullet .so is copied next to the binary (#38).
+              test -s build/linux/libscriptshot_native.linux.template_release.x86_64.so \
+                || { echo "::error::Linux export has no native bullet .so next to the binary (#38)"; exit 1; }
               # Official templates target an older glibc, so ubuntu-24.04 can run them.
               # Bound the run so a hang fails this step instead of the job timeout.
               chmod +x "$out"
               timeout 60s "$out" --headless --quit
+              ;;
+            "Windows Desktop")
+              test -s build/windows/libscriptshot_native.windows.template_release.x86_64.dll \
+                || { echo "::error::Windows export has no native bullet DLL next to the exe (#38)"; exit 1; }
               ;;
           esac
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -593,8 +620,6 @@ jobs:
     name: Native libs (linux)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    env:
-      SCONS_CACHE: ${{ github.workspace }}/../scons-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -608,10 +633,13 @@ jobs:
           python-version: "3.x"
       - name: Install SCons ${{ env.SCONS_VERSION }}
         run: python -m pip install "scons==${SCONS_VERSION}"
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
       - name: Cache SCons objects
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.SCONS_CACHE }}
+          path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
@@ -665,8 +693,6 @@ jobs:
     name: Native libs (web)
     runs-on: ubuntu-24.04
     timeout-minutes: 40
-    env:
-      SCONS_CACHE: ${{ github.workspace }}/../scons-cache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -691,10 +717,13 @@ jobs:
           emcc --version | head -1
           emcc --version | head -1 | grep -qF " ${EMSCRIPTEN_VERSION} " \
             || { echo "::error::emcc is not ${EMSCRIPTEN_VERSION} (the official Godot ${GODOT_VERSION} web template build)"; exit 1; }
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
       - name: Cache SCons objects
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.SCONS_CACHE }}
+          path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-web-wasm32-debug+release-nothreads-em${{ env.EMSCRIPTEN_VERSION }}-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
@@ -746,7 +775,6 @@ jobs:
         # Git Bash, the same shell run_tests.sh is written for.
         shell: bash
     env:
-      SCONS_CACHE: ${{ github.workspace }}/../scons-cache
       GODOT: ${{ github.workspace }}/.godot-bin/Godot_v4.7.2-stable_win64.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -773,10 +801,13 @@ jobs:
           python -m pip install "scons==${SCONS_VERSION}"
           python3 --version
           bash --version | head -1
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
       - name: Cache SCons objects
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.SCONS_CACHE }}
+          path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-windows-x86_64-msvc-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
@@ -838,7 +869,6 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 50
     env:
-      SCONS_CACHE: ${{ github.workspace }}/../scons-cache
       GODOT: ${{ github.workspace }}/.godot-bin/Godot.app/Contents/MacOS/Godot
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -862,10 +892,13 @@ jobs:
           echo "$d" >>"$GITHUB_PATH"
           /bin/bash --version | head -1
           /bin/bash -c 'case "$BASH_VERSION" in 3.2.*) ;; *) echo "::error::/bin/bash is $BASH_VERSION, not 3.2"; exit 1 ;; esac'
+      - name: SCons cache directory (outside the Godot project)
+        shell: bash
+        run: echo "SCONS_CACHE=${{ runner.temp }}/scons-cache" >>"$GITHUB_ENV"
       - name: Cache SCons objects
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ${{ env.SCONS_CACHE }}
+          path: ${{ runner.temp }}/scons-cache
           key: scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-${{ hashFiles('native/SConstruct', 'native/src/**', 'tools/build_native.sh') }}
           restore-keys: |
             scons-native-${{ runner.os }}-macos-universal-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-

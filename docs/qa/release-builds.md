@@ -178,15 +178,14 @@ Taken from the Godot 4.7.2-stable tag (`godotengine/godot`) and kept in the `env
 | JDK | Temurin 17 | `platform/android/java/app/config.gradle` (`javaVersion`) |
 | Android | compileSdk/targetSdk 36, build-tools 36.1.0, minSdk 24 | `config.gradle` |
 | Android NDK (native builds only) | 29.0.14206865 | `config.gradle` (`ndkVersion`). Not r28b (`28.1.13356709`); the shared pipeline in `docs/scripting/spike-results.md` section 12 uses Godot's own NDK. |
-| godot-cpp (native builds only, job disabled) | `507ed9d840c01a3c5b2a39af8bb4000bfac30bf5` (10.0.0-stable, `api_version` 4.7) | `docs/scripting/spike-results.md` section 12. Not `58d1de7` (lua-gdextension 0.8.2's 10.0.0-rc1, 4.6 API). |
+| godot-cpp (native builds) | `507ed9d840c01a3c5b2a39af8bb4000bfac30bf5` (10.0.0-stable, `api_version` 4.7) | `docs/scripting/spike-results.md` section 12. Not `58d1de7` (lua-gdextension 0.8.2's 10.0.0-rc1, 4.6 API). |
 | Python / SCons (native builds) | Python 3.x, SCons 4.10.1 | `.github/actions/godot-deps` |
-| Emscripten (Web native builds) | 4.0.11 | `.github/workflows/web_builds.yml` (`EM_VERSION`). `docs/scripting/testing.md` uses 4.0.20 for Scriptshot's own extension against the official web template; the disabled stub keeps 4.0.11 until that job is enabled. |
+| Emscripten (Web native builds) | 4.0.20 | The build-container pin of the official 4.7.2 web export templates (a side module must match it). Not the engine workflow's `EM_VERSION` 4.0.11, which is that CI file only. |
 
-Runners for **native library builds**: `ubuntu-24.04` (Linux, Web, Android), `windows-latest` (MSVC), `macos-14` (Apple Silicon).
-Upstream Godot builds macOS on `macos-26`; this project uses `macos-14`. The disabled `native-libs` job in `ci.yml`
-documents this and runs only when the repository variable `ENABLE_NATIVE_LIBS` is `true`. It does not build anything
-today. When it does, it must use the NDK and godot-cpp pins above. An iOS compile check is optional and low priority:
-there is a commented line in the matrix, nothing more.
+Runners for **native library builds** (issue #38, `docs/native.md` "CI"): `ubuntu-24.04` (`Native libs (linux)`,
+`Native libs (web)`), `windows-latest` (`GUT (windows, native)`, MSVC) and `macos-latest` (`GUT (macos, native)`,
+universal). They run on every PR. Android (NDK pin above, `$ANDROID_HOME/ndk/29.0.14206865`) is a TODO in `ci.yml`
+and is not built. An iOS compile check is optional and low priority.
 
 ## 7. Export template cache
 
@@ -214,7 +213,7 @@ dlink zips) is restored. The `web-smoke` job keeps its own smaller cache with on
 ## 8. Native library artifact layout (`bin/<platform>/`)
 
 Only needed if the Lua binding is a GDExtension. Each platform's libraries live in their own folder under the project's `bin/`, so
-the `native-libs` job can upload `bin/<platform>/` as `native-libs-<platform>` and `tools/ci/fetch_native_libs.sh <platform>` can restore it
+the native jobs upload `bin/<platform>/` as `native-libs-<platform>` and the export job restores it (download-artifact, same run)
 before an export. The `<platform>` ids are the `platform:` values of the export matrix.
 
 ```
