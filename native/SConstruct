@@ -2,19 +2,25 @@
 # Scriptshot native bullet core (GDExtension). See docs/native.md.
 #
 #   scons platform=linux arch=x86_64 target=template_release
-#   -> ../bin/linux/libscriptshot_native.linux.template_release.x86_64.so
+#   -> ../bin/linux.x86_64/libscriptshot_native.linux.template_release.x86_64.so
 #
 # godot-cpp is a git submodule pinned to the release whose API JSON matches
 # Godot 4.7.2 (tools/check_extension_api.sh verifies that against a godot binary).
 env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
 
+# MinGW-on-Windows clears SHLIBPREFIX and MSVC's tool leaves it empty, while a
+# Linux MinGW cross keeps the POSIX "lib" prefix. One prefix so both toolchains
+# write the filename scriptshot_native.gdextension lists.
+env["SHLIBPREFIX"] = "lib"
+
 env.Append(CPPPATH=["src/"])
 sources = Glob("src/*.cpp")
 
 lib_name = "scriptshot_native"
-out_dir = "#../bin/{}/".format(env["platform"])
+# docs/qa/release-builds.md section 8: bin/<platform>.<arch>/
+out_dir = "#../bin/{}.{}/".format(env["platform"], env["arch"])
 library = env.SharedLibrary(
-    out_dir + "{}{}{}".format(env.subst("$SHLIBPREFIX"), lib_name, env["suffix"]) + env["SHLIBSUFFIX"],
+    out_dir + "{}{}{}".format(env["SHLIBPREFIX"], lib_name, env["suffix"]) + env["SHLIBSUFFIX"],
     source=sources,
 )
 env.NoCache(library)

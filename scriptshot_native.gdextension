@@ -4,12 +4,41 @@ entry_symbol = "scriptshot_native_init"
 compatibility_minimum = "4.7"
 reloadable = false
 
-; PROTOTYPE: only the Linux x86_64 *release* library is built so far, so the
-; editor and debug entries point at it too (see docs/native.md).
-; Libraries are build output: they live in bin/<platform>/ (gitignored) and are
-; produced by `scons` in native/. Without them the game uses the GDScript backend.
+; Libraries are build output (gitignored) from ./tools/build_native.sh.
+; A missing or unloadable library is not fatal: BulletManager logs one warning
+; and stays on the GDScript pool. See docs/native.md.
+;
+; Web: the shipping preset is no-threads (variant/thread_support=false), so the
+; plain wasm32 entries are the .nothreads side modules. The .threads. keys are
+; the threaded side modules. Godot picks the key with the most matching tags,
+; so a threads export does not load the no-threads wasm. The Web preset lists
+; this file in its exclude_filter, so web exports do not package this library
+; yet and run the GDScript pool (#36; docs/native.md "Web export").
+;
+; macOS reports the "universal" feature on both arm64 and x86_64, so one
+; universal dylib covers the desktop preset. Editor and debug entries share the
+; template_debug binary (the editor binary has both feature tags).
 [libraries]
 
-linux.editor.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
-linux.debug.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
-linux.release.x86_64 = "res://bin/linux/libscriptshot_native.linux.template_release.x86_64.so"
+linux.debug.x86_64 = "res://bin/linux.x86_64/libscriptshot_native.linux.template_debug.x86_64.so"
+linux.editor.x86_64 = "res://bin/linux.x86_64/libscriptshot_native.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/linux.x86_64/libscriptshot_native.linux.template_release.x86_64.so"
+
+windows.debug.x86_64 = "res://bin/windows.x86_64/libscriptshot_native.windows.template_debug.x86_64.dll"
+windows.editor.x86_64 = "res://bin/windows.x86_64/libscriptshot_native.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/windows.x86_64/libscriptshot_native.windows.template_release.x86_64.dll"
+
+macos.debug.universal = "res://bin/macos.universal/libscriptshot_native.macos.template_debug.universal.dylib"
+macos.editor.universal = "res://bin/macos.universal/libscriptshot_native.macos.template_debug.universal.dylib"
+macos.release.universal = "res://bin/macos.universal/libscriptshot_native.macos.template_release.universal.dylib"
+
+web.debug.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_debug.wasm32.nothreads.wasm"
+web.editor.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_debug.wasm32.nothreads.wasm"
+web.release.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_release.wasm32.nothreads.wasm"
+web.debug.threads.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_debug.wasm32.wasm"
+web.editor.threads.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_debug.wasm32.wasm"
+web.release.threads.wasm32 = "res://bin/web.wasm32/libscriptshot_native.web.template_release.wasm32.wasm"
+
+android.debug.arm64 = "res://bin/android.arm64/libscriptshot_native.android.template_debug.arm64.so"
+android.editor.arm64 = "res://bin/android.arm64/libscriptshot_native.android.template_debug.arm64.so"
+android.release.arm64 = "res://bin/android.arm64/libscriptshot_native.android.template_release.arm64.so"

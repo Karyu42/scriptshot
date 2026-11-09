@@ -22,6 +22,10 @@ const CLI_PREFIX := "--bullet-backend="
 ## loaded. Tests reset the latch to observe it.
 static var missing_warned := false
 static var missing_warnings := 0
+## Tests set this to simulate a library that failed to load, including a web
+## build whose wasm side module did not register the class. The game leaves it
+## false. While it is true, is_available() is false even if ClassDB has the class.
+static var force_unavailable := false
 ## Bit 62 of a native bullet id, so it is not a BulletPool slot or pool id.
 ## Pool generations would have to reuse one handle 2^30 times before a pool id
 ## could set this bit.
@@ -30,8 +34,13 @@ const ID_FLAG := 1 << 62
 var sim: Object
 
 
-## True if the GDExtension is loaded in this process.
+## True if NativeBulletSim is registered. False when the library is missing,
+## failed to load, or loaded without registering the class (a wasm side module
+## that did not come up looks the same). force_unavailable covers that path in
+## a process where the class is already registered.
 static func is_available() -> bool:
+	if force_unavailable:
+		return false
 	return ClassDB.class_exists(CLASS_NAME)
 
 

@@ -1,8 +1,12 @@
 # Scriptshot CI.
 #   test   : headless import + GUT suite (./tools/run_tests.sh) and the export-preset policy check
 #            (tools/ci/check_export_preset.py, all five presets) on every PR and push to main.
-#   perf   : headless bullet benchmark (./tools/run_benchmark.sh) on every PR. p95 <= 16.6 ms is a HARD gate at
-#            5,000 bullets (floor) and a warning-only target at 10,000 (tools/ci/check_perf.py).
+#   perf   : headless bullet benchmark (tools/ci/perf_ab.sh -> ./tools/run_benchmark.sh, plain + hooked) on every PR
+#            and push to main, gated by tools/ci/check_perf.py. On a PR, main is benchmarked in the same job on the
+#            same runner (ABBA rounds): head 5k p95 may not exceed base x 1.10, and head raw p95 must meet the bar
+#            (plain 16.6 ms, hooked 22.0 ms at 5,000 bullets; HARD). Only if main's own p95 on this runner also misses
+#            a bar (slow runner) does that bar become bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (>= 1.0).
+#            10,000 bullets is warning-only. Push/dispatch (no base): the raw bars only.
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
 #   native-libs : DISABLED stub for per-platform native Lua libraries (bin/<platform>/); enable only if the binding is a GDExtension.
 # Checkout does not enable Git LFS or submodules: this repo has neither. If native-libs starts
@@ -143,9 +147,13 @@ jobs:
   perf:
     name: Bullet benchmark (headless, p95 gate)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # 2 rounds x (base + head) x (plain + hooked) on PRs: about 4x the old benchmark time.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Depth 2 so the PR test-merge commit's first parent (the base main) is available for the baseline.
+          fetch-depth: 2
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: cache-godot
         with:
@@ -168,66 +176,80 @@ jobs:
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
       - name: Unit-test the perf gate (tools/ci/check_perf.py)
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
-      - name: Run benchmark (5k floor + 10k target)
+      - name: Check out the PR base for a same-runner baseline (pull_request only)
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # The PR checkout is the test-merge commit (PR merged into main), so its first parent is the main
+          # it was merged onto: exactly "main without this PR". If HEAD is not a merge (unexpected), fall back
+          # to the event's pull_request.base.sha.
+          if git rev-parse --verify -q HEAD^2 >/dev/null; then
+            base="$(git rev-parse HEAD^1)"
+            echo "baseline = first parent of the test-merge commit: $base"
+          else
+            base="$BASE_SHA"
+            git fetch --no-tags --depth=1 origin "$base"
+            echo "baseline = pull_request.base.sha: $base"
+          fi
+          git worktree add --detach "$RUNNER_TEMP/perf-base" "$base"
+          echo "PERF_BASE_DIR=$RUNNER_TEMP/perf-base" >> "$GITHUB_ENV"
+      - name: Run benchmarks (plain + hooked; on PRs alternating base and head on this runner)
         run: |
           mkdir -p reports
-          # run_benchmark.sh imports (and fails on script/resource errors), then runs the scene with the
-          # same policy as check_perf.py: --floor-bullets is a hard fail (exit 1 on a p95 miss, or if the
-          # count was not benchmarked/reached) and --target-bullets only prints a WARN (exit 0).
-          # check_perf.py stays the CI gate (it also writes the step summary and the baseline check).
-          # The JSON is written either way; a benchmark failure is tolerated only if it left JSON
-          # behind and was not caused by an import/script error (those print "run_benchmark.sh: ...").
-          # Follow-up (not this job): median-of-3, or one retry when only the floor fails.
-          # docs/qa/stress-test-plan.md already plans that; headroom is still large, so it is not a gate.
-          set +e
-          ./tools/run_benchmark.sh --bullets=2000,5000,10000 --floor-bullets=5000 --target-bullets=10000 \
-            --target-ms=16.6 \
-            --json="$PWD/reports/bench.json" 2>&1 | tee reports/bench.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if grep -q '^run_benchmark.sh:' reports/bench.log; then
-            echo "::error::benchmark run failed on import/script errors"; exit 1
+          # tools/ci/perf_ab.sh runs the plain tier (--bullets=2000,5000,10000) and the hooked tier (--hooked=1.0,
+          # every bullet carries a no-op on_update hook; --bullets=5000,10000) through ./tools/run_benchmark.sh.
+          # pull_request: base (main) and head run in this job on the same runner, 2 rounds in ABBA order
+          # (base, head, head, base) so drift during the job cancels out; rounds are merged per count with
+          # tools/ci/merge_bench.py (median of the p95s = the mean for 2 rounds). Output: reports/bench.json,
+          # reports/bench-hooked.json (head), reports/base-bench.json, reports/base-bench-hooked.json (base),
+          # plus reports/raw/ and reports/logs/ per run. A head import/script error or a missing JSON fails
+          # here; a failing base run only warns and check_perf.py falls back to the absolute budgets.
+          # push to main / workflow_dispatch: no base, the head runs once, as before.
+          # The benchmark's own exit code (its built-in 16.6 ms floor check) is ignored: check_perf.py is the gate.
+          set -o pipefail
+          args=(--out=reports --rounds=1)
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            args=(--out=reports --rounds=2 --base="$PERF_BASE_DIR")
           fi
-          [ -s reports/bench.json ] || { echo "::error::benchmark produced no JSON (exit $rc)"; exit 1; }
-      - name: Run hooked benchmark (every bullet runs a no-op on_update hook; 5k floor + 10k target)
-        run: |
-          mkdir -p reports
-          # Same policy and error handling as the plain run above, with --hooked=1.0: all bullets carry a
-          # script hook, so this measures the per-bullet hook cost (BulletPool.run_update_hooks + its
-          # sanitize check). The plain tiers are untouched; check_perf.py judges both files below.
-          set +e
-          ./tools/run_benchmark.sh --bullets=5000,10000 --hooked=1.0 --floor-bullets=5000 --target-bullets=10000 \
-            --target-ms=16.6 \
-            --json="$PWD/reports/bench-hooked.json" 2>&1 | tee reports/bench-hooked.log
-          rc=${PIPESTATUS[0]}
-          set -e
-          if grep -q '^run_benchmark.sh:' reports/bench-hooked.log; then
-            echo "::error::hooked benchmark run failed on import/script errors"; exit 1
-          fi
-          [ -s reports/bench-hooked.json ] || { echo "::error::hooked benchmark produced no JSON (exit $rc)"; exit 1; }
-      - name: Enforce budget (plain 5k hard fail, 10k warn-only; hooked 5k hard fail at 22 ms, 10k warn-only)
+          ./tools/ci/perf_ab.sh "${args[@]}" 2>&1 | tee reports/bench.log
+      - name: Enforce budget (PRs vs same-run main; plain 16.6 / hooked 22.0 ms at 5k hard, 10k warn-only)
         env:
           # Repo variable: path to a committed bench.json from main. Empty = budget only.
           # Passed as data so the value is not interpolated into the shell script.
           PERF_BASELINE: ${{ vars.PERF_BASELINE }}
         run: |
-          # Annotations (::error::/::warning::) go to the log; the full table and verdict lines are
-          # appended to the job's step summary. PERF_BASELINE set = 5k regression fails, 10k regression warns.
+          # Annotations (::error::/::warning::) go to the log; the comparison table, the tier tables and the
+          # verdict lines are appended to the job's step summary. PERF_BASELINE set = 5k regression vs that
+          # stored file fails, 10k warns.
           #
-          # HOOKED BUDGET (--hooked-target-ms 22.0) is the hard gate for hooked 5k. It stays 22.0.
-          # GitHub-hosted runners vary, so a 16.6 ms gate would fail some of them on machine speed.
-          # Observed hooked 5k p95 values are in scripting/README.md (run ids there). They include
-          # samples under 22 ms and 22.65 ms on run 42272553748, which fails this gate. Those numbers
-          # describe the runs that produced them. 16.6 ms stays the real-device target (the plain tiers keep it).
-          # The hooked/plain p95 ratio of this same run is logged (stdout, step summary, reports/hooked-ratio.json),
-          # never gated.
+          # SAME-RUN BASE (pull_request; motivation: #35 failed the 22 ms gate on slow hosts with no sim change):
+          #   * relative check, always: head 5k p95 > base 5k p95 x 1.10 FAILS (plain and hooked; no ms slack).
+          #   * mode=raw (default): head raw p95 <= the bar below.
+          #   * mode=slow-runner, per tier and count, ONLY when main's own raw p95 in this job also misses that bar:
+          #     head bar = bar x min(F, 1.5), F = base plain 5k p95 / 7.5 ms (check_perf.REFERENCE_PLAIN_FLOOR_P95_MS,
+          #     main on a fast ubuntu-24.04 runner), clamped to >= 1.0. At most 24.9 ms plain, 33.0 ms hooked.
+          #   * no usable base (push to main, workflow_dispatch, a failed or NaN base run): mode=raw only.
+          #   The mode of every tier is printed in the log ("perf mode: ...") and the step summary.
+          #   10k uses the same logic, warning-only.
+          #
+          # ABSOLUTE BUDGETS: plain 5k p95 <= 16.6 ms (the real-device target) and hooked 5k p95 <= 22.0 ms
+          # (--hooked-target-ms), both hard; 10k warn-only. 22.0 is wider than 16.6 for the per-bullet hook
+          # cost; observed values, with run ids, are in scripting/README.md. The head's hooked/plain p95 ratio
+          # is logged (stdout, step summary, reports/hooked-ratio.json), never gated.
           args=(
             python3 tools/ci/check_perf.py reports/bench.json
             --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000 --regression-pct 25
             --hooked-report reports/bench-hooked.json --hooked-target-ms 22.0
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5
             --ratio-json reports/hooked-ratio.json
             --summary "$GITHUB_STEP_SUMMARY"
           )
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            # Passed even if the base run failed: check_perf.py then warns and uses the absolute budgets.
+            args+=(--base-report reports/base-bench.json --base-hooked-report reports/base-bench-hooked.json)
+          fi
           if [ -n "${PERF_BASELINE:-}" ]; then
             args+=(--baseline "$PERF_BASELINE")
           fi
