@@ -19,9 +19,9 @@ func before_each() -> void:
 
 
 func after_each() -> void:
-	# Drop the behaviour before the manager node is freed. The Lua state itself
-	# stays alive (ScriptHost pins it): freeing the behaviour from inside the
-	# node destructor is what makes the process abort on the way out.
+	# Drop the behaviour before the manager node is freed. The Lua state stays
+	# pinned until ScriptHost.shutdown(); freeing it from this node's destructor
+	# is what aborts on the way out.
 	manager._behaviors.clear()
 	_open.clear()
 

@@ -181,15 +181,16 @@ cap is soft on this binary: the hook samples it every 1,000 instructions. A
 hard cap needs the source-built binding, which is behind the godot-cpp fork
 and is not part of M1.
 
-`ScriptHost` keeps every Lua state alive until the process exits. Freeing one
-state after another state that called into Godot has already been freed
-crashes stock lua-gdextension, and freeing a host after a callback was stopped
-by the instruction hook crashes the same binary (lua-gdextension #240). A
-session that loads a handful of weapons stays inside that budget. `can_hit`
-returns its boolean directly; the host is not freed during the session, which
-is what keeps a `false` return from hitting the same free crash. Process exit
-can still abort after a green suite. That is the shutdown `run_tests.sh`
-accepts below.
+`ScriptHost` pins every Lua state until `shutdown()`. `shutdown()` does not
+resume a coroutine and it does not free any Lua wrapper. Freeing one aborts
+stock lua-gdextension, including a state whose coroutines have finished.
+`shutdown()` disarms Lua finalizers, drops the Callables stored on the host
+table, arms a stop-only count hook, restarts GC, and leaves every state in a
+process-lifetime pin. `keeps_lua_state()` is true after that.
+
+`can_hit` returns its boolean directly. Process exit is not wired to
+`shutdown()`. `run_tests.sh` still tolerates an abort after a green suite
+when the log has no in-suite crash.
 
 ## Tests
 

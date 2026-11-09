@@ -10,6 +10,7 @@
 # Cold-import SIGSEGV workaround (https://github.com/Karyu42/scriptshot/issues/7):
 # pre-seed .godot/extension_list.cfg before the first editor import. Do not file
 # this against lua-gdextension or godotengine/godot.
+# Runs under macOS /bin/bash 3.2 and Git Bash too (see tools/run_tests.sh).
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 
@@ -40,12 +41,14 @@ fi
 # The browser download URL (github.com/.../releases/download) has been answering
 # CI runners with HTTP 504. The release API asset endpoint still serves the zip.
 download_release_zip() {
-	local dest="$1" attempt asset auth=()
+	local dest="$1" attempt asset
+	local -a auth
+	auth=()
 	if [ -n "${GITHUB_TOKEN:-}" ]; then
 		auth=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
 	fi
 	for attempt in 1 2 3 4 5; do
-		asset=$(curl -fsSL --retry 2 --retry-delay 2 --max-time 60 "${auth[@]}" \
+		asset=$(curl -fsSL --retry 2 --retry-delay 2 --max-time 60 ${auth[@]+"${auth[@]}"} \
 			"https://api.github.com/repos/gilzoide/lua-gdextension/releases/tags/${VERSION}" \
 			| python3 -c 'import json,sys
 d=json.load(sys.stdin)
@@ -54,7 +57,7 @@ for a in d.get("assets", []):
         print(a["url"])
         break') || asset=""
 		if [ -n "$asset" ] && curl -fL --retry 3 --retry-delay 2 --retry-all-errors --max-time 180 \
-			-H "Accept: application/octet-stream" "${auth[@]}" -o "$dest" "$asset"; then
+			-H "Accept: application/octet-stream" ${auth[@]+"${auth[@]}"} -o "$dest" "$asset"; then
 			return 0
 		fi
 		echo "fetch_native_libs.sh: download attempt ${attempt} failed" >&2
@@ -67,7 +70,12 @@ echo "fetch_native_libs.sh: downloading lua-gdextension ${VERSION} (${platform})
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
 download_release_zip "$tmp/lua.zip"
-echo "$SHA256  $tmp/lua.zip" | sha256sum -c -
+# sha256sum (Linux, Git Bash) or shasum -a 256 (macOS has no sha256sum before 14 / without coreutils).
+if command -v sha256sum >/dev/null 2>&1; then
+	echo "$SHA256  $tmp/lua.zip" | sha256sum -c -
+else
+	echo "$SHA256  $tmp/lua.zip" | shasum -a 256 -c -
+fi
 unzip -q "$tmp/lua.zip" -d "$tmp/x"
 if [ ! -f "$tmp/x/addons/lua-gdextension/luagdextension.gdextension" ]; then
 	echo "fetch_native_libs.sh: zip is missing addons/lua-gdextension/luagdextension.gdextension" >&2
