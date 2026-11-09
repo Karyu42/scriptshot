@@ -211,6 +211,38 @@ func test_gc_finalizer_is_refused_and_does_not_hang() -> void:
 	assert_true("__gc" in err, err)
 
 
+func test_gc_added_after_setmetatable_never_runs() -> void:
+	# Lua 5.4 marks an object for finalization only when setmetatable sees __gc.
+	# A field added later is inert, and reusing that metatable is refused.
+	var behavior := _behavior("""
+		local ran = false
+		local kept = {}
+		return {
+			on_batch = function(v, dt)
+				local mt = {}
+				local t = setmetatable({}, mt)
+				mt.__gc = function() ran = true end
+				local mt2 = {}
+				setmetatable({}, mt2)
+				rawset(mt2, "__gc", function() ran = true end)
+				kept[#kept + 1] = t
+				if #kept > 4 then kept = {} end
+				collectgarbage("collect")
+				collectgarbage("collect")
+				if ran then error("finalizer ran") end
+				local ok, err = pcall(setmetatable, {}, mt)
+				if ok or not string.find(tostring(err), "__gc", 1, true) then
+					error("reuse was not refused: " .. tostring(err))
+				end
+			end,
+		}
+	""".dedent())
+	_arm(behavior, Vector2(30.0, 0.0))
+	for i in 12:
+		manager.step(DT)
+		assert_true(behavior.last_result.ok, behavior.last_result.error)
+
+
 func test_column_userdata_methods_are_unreachable() -> void:
 	var err := _expect_error("""
 		return {
