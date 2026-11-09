@@ -35,45 +35,57 @@ return function()
 	return 0
 end
 """
-## Loaded when the state is opened, before any chunk runs.
-## Locals below are the originals from that moment.
-## Not walked: userdata user values, and anything reachable only through a
-## weak table. A state that may hold a finalizer there is pinned, not closed.
-## The walk is an explicit queue, never recursive. A node budget and a wall
-## budget stop it early; shutdown pins the state either way.
+## The walk below uses only values stored at state creation. It does not call
+## the live global table.
+## Not walked: userdata user values, anything reachable only through a weak
+## table, and coroutine stacks. coroutine.status cannot be retained from
+## state creation either, and reading a stopped thread's stack is unsafe.
+## If the walk does not finish, objects it never visited keep their Lua
+## finalizers. Process exit still runs those inside lua_close. A count hook
+## cannot stop that: the collector sets allowhook to 0 before calling one.
+## Stock 0.8.2 has no call that clears the rest without visiting them.
+## The player sandbox rejects __gc, so a play-time script cannot install one.
+## The leftover case is trusted code that plants a Lua finalizer this walk
+## does not reach.
+## The walk is an explicit queue, never recursive. A node budget stops it.
+## os.clock cannot be retained from state creation: doing so aborts a later
+## coroutine create. The wall limit is the stop-only hook built at shutdown.
+## shutdown() pins the state either way.
 const _STRIP_NODE_BUDGET := 4096
 const _STRIP_FINALIZERS := """
-local cap = debug.getregistry()["__scriptshot_cap"]
-if type(cap) ~= "table" then
-	return function() return false end
-end
-local _G = _G
-local next = cap.next
-local rawget = cap.rawget
-local rawset = cap.rawset
-local getmetatable = cap.getmetatable
-local debug = cap.debug
-local getinfo = type(debug) == "table" and debug.getinfo or nil
-local dbg_getmetatable = type(debug) == "table" and debug.getmetatable or getmetatable
-local getupvalue = type(debug) == "table" and debug.getupvalue or nil
-local getlocal = type(debug) == "table" and debug.getlocal or nil
-local getregistry = type(debug) == "table" and debug.getregistry or nil
-local NODE_BUDGET = %d
-return function(env, weapon, limit_s)
-	if type(limit_s) ~= "number" or limit_s <= 0 then
-		limit_s = 0.01
+return function(cap, env, weapon, limit_s)
+	if cap == nil then
+		return false
+	end
+	local type = cap.type
+	local pcall = cap.pcall
+	local error = cap.error
+	local next = cap.next
+	local rawget = cap.rawget
+	local rawset = cap.rawset
+	local getmetatable = cap.getmetatable
+	local getinfo = cap.getinfo
+	local dbg_getmetatable = cap.dbg_getmetatable
+	local getupvalue = cap.getupvalue
+	local getlocal = cap.getlocal
+	local getregistry = cap.getregistry
+	local _G = cap._G
+	local NODE_BUDGET = %d
+	if type(cap) ~= "table" or type(limit_s) ~= "number" or limit_s <= 0 then
+		return false
 	end
 	if type(getinfo) ~= "function" or type(dbg_getmetatable) ~= "function"
 		or type(getupvalue) ~= "function" or type(getlocal) ~= "function"
 		or type(getregistry) ~= "function" or type(next) ~= "function"
 		or type(rawget) ~= "function" or type(rawset) ~= "function"
-		or type(getmetatable) ~= "function" then
+		or type(getmetatable) ~= "function" or type(type) ~= "function"
+		or type(pcall) ~= "function" or type(error) ~= "function"
+		or type(_G) ~= "table" then
 		return false
 	end
-	local t0 = os.clock()
 	local nodes = 0
 	local function stop()
-		return nodes >= NODE_BUDGET or os.clock() - t0 >= limit_s
+		return nodes >= NODE_BUDGET
 	end
 	local function is_lua_fin(fin)
 		if type(fin) ~= "function" then
@@ -153,59 +165,10 @@ return function(env, weapon, limit_s)
 		incomplete = true
 		return false
 	end
-	local function walk_thread(th)
-		local ok, st = pcall(coroutine.status, th)
-		if not ok then
-			incomplete = true
-			return false
-		end
-		if st == "suspended" then
-			incomplete = true
-			return false
-		end
-		if st ~= "running" and st ~= "normal" and st ~= "dead" then
-			incomplete = true
-			return false
-		end
-		local level = 0
-		while level < 128 do
-			if stop() then
-				return true
-			end
-			local iok, info = pcall(getinfo, th, level, "f")
-			if not iok then
-				incomplete = true
-				return false
-			end
-			if type(info) ~= "table" then
-				return false
-			end
-			if note(info.func) then
-				return true
-			end
-			local slot = 1
-			while slot <= 256 do
-				local lok, lname, lval = pcall(getlocal, th, level, slot)
-				if not lok then
-					incomplete = true
-					break
-				end
-				if lname == nil then
-					break
-				end
-				if note(lval) then
-					return true
-				end
-				slot = slot + 1
-			end
-			if slot > 256 then
-				incomplete = true
-			end
-			level = level + 1
-		end
-		if level >= 128 then
-			incomplete = true
-		end
+	local function walk_thread(_th)
+		-- Stacks stay unread. Inspecting a stopped thread is unsafe, and
+		-- retaining coroutine.status from state creation aborts a later
+		-- coroutine create on this binding.
 		return false
 	end
 	if note(_G) or note(env) or note(weapon) then
@@ -358,6 +321,8 @@ var _threads: Array[LuaThread] = []
 var _parked: Array[LuaThread] = []
 ## Set when shutdown pinned this host's Lua state. shutdown() always does.
 var _keeps_lua_state := false
+## True only when every state reported a finished walk. A bool false does not.
+var _strip_ok := false
 ## States retired after three watchdog stops, oldest first. Each one still has
 ## its sandbox, so player code there still cannot install __gc.
 var _retired: Array[RetiredState] = []
@@ -486,7 +451,15 @@ func _capture_debug() -> void:
 			rawget = rawget,
 			rawset = rawset,
 			getmetatable = getmetatable,
-			debug = debug,
+			type = type,
+			pcall = pcall,
+			error = error,
+			getinfo = debug.getinfo,
+			dbg_getmetatable = debug.getmetatable,
+			getupvalue = debug.getupvalue,
+			getlocal = debug.getlocal,
+			getregistry = debug.getregistry,
+			_G = _G,
 		}
 		return 1
 	""".dedent(), "@capture-debug.lua")
@@ -584,6 +557,7 @@ func shutdown() -> void:
 	_closed = true
 	_stop_only = true
 	_ready = false
+	_strip_ok = true
 	_expire_views()
 	for i in _retired.size():
 		_release_retired(_retired[i])
@@ -716,12 +690,18 @@ func _disarm(
 		var hook := _as_function(hook_v)
 		hold.append(hook)
 		var finished := false
+		var cap: Variant = null
+		var reg := state.get_registry()
+		if reg != null:
+			hold.append(reg)
+			cap = reg.get("__scriptshot_cap")
 		var strip_v: Variant = state.do_string(
 			_STRIP_FINALIZERS % _STRIP_NODE_BUDGET, "@shutdown-strip.lua"
 		)
-		if strip_v is LuaFunction:
+		if strip_v is LuaFunction and cap is LuaTable:
 			var strip := _as_function(strip_v)
 			hold.append(strip)
+			hold.append(cap)
 			var co: LuaCoroutine = LuaCoroutine.create(strip)
 			if co != null:
 				hold.append(co)
@@ -729,10 +709,12 @@ func _disarm(
 				# The hook is the backstop and is what stops a to-be-closed loop later.
 				co.set_hook(hook, LuaThread.HOOK_MASK_COUNT, HOOK_STRIDE)
 				var limit := float(SHUTDOWN_WALL_MSEC) / 1000.0
-				var resumed: Variant = co.resumev([env_table, weapon, limit])
-				# Type first. An object compared with == raises a script error.
-				if co.status != LuaThread.STATUS_YIELD and typeof(resumed) == TYPE_BOOL:
+				var resumed: Variant = co.resumev([cap, env_table, weapon, limit])
+				# Strict true only. A bool false stopped early and is not success.
+				if co.status != LuaThread.STATUS_YIELD and _is_true(resumed):
 					finished = true
+		if not finished:
+			_strip_ok = false
 		if finished:
 			var wipe_v: Variant = state.do_string(_WIPE_TABLE, "@shutdown-wipe.lua")
 			if wipe_v is LuaFunction:

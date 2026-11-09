@@ -202,24 +202,83 @@ func test_public_columns_cannot_redirect_a_commit() -> void:
 	assert_eq(manager.pool.owner_layer[child], Layers.PLAYER, "spawn uses the captured owner, not the column")
 
 
+## One frame. The over-cap flood must finish under this on a runner at least as
+## fast as a normal Linux host. Slower runners scale it; they do not get a
+## higher bar than OVER_CAP_FACTOR_CAP allows.
+const OVER_CAP_BUDGET_MS := 16.6
+## Best of 5000 `BatchView.command_count` calls on a fast Linux host was about
+## 0.45 ms. GitHub-hosted ubuntu varies by about 2x (see the perf gate), so the
+## reference sits several times above that fast-host sample. A baseline at or
+## under it clamps the runner factor to 1 and the bar stays exactly the budget.
+const OVER_CAP_REFERENCE_BASELINE_MS := 2.5
+## 1.5x is 24.9 ms, below the 19.9-30.8 ms windows-latest samples of this loop.
+## 2x is 33.2 ms, which covers those samples and still rejects an O(n) flood.
+const OVER_CAP_FACTOR_CAP := 2.0
+## Healthy flood / baseline is about 5. The ratio is budget / this fast-host
+## floor, so a baseline near 0.45 ms keeps ratio * baseline above the budget
+## and the ratio cannot undercut 16.6 ms on a normal runner.
+const OVER_CAP_FAST_BASELINE_MS := 0.35
+const OVER_CAP_BASELINE_RATIO := OVER_CAP_BUDGET_MS / OVER_CAP_FAST_BASELINE_MS
+
+
 class SpawnFlood:
 	extends BulletBehavior
 
+	const SAMPLES := 5
+
 	var msec := 0.0
+	var baseline_ms := 0.0
 	var dropped_spawns := 0
 	var dropped_commands := 0
 
 	func on_update_batch(batch: BatchView) -> void:
 		var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(2.0, 0.0))
 		req.lifetime = 2.0
-		var t0 := Time.get_ticks_usec()
-		for i in 5000:
-			batch.spawn_child(0, req)
-		for i in 5000:
-			batch.kill(0)
-		msec = float(Time.get_ticks_usec() - t0) / 1000.0
+		# Discard one cold sample. The baseline is the best of the rest so a
+		# slow calibration tick cannot loosen the bar. The flood is the median.
+		_time_baseline(batch)
+		baseline_ms = _best_baseline(batch)
+		_time_flood(BatchView.new(), req)
+		var floods: Array[float] = []
+		for _sample in SAMPLES - 1:
+			floods.append(_time_flood(BatchView.new(), req))
+		floods.append(_time_flood(batch, req))
+		msec = _median(floods)
 		dropped_spawns = batch.dropped_spawns
 		dropped_commands = batch.dropped_commands
+
+
+	func _time_baseline(batch: BatchView) -> float:
+		# Cheapest comparable BatchView call: no command is recorded, and the
+		# over-cap branches are not on this path, so a regression there cannot
+		# inflate the baseline and hide itself.
+		var t0 := Time.get_ticks_usec()
+		for _i in 5000:
+			batch.command_count()
+		return float(Time.get_ticks_usec() - t0) / 1000.0
+
+
+	func _best_baseline(batch: BatchView) -> float:
+		var best := _time_baseline(batch)
+		for _sample in SAMPLES - 1:
+			best = minf(best, _time_baseline(batch))
+		return best
+
+
+	func _time_flood(view: BatchView, req: ShotRequest) -> float:
+		var t0 := Time.get_ticks_usec()
+		for _i in 5000:
+			view.spawn_child(0, req)
+		for _i in 5000:
+			view.kill(0)
+		return float(Time.get_ticks_usec() - t0) / 1000.0
+
+
+	func _median(samples: Array[float]) -> float:
+		var ordered: Array[float] = []
+		ordered.append_array(samples)
+		ordered.sort()
+		return ordered[ordered.size() >> 1]
 
 
 func test_over_cap_calls_keep_the_first_and_stay_fast() -> void:
@@ -241,7 +300,17 @@ func test_over_cap_calls_keep_the_first_and_stay_fast() -> void:
 	# The 256 kept spawns take command slots, so the kill loop fills the rest.
 	var kill_room := BatchView.CMD_CAP - BatchView.SPAWN_CAP
 	assert_eq(flood.dropped_commands, 5000 - kill_room)
-	assert_lt(flood.msec, 16.6, "5000 calls took %.2f ms" % flood.msec)
+	# factor = clamp(baseline / reference, 1, cap). scaled = 16.6 * factor.
+	# ratio = baseline * (16.6 / fast-host floor). The bar is the tighter
+	# ceiling, and it is exactly 16.6 ms whenever the factor clamps to 1.
+	var factor := clampf(flood.baseline_ms / OVER_CAP_REFERENCE_BASELINE_MS, 1.0, OVER_CAP_FACTOR_CAP)
+	var scaled := OVER_CAP_BUDGET_MS * factor
+	var relative := flood.baseline_ms * OVER_CAP_BASELINE_RATIO
+	var bar := minf(scaled, maxf(OVER_CAP_BUDGET_MS, relative))
+	var detail := "flood median %.2f ms, baseline best %.2f ms, factor %.2f, scaled %.2f ms, ratio %.2f ms, bar %.2f ms" % [
+		flood.msec, flood.baseline_ms, factor, scaled, relative, bar]
+	print("over-cap timing: " + detail)
+	assert_lt(flood.msec, bar, detail)
 	assert_false(manager.pool.is_alive(parent_id), "the first kill is inside the command cap")
 	assert_eq(manager.alive_count(), BatchView.SPAWN_CAP)
 
