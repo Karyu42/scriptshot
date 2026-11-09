@@ -571,27 +571,54 @@ func _invuln(preference: String, keep: bool) -> int:
 	return flags[0]
 
 
-## UNSUPPORTED: reflect_bullet on a native id. Not scripting parity. The
-## deferred-op follow-up is the later slice that would queue the call; this
-## PR does not enable that path.
-func _assert_reflect_unsupported(created: BulletManager, id: int, before: Dictionary) -> void:
-	assert_false(created.emitter.reflect_bullet(id, Layers.ENEMY, true))
-	assert_true(created.is_native_bullet_alive(id))
-	var after := _native_of(created, id)
-	var bp: Vector2 = before["pos"]
-	var ap: Vector2 = after["pos"]
-	var bv: Vector2 = before["vel"]
-	var av: Vector2 = after["vel"]
-	var bo: int = before["owner"]
-	var ao: int = after["owner"]
-	var br: int = before["reflects"]
-	var ar: int = after["reflects"]
-	assert_eq(ap, bp, "position unchanged")
-	assert_eq(av, bv, "velocity unchanged")
-	assert_eq(ao, bo, "owner unchanged")
-	assert_eq(ar, br, "reflection count unchanged")
-	assert_eq(ao, Layers.PLAYER)
-	assert_eq(ar, 0)
+## GDScript reflect_bullet timing, measured on the pool (see docs/native.md):
+## advance() has already moved the bullet, the call mutates immediately, and
+## this tick's sweeps then see the new owner, mask and damage. The next tick
+## is what travels on the new velocity.
+func test_gd_on_update_reflect_applies_after_advance_and_before_collision() -> void:
+	var created := _manager("gdscript")
+	var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+	var hook := _ScriptReflect.new()
+	hook.record = true
+	_arm(created, id, hook)
+	created.step(DT)
+	assert_eq(hook.returns.size(), 1)
+	assert_true(hook.returns[0])
+	assert_lt(hook.pos.distance_to(Vector2(20, 20)), 0.02, "advance already ran")
+	assert_lt(hook.vel.distance_to(Vector2(-600, 0)), 0.02, "the flip is visible inside the call")
+	assert_eq(hook.owner_seen, Layers.ENEMY)
+	assert_eq(hook.reflects, 1)
+	var end := _row_near(_rows(created), 20.0)
+	_assert_reflect_row(end, Vector2(20, 20), Vector2(-600, 0), Layers.ENEMY, 1, Layers.PLAYER)
+	hook.returns.clear()
+	created.step(DT)
+	assert_eq(hook.returns.size(), 1)
+	assert_false(hook.returns[0], "the cap was spent by the first tick")
+	var nxt := _row_near(_rows(created), 20.0)
+	_assert_reflect_row(nxt, Vector2(10, 20), Vector2(-600, 0), Layers.ENEMY, 1, Layers.PLAYER)
+	_close(created)
+
+
+## Same tick's position is the pre-reflect travel. Velocity and owner are the
+## reflected ones once step() returns, and the id is still the native id.
+func _b(d: Dictionary, key: String) -> bool:
+	var v: bool = d[key]
+	return v
+
+
+func _i(d: Dictionary, key: String) -> int:
+	var v: int = d[key]
+	return v
+
+
+func _a(d: Dictionary, key: String) -> Array:
+	var v: Array = d[key]
+	return v
+
+
+func _rd(d: Dictionary, key: String) -> Array[Dictionary]:
+	var rows: Array[Dictionary] = d[key]
+	return rows
 
 
 func _native_of(created: BulletManager, id: int) -> Dictionary:
@@ -607,84 +634,531 @@ func _native_of(created: BulletManager, id: int) -> Dictionary:
 	return {"pos": Vector2.INF, "vel": Vector2.INF, "owner": -1, "reflects": -1}
 
 
-## Outside a hook. The call returns false and the bullet is unchanged.
-func test_reflect_bullet_on_a_native_id_returns_false() -> void:
+func test_reflect_same_tick_position_velocity_and_owner_match() -> void:
+	if not _ready_native():
+		return
+	var gd := _hooked_reflect("gdscript", 1, true, Layers.ENEMY)
+	var nat := _hooked_reflect("native", 1, true, Layers.ENEMY)
+	var nat_ok := _a(nat, "ok")
+	var first: bool = nat_ok[0]
+	assert_true(first)
+	assert_eq(_a(nat, "ok"), _a(gd, "ok"))
+	_assert_rows(_rd(nat, "rows"), _rd(gd, "rows"), "same tick")
+	assert_true(_b(nat, "native_alive"))
+	assert_true(_b(nat, "still_native"), "the id is not retired")
+	assert_eq(_i(nat, "enemy"), _i(gd, "enemy"))
+	assert_eq(_i(gd, "enemy"), 1)
+	var again_gd := _hooked_reflect("gdscript", 1, true, Layers.ENEMY, 2)
+	var again_nat := _hooked_reflect("native", 1, true, Layers.ENEMY, 2)
+	assert_eq(_a(again_nat, "second_ok"), _a(again_gd, "second_ok"))
+	var second := _a(again_gd, "second_ok")
+	var second_ok: bool = second[0]
+	assert_false(second_ok)
+	_assert_rows(_rd(again_nat, "second_rows"), _rd(again_gd, "second_rows"), "next tick")
+
+
+func test_repeated_reflects_match_within_a_tick_and_across_ticks() -> void:
+	if not _ready_native():
+		return
+	var gd := _hooked_reflect("gdscript", 2, true, Layers.ENEMY)
+	var nat := _hooked_reflect("native", 2, true, Layers.ENEMY)
+	assert_eq(_a(gd, "ok"), [true, false])
+	assert_eq(_a(nat, "ok"), _a(gd, "ok"))
+	_assert_rows(_rd(nat, "rows"), _rd(gd, "rows"), "two calls, cap 1")
+	var across_gd := _hooked_reflect("gdscript", 1, true, Layers.ENEMY, 2)
+	var across_nat := _hooked_reflect("native", 1, true, Layers.ENEMY, 2)
+	assert_eq(_a(across_gd, "ok"), [true])
+	assert_eq(_a(across_gd, "second_ok"), [false])
+	assert_eq(_a(across_nat, "ok"), _a(across_gd, "ok"))
+	assert_eq(_a(across_nat, "second_ok"), _a(across_gd, "second_ok"))
+	_assert_rows(_rd(across_nat, "second_rows"), _rd(across_gd, "second_rows"), "across ticks")
+	var owners: Array[int] = [Layers.ENEMY, Layers.PLAYER]
+	var open_gd := _hooked_reflect("gdscript", 2, true, Layers.ENEMY, 1, 0, owners)
+	var open_nat := _hooked_reflect("native", 2, true, Layers.ENEMY, 1, 0, owners)
+	assert_eq(_a(open_gd, "ok"), [true, true])
+	assert_eq(_a(open_nat, "ok"), _a(open_gd, "ok"))
+	_assert_rows(_rd(open_nat, "rows"), _rd(open_gd, "rows"), "unlimited, two reverses")
+	_assert_reflect_row(_row_near(_rd(open_gd, "rows"), 20.0), Vector2(20, 20), Vector2(600, 0), Layers.PLAYER, 2, Layers.ENEMY)
+
+
+## The call returns true (the bullet is alive), then a despawn lands before the
+## queued op. The op is dropped. The bullet is simply gone.
+func test_reflect_is_dropped_when_the_bullet_despawns_before_it_runs() -> void:
+	if not _ready_native():
+		return
+	var none: Array[int] = []
+	var gd := _hooked_reflect("gdscript", 1, true, Layers.ENEMY, 1, 1, none, true)
+	var nat := _hooked_reflect("native", 1, true, Layers.ENEMY, 1, 1, none, true)
+	assert_eq(_a(gd, "ok"), [true])
+	assert_eq(_a(nat, "ok"), _a(gd, "ok"))
+	assert_false(_b(gd, "alive"))
+	assert_false(_b(nat, "alive"))
+	assert_eq(_rd(nat, "rows").size(), _rd(gd, "rows").size())
+
+
+## Kill, compact, and spawn a new native bullet on the same handle before the
+## queued op runs. The replacement keeps its own owner and velocity.
+func test_deferred_reflect_does_not_affect_a_reused_slot() -> void:
 	if not _ready_native():
 		return
 	var created := _manager("native")
-	var id := created.spawn(_shot(Vector2(10, 20), Vector2(100, 0)))
-	assert_true(created.is_native_id(id))
-	_assert_reflect_unsupported(created, id, _native_of(created, id))
-	_close(created)
-
-
-## From on_update, which runs after the pool integrate and before the native
-## sim moves. Same refusal. The rest of the tick does not apply the reflect.
-func test_reflect_bullet_on_a_native_id_in_on_update_is_unsupported() -> void:
-	if not _ready_native():
-		return
-	var created := _manager("native")
-	var id := created.spawn(_shot(Vector2(10, 20), Vector2(100, 0)))
-	var before := _native_of(created, id)
-	var hook := _UnsupportedReflect.new()
+	var id := created.emitter.request_shot_id(_shot(Vector2(0, 0), Vector2(300, 0)))
+	var handle := id & 0xFFFFFFFF
+	var hook := _ReuseReflect.new()
 	hook.host = created
 	hook.target_id = id
-	var hooked := _shot(Vector2(0, 400), Vector2.ZERO)
-	hooked.behavior_id = created.register_behavior(hook)
-	hooked.hit_mask = 0
-	created.spawn(hooked)
+	hook.replacement_at = Vector2(80, 10)
+	hook.replacement_vel = Vector2(120, 40)
+	var req := _shot(Vector2(0, 400), Vector2.ZERO)
+	req.hit_mask = 0
+	req.behavior_id = created.register_behavior(hook)
+	created.spawn(req)
 	created.step(DT)
-	assert_true(hook.saw, "on_update ran")
-	assert_false(hook.returned)
-	var at_call_pos: Vector2 = hook.pos
-	var at_call_vel: Vector2 = hook.vel
-	var before_pos: Vector2 = before["pos"]
-	var before_vel: Vector2 = before["vel"]
-	var before_owner: int = before["owner"]
-	var before_reflects: int = before["reflects"]
-	assert_eq(at_call_pos, before_pos, "position at the call")
-	assert_eq(at_call_vel, before_vel, "velocity at the call")
-	assert_eq(hook.owner, before_owner, "owner at the call")
-	assert_eq(hook.reflects, before_reflects, "reflection count at the call")
-	var after := _native_of(created, id)
-	var after_vel: Vector2 = after["vel"]
-	var after_owner: int = after["owner"]
-	var after_reflects: int = after["reflects"]
-	assert_eq(after_vel, before_vel, "the tick did not reverse velocity")
-	assert_eq(after_owner, Layers.PLAYER)
-	assert_eq(after_reflects, 0)
-	assert_true(created.is_native_bullet_alive(id))
+	assert_eq(hook.returns.size(), 1)
+	assert_true(hook.returns[0], "the original bullet accepted the reflect")
+	assert_false(created.is_native_bullet_alive(id))
+	assert_ne(hook.replacement_id, id)
+	assert_eq(hook.replacement_id & 0xFFFFFFFF, handle, "the handle index was reused")
+	assert_true(created.is_native_bullet_alive(hook.replacement_id))
+	var row: Dictionary = _native_of(created, hook.replacement_id)
+	var pos: Vector2 = row["pos"]
+	var vel: Vector2 = row["vel"]
+	var owner: int = row["owner"]
+	var reflects: int = row["reflects"]
+	assert_eq(owner, Layers.PLAYER)
+	assert_eq(reflects, 0)
+	assert_lt(vel.distance_to(hook.replacement_vel), VEL_EPS)
+	assert_lt(pos.distance_to(hook.replacement_at + hook.replacement_vel * DT), POS_EPS)
 	_close(created)
 
 
-class _UnsupportedReflect:
+## Before the first step, between steps, and from on_despawn: the call applies
+## immediately. The next integrate uses the new velocity.
+func test_reflect_outside_on_update_matches() -> void:
+	if not _ready_native():
+		return
+	var before_gd := _reflect_then_step("gdscript")
+	var before_nat := _reflect_then_step("native")
+	assert_true(_b(before_gd, "ok"))
+	assert_eq(_b(before_nat, "ok"), _b(before_gd, "ok"))
+	assert_true(_b(before_nat, "still_native"))
+	_assert_rows(_rd(before_nat, "before"), _rd(before_gd, "before"), "before any step")
+	_assert_rows(_rd(before_nat, "after"), _rd(before_gd, "after"), "first step uses the new velocity")
+	var between_gd := _reflect_between("gdscript")
+	var between_nat := _reflect_between("native")
+	assert_true(_b(between_gd, "ok"))
+	assert_eq(_b(between_nat, "ok"), _b(between_gd, "ok"))
+	_assert_rows(_rd(between_nat, "at_call"), _rd(between_gd, "at_call"), "between steps, immediate")
+	_assert_rows(_rd(between_nat, "after"), _rd(between_gd, "after"), "the following step")
+	var despawn_gd := _reflect_on_despawn("gdscript")
+	var despawn_nat := _reflect_on_despawn("native")
+	assert_eq(_a(despawn_gd, "ok"), [true])
+	assert_eq(_a(despawn_nat, "ok"), _a(despawn_gd, "ok"))
+	_assert_rows(_rd(despawn_nat, "rows"), _rd(despawn_gd, "rows"), "on_despawn same tick")
+	_assert_rows(_rd(despawn_nat, "next"), _rd(despawn_gd, "next"), "on_despawn next tick")
+
+
+func test_reflect_return_value_matches() -> void:
+	if not _ready_native():
+		return
+	for preference: String in ["gdscript", "native"]:
+		var created := _manager(preference)
+		var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+		assert_false(created.emitter.reflect_bullet(id, 0, true), "%s bad owner" % preference)
+		assert_false(created.emitter.reflect_bullet(id, Layers.WORLD), "%s world owner" % preference)
+		var untouched := _row_near(_rows(created), 20.0)
+		_assert_reflect_row(untouched, Vector2(10, 20), Vector2(600, 0), Layers.PLAYER, 0, Layers.ENEMY)
+		assert_true(created.emitter.reflect_bullet(id, Layers.ENEMY, true))
+		assert_false(created.emitter.reflect_bullet(id, Layers.PLAYER, true), "%s second call" % preference)
+		if preference == "native":
+			assert_true(created.is_native_id(id))
+			assert_true(created.is_native_bullet_alive(id))
+		_close(created)
+	var life_gd := _death_return("gdscript", "lifetime")
+	var life_nat := _death_return("native", "lifetime")
+	assert_eq(_a(life_gd, "ok"), [false])
+	assert_eq(_a(life_nat, "ok"), _a(life_gd, "ok"))
+	assert_false(_b(life_gd, "alive"))
+	assert_false(_b(life_nat, "alive"))
+	var bounds_gd := _death_return("gdscript", "bounds")
+	var bounds_nat := _death_return("native", "bounds")
+	assert_eq(_a(bounds_gd, "ok"), [false])
+	assert_eq(_a(bounds_nat, "ok"), _a(bounds_gd, "ok"))
+	assert_false(_b(bounds_nat, "alive"))
+	var wall_gd := _death_return("gdscript", "wall")
+	var wall_nat := _death_return("native", "wall")
+	assert_eq(_a(wall_gd, "ok"), [true])
+	assert_eq(_a(wall_nat, "ok"), _a(wall_gd, "ok"))
+	assert_false(_b(wall_gd, "alive"))
+	assert_false(_b(wall_nat, "alive"))
+	var stale_gd := _stale_return("gdscript")
+	var stale_nat := _stale_return("native")
+	assert_false(stale_gd)
+	assert_false(stale_nat)
+
+
+## A reflect in on_update changes who this tick's zone and hurtbox see.
+## Damage is the reflected 1, not the shot's 5.
+func test_script_reflect_is_visible_to_same_tick_zones_and_hurtboxes() -> void:
+	if not _ready_native():
+		return
+	var gd_zone := _zone_case("gdscript")
+	var nat_zone := _zone_case("native")
+	assert_eq(_a(nat_zone, "returns"), _a(gd_zone, "returns"))
+	assert_eq(_a(gd_zone, "returns"), [true])
+	assert_eq(_i(nat_zone, "zone"), _i(gd_zone, "zone"))
+	assert_eq(_i(gd_zone, "zone"), 0, "the new owner is not the zone's faction")
+	_assert_rows(_rd(nat_zone, "rows"), _rd(gd_zone, "rows"), "zone")
+	_assert_reflect_row(_row_near(_rd(gd_zone, "rows"), 0.0), Vector2(80, 0), Vector2(2400, 0), Layers.ENEMY, 1, Layers.PLAYER)
+	var gd_hit := _hurt_case("gdscript", false)
+	var nat_hit := _hurt_case("native", false)
+	assert_eq(_i(nat_hit, "enemy"), _i(gd_hit, "enemy"))
+	assert_eq(_i(nat_hit, "player"), _i(gd_hit, "player"))
+	assert_eq(_i(gd_hit, "enemy"), 0)
+	assert_eq(_i(gd_hit, "player"), 1)
+	assert_eq(_i(nat_hit, "damage"), _i(gd_hit, "damage"))
+	assert_almost_eq(float(_i(gd_hit, "damage")), 1.0, 0.001)
+	var gv: Vector2 = gd_hit["vel"]
+	var nv: Vector2 = nat_hit["vel"]
+	assert_lt(nv.distance_to(gv), VEL_EPS)
+	assert_lt(gv.distance_to(Vector2(2400, 0)), VEL_EPS)
+	var gd_flip := _hurt_case("gdscript", true)
+	var nat_flip := _hurt_case("native", true)
+	var gfv: Vector2 = gd_flip["vel"]
+	var nfv: Vector2 = nat_flip["vel"]
+	assert_eq(_i(nat_flip, "player"), _i(gd_flip, "player"))
+	assert_eq(_i(gd_flip, "player"), 1)
+	assert_lt(nfv.distance_to(gfv), VEL_EPS)
+	assert_lt(gfv.distance_to(Vector2(-2400, 0)), VEL_EPS)
+
+
+func test_script_reflect_clears_invulnerability_unless_kept() -> void:
+	if not _ready_native():
+		return
+	var cleared_gd := _script_invuln("gdscript", false)
+	var cleared_nat := _script_invuln("native", false)
+	assert_eq(cleared_nat, cleared_gd)
+	assert_eq(cleared_gd, 0)
+	var kept_gd := _script_invuln("gdscript", true)
+	var kept_nat := _script_invuln("native", true)
+	assert_eq(kept_nat, kept_gd)
+	assert_eq(kept_gd, Health.SOURCE_PIERCES_SCRIPT_INVULN)
+
+
+func _assert_reflect_row(row: Dictionary, pos: Vector2, vel: Vector2, owner: int, reflects: int, mask: int) -> void:
+	assert_false(row.is_empty())
+	var rp: Vector2 = row["pos"]
+	var rv: Vector2 = row["vel"]
+	var ro: int = row["owner"]
+	var rr: int = row["reflects"]
+	var rm: int = row["mask"]
+	assert_lt(rp.distance_to(pos), POS_EPS)
+	assert_lt(rv.distance_to(vel), VEL_EPS)
+	assert_eq(ro, owner)
+	assert_eq(rr, reflects)
+	assert_eq(rm, mask)
+
+
+func _row_near(rows: Array[Dictionary], y: float) -> Dictionary:
+	for row: Dictionary in rows:
+		var p: Vector2 = row["pos"]
+		if absf(p.y - y) < 1.0:
+			return row
+	return {}
+
+
+func _arm(created: BulletManager, target: int, hook: _ScriptReflect, life: float = 4.0) -> void:
+	hook.host = created
+	hook.target_id = target
+	var req := _shot(Vector2(0, 400), Vector2.ZERO)
+	req.hit_mask = 0
+	req.lifetime = life
+	req.behavior_id = created.register_behavior(hook)
+	created.spawn(req)
+
+
+func _hooked_reflect(
+	preference: String,
+	times: int,
+	reverse: bool,
+	owner: int,
+	steps: int = 1,
+	limit: int = 1,
+	owners: Array[int] = [],
+	kill_after: bool = false
+) -> Dictionary:
+	var created := _manager(preference)
+	created.pool.max_reflections = limit
+	var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+	var hook := _ScriptReflect.new()
+	hook.times = times
+	hook.reverse = reverse
+	hook.owner = owner
+	hook.owners = owners
+	hook.kill_after = kill_after
+	_arm(created, id, hook)
+	created.step(DT)
+	var first: Array[bool] = []
+	first.assign(hook.returns)
+	var rows := _rows(created)
+	var alive := created.emitter.is_bullet_alive(id)
+	var enemy := created.owner_count_all(Layers.ENEMY)
+	var native_alive := created.is_native_bullet_alive(id)
+	var still_native := created.is_native_id(id) and native_alive
+	hook.returns.clear()
+	if steps > 1:
+		created.step(DT)
+	var second: Array[bool] = []
+	second.assign(hook.returns)
+	var second_rows := _rows(created)
+	_close(created)
+	return {
+		"ok": first,
+		"rows": rows,
+		"alive": alive,
+		"enemy": enemy,
+		"native_alive": native_alive,
+		"still_native": still_native,
+		"second_ok": second,
+		"second_rows": second_rows,
+	}
+
+
+func _reflect_then_step(preference: String) -> Dictionary:
+	var created := _manager(preference)
+	var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+	var ok := created.emitter.reflect_bullet(id, Layers.ENEMY, true)
+	var before := _rows(created)
+	created.step(DT)
+	var after := _rows(created)
+	var still := created.is_native_id(id) and created.is_native_bullet_alive(id)
+	_close(created)
+	return {"ok": ok, "before": before, "after": after, "still_native": still}
+
+
+func _reflect_between(preference: String) -> Dictionary:
+	var created := _manager(preference)
+	var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+	created.step(DT)
+	var ok := created.emitter.reflect_bullet(id, Layers.ENEMY, true)
+	var at_call := _rows(created)
+	created.step(DT)
+	var after := _rows(created)
+	_close(created)
+	return {"ok": ok, "at_call": at_call, "after": after}
+
+
+func _reflect_on_despawn(preference: String) -> Dictionary:
+	var created := _manager(preference)
+	var id := created.emitter.request_shot_id(_shot(Vector2(10, 20), Vector2(600, 0)))
+	var hook := _DespawnReflect.new()
+	hook.host = created
+	hook.target_id = id
+	var req := _shot(Vector2(0, 400), Vector2.ZERO)
+	req.hit_mask = 0
+	req.lifetime = 0.01
+	req.behavior_id = created.register_behavior(hook)
+	created.spawn(req)
+	created.step(DT)
+	var returns: Array[bool] = []
+	returns.assign(hook.returns)
+	var rows := _rows(created)
+	created.step(DT)
+	var nxt := _rows(created)
+	_close(created)
+	return {"ok": returns, "rows": rows, "next": nxt}
+
+
+func _death_return(preference: String, kind: String) -> Dictionary:
+	var created := _manager(preference)
+	var req := _shot(Vector2(10, 20), Vector2(600, 0))
+	if kind == "lifetime":
+		req.lifetime = 0.01
+	elif kind == "bounds":
+		req.position = Vector2(790, 0)
+		req.velocity = Vector2(1000, 0)
+	elif kind == "wall":
+		created.add_wall(Rect2(30, -20, 40, 40))
+		req.position = Vector2(0, 0)
+		req.velocity = Vector2(2400, 0)
+	var id := created.emitter.request_shot_id(req)
+	var hook := _ScriptReflect.new()
+	_arm(created, id, hook)
+	created.step(DT)
+	var returns: Array[bool] = []
+	returns.assign(hook.returns)
+	var alive := created.emitter.is_bullet_alive(id)
+	_close(created)
+	return {"ok": returns, "alive": alive}
+
+
+func _stale_return(preference: String) -> bool:
+	var created := _manager(preference)
+	var req := _shot(Vector2.ZERO, Vector2.ZERO)
+	req.lifetime = 0.01
+	var id := created.emitter.request_shot_id(req)
+	created.step(DT)
+	var ok := created.emitter.reflect_bullet(id, Layers.ENEMY, true)
+	_close(created)
+	return ok
+
+
+func _zone_case(preference: String) -> Dictionary:
+	var created := _manager(preference)
+	var zone := Reflector.new()
+	zone.position = Vector2(80, 0)
+	zone.radius = 30.0
+	zone.mode = Reflector.Mode.REVERSE
+	zone.reflects_owners = Layers.PLAYER
+	add_child(zone)
+	var id := created.emitter.request_shot_id(_shot(Vector2(40, 0), Vector2(2400, 0)))
+	var hook := _ScriptReflect.new()
+	hook.reverse = false
+	_arm(created, id, hook)
+	created.step(DT)
+	var returns: Array[bool] = []
+	returns.assign(hook.returns)
+	var rows := _rows(created)
+	var total := zone.reflected_total
+	_close(created)
+	zone.free()
+	return {"returns": returns, "rows": rows, "zone": total}
+
+
+func _hurt_case(preference: String, reverse: bool) -> Dictionary:
+	var created := _manager(preference)
+	var enemy := _HitSink.new()
+	enemy.position = Vector2(15, 0)
+	enemy.radius = 8.0
+	enemy.layer = Layers.ENEMY
+	var player := _HitSink.new()
+	player.position = Vector2(30, 0)
+	player.radius = 8.0
+	player.layer = Layers.PLAYER
+	created.add_child(enemy)
+	created.add_child(player)
+	var id := created.emitter.request_shot_id(_shot(Vector2(0, 0), Vector2(2400, 0)))
+	var hook := _ScriptReflect.new()
+	hook.reverse = reverse
+	_arm(created, id, hook)
+	created.step(DT)
+	var result := {
+		"enemy": enemy.hits,
+		"player": player.hits,
+		"damage": player.damage,
+		"vel": player.velocity,
+	}
+	_close(created)
+	return result
+
+
+func _script_invuln(preference: String, keep: bool) -> int:
+	var created := _manager(preference)
+	var player := _HitSink.new()
+	player.position = Vector2(30, 0)
+	player.radius = 8.0
+	player.layer = Layers.PLAYER
+	created.add_child(player)
+	var req := _shot(Vector2(0, 0), Vector2(2400, 0))
+	req.pierces_script_invuln = true
+	var id := created.emitter.request_shot_id(req)
+	var hook := _ScriptReflect.new()
+	hook.reverse = false
+	hook.keep = keep
+	_arm(created, id, hook)
+	created.step(DT)
+	var flags := player.flags
+	_close(created)
+	return flags
+
+
+class _ScriptReflect:
 	extends BulletBehavior
 	var host: BulletManager
 	var target_id := -1
-	var returned := true
-	var saw := false
+	var times := 1
+	var reverse := true
+	var owner := Layers.ENEMY
+	var owners: Array[int] = []
+	var damage := BulletPool.REFLECTED_DAMAGE
+	var keep := false
+	var kill_after := false
+	var record := false
+	var returns: Array[bool] = []
 	var pos := Vector2.INF
 	var vel := Vector2.INF
-	var owner := -2
+	var owner_seen := -2
 	var reflects := -2
 
-	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
-		saw = true
-		returned = host.emitter.reflect_bullet(target_id, Layers.ENEMY, true)
-		var snap := host.native.snapshot()
-		var ids: PackedInt64Array = snap["id"]
-		var positions: PackedVector2Array = snap["pos"]
-		var velocities: PackedVector2Array = snap["vel"]
-		var owners: PackedInt32Array = snap["owner"]
-		var counts: PackedInt32Array = snap["reflect_count"]
-		for i in ids.size():
-			if ids[i] == target_id:
-				pos = positions[i]
-				vel = velocities[i]
-				owner = owners[i]
-				reflects = counts[i]
-				return
+	func on_update(pool: BulletPool, _index: int, _delta: float) -> void:
+		for i in times:
+			var who := owner
+			if i < owners.size():
+				who = owners[i]
+			returns.append(host.emitter.reflect_bullet(target_id, who, reverse, damage, keep))
+		if record:
+			var slot := pool.slot_of(target_id)
+			if slot >= 0:
+				pos = pool.pos[slot]
+				vel = pool.vel[slot]
+				owner_seen = pool.owner_layer[slot]
+				reflects = pool.reflect_count[slot]
+		if kill_after:
+			if host.is_native_id(target_id):
+				host.native.kill(target_id)
+			else:
+				var slot := pool.slot_of(target_id)
+				if slot >= 0:
+					pool.mark_dead(slot, BulletPool.DespawnReason.MANUAL)
 
+
+class _DespawnReflect:
+	extends BulletBehavior
+	var host: BulletManager
+	var target_id := -1
+	var returns: Array[bool] = []
+
+	func on_despawn(_pool: BulletPool, _index: int, _reason: int) -> void:
+		returns.append(host.emitter.reflect_bullet(target_id, Layers.ENEMY, true))
+
+
+class _ReuseReflect:
+	extends BulletBehavior
+	var host: BulletManager
+	var target_id := -1
+	var replacement_at := Vector2.ZERO
+	var replacement_vel := Vector2.ZERO
+	var replacement_id := -1
+	var returns: Array[bool] = []
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		returns.append(host.emitter.reflect_bullet(target_id, Layers.ENEMY, true))
+		host.native.kill(target_id)
+		host.native.finish_delivery()
+		var req := ShotRequest.with_velocity(replacement_at, replacement_vel)
+		req.radius = 2.0
+		req.lifetime = 4.0
+		req.hit_mask = Layers.ENEMY
+		req.owner_layer = Layers.PLAYER
+		req.damage = 5.0
+		req.collide_world = true
+		replacement_id = host.native.spawn(req, 50)
+
+
+class _HitSink:
+	extends Hurtbox
+	var hits := 0
+	var damage := -1.0
+	var velocity := Vector2.INF
+	var flags := -1
+
+	func _ready() -> void:
+		hit.connect(func(d: float, _p: Vector2, v: Vector2) -> void:
+			hits += 1
+			damage = d
+			velocity = v
+			flags = last_hit_flags
+		)
 
 func test_dynamic_reflectors_match_including_one_added_mid_reflection() -> void:
 	if not _ready_native():
