@@ -100,9 +100,11 @@ move to C++.
      migrated into the sim later.
   **Zero-copy stays off.** The columns are packed copies through stock
   lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
-  Packed copies are the backing that was measured: native batch work p95 was
-  **2.25 ms at 5,000** and **4.25 ms at 10,000** (table below), which is
-  inside the budget, so the copy is not the thing to remove next. A later
+  Packed copies are the backing that was measured. Native batch work p95 on the
+  machines sampled so far is about **1.5–2.3 ms at 5,000** and about **4 ms at
+  10,000** (single runs have reported 1.51 ms and 2.25 ms at 5,000; the table
+  below is one of those machines). That is inside the budget, so the copy is
+  not the thing to remove next. These samples are provisional and may change. A later
   zero-copy column could replace the arrays inside `BatchView` without a
   script change. That decision is not this slice. Scripts receive Lua tables,
   not the packed arrays. Per call, `BatchView.CMD_CAP` (4096) commands and
@@ -113,9 +115,11 @@ move to C++.
   and may change. A hot reload that adds `on_batch` does not move bullets that
   already have `behavior_id` 0 into the batch.
   **Default backend cost (provisional).** With the default GDScript backend,
-  `on_batch` bullets stay on the GD pool, which measured about 20.7 ms p95 at
-  5,000 and 40.9 ms at 10,000, over the 16.6 ms frame budget at 5,000. Routing
-  them to native by default belongs to the default-backend decision, tracked in
+  `on_batch` bullets stay on the GD pool. That path is about 21–25 ms p95 at
+  5,000 and about 41–47 ms at 10,000 on the machines sampled so far (single
+  runs have reported 20.7 / 40.9 ms and 24.8 / 47.0 ms), over the 16.6 ms frame
+  budget at 5,000. Routing them to native by default belongs to the
+  default-backend decision, tracked in
   [#34](https://github.com/Karyu42/scriptshot/issues/34).
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
@@ -273,6 +277,10 @@ the pool.
 | 5,000 | one hook | 24.77 ms | 2.25 ms |
 | 10,000 | one hook | 47.02 ms | 4.25 ms |
 
+That table is one machine. Across the machines sampled so far the same native
+batch is about 1.5–2.3 ms at 5,000, and the GD pool path is about 21–25 ms at
+5,000 and about 41–47 ms at 10,000. Provisional; may change.
+
 `--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
 keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
 same machine measured work p50/p95 of 13.97/14.20 ms on GDScript and 0.95/1.04 ms
@@ -284,8 +292,9 @@ Left for later PRs, on purpose:
 
 - Moving per-bullet hooks (`on_update`, `on_hit`, `can_hit`, `on_despawn`)
   into C++. Those bullets stay on the GDScript pool.
-- Zero-copy stays off. Packed copies measured 2.25 ms / 4.25 ms work p95 at
-  5k / 10k native batch, which is inside the budget. A later column could
+- Zero-copy stays off. Packed copies measured about 1.5–2.3 ms at 5k and about
+  4 ms at 10k native batch on the machines sampled so far, which is inside the
+  budget. A later column could
   replace the copies without a script change. This tree does not fork Lua.
 - The six batch defaults above, if a later slice extends one of them:
   `update_interval` / `update_slice`, a reflect command on the view, a

@@ -2033,7 +2033,12 @@ bool NativeBulletSim::apply_script_reflect(int64_t p_id, int p_new_owner, int p_
 		damage[s] = p_new_damage;
 	}
 	if (!p_keep_script) {
+		// Match BulletPool.reflect: the bullet leaves its behaviour before this
+		// tick's batch gather, so a column write cannot replace the new velocity.
 		source_flags[s] = 0;
+		behavior[s] = 0;
+		param_a[s] = 0.0f;
+		param_b[s] = 0.0f;
 	}
 	if (p_reverse) {
 		vx[s] = -vx[s];

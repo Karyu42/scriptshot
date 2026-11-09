@@ -504,3 +504,98 @@ func test_native_empty_batch_and_invalid_write() -> void:
 	var view := clamped.gather_batch(cid, DT)
 	assert_eq(view.id[0], live)
 	assert_almost_eq(view.vx[0], BulletLimits.MAX_SPEED, 0.001)
+
+
+class BatchOverwrite:
+	extends BulletBehavior
+	var calls := 0
+	var rows := 0
+
+	func on_update_batch(batch: BatchView) -> void:
+		calls += 1
+		rows = batch.n
+		for i in batch.n:
+			batch.vx[i] = 250.0
+			batch.vy[i] = 0.0
+
+
+class ReflectBeforeBatch:
+	extends BulletBehavior
+	var target_id := -1
+	var keep_script := false
+	var reflected_ok := false
+
+	func on_update(_pool: BulletPool, _index: int, _delta: float) -> void:
+		reflected_ok = emitter.reflect_bullet(target_id, Layers.ENEMY, true, BulletPool.REFLECTED_DAMAGE, keep_script)
+
+
+func _reflect_before_batch(preference: String, keep_script: bool) -> Dictionary:
+	var manager := _manager(preference)
+	var batch_behavior := BatchOverwrite.new()
+	var hook := ReflectBeforeBatch.new()
+	hook.keep_script = keep_script
+	var batch_id := manager.register_behavior(batch_behavior)
+	var hook_id := manager.register_behavior(hook)
+	var spawned := manager.spawn(_shot(batch_id, Vector2(300.0, 0.0)))
+	var bullet_id := spawned if manager.is_native_id(spawned) else manager.pool.id_of(spawned)
+	hook.target_id = bullet_id
+	manager.spawn(_shot(hook_id, Vector2.ZERO))
+	manager.step(DT)
+	var vel := Vector2.ZERO
+	var owner := -1
+	if manager.is_native_id(bullet_id):
+		var snap := manager.native.snapshot()
+		var ids: PackedInt64Array = snap["id"]
+		var vels: PackedVector2Array = snap["vel"]
+		var owners: PackedInt32Array = snap["owner"]
+		for i in ids.size():
+			if ids[i] == bullet_id:
+				vel = vels[i]
+				owner = owners[i]
+	else:
+		var slot := manager.pool.slot_of(bullet_id)
+		vel = manager.pool.vel[slot]
+		owner = manager.pool.owner_layer[slot]
+	var still := 0
+	if manager.native != null and manager.is_native_id(bullet_id):
+		still = manager.native.count_with_behavior(batch_id)
+	elif not manager.is_native_id(bullet_id):
+		still = 1 if manager.pool.behavior[manager.pool.slot_of(bullet_id)] == batch_id else 0
+	return {
+		"ok": hook.reflected_ok,
+		"calls": batch_behavior.calls,
+		"rows": batch_behavior.rows,
+		"vel": vel,
+		"owner": owner,
+		"still": still,
+	}
+
+
+func _expect_reflect_before_batch(result: Dictionary, keep_script: bool) -> void:
+	var ok: bool = result["ok"]
+	var owner: int = result["owner"]
+	var calls: int = result["calls"]
+	var rows: int = result["rows"]
+	var still: int = result["still"]
+	var vel: Vector2 = result["vel"]
+	assert_true(ok)
+	assert_eq(owner, Layers.ENEMY)
+	if keep_script:
+		assert_eq(calls, 1)
+		assert_eq(rows, 1)
+		assert_eq(still, 1)
+		assert_eq(vel, Vector2(250.0, 0.0))
+	else:
+		assert_eq(calls, 0, "the bullet left the behaviour before gather")
+		assert_eq(still, 0)
+		assert_eq(vel, Vector2(-300.0, 0.0))
+
+
+func test_reflect_before_the_batch_hook_matches_on_both_stores() -> void:
+	_expect_reflect_before_batch(_reflect_before_batch("gdscript", false), false)
+	_expect_reflect_before_batch(_reflect_before_batch("gdscript", true), true)
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_expect_reflect_before_batch(_reflect_before_batch("native", false), false)
+	_expect_reflect_before_batch(_reflect_before_batch("native", true), true)

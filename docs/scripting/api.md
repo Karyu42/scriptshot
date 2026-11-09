@@ -658,10 +658,12 @@ callback. The instruction budget for `on_batch` is 100,000 plus 128 per row, cap
 50 ms wall-time limit and the 64 MB memory cap still apply. These numbers are provisional and may change.
 
 **Performance on the default backend (provisional).** Bullets whose behaviour defines `on_batch` stay on the GDScript
-pool by default, because the GDScript backend is the default. There, one `on_batch` steering every bullet measured about
-20.7 ms p95 at 5,000 bullets and 40.9 ms at 10,000, which is over the 16.6 ms frame budget at 5,000. With the opt-in
-native backend the same work measured 2.25 ms and 4.25 ms. Routing `on_batch` to native by default is part of the
-default-backend decision and is tracked in [#34](https://github.com/Karyu42/scriptshot/issues/34).
+pool by default, because the GDScript backend is the default. There, one `on_batch` steering every bullet is about
+21–25 ms p95 at 5,000 and about 41–47 ms at 10,000 on the machines sampled so far (single runs have reported 20.7 / 40.9 ms
+and 24.8 / 47.0 ms), which is over the 16.6 ms frame budget at 5,000. With the opt-in native backend the same work is
+about 1.5–2.3 ms at 5,000 and about 4 ms at 10,000 (single runs have reported 1.51 ms and 2.25 ms at 5,000). These are
+one-machine samples and may change. Routing `on_batch` to native by default is part of the default-backend decision and
+is tracked in [#34](https://github.com/Karyu42/scriptshot/issues/34).
 
 | Member | Meaning |
 |---|---|
