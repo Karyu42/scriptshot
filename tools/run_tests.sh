@@ -8,6 +8,12 @@
 #   ./tools/run_tests.sh -gselect=bullet_pool # only scripts matching a name
 #
 # Uses $GODOT if set, otherwise `godot` from PATH (Godot 4.7.2).
+#
+# Portable to macOS's /bin/bash 3.2 and to Git Bash on Windows (the GUT (macos, native) and
+# GUT (windows, native) CI jobs): no EPOCHREALTIME, mapfile, associative arrays, ${var,,} or
+# `tail --pid`, and empty arrays are expanded with ${a[@]+"${a[@]}"} (bash < 4.4 treats
+# "${a[@]}" of an empty array as unbound under set -u). tools/ci/test_run_tests_guard.py runs
+# the guard cases under any bash (RUN_TESTS_BASH=/bin/bash on macOS).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 GODOT="${GODOT:-godot}"
@@ -77,7 +83,8 @@ done
 # used when there are no failing tests and no failing before/after asserts.
 suite_is_green() {
 	local log="$1"
-	if grep -a -q 'handle_crash' "$log"; then
+	# handle_crash: the Linux/macOS crash handler. CrashHandlerException: the Windows one.
+	if grep -a -E -q -e 'handle_crash' -e 'CrashHandlerException' -- "$log"; then
 		return 1
 	fi
 	if grep -a -E -q -e 'Failing Tests' -e '[0-9]+ failing tests' -e 'assert\(s\) in before_all/after_all' -- "$log"; then
@@ -93,10 +100,26 @@ junit_is_green() {
 	python3 tools/ci/junit_green.py "$1"
 }
 
+# Exit statuses that mean "aborted while releasing Lua at exit". POSIX: 134 (SIGABRT). Windows
+# (Git Bash): ABORT_CODES_WINDOWS below, measured in the GUT (windows, native) job. Any of them
+# is accepted only with a green console summary AND a green junit XML.
+ABORT_CODES="134"
+case "$(uname -s)" in
+	MINGW*|MSYS*|CYGWIN*) ABORT_CODES="134 ${ABORT_CODES_WINDOWS:-3}" ;;
+esac
+
+is_abort_code() {
+	local c
+	for c in $ABORT_CODES; do
+		[ "$1" -eq "$c" ] && return 0
+	done
+	return 1
+}
+
 tolerate_lua_shutdown() {
 	local status="$1" log="$2" junit="$3"
-	if [ "$status" -eq 134 ] && suite_is_green "$log" && junit_is_green "$junit"; then
-		echo "run_tests.sh: godot aborted while releasing Lua at exit after a green suite (console and junit)"
+	if [ "$status" -ne 0 ] && is_abort_code "$status" && suite_is_green "$log" && junit_is_green "$junit"; then
+		echo "run_tests.sh: godot aborted (exit $status) while releasing Lua at exit after a green suite (console and junit)"
 		return 0
 	fi
 	return "$status"
@@ -105,7 +128,7 @@ tolerate_lua_shutdown() {
 # Exit-after-results guard (issue #41). The same Lua-state release at exit sometimes hangs instead of
 # aborting (about 1 run in 20, on main too), so the job sat until its timeout with every test green.
 # Once GUT has printed its end-of-run summary ("---- ... ----" grand total) or "Results saved to", godot gets
-# GUT_EXIT_GRACE_S seconds (default 60, measured with EPOCHREALTIME, so not rounded down to whole seconds)
+# GUT_EXIT_GRACE_S seconds (default 60, measured in milliseconds by now_ms, so not rounded down to whole seconds)
 # to exit. After that it is killed (TERM, then KILL after 5 s):
 #   green console summary AND green junit XML -> success, with a ::warning:: annotation pointing at #41
 #   anything else (red summary, junit missing, malformed, failures or errors) -> failure
@@ -114,9 +137,29 @@ results_written() {
 	grep -a -E -q -e '^Results saved to ' -e '---- (All tests passed!|[0-9]+ pending/risky tests\.|[0-9]+ failing tests|[0-9]+ assert\(s\) in before_all/after_all methods failed) ----' -- "$1"
 }
 
-now_ms() {
-	local t="${EPOCHREALTIME//[.,]/}"
-	echo $((10#$t / 1000))
+# now_ms: wall clock in milliseconds. bash 5 has EPOCHREALTIME; bash 3.2 (macOS /bin/bash) does not, so use
+# perl's Time::HiRes (macOS, Linux runners and Git for Windows all ship perl), else python3.
+if [ -n "${EPOCHREALTIME:-}" ]; then
+	now_ms() {
+		local t="${EPOCHREALTIME//[.,]/}"
+		echo $((10#$t / 1000))
+	}
+elif command -v perl >/dev/null 2>&1; then
+	now_ms() { perl -MTime::HiRes=time -e 'printf("%d\n", time() * 1000)'; }
+else
+	now_ms() { python3 -c 'import time; print(int(time.time() * 1000))'; }
+fi
+
+# stream_new <file>: print what was appended to <file> since the last call (byte offset in STREAMED).
+# Replaces `tail -f --pid`, which BSD tail (macOS) does not have.
+STREAMED=0
+stream_new() {
+	local size
+	size=$(wc -c <"$1" | tr -d ' ')
+	if [ "$size" -gt "$STREAMED" ]; then
+		tail -c +$((STREAMED + 1)) -- "$1" | head -c $((size - STREAMED))
+		STREAMED=$size
+	fi
 }
 
 # junit_path <gut args...>: the file GUT will write, from -gjunit_xml_file=PATH (res:// -> project dir).
@@ -137,8 +180,10 @@ junit_path() {
 }
 
 run_gut() {
-	local log="$LOG_DIR/gut.log" grace="${GUT_EXIT_GRACE_S:-60}" pid tail_pid status
-	local results_seen=0 seen_at=0 hung=0 i junit extra=()
+	local log="$LOG_DIR/gut.log" grace="${GUT_EXIT_GRACE_S:-60}" pid status
+	local results_seen=0 seen_at=0 hung=0 i junit
+	local -a extra
+	extra=()
 	junit="$(junit_path "$@")"
 	if [ -z "$junit" ]; then
 		junit="$LOG_DIR/gut-junit.xml"
@@ -147,12 +192,12 @@ run_gut() {
 	# A file left by an earlier process (the split suite writes the same path twice) must not count.
 	[ "$junit" = "-" ] || rm -f "$junit"
 	: >"$log"
-	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" "${extra[@]}" >"$log" 2>&1 &
+	"$GODOT" --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit "$@" ${extra[@]+"${extra[@]}"} >"$log" 2>&1 &
 	pid=$!
-	# Stream the output live (the CI step tees this script's stdout into reports/gut.log).
-	tail -n +1 -f --pid="$pid" "$log" &
-	tail_pid=$!
+	# Stream the output (about once a second; the CI step tees this script's stdout into reports/gut.log).
+	STREAMED=0
 	while kill -0 "$pid" 2>/dev/null; do
+		stream_new "$log"
 		if [ "$results_seen" -eq 0 ] && results_written "$log"; then
 			results_seen=1
 			seen_at=$(now_ms)
@@ -171,7 +216,9 @@ run_gut() {
 	done
 	wait "$pid"
 	status=$?
-	wait "$tail_pid" 2>/dev/null
+	stream_new "$log"
+	# Always logged: the Windows abort status is platform-specific (ABORT_CODES above).
+	echo "run_tests.sh: godot exited with status $status$([ "$hung" -eq 1 ] && echo ' (killed by the exit-after-results guard)')"
 	if [ "$hung" -eq 1 ]; then
 		if suite_is_green "$log" && junit_is_green "$junit"; then
 			echo "::warning::godot did not exit after results (teardown hang, see #41); killed after ${grace}s, suite and junit were green"
