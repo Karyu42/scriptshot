@@ -105,11 +105,24 @@ return function(host)
 	end
 	env.string = S
 	getmetatable("").__index = S
+	-- Scripts do not receive Variant userdata. getmetatable on userdata is nil,
+	-- so a shared engine metatable is not something a script can walk.
+	local real_getmetatable = getmetatable
 	env.getmetatable = function(x)
 		if type(x) == "string" then
 			return { __index = S }
 		end
-		return getmetatable(x)
+		if type(x) == "userdata" then
+			return nil
+		end
+		return real_getmetatable(x)
+	end
+	local real_rawset = rawset
+	env.rawset = function(t, k, v)
+		if type(t) == "table" and real_getmetatable(t) == false then
+			error("cannot modify a protected table", 2)
+		end
+		return real_rawset(t, k, v)
 	end
 
 	env.table = real.table
@@ -178,42 +191,129 @@ return function(host)
 	end
 	host.make_bullet = make_bullet
 
-	-- Batch view. Columns are whatever the host passed (packed copies today,
-	-- a zero-copy column object later). Scripts only see v.vx[i] and the methods.
-	local function make_batch(n, id, px, py, vx, vy, age, pa, pb, owner, dt)
-		return {
-			n = n,
-			dt = dt,
-			id = id,
-			px = px,
-			py = py,
-			vx = vx,
-			vy = vy,
-			age = age,
-			pa = pa,
-			pb = pb,
-			owner = owner,
-			kill = function(self, i)
-				local err = host.batch_kill(i)
+	-- Batch view. The packed columns stay in upvalues. The script receives Lua
+	-- tables whose metamethods read and write those upvalues. The view is only
+	-- valid for this call: host.expire_batch marks it expired when the call returns.
+	local function make_batch(token, n, id, px, py, vx, vy, age, pa, pb, owner, dt)
+		n = math.tointeger(n) or 0
+		local expired = { false }
+		host.expire_batch = function()
+			expired[1] = true
+		end
+		local function column(arr, name, writable)
+			return setmetatable({}, {
+				__index = function(_, i)
+					if expired[1] then
+						error("view expired", 2)
+					end
+					-- A string key is a method lookup. There are no methods;
+					-- returning nil keeps them unreachable without a raw value.
+					if math.type(i) ~= "integer" then
+						if type(i) ~= "number" then
+							return nil
+						end
+						error("column '" .. name .. "': row must be an integer in 0.." .. tostring(n - 1), 2)
+					end
+					if i < 0 or i >= n then
+						error("column '" .. name .. "': row must be an integer in 0.." .. tostring(n - 1), 2)
+					end
+					return arr[i]
+				end,
+				__newindex = function(_, i, value)
+					if expired[1] then
+						error("view expired", 2)
+					end
+					if math.type(i) ~= "integer" or i < 0 or i >= n then
+						error("column '" .. name .. "': row must be an integer in 0.." .. tostring(n - 1), 2)
+					end
+					if not writable then
+						error("column '" .. name .. "' is read-only", 2)
+					end
+					arr[i] = value
+				end,
+				__metatable = false,
+			})
+		end
+		local cols = {
+			id = column(id, "id", false),
+			px = column(px, "px", false),
+			py = column(py, "py", false),
+			vx = column(vx, "vx", true),
+			vy = column(vy, "vy", true),
+			age = column(age, "age", false),
+			pa = column(pa, "pa", true),
+			pb = column(pb, "pb", true),
+			owner = column(owner, "owner", false),
+		}
+		local function row_ok(i)
+			return not expired[1] and math.type(i) == "integer" and i >= 0 and i < n
+		end
+		local function row_error(cmd)
+			if expired[1] then
+				return "view expired"
+			end
+			return cmd .. ": row must be an integer in 0.." .. tostring(n - 1)
+		end
+		local methods = {
+			kill = function(_, i)
+				if not row_ok(i) then
+					error(row_error("kill"), 2)
+				end
+				local err = host.batch_kill(token, i)
 				if err ~= nil then
 					error(err, 2)
 				end
 			end,
-			teleport = function(self, i, x, y)
-				local err = host.batch_teleport(i, x, y)
+			teleport = function(_, i, x, y)
+				if not row_ok(i) then
+					error(row_error("teleport"), 2)
+				end
+				local err = host.batch_teleport(token, i, x, y)
 				if err ~= nil then
 					error(err, 2)
 				end
 			end,
-			spawn_child = function(self, i, x, y, vx, vy, life)
-				local err = host.batch_spawn(i, x, y, vx, vy, life)
+			spawn_child = function(_, i, x, y, svx, svy, life)
+				if not row_ok(i) then
+					error(row_error("spawn_child"), 2)
+				end
+				local err = host.batch_spawn(token, i, x, y, svx, svy, life)
 				if err ~= nil then
 					error(err, 2)
 				end
 			end,
 		}
+		return setmetatable({}, {
+			__index = function(_, k)
+				if expired[1] then
+					error("view expired", 2)
+				end
+				if k == "n" then
+					return n
+				end
+				if k == "dt" then
+					return dt
+				end
+				local c = cols[k]
+				if c ~= nil then
+					return c
+				end
+				return methods[k]
+			end,
+			__newindex = function()
+				error("batch view is read-only", 2)
+			end,
+			__metatable = false,
+		})
 	end
 	host.make_batch = make_batch
+
+	-- One lock for the whole state. Indexing still works; scripts cannot
+	-- replace entries on the shared metatable.
+	local variant_mt = getmetatable(host.print)
+	if type(variant_mt) == "table" then
+		variant_mt.__metatable = false
+	end
 
 	return env
 end

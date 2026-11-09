@@ -90,7 +90,7 @@ move to C++.
   3. **`spawn_child` only.** It creates a declarative child (`behavior_id` 0).
      There is no `spawn{}` / `spawn_polar` on the view.
   4. **Read-only columns.** `px`, `py`, `age`, `id` and `owner` are read-only.
-     A position change goes through `teleport`.
+     Writing one raises. A position change goes through `teleport`.
   5. **`on_update` stays per-bullet.** Overriding `on_update` keeps the bullet
      on the pool and does not also run the batch hook, unless `update_mode`
      is `BATCH`. Explicit `BATCH` plus `on_update` still lives on the pool,
@@ -101,10 +101,17 @@ move to C++.
   **Zero-copy stays off.** The columns are packed copies through stock
   lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
   Packed copies are the backing that was measured: native batch work p95 was
-  **1.80 ms at 5,000** and **3.23 ms at 10,000** (table below), which is
+  **2.25 ms at 5,000** and **4.25 ms at 10,000** (table below), which is
   inside the budget, so the copy is not the thing to remove next. A later
   zero-copy column could replace the arrays inside `BatchView` without a
-  script change. That decision is not this slice.
+  script change. That decision is not this slice. Scripts receive Lua tables,
+  not the packed arrays. Per call, `BatchView.CMD_CAP` (4096) commands and
+  `BatchView.SPAWN_CAP` (256) spawns are kept; the rest are dropped and one
+  warning is logged. The `on_batch` instruction budget is 100,000 plus 64 per
+  row, capped at 2,000,000 (`ScriptHost.BATCH_BUDGET_CEILING`). The 50 ms wall
+  clock and the 64 MB memory cap are unchanged. Those limits are provisional
+  and may change. A hot reload that adds `on_batch` does not move bullets that
+  already have `behavior_id` 0 into the batch.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -258,8 +265,8 @@ the pool.
 
 | bullets | batch | gdscript | native |
 | ---: | --- | ---: | ---: |
-| 5,000 | one hook | 24.37 ms | 1.80 ms |
-| 10,000 | one hook | 53.66 ms | 3.23 ms |
+| 5,000 | one hook | 24.77 ms | 2.25 ms |
+| 10,000 | one hook | 47.02 ms | 4.25 ms |
 
 `--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
 keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
@@ -272,7 +279,7 @@ Left for later PRs, on purpose:
 
 - Moving per-bullet hooks (`on_update`, `on_hit`, `can_hit`, `on_despawn`)
   into C++. Those bullets stay on the GDScript pool.
-- Zero-copy stays off. Packed copies measured 1.80 ms / 3.23 ms work p95 at
+- Zero-copy stays off. Packed copies measured 2.25 ms / 4.25 ms work p95 at
   5k / 10k native batch, which is inside the budget. A later column could
   replace the copies without a script change. This tree does not fork Lua.
 - The six batch defaults above, if a later slice extends one of them:

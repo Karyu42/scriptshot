@@ -167,6 +167,85 @@ func test_gd_batch_write_is_visible_and_does_not_move_this_tick() -> void:
 	assert_gt(absf(moved_vel.x - 60.0), 0.01)
 
 
+class PublicColumnForge:
+	extends BulletBehavior
+
+	func on_update_batch(batch: BatchView) -> void:
+		if batch.n < 2:
+			return
+		batch.id[0] = batch.id[1]
+		batch.vx[0] = 77.0
+		batch.vy[0] = 0.0
+		batch.vx[1] = 3.0
+		batch.vy[1] = 0.0
+		batch.owner[0] = Layers.ENEMY
+		var req := ShotRequest.with_velocity(Vector2(8, 8), Vector2(4, 0))
+		req.lifetime = 2.0
+		req.owner_layer = Layers.ENEMY
+		batch.spawn_child(0, req)
+
+
+func test_public_columns_cannot_redirect_a_commit() -> void:
+	var manager := _manager("gdscript")
+	var id := manager.register_behavior(PublicColumnForge.new())
+	var a := manager.spawn(_shot(id, Vector2(10.0, 0.0), Layers.PLAYER))
+	var b := manager.spawn(_shot(id, Vector2(20.0, 0.0), Layers.PLAYER))
+	manager.step(DT)
+	assert_eq(manager.pool.vel[a], Vector2(77.0, 0.0))
+	assert_eq(manager.pool.vel[b], Vector2(3.0, 0.0))
+	assert_eq(manager.pool.owner_layer[a], Layers.PLAYER)
+	var child := -1
+	for i in manager.pool.count:
+		if manager.pool.vel[i] == Vector2(4.0, 0.0):
+			child = i
+	assert_ne(child, -1)
+	assert_eq(manager.pool.owner_layer[child], Layers.PLAYER, "spawn uses the captured owner, not the column")
+
+
+class SpawnFlood:
+	extends BulletBehavior
+
+	var msec := 0.0
+	var dropped_spawns := 0
+	var dropped_commands := 0
+
+	func on_update_batch(batch: BatchView) -> void:
+		var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(2.0, 0.0))
+		req.lifetime = 2.0
+		var t0 := Time.get_ticks_usec()
+		for i in 5000:
+			batch.spawn_child(0, req)
+		for i in 5000:
+			batch.kill(0)
+		msec = float(Time.get_ticks_usec() - t0) / 1000.0
+		dropped_spawns = batch.dropped_spawns
+		dropped_commands = batch.dropped_commands
+
+
+func test_over_cap_calls_keep_the_first_and_stay_fast() -> void:
+	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
+	manager.capacity = 8000
+	manager.logical_cap = 8000
+	manager.enemy_reserve = 0
+	manager.world_bounds = Rect2(-20000, -20000, 40000, 40000)
+	manager.render_enabled = false
+	manager.auto_step = false
+	add_child_autofree(manager)
+	var flood := SpawnFlood.new()
+	var id := manager.register_behavior(flood)
+	var slot := manager.spawn(_shot(id, Vector2(1.0, 0.0)))
+	var parent_id := manager.pool.id_of(slot)
+	manager.step(DT)
+	assert_eq(flood.dropped_spawns, 5000 - BatchView.SPAWN_CAP)
+	# The 256 kept spawns take command slots, so the kill loop fills the rest.
+	var kill_room := BatchView.CMD_CAP - BatchView.SPAWN_CAP
+	assert_eq(flood.dropped_commands, 5000 - kill_room)
+	assert_lt(flood.msec, 16.6, "5000 calls took %.2f ms" % flood.msec)
+	assert_false(manager.pool.is_alive(parent_id), "the first kill is inside the command cap")
+	assert_eq(manager.alive_count(), BatchView.SPAWN_CAP)
+
+
 func test_gd_owner_is_read_and_unchanged() -> void:
 	var ran := _run_steer("gdscript")
 	var first: Dictionary = ran["ticks"][0]

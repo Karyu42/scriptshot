@@ -13,6 +13,10 @@ extends RefCounted
 ## instructions. A hard allocator cap needs the source-built binding (deferred).
 
 const INSTRUCTION_BUDGET := 100_000
+## Extra instructions per batch row. Provisional; may change.
+const BATCH_ROW_BUDGET := 64
+## Ceiling for one on_batch call. Provisional; may change.
+const BATCH_BUDGET_CEILING := 2_000_000
 const HOOK_STRIDE := 1_000
 const WALL_MSEC := 50
 const MEMORY_CAP := 64 * 1024 * 1024
@@ -30,8 +34,9 @@ const LIBS := (
 	| LuaState.LUA_MATH
 	| LuaState.LUA_TABLE
 	| LuaState.LUA_UTF8
-	# Packed-array columns (`v.vx[i]`) need the variant library. It does not
-	# open Godot classes; the script environment still has no engine API.
+	# Opened so the host can pass packed columns into the trusted view builder.
+	# Scripts never receive those values: the view handed to on_batch is a Lua
+	# table. The script environment has no engine API.
 	| LuaState.GODOT_VARIANT
 )
 
@@ -94,6 +99,10 @@ var _pending_children: Array[ShotRequest] = []
 var _number := 0.0
 ## The BatchView whose Lua callback is running, or null.
 var _batch: BatchView
+## Token of the view that is allowed to issue commands. -1 when none is.
+var _batch_token := -1
+var _batch_serial := 0
+var _row_value := -1
 
 
 class RunResult:
@@ -278,20 +287,38 @@ func call_batch(batch: BatchView) -> RunResult:
 	if not maker is LuaFunction:
 		batch.discard = true
 		return _fail("sandbox did not install make_batch", "on_batch")
+	_batch_serial += 1
+	_batch_token = _batch_serial
 	_batch = batch
 	var view_v: Variant = _as_function(maker).invoke(
-		batch.n, batch.id, batch.px, batch.py, batch.vx, batch.vy, batch.age, batch.pa, batch.pb, batch.owner, batch.dt
+		_batch_token, batch.n, batch.id, batch.px, batch.py, batch.vx, batch.vy, batch.age, batch.pa, batch.pb, batch.owner, batch.dt
 	)
 	if view_v is LuaError:
-		_batch = null
+		_end_batch()
 		batch.discard = true
 		return _fail(_lua_error_message(view_v), "on_batch")
+	# v.dt and the second argument are the same tick delta.
+	var saved_budget := instruction_budget
+	var batch_budget := INSTRUCTION_BUDGET + batch.n * BATCH_ROW_BUDGET
+	if batch_budget > BATCH_BUDGET_CEILING:
+		batch_budget = BATCH_BUDGET_CEILING
+	instruction_budget = batch_budget
 	var result := _run(_as_function(fn), [view_v, batch.dt])
+	instruction_budget = saved_budget
 	result.chunk_name = "on_batch"
-	_batch = null
+	_end_batch()
 	if not result.ok:
 		batch.discard = true
 	return result
+
+
+func _end_batch() -> void:
+	if _host != null:
+		var expire: Variant = _host.get("expire_batch")
+		if expire is LuaFunction:
+			_as_function(expire).invoke()
+	_batch = null
+	_batch_token = -1
 
 
 func has_pending_velocity() -> bool:
@@ -509,21 +536,51 @@ func _lua_set_velocity(x: Variant, y: Variant) -> Variant:
 	return null
 
 
-func _lua_batch_kill(i: Variant) -> Variant:
-	if _batch == null:
-		return "kill: no batch is running"
-	if not _read_number(i):
-		return "kill: expected a row index"
-	_batch.kill(int(_number))
+func _token_matches(token: Variant) -> bool:
+	if not _read_number(token) or not is_finite(_number) or _number != floor(_number):
+		return false
+	return int(_number) == _batch_token and _batch != null
+
+
+func _batch_gate(token: Variant) -> String:
+	if _batch == null or not _token_matches(token):
+		return "view expired"
+	return ""
+
+
+## Empty string means `_row_value` is a legal row. Otherwise the message.
+func _read_row(cmd: String, v: Variant) -> String:
+	var msg := "%s: row must be an integer in 0..%d" % [cmd, _batch.n - 1]
+	if v is String or v is bool:
+		return msg
+	if not _read_number(v) or not is_finite(_number) or _number != floor(_number):
+		return msg
+	var row := int(_number)
+	if row < 0 or row >= _batch.n:
+		return msg
+	_row_value = row
+	return ""
+
+
+func _lua_batch_kill(token: Variant, i: Variant) -> Variant:
+	var gate := _batch_gate(token)
+	if gate != "":
+		return gate
+	var err := _read_row("kill", i)
+	if err != "":
+		return err
+	_batch.kill(_row_value)
 	return null
 
 
-func _lua_batch_teleport(i: Variant, x: Variant, y: Variant) -> Variant:
-	if _batch == null:
-		return "teleport: no batch is running"
-	if not _read_number(i):
-		return "teleport: expected (row, x, y)"
-	var row := int(_number)
+func _lua_batch_teleport(token: Variant, i: Variant, x: Variant, y: Variant) -> Variant:
+	var gate := _batch_gate(token)
+	if gate != "":
+		return gate
+	var err := _read_row("teleport", i)
+	if err != "":
+		return err
+	var row := _row_value
 	if not _read_number(x):
 		return "teleport: expected (row, x, y)"
 	var px := _number
@@ -533,12 +590,14 @@ func _lua_batch_teleport(i: Variant, x: Variant, y: Variant) -> Variant:
 	return null
 
 
-func _lua_batch_spawn(i: Variant, x: Variant, y: Variant, vx: Variant, vy: Variant, life: Variant) -> Variant:
-	if _batch == null:
-		return "spawn_child: no batch is running"
-	if not _read_number(i):
-		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
-	var row := int(_number)
+func _lua_batch_spawn(token: Variant, i: Variant, x: Variant, y: Variant, vx: Variant, vy: Variant, life: Variant) -> Variant:
+	var gate := _batch_gate(token)
+	if gate != "":
+		return gate
+	var err := _read_row("spawn_child", i)
+	if err != "":
+		return err
+	var row := _row_value
 	if not _read_number(x):
 		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
 	var px := _number
@@ -555,8 +614,7 @@ func _lua_batch_spawn(i: Variant, x: Variant, y: Variant, vx: Variant, vy: Varia
 		return "spawn_child: expected (row, x, y, vx, vy, lifetime)"
 	var req := ShotRequest.with_velocity(Vector2(px, py), Vector2(pvx, pvy))
 	req.lifetime = _number
-	# Same as the per-bullet helper: the child is declarative, so it does not
-	# re-enter Lua from inside this callback.
+	# The child is declarative, so it does not re-enter Lua from this callback.
 	req.behavior_id = 0
 	_batch.spawn_child(row, req)
 	return null

@@ -773,6 +773,7 @@ func gather_batch(behavior_id: int, delta: float) -> BatchView:
 		view.native_rows = view.n
 	_append_pool_batch(view, behavior_id)
 	view.native = view.native_rows > 0 and view.native_rows == view.n
+	view.capture_commit_keys()
 	return view
 
 
@@ -782,7 +783,7 @@ func commit_batch(view: BatchView) -> void:
 	if view == null or view.discard or view.n == 0 and view.command_count() == 0:
 		return
 	if view.native_rows > 0 and native != null:
-		native.apply_batch(view.id, view.vx, view.vy, view.pa, view.pb)
+		native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb)
 	if view.n > view.native_rows:
 		_commit_pool_columns(view)
 	_commit_batch_commands(view)
@@ -841,22 +842,31 @@ func _fill_native_batch(view: BatchView, behavior_id: int) -> void:
 
 
 func _commit_pool_columns(view: BatchView) -> void:
-	var rows := mini(view.n, view.id.size())
+	var rows := mini(view.n, view._commit_id.size())
 	for i in rows:
-		var bullet_id := view.id[i]
+		var bullet_id := view._commit_id[i]
 		var slot := pool.slot_of(bullet_id)
 		if slot < 0 or pool.dead_reason[slot] != 0 or pool.id_of(slot) != bullet_id:
 			continue
 		if i >= view.vx.size() or i >= view.vy.size():
 			break
+		var cur := pool.vel[slot]
+		var nvx := view.vx[i]
+		var nvy := view.vy[i]
+		var vel_dirty := nvx != cur.x or nvy != cur.y
+		var pa_dirty := i < view.pa.size() and view.pa[i] != pool.param_a[slot]
+		var pb_dirty := i < view.pb.size() and view.pb[i] != pool.param_b[slot]
+		if not vel_dirty and not pa_dirty and not pb_dirty:
+			continue
 		# set_velocity clamps, and a non-finite value kills as INVALID.
-		if not pool.set_velocity(slot, Vector2(view.vx[i], view.vy[i])):
+		if vel_dirty and not pool.set_velocity(slot, Vector2(nvx, nvy)):
 			continue
-		if i >= view.pa.size() or i >= view.pb.size():
-			continue
-		pool.param_a[slot] = view.pa[i]
-		pool.param_b[slot] = view.pb[i]
-		pool.sanitize(slot)
+		if pa_dirty or pb_dirty:
+			if i < view.pa.size():
+				pool.param_a[slot] = view.pa[i]
+			if i < view.pb.size():
+				pool.param_b[slot] = view.pb[i]
+			pool.sanitize(slot)
 
 
 func _commit_batch_commands(view: BatchView) -> void:
@@ -868,8 +878,8 @@ func _commit_batch_commands(view: BatchView) -> void:
 		if op != BatchView.CMD_SPAWN and row >= 0 and row < killed.size() and killed[row] != 0:
 			continue
 		var bullet_id := -1
-		if row >= 0 and row < view.id.size():
-			bullet_id = view.id[row]
+		if row >= 0 and row < view._commit_id.size():
+			bullet_id = view._commit_id[row]
 		match op:
 			BatchView.CMD_KILL:
 				if _batch_kill(view, bullet_id) and row >= 0 and row < killed.size():
@@ -923,14 +933,16 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
-	if row >= 0 and row < view.owner.size():
-		var owner: int = view.owner[row]
-		var outer := pool.hook_owner
-		pool.hook_owner = owner
-		_spawn_inheriting(owner, request, "BatchView.spawn_child", "a batch hook")
-		pool.hook_owner = outer
+	if row < 0 or row >= view._commit_owner.size() or row >= view._commit_id.size():
 		return
-	_spawn_checked(request)
+	var bullet_id := view._commit_id[row]
+	if not _batch_id_current(bullet_id):
+		return
+	var owner: int = view._commit_owner[row]
+	var outer := pool.hook_owner
+	pool.hook_owner = owner
+	_spawn_inheriting(owner, request, "BatchView.spawn_child", "a batch hook")
+	pool.hook_owner = outer
 
 
 func _run_batch_hooks(delta: float) -> void:
