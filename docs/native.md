@@ -81,15 +81,30 @@ move to C++.
   error sets `discard` and commits nothing. An empty behaviour (no live
   bullets) does not enter the callback. With the GDScript backend the same
   view is filled from the pool and the semantics match. Lua `on_batch(v, dt)`
-  is that object: columns are the packed arrays today. A later zero-copy
-  column can replace the arrays inside the view without a script change.
-  There is no zero-copy path and no lua-gdextension fork in this slice.
-  `update_interval` / slicing are not implemented: every live bullet of the
-  behaviour is in the view every tick. The view does not expose `reflect`;
-  `reflect_bullet()` during the callback is the existing API (immediate once
-  the sim has moved). A behaviour that overrides `on_update` is not also
-  batch-called unless `update_mode` is explicitly `BATCH`, and those bullets
-  stay on the pool.
+  is that object. The six defaults below are current behaviour. Each may be
+  extended later; none of them is a zero-copy change.
+  1. **Every-tick cadence.** Every live bullet of the behaviour is in the view
+     every tick. No `update_interval` and no `update_slice`.
+  2. **No view reflect.** The view has no reflect command. Call
+     `reflect_bullet()`. After the sim has moved, that call applies immediately.
+  3. **`spawn_child` only.** It creates a declarative child (`behavior_id` 0).
+     There is no `spawn{}` / `spawn_polar` on the view.
+  4. **Read-only columns.** `px`, `py`, `age`, `id` and `owner` are read-only.
+     A position change goes through `teleport`.
+  5. **`on_update` stays per-bullet.** Overriding `on_update` keeps the bullet
+     on the pool and does not also run the batch hook, unless `update_mode`
+     is `BATCH`. Explicit `BATCH` plus `on_update` still lives on the pool,
+     and both run.
+  6. **Hook spawns stay on the pool for life.** A bullet spawned inside a hook,
+     including `on_update_batch`, is born on the GDScript pool and is not
+     migrated into the sim later.
+  **Zero-copy stays off.** The columns are packed copies through stock
+  lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
+  Packed copies are the backing that was measured: native batch work p95 was
+  **1.80 ms at 5,000** and **3.23 ms at 10,000** (table below), which is
+  inside the budget, so the copy is not the thing to remove next. A later
+  zero-copy column could replace the arrays inside `BatchView` without a
+  script change. That decision is not this slice.
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -257,12 +272,14 @@ Left for later PRs, on purpose:
 
 - Moving per-bullet hooks (`on_update`, `on_hit`, `can_hit`, `on_despawn`)
   into C++. Those bullets stay on the GDScript pool.
-- The narrow zero-copy Lua view. This slice's batch view is packed copies
-  through stock lua-gdextension. A zero-copy column can replace those arrays
-  later without a script change. This PR does not fork Lua.
-- Batch `update_interval` / `update_slice`, and a `reflect` command on the
-  batch view. Cadence is every tick, every bullet. Reflect stays
-  `reflect_bullet()`.
+- Zero-copy stays off. Packed copies measured 1.80 ms / 3.23 ms work p95 at
+  5k / 10k native batch, which is inside the budget. A later column could
+  replace the copies without a script change. This tree does not fork Lua.
+- The six batch defaults above, if a later slice extends one of them:
+  `update_interval` / `update_slice`, a reflect command on the view, a
+  `spawn{}` form, writable position columns, batch-calling an `on_update`
+  bullet without `update_mode = BATCH`, or moving a hook-spawned bullet into
+  the sim. Current behaviour is the list in the batch-hook bullet.
 - Full platform matrix (Windows, macOS, Android, web) and CI build wiring.
 - `can_hit` vetoes inside the C++ sim. A bullet whose mask includes `can_hit`
   stays on the GDScript pool, and so does every other per-bullet hook.

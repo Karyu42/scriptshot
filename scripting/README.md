@@ -21,8 +21,25 @@ previous weapon stays loaded and the game keeps running.
 `LuaBulletBehavior` overrides the four event hooks so it can forward them. It
 sets `hook_mask` with `BulletBehavior.mask_from_names()` from the functions
 that script defines, and `hook_mask_exact = true`. A script with no event
-callback keeps mask 0, and `apply_to_request()` leaves `behavior_id` at 0 so
-the bullet stays declarative.
+callback and no `on_batch` keeps mask 0, and `apply_to_request()` leaves
+`behavior_id` at 0 so the bullet stays declarative. `on_batch` sets
+`update_mode` to `BATCH`.
+
+`on_batch(v, dt)` is one call per tick with every live bullet of that script.
+The columns are packed copies. These six are current behaviour and may be
+extended later (the player-facing writeup is `docs/scripting/api.md`, *Current
+behaviour*):
+
+1. Every tick, every live bullet. No `update_interval` or `update_slice`.
+2. No reflect command on `v`. Use `reflect_bullet()`.
+3. `v:spawn_child(i, x, y, vx, vy, life)` only. The child is declarative.
+4. `px`, `py`, `age`, `id` and `owner` are read-only. Move with `v:teleport`.
+5. Overriding `on_update` keeps the bullet per-bullet on the pool, unless
+   `update_mode` is `BATCH`.
+6. A bullet spawned inside a hook stays on the pool for its whole life.
+
+A script error in `on_batch` commits nothing. Zero-copy is off; see
+`docs/native.md`.
 
 Velocity commits through `BulletPool.set_velocity` (clamped to
 `BulletLimits.MAX_SPEED`, 4,000). A non-finite velocity kills the bullet with

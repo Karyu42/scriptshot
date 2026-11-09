@@ -604,8 +604,8 @@ by the Lua VM. So per-frame logic comes in three grades:
 | **B batch** | `on_batch(bs, dt)` once per bucket | ~4.0 ms (slice) / ~4.9 ms (gather), **~1.0-1.2 us/bullet** | steering many bullets every tick (sine waves, orbits, flocking) |
 | **A per-bullet** | `on_tick(b, dt)` | ~6.2 ms, **~1.6-2.1 us/bullet** | rare, small counts, convenience |
 
-Both A and B support throttling: `tick_every = 4` (or `batch_slice = 4`, process a quarter
-of the bullets per tick) cuts cost linearly (B slice 1/4 at 10000 bullets: 2.5 ms).
+The spike measured throttling (`tick_every = 4`, `batch_slice = 4`). That is **not**
+current behaviour: see *Current behaviour* below. A batch hook runs every tick, for every live bullet.
 
 ```lua
 spawn { speed = 200, bucket = "wave",
@@ -619,12 +619,37 @@ spawn { speed = 200, bucket = "wave",
 
 ### The batch view `v` (Lua-facing contract, backend-agnostic)
 
-`v` is **an object, not raw arrays**, so that its backing can change without any change to scripts. Today the backing
-is **packed copies** made by the GDScript pool; the C++ bullet pool (approved by Karyu as a narrow view, see
-spike-results.md section 8.3) will back the same object with **zero-copy userdata over native pool memory**. **Only per-bullet
-hooks (`on_tick` and the GDScript `BulletBehavior` callbacks) force GDScript storage and the packed-copy backing**;
-declarative bullets and bullets whose only hook is `on_batch` live in the native pool and get the zero-copy view once it exists.
-Queued `on_hit` / `on_despawn` events do not change where a bullet lives. A script that follows the rules below cannot tell which backing it got.
+`v` is **an object, not raw arrays**, so that its backing can change without any change to scripts. The backing that
+ships is **packed copies** (`PackedFloat32Array` / `PackedInt64Array`). A later zero-copy column could replace those
+arrays inside the same object; that path is **off**. Packed copies are the behaviour. An `on_update` override, and any
+event hook, keeps the bullet on the GDScript pool (rule 5 below). A script whose only per-tick hook is `on_batch` is
+batch-only: on the native backend those bullets live in the C++ sim, and on the GDScript backend they stay in the pool,
+with the same view either way.
+
+#### Current behaviour (may be extended later)
+
+These six are what the engine does now. Each one is a conservative default, not a permanent limit. A later change can
+widen one of them without rewriting scripts that follow this list.
+
+1. **Every-tick cadence.** `on_batch` runs once per tick and receives every live bullet of that script. There is no
+   `update_interval` and no `update_slice`. `tick_every` / `batch_slice` from the spike are not implemented.
+2. **No reflect command on the view.** `v` has no `reflect`. To hand a bullet to the other faction, call
+   `reflect_bullet()` (the same call as `b:reflect`). It is not a batch-view command.
+3. **`spawn_child` only.** The batch spawn is `v:spawn_child(i, x, y, vx, vy, life)`. It creates a **declarative**
+   child (`behavior_id` 0: no `on_batch`, no per-bullet hook). `v:spawn{...}` and `v:spawn_polar` are not in this slice.
+4. **Read-only columns.** `v.px`, `v.py`, `v.age`, `v.id` and `v.owner` are read-only. Writing them changes only the
+   copy for this call and does not move the bullet or change its owner. A position change goes through
+   `v:teleport(i, x, y)`. Writable columns are `v.vx`, `v.vy`, `v.pa` and `v.pb`.
+5. **Overriding `on_update` keeps the bullet per-bullet.** That bullet stays on the GDScript pool and is not also
+   called as a batch, unless `update_mode` is explicitly `BATCH`. Explicit `BATCH` plus an `on_update` override still
+   lives on the pool, and both run. Event hooks (`on_spawn`, `on_hit`, `can_hit`, `on_death`) likewise keep the bullet
+   on the pool.
+6. **Hook spawns stay on the pool for life.** A bullet spawned inside a hook, including inside `on_batch`, is born on
+   the GDScript pool and stays there for its whole life. It is not moved into the native sim on a later tick. It
+   inherits the owner's layer from the row (or the hook) that spawned it.
+
+`v:kill(i)` removes that row. Commands and column writes apply when the callback returns, and only if the stable id
+still names that bullet. A script error commits nothing. A behaviour with no live bullets is not entered.
 
 | Member | Meaning |
 |---|---|
@@ -634,8 +659,8 @@ Queued `on_hit` / `on_despawn` events do not change where a bullet lives. A scri
 | `v.vx[i]`, `v.vy[i]` | velocity, **read/write** |
 | `v.age[i]` | seconds since spawn, read-only |
 | `v.pa[i]`, `v.pb[i]` | the per-bullet scratch numbers `param_a` / `param_b`, **read/write** |
-| `v:teleport(i, x, y)`, `v:kill(i)`, `v:reflect(i, layer, reverse)` | structural commands for the bullet at index `i` |
-| `v:spawn_polar(x, y, angle, speed, life)`, `v:spawn{...}` | spawn children (deferred; written to a separate request-batch buffer and referenced by one command, see spike-results.md 8.3; subject to the spawn caps, counted when over) |
+| `v:teleport(i, x, y)`, `v:kill(i)` | structural commands for the bullet at index `i`. **Current:** these two, plus `v:spawn_child`. `v:reflect` is not on the view; use `reflect_bullet()` |
+| `v:spawn_child(i, x, y, vx, vy, life)` | **Current** spawn. Declarative child, stays on the pool for life. `v:spawn{...}` / `v:spawn_polar` are not shipped; they may be added later |
 
 Rules for both backings (rules 3 and 4 differ in how a violation is reported, as stated; a script that follows them behaves the same on both):
 
@@ -647,9 +672,10 @@ Rules for both backings (rules 3 and 4 differ in how a violation is reported, as
    `player` writes). The host sanitizes written values at commit, on both backings: **velocities are clamped to the engine's speed limit, and a NaN or inf
    written to `vx`, `vy`, `pa` or `pb` kills that bullet** (despawn reason `INVALID`, on `main`), increments a counter (`get_script_stats().bad_writes`) and is reported in the script
    error console with the script name and line, rate-limited (once per 5 s per site, like callback errors). Do not write non-finite numbers. **The reported line differs by backing:** the packed backing reports the line where the `on_batch` function is *defined* (it cannot see individual writes), the native backing the line of the *first bad write*. A `v:spawn` record with an invalid `behavior` id (not an exact integer below 2^24; request records are `float32`) is dropped and reported the same way. Engine side (PR #8): the pool also rejects a spawn record whose `radius`, `lifetime`, `acceleration`, `turn_rate`, `damage`, `param_a`, `param_b`, position or velocity is NaN or inf (`BulletPool.invalid_total`, capped warning naming the field), clamps finite out-of-range values to the `BulletLimits` ranges, and checks every numeric field of a hooked bullet after a hook (`BulletPool.sanitize`: NaN or inf kills it as `INVALID`); `pa` / `pb` are covered there too. See `docs/architecture.md`, "Numeric field validation".
-3. **Do not write a read-only column** (`px`, `py`, `age`, `id`). The native backing raises "column 'px' is read-only". The packed
-   backing cannot (columns are bare packed arrays, measured): the write changes only the throw-away copy the pool made for this call
-   and never reaches the engine. Use `v:teleport` to move a bullet.
+3. **Do not write a read-only column** (`px`, `py`, `age`, `id`, `owner`). This is current behaviour, and it may be extended
+   later only by adding a command, not by making the column writable. The packed backing cannot reject the write (columns are
+   bare packed arrays): it changes only the throw-away copy and never reaches the engine. Use `v:teleport` to move a bullet.
+   Owner changes only through `reflect_bullet()`.
 4. **Keep indices inside `0 .. v.n - 1`; negative indices are out of range.** The native backing raises a Lua error on any
    out-of-range index (read or write) and never touches memory outside the view. The packed backing is memory-safe but not
    uniform (measured on 4.7.2): an out-of-range **read returns `nil`**, a **negative index reads from the end** (`px[-1]` is the last
@@ -660,7 +686,8 @@ Rules for both backings (rules 3 and 4 differ in how a violation is reported, as
    either.)
 6. **Structural commands are queued** in a command buffer and applied after the callback returns, in call order; indices
    refer to the bullets of *this* call, and a bullet killed earlier in the same call ignores later commands.
-7. `v:spawn{...}` takes the same fields as the global `spawn` (mapping table above); it does not return an id.
+7. **Current spawn is `v:spawn_child(i, x, y, vx, vy, life)`** (declarative child; see *Current behaviour*). A future
+   `v:spawn{...}` would take the same fields as the global `spawn` and would not return an id. That form is not shipped.
 
 Cost of the object in the current (packed-copy) backing, measured against raw packed arrays: **0.97-1.06x** (separate packed
 columns, hoisted or not), versus 1.12-1.25x for accessor methods (`v:pos(i)`), 1.19x for Lua-proxy columns and 2.0x for
