@@ -215,20 +215,14 @@ func _mirror_body(preference: String, pierce: int) -> PackedInt32Array:
 	var req := _shot(Vector2(100, 0), 4000.0, pierce)
 	var id := _stable(created, created.spawn(req))
 	created.step(0.05)
-	var slot := created.pool.slot_of(id)
-	var vx_sign := 0
-	var owner := -1
-	if slot >= 0:
-		var vx := created.pool.vel[slot].x
-		vx_sign = -1 if vx < 0.0 else (1 if vx > 0.0 else 0)
-		owner = created.pool.owner_layer[slot]
+	var motion := _motion(created, id)
 	var out := PackedInt32Array()
 	out.append(hits)
 	out.append(created.last_reflect_count)
 	out.append(1 if created.emitter.is_bullet_alive(id) else 0)
-	out.append(vx_sign)
-	out.append(owner)
-	out.append(created.pool.count)
+	out.append(motion[0])
+	out.append(motion[1])
+	out.append(motion[2])
 	remove_child(zone)
 	zone.free()
 	remove_child(body)
@@ -293,7 +287,7 @@ func test_mirror_return_leg_wall_normal_matches_gdscript() -> void:
 	assert_eq(gd[2], 0)
 
 
-func test_reflector_routes_to_the_pool_and_migrates_live_native_bullets() -> void:
+func test_a_reflector_leaves_hook_free_bullets_native() -> void:
 	if not _ready_native():
 		return
 	var created := _manager("native")
@@ -307,20 +301,50 @@ func test_reflector_routes_to_the_pool_and_migrates_live_native_bullets() -> voi
 	zone.radius = 30.0
 	zone.position = Vector2(400, 40)
 	add_child(zone)
-	assert_eq(created.native.count(), 0, "live native bullets moved into the pool")
-	assert_eq(created.pool.count, 1)
-	assert_almost_eq(created.pool.pos[0].x, before.x, 0.001)
-	assert_almost_eq(created.pool.pos[0].y, before.y, 0.001)
-	assert_eq(created.pool.seq[0], 0)
+	assert_eq(created.native.count(), 1, "a reflector does not migrate live native bullets")
+	assert_eq(created.pool.count, 0)
+	var still: PackedVector2Array = created.native.snapshot()["pos"]
+	assert_almost_eq(still[0].x, before.x, 0.001)
+	assert_almost_eq(still[0].y, before.y, 0.001)
 	var during := created.spawn(_shot(Vector2(0, 80), 0.0, 0))
-	assert_false(created.is_native_id(during), "a reflector keeps new spawns on the pool")
-	assert_gte(created.pool.slot_of(_stable(created, during)), 0)
+	assert_true(created.is_native_id(during), "a hook-free spawn stays native while a reflector is up")
 	remove_child(zone)
 	zone.free()
 	var again := created.spawn(_shot(Vector2(0, 120), 0.0, 0))
-	assert_true(created.is_native_id(again), "no reflectors: hook-free spawns are native again")
-	assert_eq(created.pool.count, 2, "bullets already in the pool stay there")
+	assert_true(created.is_native_id(again))
+	assert_eq(created.pool.count, 0)
+	assert_true(created.emitter.is_bullet_alive(id))
 	_close(created)
+
+
+func _motion(created: BulletManager, id: int) -> PackedInt32Array:
+	var vel := Vector2.ZERO
+	var owner := -1
+	var reflects := -1
+	if created.is_native_id(id) and created.native != null and created.native.is_alive(id):
+		var snap := created.native.snapshot()
+		var ids: PackedInt64Array = snap["id"]
+		var vels: PackedVector2Array = snap["vel"]
+		var owners: PackedInt32Array = snap["owner"]
+		var counts: PackedInt32Array = snap["reflect_count"]
+		for i in ids.size():
+			if ids[i] == id:
+				vel = vels[i]
+				owner = owners[i]
+				reflects = counts[i]
+				break
+	else:
+		var slot := created.pool.slot_of(id)
+		if slot >= 0:
+			vel = created.pool.vel[slot]
+			owner = created.pool.owner_layer[slot]
+			reflects = created.pool.reflect_count[slot]
+	var sign := -1 if vel.x < 0.0 else (1 if vel.x > 0.0 else 0)
+	var out := PackedInt32Array()
+	out.append(sign)
+	out.append(owner)
+	out.append(reflects)
+	return out
 
 
 ## Registers a reflector from a hit callback. `where` is "hit", "can_hit",
@@ -429,11 +453,13 @@ func test_on_hit_reflector_does_not_drop_the_later_native_hit() -> void:
 		return
 	var gd := _callback_case("gdscript", "hit", false)
 	var nat := _callback_case("native", "hit", false)
-	assert_eq(nat, gd)
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[2], gd[2])
 	assert_eq(gd[0], 1, "target A")
 	assert_eq(gd[1], 1, "target B")
-	assert_eq(nat[3], 0, "native store empty after the boundary")
-	assert_eq(nat[4], nat[2], "every survivor is in the pool, none duplicated")
+	# Both bullets die on their targets. The survivor case (a bystander that
+	# stays native) is test_on_despawn_reflector_migrates_after_the_hits.
 
 
 func test_can_hit_reflector_does_not_drop_the_later_native_hit() -> void:
@@ -441,7 +467,9 @@ func test_can_hit_reflector_does_not_drop_the_later_native_hit() -> void:
 		return
 	var gd := _callback_case("gdscript", "can_hit", false)
 	var nat := _callback_case("native", "can_hit", false)
-	assert_eq(nat, gd)
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[2], gd[2])
 	assert_eq(gd[0], 1, "target A")
 	assert_eq(gd[1], 1, "target B")
 
@@ -453,9 +481,10 @@ func test_on_despawn_reflector_migrates_after_the_hits() -> void:
 	var nat := _callback_case("native", "despawn", true)
 	assert_eq(gd[0], 1)
 	assert_eq(gd[1], 1)
-	assert_eq(nat, gd)
-	assert_eq(nat[3], 0)
-	assert_eq(nat[4], nat[2])
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[2], gd[2])
+	assert_eq(nat[6], 1, "the bystander stayed native; the sim can reflect it next tick")
 
 
 func test_callback_spawn_after_register_stays_on_the_pool() -> void:
@@ -463,12 +492,12 @@ func test_callback_spawn_after_register_stays_on_the_pool() -> void:
 		return
 	var gd := _callback_case("gdscript", "spawn", false)
 	var nat := _callback_case("native", "spawn", false)
-	assert_eq(nat, gd)
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[2], gd[2])
 	assert_eq(nat[0], 1)
 	assert_eq(nat[1], 1)
-	assert_eq(nat[5], 0, "the callback spawn was not a native id")
-	assert_eq(nat[3], 0)
-	assert_eq(nat[4], nat[2])
+	assert_eq(nat[5], 1, "a hook-free spawn stays native after a reflector is registered")
 
 
 func test_register_then_unregister_in_one_callback_does_not_migrate() -> void:
@@ -488,13 +517,17 @@ func test_on_hit_reflector_is_met_on_the_next_tick() -> void:
 		return
 	var gd := _meet_next_tick("gdscript")
 	var nat := _meet_next_tick("native")
-	assert_eq(nat, gd)
+	assert_eq(nat[0], gd[0])
+	assert_eq(nat[1], gd[1])
+	assert_eq(nat[3], gd[3])
+	assert_eq(nat[4], gd[4])
+	assert_eq(nat[5], gd[5])
 	assert_eq(gd[0], 1, "the hooked bullet hit its target")
 	assert_eq(gd[1], 0, "the plain bullet turned before the body")
-	assert_eq(gd[2], 0, "native store empty after the first tick's boundary")
 	assert_eq(gd[3], 1, "the mirror caught the bullet on the next tick")
 	assert_eq(gd[4], 1, "the bullet is enemy-owned")
 	assert_eq(gd[5], -1, "the bullet is travelling back")
+	assert_eq(nat[2], 1, "the plain bullet stayed native across the callback")
 
 
 func _meet_next_tick(preference: String) -> PackedInt32Array:
@@ -536,6 +569,14 @@ func _meet_next_tick(preference: String) -> PackedInt32Array:
 	created.step(0.05)
 	var enemy_owned := 0
 	var vx_sign := 0
+	if created.native != null:
+		var snap := created.native.snapshot()
+		var owners: PackedInt32Array = snap["owner"]
+		var vels: PackedVector2Array = snap["vel"]
+		for i in owners.size():
+			if owners[i] == Layers.ENEMY:
+				enemy_owned += 1
+				vx_sign = -1 if vels[i].x < 0.0 else (1 if vels[i].x > 0.0 else 0)
 	for i in created.pool.count:
 		if created.pool.owner_layer[i] == Layers.ENEMY:
 			enemy_owned += 1
@@ -567,22 +608,50 @@ class _UpdateMirror:
 
 
 func _live_rows(created: BulletManager) -> PackedInt32Array:
+	# Store-independent and in seq order, so a native plain bullet lines up with
+	# the same bullet on the all-GD run.
+	var rows: Array[Dictionary] = []
+	if created.native != null and created.native.count() > 0:
+		var snap := created.native.snapshot()
+		var pos: PackedVector2Array = snap["pos"]
+		var vel: PackedVector2Array = snap["vel"]
+		var owners: PackedInt32Array = snap["owner"]
+		var pierce: PackedInt32Array = snap["pierce"]
+		var seqs: PackedInt32Array = snap["seq"]
+		for i in pos.size():
+			rows.append({
+				"seq": seqs[i], "x": pos[i].x, "y": pos[i].y,
+				"vx": vel[i].x, "vy": vel[i].y, "owner": owners[i], "pierce": pierce[i],
+			})
+	for i in created.pool.count:
+		rows.append({
+			"seq": created.pool.seq[i],
+			"x": created.pool.pos[i].x, "y": created.pool.pos[i].y,
+			"vx": created.pool.vel[i].x, "vy": created.pool.vel[i].y,
+			"owner": created.pool.owner_layer[i], "pierce": created.pool.pierce[i],
+		})
+	rows.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		var sa: int = a["seq"]
+		var sb: int = b["seq"]
+		return sa < sb)
 	var out := PackedInt32Array()
 	out.append(created.last_reflect_count)
-	var native_left := 0
-	if created.native != null:
-		native_left = created.native.count()
-	out.append(native_left)
-	out.append(created.pool.count)
 	out.append(created.alive_count())
-	for i in created.pool.count:
-		out.append(roundi(created.pool.pos[i].x * 100.0))
-		out.append(roundi(created.pool.pos[i].y * 100.0))
-		out.append(roundi(created.pool.vel[i].x))
-		out.append(roundi(created.pool.vel[i].y))
-		out.append(created.pool.owner_layer[i])
-		out.append(created.pool.pierce[i])
-		out.append(created.pool.seq[i])
+	for row: Dictionary in rows:
+		var x: float = row["x"]
+		var y: float = row["y"]
+		var vx: float = row["vx"]
+		var vy: float = row["vy"]
+		var owner: int = row["owner"]
+		var pierce: int = row["pierce"]
+		var seq: int = row["seq"]
+		out.append(roundi(x * 100.0))
+		out.append(roundi(y * 100.0))
+		out.append(roundi(vx))
+		out.append(roundi(vy))
+		out.append(owner)
+		out.append(pierce)
+		out.append(seq)
 	return out
 
 
@@ -644,16 +713,14 @@ func test_on_update_mirror_reflects_the_native_bullet_this_tick() -> void:
 	var gd := _update_mirror_case("gdscript", false, 0, false)
 	var nat := _update_mirror_case("native", false, 0, false)
 	assert_eq(nat, gd)
-	# first rows: hits, behind, r1, native, pool, alive, then bullet 0, bullet 1.
+	# hits, behind, reflect, alive, then each bullet (x y vx vy owner pierce seq).
 	assert_eq(gd[2], 2, "both shots reflect in the registration tick")
-	assert_eq(gd[3], 0, "native store empty after the same-tick move")
-	assert_eq(gd[4], gd[5], "every survivor is in the pool")
+	assert_eq(gd[3], 2, "both bullets survived")
 	assert_eq(gd[1], 0, "the body behind the mirror is not hit")
-	# Bullet 1 is the off-axis shot: its reflected vy is the mirror normal.
-	assert_ne(gd[16], 0, "off-axis reflection is not a plain reversal")
-	assert_lt(gd[8], 0, "on-axis shot reversed")
+	assert_lt(gd[6], 0, "on-axis shot reversed")
+	assert_ne(gd[14], 0, "off-axis reflection is not a plain reversal")
 	# Second tick does not reflect either bullet again.
-	var second_r := 2 + 4 + 7 * 2
+	var second_r := 2 + 2 + 7 * 2
 	assert_eq(gd[second_r], 0)
 
 
@@ -675,8 +742,7 @@ func test_on_update_mirror_plain_spawned_first_matches_gdscript() -> void:
 	var nat := _update_mirror_case("native", true, 0, false)
 	assert_eq(nat, gd)
 	assert_eq(gd[2], 2)
-	assert_eq(gd[3], 0)
-	assert_eq(gd[4], 2)
+	assert_eq(gd[3], 2)
 
 
 func test_mid_flight_mirror_matches_gdscript() -> void:
@@ -708,17 +774,19 @@ func _mid_flight(preference: String) -> PackedInt32Array:
 	body.hit.connect(func(_d: float, _p: Vector2, _v: Vector2) -> void: hits += 1)
 	created.step(0.04)
 	var reflected := 0
+	if created.native != null:
+		var owners: PackedInt32Array = created.native.snapshot()["owner"]
+		for owner in owners:
+			if owner == Layers.ENEMY:
+				reflected += 1
 	for i in created.pool.count:
 		if created.pool.owner_layer[i] == Layers.ENEMY:
 			reflected += 1
-	var native_left := 0
-	if created.native != null:
-		native_left = created.native.count()
 	var out := PackedInt32Array()
 	out.append(hits)
 	out.append(created.last_reflect_count)
 	out.append(reflected)
-	out.append(native_left)
+	out.append(created.alive_count())
 	remove_child(zone)
 	zone.free()
 	remove_child(body)

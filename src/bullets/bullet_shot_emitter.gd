@@ -86,5 +86,7 @@ func get_enemy_reserve() -> int:
 
 
 func get_wall_normal(id: int) -> Vector2:
+	if _manager.is_native_id(id):
+		return _manager.native.wall_normal(id) if _manager.native != null else Vector2.ZERO
 	var slot := _manager.pool.slot_of(id)
 	return _manager.wall_normal_of(slot) if slot >= 0 else Vector2.ZERO

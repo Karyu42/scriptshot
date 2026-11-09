@@ -36,11 +36,35 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_retire_callback", "callback"), &NativeBulletSim::set_retire_callback);
 	ClassDB::bind_method(D_METHOD("get_pending_hit_count"), &NativeBulletSim::get_pending_hit_count);
 	ClassDB::bind_method(D_METHOD("get_pending_hit_seqs"), &NativeBulletSim::get_pending_hit_seqs);
+	ClassDB::bind_method(D_METHOD("get_pending_hit_t"), &NativeBulletSim::get_pending_hit_t);
 	ClassDB::bind_method(D_METHOD("commit_pending_hit", "index"), &NativeBulletSim::commit_pending_hit);
 	ClassDB::bind_method(D_METHOD("finish_delivery"), &NativeBulletSim::finish_delivery);
 	ClassDB::bind_method(D_METHOD("find_seq", "seq"), &NativeBulletSim::find_seq);
 	ClassDB::bind_method(D_METHOD("set_seq_at", "slot", "seq"), &NativeBulletSim::set_seq_at);
 	ClassDB::bind_method(D_METHOD("export_states"), &NativeBulletSim::export_states);
+	ClassDB::bind_method(D_METHOD("set_zones", "pos", "radius", "owners", "count"), &NativeBulletSim::set_zones);
+	ClassDB::bind_method(D_METHOD("get_zone_hit_count"), &NativeBulletSim::get_zone_hit_count);
+	ClassDB::bind_method(D_METHOD("get_zone_hit_slots"), &NativeBulletSim::get_zone_hit_slots);
+	ClassDB::bind_method(D_METHOD("get_zone_hit_zones"), &NativeBulletSim::get_zone_hit_zones);
+	ClassDB::bind_method(D_METHOD("get_zone_hit_t"), &NativeBulletSim::get_zone_hit_t);
+	ClassDB::bind_method(D_METHOD("get_zone_hit_seqs"), &NativeBulletSim::get_zone_hit_seqs);
+	ClassDB::bind_method(D_METHOD("get_position_at", "slot"), &NativeBulletSim::get_position_at);
+	ClassDB::bind_method(D_METHOD("get_previous_at", "slot"), &NativeBulletSim::get_previous_at);
+	ClassDB::bind_method(D_METHOD("get_velocity_at", "slot"), &NativeBulletSim::get_velocity_at);
+	ClassDB::bind_method(D_METHOD("get_owner_at", "slot"), &NativeBulletSim::get_owner_at);
+	ClassDB::bind_method(D_METHOD("get_reflect_count_at", "slot"), &NativeBulletSim::get_reflect_count_at);
+	ClassDB::bind_method(D_METHOD("get_wall_clip_at", "slot"), &NativeBulletSim::get_wall_clip_at);
+	ClassDB::bind_method(D_METHOD("is_slot_alive", "slot"), &NativeBulletSim::is_slot_alive);
+	ClassDB::bind_method(D_METHOD("apply_reflect", "slot", "new_owner", "new_mask", "color", "new_damage", "keep_script", "limit", "heading", "speed", "impact"),
+			&NativeBulletSim::apply_reflect);
+	ClassDB::bind_method(D_METHOD("cancel_outbound_wall", "slot"), &NativeBulletSim::cancel_outbound_wall);
+	ClassDB::bind_method(D_METHOD("begin_return", "slot", "delta", "reflected_t"), &NativeBulletSim::begin_return);
+	ClassDB::bind_method(D_METHOD("get_return_hit_count"), &NativeBulletSim::get_return_hit_count);
+	ClassDB::bind_method(D_METHOD("commit_return_hit", "index"), &NativeBulletSim::commit_return_hit);
+	ClassDB::bind_method(D_METHOD("finish_return", "slot"), &NativeBulletSim::finish_return);
+	ClassDB::bind_method(D_METHOD("get_wall_normal", "id"), &NativeBulletSim::get_wall_normal);
+	ClassDB::bind_method(D_METHOD("clear_wall_normals"), &NativeBulletSim::clear_wall_normals);
+	ClassDB::bind_method(D_METHOD("query_wall_normal", "start", "delta", "radius"), &NativeBulletSim::query_wall_normal);
 	ClassDB::bind_method(D_METHOD("is_alive", "id"), &NativeBulletSim::is_alive);
 	ClassDB::bind_method(D_METHOD("slot_of", "id"), &NativeBulletSim::slot_of);
 	ClassDB::bind_method(D_METHOD("id_of", "slot"), &NativeBulletSim::id_of);
@@ -100,6 +124,13 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 	collide_world.assign(n, 1);
 	dead.assign(n, 0);
 	source_flags.assign(n, 0);
+	reflect_count.assign(n, 0);
+	wall_clip.assign(n, 1.0f);
+	wall_nx.assign(n, 0.0f);
+	wall_ny.assign(n, 0.0f);
+	wall_suppress.assign(n, 0);
+	wall_report.assign(n, 0);
+	return_wall_pending.assign(n, 0);
 	hit_mem.assign(n * (size_t)HIT_MEMORY, 0);
 	hit_mem_count.assign(n, 0);
 	hit_mem_head.assign(n, 0);
@@ -114,6 +145,7 @@ void NativeBulletSim::configure(int p_capacity, const Rect2 &p_bounds, float p_c
 	t_occupied.assign((size_t)cols * rows, 0);
 	t_touched.clear();
 	t_entry_count = 0;
+	resize_zone_grid();
 	walls_dirty = true;
 	hit_events.reserve(1024);
 	for (int s = 0; s < 2; s++) {
@@ -153,6 +185,7 @@ void NativeBulletSim::set_bounds(const Rect2 &p_bounds) {
 	t_heads.assign((size_t)cols * (size_t)rows, -1);
 	t_occupied.assign((size_t)cols * (size_t)rows, 0);
 	t_touched.clear();
+	resize_zone_grid();
 	walls_dirty = true;
 }
 
@@ -456,9 +489,82 @@ bool NativeBulletSim::point_hit(double x, double y, double r, int mask, int slot
 // walls
 // ---------------------------------------------------------------------------
 
-// First t in [0, 1] at which the segment s + d*t enters any wall grown by `r`
-// (0 if it starts inside one), or -1.0.
-double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double dy, double r) const {
+// Outward unit normal of the inflated box face the path enters through.
+// Same rules as WallGrid.box_normal, including the corner and inside ties.
+void NativeBulletSim::box_normal(float sx, float sy, float dx, float dy, float lox, float loy, float hix, float hiy, float &nx, float &ny) {
+	float tx = -std::numeric_limits<float>::infinity();
+	float ty = -std::numeric_limits<float>::infinity();
+	float nnx = 0.0f;
+	float nny = 0.0f;
+	if (std::fabs(dx) >= 1e-9f) {
+		if (dx > 0.0f) {
+			tx = (lox - sx) / dx;
+			nnx = -1.0f;
+		} else {
+			tx = (hix - sx) / dx;
+			nnx = 1.0f;
+		}
+	}
+	if (std::fabs(dy) >= 1e-9f) {
+		if (dy > 0.0f) {
+			ty = (loy - sy) / dy;
+			nny = -1.0f;
+		} else {
+			ty = (hiy - sy) / dy;
+			nny = 1.0f;
+		}
+	}
+	if (tx <= 0.0f && ty <= 0.0f) {
+		const float left = sx - lox;
+		const float right = hix - sx;
+		const float top = sy - loy;
+		const float bottom = hiy - sy;
+		const float m = std::min(std::min(left, right), std::min(top, bottom));
+		if (m == left) {
+			nx = -1.0f;
+			ny = 0.0f;
+			return;
+		}
+		if (m == right) {
+			nx = 1.0f;
+			ny = 0.0f;
+			return;
+		}
+		if (m == top) {
+			nx = 0.0f;
+			ny = -1.0f;
+			return;
+		}
+		nx = 0.0f;
+		ny = 1.0f;
+		return;
+	}
+	if (tx > ty) {
+		nx = nnx;
+		ny = 0.0f;
+		return;
+	}
+	if (ty > tx) {
+		nx = 0.0f;
+		ny = nny;
+		return;
+	}
+	if (std::fabs(dx) >= std::fabs(dy)) {
+		nx = nnx;
+		ny = 0.0f;
+		return;
+	}
+	nx = 0.0f;
+	ny = nny;
+}
+
+// First contact with any wall grown by `r`. On an exact time tie the lower wall
+// index wins, matching WallGrid._best_hit, so the normal does not follow cell order.
+NativeBulletSim::WallContact NativeBulletSim::query_wall(double sx, double sy, double dx, double dy, double r) const {
+	WallContact out;
+	if (wall_lo_x.empty() || w_cell_start.empty()) {
+		return out;
+	}
 	const double ex = sx + dx, ey = sy + dy;
 	const double minx = std::min(sx, ex) - r, maxx = std::max(sx, ex) + r;
 	const double miny = std::min(sy, ey) - r, maxy = std::max(sy, ey) + r;
@@ -467,14 +573,17 @@ double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double d
 	const int y0 = std::clamp((int)std::floor((miny - bounds.position.y) * inv_cell), 0, rows - 1);
 	const int y1 = std::clamp((int)std::floor((maxy - bounds.position.y) * inv_cell), 0, rows - 1);
 	double best = 2.0;
+	int best_w = -1;
 	for (int cy = y0; cy <= y1; cy++) {
 		for (int cx = x0; cx <= x1; cx++) {
 			const size_t c = (size_t)cy * cols + cx;
+			if (c + 1 >= w_cell_start.size()) {
+				continue;
+			}
 			for (int k = w_cell_start[c]; k < w_cell_start[c + 1]; k++) {
 				const int w = w_cell_walls[k];
 				const double lx = wall_lo_x[w] - r, hx = wall_hi_x[w] + r;
 				const double ly = wall_lo_y[w] - r, hy = wall_hi_y[w] + r;
-				// Cheap reject on the path's bounding box.
 				if (maxx < lx || minx > hx || maxy < ly || miny > hy) {
 					continue;
 				}
@@ -504,13 +613,26 @@ double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double d
 						ok = t_min <= t_max;
 					}
 				}
-				if (ok && t_min < best) {
+				if (ok && (t_min < best || (t_min == best && w < best_w))) {
 					best = t_min;
+					best_w = w;
 				}
 			}
 		}
 	}
-	return best <= 1.0 ? best : -1.0;
+	if (best > 1.0 || best_w < 0) {
+		return out;
+	}
+	out.t = best;
+	out.wall = best_w;
+	const float fr = (float)r;
+	box_normal((float)sx, (float)sy, (float)dx, (float)dy, wall_lo_x[best_w] - fr, wall_lo_y[best_w] - fr, wall_hi_x[best_w] + fr,
+			wall_hi_y[best_w] + fr, out.nx, out.ny);
+	return out;
+}
+
+double NativeBulletSim::wall_first_hit(double sx, double sy, double dx, double dy, double r) const {
+	return query_wall(sx, sy, dx, dy, r).t;
 }
 
 // ---------------------------------------------------------------------------
@@ -571,6 +693,11 @@ int64_t NativeBulletSim::spawn(const Vector2 &p_position, const Vector2 &p_veloc
 	seq[i] = p_seq;
 	collide_world[i] = p_collide_world ? 1 : 0;
 	source_flags[i] = (uint8_t)p_source_flags;
+	reflect_count[i] = 0;
+	wall_clip[i] = 1.0f;
+	wall_suppress[i] = 0;
+	wall_report[i] = 0;
+	return_wall_pending[i] = 0;
 	clear_hit_memory(i);
 	dead[i] = 0;
 	if (p_radius > max_radius) {
@@ -631,8 +758,12 @@ void NativeBulletSim::remove_at(int i) {
 	if (reason >= 0 && reason < 6) {
 		despawn_counts[reason]++;
 	}
+	if (wall_report[i] != 0) {
+		wall_reports.push_back(WallReport{ id_of(i), wall_nx[i], wall_ny[i] });
+	}
 	if (record_events && reason >= 0) {
-		despawn_log.push_back(DespawnEvent{ lifetime[i], reason });
+		const bool wall = reason == REASON_WALL && wall_report[i] != 0;
+		despawn_log.push_back(DespawnEvent{ lifetime[i], reason, wall ? wall_nx[i] : 0.0f, wall ? wall_ny[i] : 0.0f });
 	}
 	owner_counts[owner_slot_of(owner_layer[i])]--;
 	if (retire_order.is_valid()) {
@@ -673,6 +804,13 @@ void NativeBulletSim::remove_at(int i) {
 		seq[i] = seq[last];
 		collide_world[i] = collide_world[last];
 		source_flags[i] = source_flags[last];
+		reflect_count[i] = reflect_count[last];
+		wall_clip[i] = wall_clip[last];
+		wall_nx[i] = wall_nx[last];
+		wall_ny[i] = wall_ny[last];
+		wall_suppress[i] = wall_suppress[last];
+		wall_report[i] = wall_report[last];
+		return_wall_pending[i] = return_wall_pending[last];
 		copy_hit_memory(last, i);
 		dead[i] = dead[last];
 	} else {
@@ -712,6 +850,9 @@ void NativeBulletSim::clear() {
 	owner_counts[0] = owner_counts[1] = owner_counts[2] = 0;
 	count = 0;
 	pending_count = 0;
+	wall_reports.clear();
+	zone_events.clear();
+	return_events.clear();
 }
 
 void NativeBulletSim::claim_from_bounds(int slot, int reason) {
@@ -773,6 +914,9 @@ void NativeBulletSim::copy_hit_memory(int src, int dst) {
 int NativeBulletSim::step(double delta) {
 	hit_events.clear();
 	wall_slots.clear();
+	zone_events.clear();
+	return_events.clear();
+	wall_reports.clear();
 	if (record_events) {
 		hit_log.clear();
 		despawn_log.clear();
@@ -797,6 +941,12 @@ int NativeBulletSim::step(double delta) {
 		const float old_x = px[i], old_y = py[i];
 		qx[i] = old_x;
 		qy[i] = old_y;
+		wall_clip[i] = 1.0f;
+		wall_suppress[i] = 0;
+		wall_report[i] = 0;
+		return_wall_pending[i] = 0;
+		wall_nx[i] = 0.0f;
+		wall_ny[i] = 0.0f;
 		const double a = (double)age[i] + delta;
 		age[i] = (float)a;
 		if (a >= (double)lifetime[i]) {
@@ -847,11 +997,15 @@ int NativeBulletSim::step(double delta) {
 		// applied in deliver_hits(), after hurtboxes, so a target in front of
 		// the wall wins the reason.
 		if (have_walls && collide_world[i]) {
-			const double t = wall_first_hit(old_x, old_y, (double)nx - old_x, (double)ny - old_y, r);
-			if (t >= 0.0) {
+			const WallContact hit = query_wall(old_x, old_y, (double)nx - old_x, (double)ny - old_y, r);
+			if (hit.t >= 0.0) {
 				wall_slots.push_back(i);
-				nx = (float)(old_x + ((double)nx - old_x) * t);
-				ny = (float)(old_y + ((double)ny - old_y) * t);
+				wall_clip[i] = (float)hit.t;
+				wall_nx[i] = hit.nx;
+				wall_ny[i] = hit.ny;
+				wall_report[i] = 1;
+				nx = (float)(old_x + ((double)nx - old_x) * hit.t);
+				ny = (float)(old_y + ((double)ny - old_y) * hit.t);
 			}
 		}
 
@@ -868,7 +1022,7 @@ int NativeBulletSim::step(double delta) {
 			if (short_path) {
 				int ti = -1;
 				if (point_hit(nx, ny, r, mask, i, ti)) {
-					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i], seq[i] });
+					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), nx, ny, vxi, vyi, damage[i], source_flags[i], seq[i], 1.0f });
 				}
 			} else {
 				double sx = old_x, sy = old_y;
@@ -883,8 +1037,16 @@ int NativeBulletSim::step(double delta) {
 					}
 					const double ix = sx + ((double)nx - sx) * t;
 					const double iy = sy + ((double)ny - sy) * t;
+					float path_t = 0.0f;
+					const float sdx = nx - old_x;
+					const float sdy = ny - old_y;
+					if (std::fabs(sdx) >= std::fabs(sdy)) {
+						path_t = std::fabs(sdx) > 1e-8f ? (float)((ix - old_x) / (double)sdx) : 0.0f;
+					} else {
+						path_t = std::fabs(sdy) > 1e-8f ? (float)((iy - old_y) / (double)sdy) : 0.0f;
+					}
 					hit_events.push_back(HitEvent{ targets[ti].id, id_of(i), (float)ix, (float)iy, vxi, vyi, damage[i],
-							source_flags[i], seq[i] });
+							source_flags[i], seq[i], path_t });
 					if (left > 0) {
 						left--;
 						excl_buf.push_back(ti);
@@ -895,6 +1057,10 @@ int NativeBulletSim::step(double delta) {
 					break;
 				}
 			}
+		}
+
+		if (zone_count > 0 && owner_layer[i] != 0 && (dead[i] == 0 || dead[i] == REASON_BOUNDS + 1)) {
+			sweep_zones_for(i, old_x, old_y, nx - old_x, ny - old_y, (float)r, owner_layer[i]);
 		}
 
 		px[i] = nx;
@@ -926,6 +1092,13 @@ void NativeBulletSim::commit_hit(const HitEvent &h) {
 	if (!piercing) {
 		px[s] = h.x;
 		py[s] = h.y;
+		// A killing hit on the return leg never reaches the wall behind it.
+		if (return_wall_pending[s] != 0) {
+			return_wall_pending[s] = 0;
+			wall_report[s] = 0;
+			wall_nx[s] = 0.0f;
+			wall_ny[s] = 0.0f;
+		}
 	}
 	target->call("receive_hit", h.damage, Vector2(h.x, h.y), Vector2(h.vx, h.vy), h.bullet_id, h.flags);
 	if (record_events) {
@@ -952,6 +1125,15 @@ PackedInt32Array NativeBulletSim::get_pending_hit_seqs() const {
 	out.resize((int)hit_events.size());
 	for (int i = 0; i < (int)hit_events.size(); i++) {
 		out[i] = hit_events[(size_t)i].seq;
+	}
+	return out;
+}
+
+PackedFloat32Array NativeBulletSim::get_pending_hit_t() const {
+	PackedFloat32Array out;
+	out.resize((int)hit_events.size());
+	for (int i = 0; i < (int)hit_events.size(); i++) {
+		out[i] = hit_events[(size_t)i].path_t;
 	}
 	return out;
 }
@@ -983,7 +1165,7 @@ void NativeBulletSim::finish_delivery() {
 	// pulling a later hit's slot out from under it. Hits left uncommitted are
 	// skipped: the manager delivers them itself, in global seq order.
 	for (int s : wall_slots) {
-		if (s < 0 || s >= count) {
+		if (s < 0 || s >= count || wall_suppress[s] != 0) {
 			continue;
 		}
 		if (dead[s] != 0 && dead[s] != REASON_BOUNDS + 1) {
@@ -1079,7 +1261,7 @@ PackedInt32Array NativeBulletSim::get_despawn_counts() const {
 Dictionary NativeBulletSim::snapshot() const {
 	PackedVector2Array pos, prev, vel;
 	PackedFloat32Array ages, lifes, rads;
-	PackedInt32Array pierces, masks;
+	PackedInt32Array pierces, masks, owners, reflects, seqs;
 	PackedInt64Array ids;
 	pos.resize(count);
 	prev.resize(count);
@@ -1089,6 +1271,9 @@ Dictionary NativeBulletSim::snapshot() const {
 	rads.resize(count);
 	pierces.resize(count);
 	masks.resize(count);
+	owners.resize(count);
+	reflects.resize(count);
+	seqs.resize(count);
 	ids.resize(count);
 	for (int i = 0; i < count; i++) {
 		pos[i] = Vector2(px[i], py[i]);
@@ -1099,6 +1284,9 @@ Dictionary NativeBulletSim::snapshot() const {
 		rads[i] = radius[i];
 		pierces[i] = pierce[i];
 		masks[i] = hit_mask[i];
+		owners[i] = owner_layer[i];
+		reflects[i] = reflect_count[i];
+		seqs[i] = seq[i];
 		ids[i] = id_of(i);
 	}
 	Dictionary d;
@@ -1110,6 +1298,9 @@ Dictionary NativeBulletSim::snapshot() const {
 	d["radius"] = rads;
 	d["pierce"] = pierces;
 	d["hit_mask"] = masks;
+	d["owner"] = owners;
+	d["reflect_count"] = reflects;
+	d["seq"] = seqs;
 	d["id"] = ids;
 	return d;
 }
@@ -1165,6 +1356,7 @@ Array NativeBulletSim::export_states() const {
 		row["collide"] = collide_world[i] != 0;
 		row["flags"] = (int)source_flags[i];
 		row["seq"] = seq[i];
+		row["reflect_count"] = (int)reflect_count[i];
 		PackedInt64Array mem;
 		const int n = hit_mem_count[i];
 		mem.resize(n);
@@ -1185,6 +1377,7 @@ Array NativeBulletSim::get_last_despawns() const {
 		Dictionary d;
 		d["lifetime"] = e.lifetime;
 		d["reason"] = e.reason;
+		d["normal"] = Vector2(e.nx, e.ny);
 		out.push_back(d);
 	}
 	return out;
@@ -1202,6 +1395,470 @@ Array NativeBulletSim::get_last_hits() const {
 		out.push_back(d);
 	}
 	return out;
+}
+
+// ---------------------------------------------------------------------------
+// reflectors and wall normals
+// ---------------------------------------------------------------------------
+
+void NativeBulletSim::resize_zone_grid() {
+	const size_t cells = (size_t)cols * (size_t)rows;
+	z_heads.assign(cells, -1);
+	z_occupied.assign(cells, 0);
+	z_touched.clear();
+	z_entry_count = 0;
+}
+
+void NativeBulletSim::set_zones(const PackedVector2Array &p_pos, const PackedFloat32Array &p_radius, const PackedInt32Array &p_owners, int p_count) {
+	p_count = std::min(p_count, (int)std::min({ p_pos.size(), p_radius.size(), p_owners.size() }));
+	zone_count = std::max(p_count, 0);
+	zones.resize((size_t)zone_count);
+	const Vector2 *pp = p_pos.ptr();
+	const float *pr = p_radius.ptr();
+	const int32_t *po = p_owners.ptr();
+	for (int k = 0; k < zone_count; k++) {
+		zones[k] = Zone{ pp[k].x, pp[k].y, pr[k], po[k] };
+	}
+	rebuild_zones();
+}
+
+void NativeBulletSim::rebuild_zones() {
+	if ((int)z_heads.size() != cols * rows) {
+		resize_zone_grid();
+	}
+	for (int32_t cell : z_touched) {
+		z_heads[cell] = -1;
+		z_occupied[cell] = 0;
+	}
+	z_touched.clear();
+	z_entry_count = 0;
+	const float margin = max_radius;
+	for (int id = 0; id < zone_count; id++) {
+		const Zone &z = zones[id];
+		const float reach = z.r + margin;
+		int x0 = std::clamp((int)std::floor((z.x - reach - bounds.position.x) * inv_cell), 0, cols - 1);
+		int x1 = std::clamp((int)std::floor((z.x + reach - bounds.position.x) * inv_cell), 0, cols - 1);
+		int y0 = std::clamp((int)std::floor((z.y - reach - bounds.position.y) * inv_cell), 0, rows - 1);
+		int y1 = std::clamp((int)std::floor((z.y + reach - bounds.position.y) * inv_cell), 0, rows - 1);
+		for (int cy = y0; cy <= y1; cy++) {
+			for (int cx = x0; cx <= x1; cx++) {
+				const int cell = cy * cols + cx;
+				if ((size_t)z_entry_count >= z_entry_target.size()) {
+					size_t ns = std::max<size_t>(256, z_entry_target.size() * 2);
+					z_entry_target.resize(ns);
+					z_entry_next.resize(ns);
+				}
+				const int e = z_entry_count++;
+				z_entry_target[e] = id;
+				z_entry_next[e] = z_heads[cell];
+				if (!z_occupied[cell]) {
+					z_occupied[cell] = 1;
+					z_touched.push_back(cell);
+				}
+				z_heads[cell] = e;
+			}
+		}
+	}
+}
+
+static int cell_trunc(float v, int hi) {
+	int i = (int)v;
+	if (i < 0) {
+		i = 0;
+	}
+	if (i > hi) {
+		i = hi;
+	}
+	return i;
+}
+
+void NativeBulletSim::sweep_zones_for(int slot, float sx, float sy, float dx, float dy, float br, int mask) {
+	if (zone_count <= 0 || mask == 0) {
+		return;
+	}
+	const float ox = bounds.position.x, oy = bounds.position.y;
+	const float inv = inv_cell;
+	const float fx0 = (sx - ox) * inv;
+	const float fy0 = (sy - oy) * inv;
+	const float dfx = dx * inv;
+	const float dfy = dy * inv;
+	float tc0 = 0.0f, tc1 = 1.0f;
+	if (dfx == 0.0f) {
+		if (fx0 < 0.0f || fx0 >= (float)cols) {
+			return;
+		}
+	} else {
+		const float ta = -fx0 / dfx;
+		const float tb = ((float)cols - fx0) / dfx;
+		tc0 = std::max(tc0, std::min(ta, tb));
+		tc1 = std::min(tc1, std::max(ta, tb));
+	}
+	if (dfy == 0.0f) {
+		if (fy0 < 0.0f || fy0 >= (float)rows) {
+			return;
+		}
+	} else {
+		const float tya = -fy0 / dfy;
+		const float tyb = ((float)rows - fy0) / dfy;
+		tc0 = std::max(tc0, std::min(tya, tyb));
+		tc1 = std::min(tc1, std::max(tya, tyb));
+	}
+	if (tc0 > tc1) {
+		return;
+	}
+	const int max_hits = std::min(zone_count, MAX_ZONE_HITS);
+	int excl[MAX_ZONE_HITS];
+	int excl_n = 0;
+	float t_min = 0.0f;
+	const float a = dx * dx + dy * dy;
+	for (int n = 0; n < max_hits; n++) {
+		const float t_begin = std::max(tc0, t_min);
+		if (t_begin > tc1) {
+			return;
+		}
+		const float px0 = fx0 + dfx * t_begin;
+		const float py0 = fy0 + dfy * t_begin;
+		int cx = cell_trunc(px0, cols - 1);
+		int cy = cell_trunc(py0, rows - 1);
+		const int ex = cell_trunc(fx0 + dfx * tc1, cols - 1);
+		const int ey = cell_trunc(fy0 + dfy * tc1, rows - 1);
+		const int step_x = dx > 0.0f ? 1 : -1;
+		const int step_y = dy > 0.0f ? 1 : -1;
+		float tmax_x = std::numeric_limits<float>::infinity();
+		float tmax_y = std::numeric_limits<float>::infinity();
+		float tdelta_x = std::numeric_limits<float>::infinity();
+		float tdelta_y = std::numeric_limits<float>::infinity();
+		if (dfx != 0.0f) {
+			tdelta_x = std::fabs(1.0f / dfx);
+			tmax_x = t_begin + ((float)(cx + (step_x > 0 ? 1 : 0)) - px0) / dfx;
+		}
+		if (dfy != 0.0f) {
+			tdelta_y = std::fabs(1.0f / dfy);
+			tmax_y = t_begin + ((float)(cy + (step_y > 0 ? 1 : 0)) - py0) / dfy;
+		}
+		const int steps = std::abs(ex - cx) + std::abs(ey - cy) + 1;
+		float best_t = 2.0f;
+		int best = -1;
+		for (int stp = 0; stp < steps; stp++) {
+			const int cell = cy * cols + cx;
+			if (cell >= 0 && cell < (int)z_occupied.size() && z_occupied[cell]) {
+				for (int e = z_heads[cell]; e != -1; e = z_entry_next[e]) {
+					const int zi = z_entry_target[e];
+					const Zone &z = zones[zi];
+					if ((z.layer & mask) == 0) {
+						continue;
+					}
+					bool skip = false;
+					for (int k = 0; k < excl_n; k++) {
+						if (excl[k] == zi) {
+							skip = true;
+							break;
+						}
+					}
+					if (skip) {
+						continue;
+					}
+					const float rr = z.r + br;
+					const float fx = sx - z.x;
+					const float fy = sy - z.y;
+					const float c = fx * fx + fy * fy - rr * rr;
+					float hit = -1.0f;
+					if (a > 0.0f) {
+						const float b = fx * dx + fy * dy;
+						const float disc = b * b - a * c;
+						if (disc >= 0.0f) {
+							const float root = std::sqrt(disc);
+							if ((-b + root) / a >= t_min) {
+								hit = std::max((-b - root) / a, t_min);
+							}
+						}
+					} else if (c <= 0.0f) {
+						hit = 0.0f;
+					}
+					if (hit >= 0.0f && hit <= 1.0f && hit < best_t) {
+						best_t = hit;
+						best = zi;
+					}
+				}
+			}
+			if (best != -1 && std::min(tmax_x, tmax_y) >= best_t) {
+				break;
+			}
+			if (cx == ex || (cy != ey && tmax_y < tmax_x)) {
+				cy += step_y;
+				tmax_y += tdelta_y;
+			} else {
+				cx += step_x;
+				tmax_x += tdelta_x;
+			}
+		}
+		if (best < 0) {
+			return;
+		}
+		zone_events.push_back(ZoneEvent{ slot, best, best_t, seq[slot] });
+		excl[excl_n++] = best;
+		t_min = best_t;
+		if (t_min >= 1.0f) {
+			return;
+		}
+	}
+}
+
+PackedInt32Array NativeBulletSim::get_zone_hit_slots() const {
+	PackedInt32Array out;
+	out.resize((int)zone_events.size());
+	for (int i = 0; i < (int)zone_events.size(); i++) {
+		out[i] = zone_events[(size_t)i].slot;
+	}
+	return out;
+}
+
+PackedInt32Array NativeBulletSim::get_zone_hit_zones() const {
+	PackedInt32Array out;
+	out.resize((int)zone_events.size());
+	for (int i = 0; i < (int)zone_events.size(); i++) {
+		out[i] = zone_events[(size_t)i].zone;
+	}
+	return out;
+}
+
+PackedFloat32Array NativeBulletSim::get_zone_hit_t() const {
+	PackedFloat32Array out;
+	out.resize((int)zone_events.size());
+	for (int i = 0; i < (int)zone_events.size(); i++) {
+		out[i] = zone_events[(size_t)i].t;
+	}
+	return out;
+}
+
+PackedInt32Array NativeBulletSim::get_zone_hit_seqs() const {
+	PackedInt32Array out;
+	out.resize((int)zone_events.size());
+	for (int i = 0; i < (int)zone_events.size(); i++) {
+		out[i] = zone_events[(size_t)i].seq;
+	}
+	return out;
+}
+
+Vector2 NativeBulletSim::get_position_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return Vector2();
+	}
+	return Vector2(px[p_slot], py[p_slot]);
+}
+
+Vector2 NativeBulletSim::get_previous_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return Vector2();
+	}
+	return Vector2(qx[p_slot], qy[p_slot]);
+}
+
+Vector2 NativeBulletSim::get_velocity_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return Vector2();
+	}
+	return Vector2(vx[p_slot], vy[p_slot]);
+}
+
+int NativeBulletSim::get_owner_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return 0;
+	}
+	return owner_layer[p_slot];
+}
+
+int NativeBulletSim::get_reflect_count_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return 0;
+	}
+	return reflect_count[p_slot];
+}
+
+float NativeBulletSim::get_wall_clip_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return 1.0f;
+	}
+	return wall_clip[p_slot];
+}
+
+bool NativeBulletSim::is_slot_alive(int p_slot) const {
+	return p_slot >= 0 && p_slot < count && dead[p_slot] == 0;
+}
+
+bool NativeBulletSim::apply_reflect(int p_slot, int p_new_owner, int p_new_mask, const Color &p_color, float p_new_damage, bool p_keep_script, int p_limit, const Vector2 &p_heading, float p_speed, const Vector2 &p_impact) {
+	if (!is_slot_alive(p_slot)) {
+		return false;
+	}
+	if (p_new_owner != LAYER_PLAYER && p_new_owner != LAYER_ENEMY) {
+		return false;
+	}
+	if (p_limit > 0 && reflect_count[p_slot] >= p_limit) {
+		return false;
+	}
+	if (!std::isfinite(p_heading.x) || !std::isfinite(p_heading.y) || !std::isfinite(p_speed) || !std::isfinite(p_impact.x) || !std::isfinite(p_impact.y) || !std::isfinite(p_new_damage)) {
+		return false;
+	}
+	const int old_owner = owner_slot_of(owner_layer[p_slot]);
+	const int new_owner = owner_slot_of(p_new_owner);
+	if (old_owner != new_owner) {
+		owner_counts[old_owner]--;
+		owner_counts[new_owner]++;
+	}
+	owner_layer[p_slot] = p_new_owner;
+	if (reflect_count[p_slot] < 255) {
+		reflect_count[p_slot]++;
+	}
+	hit_mask[p_slot] = p_new_mask;
+	col[4 * p_slot] = p_color.r;
+	col[4 * p_slot + 1] = p_color.g;
+	col[4 * p_slot + 2] = p_color.b;
+	col[4 * p_slot + 3] = p_color.a;
+	clear_hit_memory(p_slot);
+	if (p_new_damage >= 0.0f) {
+		damage[p_slot] = p_new_damage;
+	}
+	if (!p_keep_script) {
+		source_flags[p_slot] = 0;
+	}
+	float hx = p_heading.x;
+	float hy = p_heading.y;
+	float vxn = hx * p_speed;
+	float vyn = hy * p_speed;
+	if (max_speed > 0.0f) {
+		const float sp2 = vxn * vxn + vyn * vyn;
+		const float cap = max_speed * max_speed;
+		if (sp2 > cap && sp2 > 0.0f) {
+			const float k = max_speed / std::sqrt(sp2);
+			vxn *= k;
+			vyn *= k;
+		}
+	}
+	vx[p_slot] = vxn;
+	vy[p_slot] = vyn;
+	if (p_speed > 0.0f) {
+		rx[p_slot] = hx;
+		ry[p_slot] = hy;
+	}
+	px[p_slot] = p_impact.x;
+	py[p_slot] = p_impact.y;
+	qx[p_slot] = p_impact.x;
+	qy[p_slot] = p_impact.y;
+	return true;
+}
+
+void NativeBulletSim::cancel_outbound_wall(int p_slot) {
+	if (p_slot < 0 || p_slot >= count) {
+		return;
+	}
+	wall_suppress[p_slot] = 1;
+	wall_report[p_slot] = 0;
+	wall_nx[p_slot] = 0.0f;
+	wall_ny[p_slot] = 0.0f;
+}
+
+void NativeBulletSim::begin_return(int p_slot, double p_delta, float p_reflected_t) {
+	if (!is_slot_alive(p_slot)) {
+		return;
+	}
+	const float start_x = px[p_slot];
+	const float start_y = py[p_slot];
+	const float remain = (1.0f - p_reflected_t) * (float)p_delta;
+	float ddx = vx[p_slot] * remain;
+	float ddy = vy[p_slot] * remain;
+	return_wall_pending[p_slot] = 0;
+	if (collide_world[p_slot] != 0 && (ddx != 0.0f || ddy != 0.0f)) {
+		const WallContact hit = query_wall(start_x, start_y, ddx, ddy, radius[p_slot]);
+		if (hit.t >= 0.0) {
+			ddx *= (float)hit.t;
+			ddy *= (float)hit.t;
+			wall_nx[p_slot] = hit.nx;
+			wall_ny[p_slot] = hit.ny;
+			wall_report[p_slot] = 1;
+			return_wall_pending[p_slot] = 1;
+		}
+	}
+	qx[p_slot] = start_x;
+	qy[p_slot] = start_y;
+	px[p_slot] = start_x + ddx;
+	py[p_slot] = start_y + ddy;
+	const int mask = hit_mask[p_slot];
+	if (target_count <= 0 || mask == 0) {
+		return;
+	}
+	const int max_hits = pierce[p_slot] + 1;
+	excl_buf.clear();
+	double sx = start_x, sy = start_y;
+	const double end_x = px[p_slot], end_y = py[p_slot];
+	for (int left = max_hits; left > 0; left--) {
+		double t = 0.0;
+		const int ti = sweep_targets(sx, sy, end_x - sx, end_y - sy, radius[p_slot], mask, p_slot, excl_buf.data(), (int)excl_buf.size(), t);
+		if (ti < 0) {
+			break;
+		}
+		const double ix = sx + (end_x - sx) * t;
+		const double iy = sy + (end_y - sy) * t;
+		return_events.push_back(HitEvent{ targets[ti].id, id_of(p_slot), (float)ix, (float)iy, vx[p_slot], vy[p_slot], damage[p_slot], source_flags[p_slot], seq[p_slot], (float)t });
+		excl_buf.push_back(ti);
+		sx = ix;
+		sy = iy;
+		if (t >= 1.0) {
+			break;
+		}
+	}
+}
+
+void NativeBulletSim::commit_return_hit(int p_index) {
+	if (p_index < 0 || p_index >= (int)return_events.size()) {
+		return;
+	}
+	commit_hit(return_events[(size_t)p_index]);
+}
+
+void NativeBulletSim::finish_return(int p_slot) {
+	if (p_slot < 0 || p_slot >= count || return_wall_pending[p_slot] == 0) {
+		return;
+	}
+	return_wall_pending[p_slot] = 0;
+	if (dead[p_slot] != 0) {
+		wall_report[p_slot] = 0;
+		wall_nx[p_slot] = 0.0f;
+		wall_ny[p_slot] = 0.0f;
+		return;
+	}
+	mark_dead(p_slot, REASON_WALL);
+	claim_from_bounds(p_slot, REASON_WALL);
+}
+
+Vector2 NativeBulletSim::get_wall_normal(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	if (s >= 0 && wall_report[s] != 0) {
+		return Vector2(wall_nx[s], wall_ny[s]);
+	}
+	for (const WallReport &r : wall_reports) {
+		if (r.id == p_id) {
+			return Vector2(r.nx, r.ny);
+		}
+	}
+	return Vector2();
+}
+
+void NativeBulletSim::clear_wall_normals() {
+	wall_reports.clear();
+	for (int i = 0; i < count; i++) {
+		wall_report[i] = 0;
+	}
+}
+
+Vector2 NativeBulletSim::query_wall_normal(const Vector2 &p_start, const Vector2 &p_delta, float p_radius) {
+	if (walls_dirty) {
+		rebuild_walls();
+	}
+	const WallContact hit = query_wall(p_start.x, p_start.y, p_delta.x, p_delta.y, p_radius);
+	if (hit.t < 0.0) {
+		return Vector2();
+	}
+	return Vector2(hit.nx, hit.ny);
 }
 
 } // namespace scriptshot

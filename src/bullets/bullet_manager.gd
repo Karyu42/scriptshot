@@ -141,32 +141,23 @@ var _return_wall_hit := PackedByteArray()
 ## (0 = none). Set after the wall sweep and cleared before removal; see
 ## wall_normal_of().
 var _wall_hit_index := PackedInt32Array()
-## Reflectors currently registered. While this is > 0 every new bullet stays in
-## the GDScript pool. The count itself updates immediately, including from a hit
-## callback, so a spawn in that callback already takes the pool.
+## Reflectors currently registered. Hook-free bullets stay in the native sim
+## and reflect there. The count still updates immediately, including from a hit
+## callback: a zone that appears during delivery is not in this tick's sweep.
 var _reflector_count := 0
-## Where step() is. Migration is phase-aware: before the native sim has moved
-## or collided this tick, live native bullets move into the pool immediately so
-## they still take this tick's pool advance and collision. During hit delivery
-## the native hit list is live, so the move waits until those commits finish.
-const _PHASE_IDLE := 0
-const _PHASE_PRE_MOVE := 1
-const _PHASE_MOVED := 2
-const _PHASE_DELIVERING := 3
-var _phase := _PHASE_IDLE
-## Delta of the step in progress. A bullet migrated after pool.advance() still
-## needs this one integrate; it has not been moved by the native sim yet.
+## Delta of the step in progress. Return legs fly for the unused fraction of it.
 var _step_delta := 0.0
-## True while pool.run_update_hooks is on the stack. Sorting slots there would
-## pull the hook's slot out from under it, so the sort waits until the hooks return.
-var _inside_update_hooks := false
-## Set when a mid-hook migration appended bullets that still need seq order
-## before this tick's wall and zone sweep.
-var _resort_before_collision := false
-## Set when the first reflector appears during hit delivery. Flushed once, after
-## merged commits, native wall compaction, and despawn hooks. Cleared if the
-## count falls back to 0 before that boundary (a register/unregister pair).
-var _pending_migration := false
+## Active zones this tick, same order as the native zone sweep and the pool grid.
+var _native_zones: Array[Reflector] = []
+var _nz_pos := PackedVector2Array()
+var _nz_radius := PackedFloat32Array()
+var _nz_owner := PackedInt32Array()
+## Bullets reflected this tick, pool and native, in the order they turned.
+## Walked once after every bullet's old path has been resolved.
+var _ret_native := PackedByteArray()
+var _ret_slot := PackedInt32Array()
+var _ret_t := PackedFloat32Array()
+var _ret_count := 0
 ## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
 var _order_count := 0
 
@@ -199,29 +190,7 @@ static func notify_reflectors(delta: int) -> void:
 
 
 func _reflectors_changed(delta: int) -> void:
-	var before := _reflector_count
 	_reflector_count = maxi(_reflector_count + delta, 0)
-	if _reflector_count == 0:
-		# Net zero for this callback window: nothing is waiting to move.
-		_pending_migration = false
-		return
-	if before > 0:
-		return
-	# First reflector. Hit delivery still has the native hit list in hand, so
-	# the move waits until those commits finish. Any earlier phase (outside
-	# step, before pool.advance, or in on_update before the native sim moves)
-	# brings the bullets across now. After pool.advance they still need that
-	# one integrate; before it, the upcoming advance is their only step.
-	if _phase == _PHASE_DELIVERING:
-		_pending_migration = true
-	else:
-		_migrate_native_to_pool(_phase == _PHASE_MOVED)
-
-
-func _flush_pending_migration() -> void:
-	if _pending_migration and _reflector_count > 0:
-		_migrate_native_to_pool()
-	_pending_migration = false
 
 
 func _ready() -> void:
@@ -403,10 +372,8 @@ func spawn(request: ShotRequest) -> int:
 ## True when this request should be simulated in C++. Hook context is handled
 ## by spawn() before this is asked.
 func _wants_native(request: ShotRequest) -> bool:
-	# Any registered reflector keeps every new bullet on the pool. Native
-	# reflection is not implemented; the pool's mirror path is the baseline.
-	if _reflector_count > 0:
-		return false
+	# Reflectors do not pull hook-free bullets back. The sim reflects them.
+	# A per-bullet hook, including can_hit, still stays on the pool.
 	return native != null and not _has_per_bullet_hooks(request.behavior_id)
 
 
@@ -514,29 +481,6 @@ func _retire_seq(removed: int) -> void:
 func _on_pool_cleared() -> void:
 	if native == null or native.count() == 0:
 		_order_count = 0
-
-
-## Copies every live native bullet into the pool and clears the sim. `catch_up`
-## is true only after pool.advance() has already run and before the native sim
-## has moved: those bullets missed the pool integrate, so they take it now and
-## only now. Slots are not reordered while an on_update hook is on the stack.
-func _migrate_native_to_pool(catch_up: bool = false) -> void:
-	if native == null or native.count() == 0 or pool == null:
-		return
-	var first := pool.count
-	var rows: Array = native.export_states()
-	native.clear()
-	for i in rows.size():
-		var state: Dictionary = rows[i]
-		pool.adopt_native(state)
-	if catch_up:
-		for i in range(first, pool.count):
-			pool.advance_one(i, _step_delta, world_bounds)
-	if catch_up and _inside_update_hooks:
-		_resort_before_collision = true
-	else:
-		pool.sort_slots_by_seq()
-	_sync_pool_external()
 
 
 ## Pool hits and native hits, in ascending seq, ties broken by the order the
@@ -673,6 +617,12 @@ func reflect(
 	new_damage: float = BulletPool.REFLECTED_DAMAGE,
 	keep_script: bool = false
 ) -> bool:
+	# Zone reflection of a hook-free bullet happens in the sim. A script calling
+	# reflect_bullet() on a native id still gets false: doing it from on_update
+	# would integrate that bullet on a different phase than the pool (the sim
+	# has not moved yet). See docs/native.md.
+	if is_native_id(id):
+		return false
 	if not pool.is_alive(id):
 		return false
 	return pool.reflect(pool.slot_of(id), new_owner_layer, reverse, new_damage, keep_script)
@@ -680,14 +630,10 @@ func reflect(
 
 ## Advances the whole bullet simulation by `delta` seconds.
 func step(delta: float) -> void:
-	# A mirror that was already registered owns every bullet before this tick
-	# moves. One that appears in on_update (before the native sim moves) migrates
-	# immediately. One that appears during hit delivery is deferred.
+	# Hook-free bullets stay in the native sim when reflectors are registered.
+	# A zone that appears in on_update is in this tick's sweep (zones are
+	# collected after the hooks). One that appears during hit delivery is not.
 	_step_delta = delta
-	_flush_pending_migration()
-	if _reflector_count > 0:
-		_migrate_native_to_pool()
-	_phase = _PHASE_PRE_MOVE
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
 
@@ -700,18 +646,13 @@ func step(delta: float) -> void:
 	pool.advance(delta, world_bounds)
 	# on_update runs after the pool integrate and before native movement, matching
 	# the all-GD order (BulletPool.advance, then hooks, then collision). A mirror
-	# registered here migrates native bullets and gives them this same integrate.
-	_phase = _PHASE_MOVED
+	# registered here is visible to the zone sweep below; native bullets take
+	# their integrate in the sim, not as a second pool step.
 	var t1 := Time.get_ticks_usec()
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
-	_inside_update_hooks = true
 	pool.run_update_hooks(_behaviors, delta)
-	_inside_update_hooks = false
-	if _resort_before_collision:
-		pool.sort_slots_by_seq()
-		_resort_before_collision = false
 
 	# A hook may have spawned a bullet bigger than any the targets were bucketed
 	# for; re-bucket with the new margin so it does not miss targets by a hair.
@@ -736,18 +677,17 @@ func step(delta: float) -> void:
 	# flies on for the rest of the tick along its new heading.
 	var zone_hits := _collect_zone_hits()
 	last_hit_count = grid.collide_bullets(pool)
-	# From here a new reflector is a hit-delivery registration: the native sim
-	# either is about to move, or has nothing left to move. Do not catch up.
-	_phase = _PHASE_DELIVERING
 	# Integrate native bullets before any hit is delivered, so both stores'
 	# candidates exist and can be applied in one seq order. With no native
 	# bullets this is the all-GD path below, unchanged.
 	var native_queued := 0
 	var stepped_native := false
+	var native_zone_hits := 0
 	if native != null and native.count() > 0:
 		native_queued = native.step(delta)
 		stepped_native = true
-	if zone_hits == 0:
+		native_zone_hits = native.zone_hit_count()
+	if zone_hits == 0 and native_zone_hits == 0:
 		# stepped_native: both stores may hold bullets, so pool slot order is not
 		# the all-GD order. Seq is that order. No native bullets: the old loop.
 		if stepped_native:
@@ -755,6 +695,9 @@ func step(delta: float) -> void:
 		else:
 			for k in last_hit_count:
 				_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+	elif stepped_native:
+		_resolve_mixed(zone_hits, delta)
+		native_queued += native.return_hit_count()
 	else:
 		_resolve_hits_in_time_order(zone_hits)
 		_continue_reflected(delta)
@@ -819,11 +762,10 @@ func step(delta: float) -> void:
 	# so nothing bad reaches the renderer below or the next tick. Skipped if nothing ran.
 	if pool.hook_ran:
 		pool.sweep_cross_writes()
-	# on_hit, can_hit, and on_despawn may have registered a reflector. Native
-	# commits for this tick have already run, so this move does not integrate
-	# again. It lands before the renderer and before the next tick's advance.
-	_phase = _PHASE_IDLE
-	_flush_pending_migration()
+	# Wall normals were readable through the despawn hooks above. Drop them
+	# before the step returns, same window as the pool's wall_hit index.
+	if native != null:
+		native.clear_wall_normals()
 	var t4 := Time.get_ticks_usec()
 
 	_sim_time += delta
@@ -1062,14 +1004,28 @@ func _report_saturation() -> void:
 func _collect_zone_hits() -> int:
 	last_reflect_count = 0
 	_reflected_count = 0
-	var zones := Reflector.registry
-	if zones.is_empty():
+	_ret_count = 0
+	_native_zones.clear()
+	for zone in Reflector.registry:
+		if zone.is_active():
+			_native_zones.append(zone)
+	if native != null:
+		var n := _native_zones.size()
+		if _nz_pos.size() < n:
+			_nz_pos.resize(n)
+			_nz_radius.resize(n)
+			_nz_owner.resize(n)
+		for i in n:
+			var zone := _native_zones[i]
+			_nz_pos[i] = zone.global_position
+			_nz_radius[i] = zone.radius
+			_nz_owner[i] = zone.reflects_owners
+		native.set_zones(_nz_pos, _nz_radius, _nz_owner, n)
+	if _native_zones.is_empty():
 		return 0
 	reflector_grid.begin(pool.max_radius)
-	for k in zones.size():
-		var zone := zones[k]
-		if zone.is_active():
-			reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
+	for zone in _native_zones:
+		reflector_grid.add_circle(zone.global_position, zone.radius, zone.reflects_owners, zone)
 	return reflector_grid.collide_bullets(pool, true)
 
 
@@ -1137,6 +1093,155 @@ func _try_reflect(bullet: int, k: int) -> bool:
 	return true
 
 
+## Pool and native hits, including reflector crossings, in shared seq order.
+## Within one bullet, time along the clipped path; a zone wins a tie. A reflection
+## ends that bullet's old path. Return legs then run in the order the bullets turned.
+func _resolve_mixed(zone_hits: int, delta: float) -> void:
+	var nseq := native.pending_hit_seqs()
+	var nt := native.pending_hit_t()
+	var zseq := native.zone_hit_seqs()
+	var zt := native.zone_hit_t()
+	var zslot := native.zone_hit_slots()
+	var zzone := native.zone_hit_zones()
+	var total := last_hit_count + zone_hits + nseq.size() + zseq.size()
+	var seqs := PackedInt32Array()
+	var ts := PackedFloat32Array()
+	var kind := PackedByteArray()
+	var store := PackedByteArray()
+	var index := PackedInt32Array()
+	seqs.resize(total)
+	ts.resize(total)
+	kind.resize(total)
+	store.resize(total)
+	index.resize(total)
+	var at := 0
+	for k in last_hit_count:
+		seqs[at] = pool.seq[grid.hit_bullets[k]]
+		ts[at] = grid.hit_t[k]
+		kind[at] = 1
+		store[at] = 0
+		index[at] = k
+		at += 1
+	for k in zone_hits:
+		seqs[at] = pool.seq[reflector_grid.hit_bullets[k]]
+		ts[at] = reflector_grid.hit_t[k]
+		kind[at] = 0
+		store[at] = 0
+		index[at] = k
+		at += 1
+	for k in nseq.size():
+		seqs[at] = nseq[k]
+		ts[at] = nt[k]
+		kind[at] = 1
+		store[at] = 1
+		index[at] = k
+		at += 1
+	for k in zseq.size():
+		seqs[at] = zseq[k]
+		ts[at] = zt[k]
+		kind[at] = 0
+		store[at] = 1
+		index[at] = k
+		at += 1
+	var order := PackedInt32Array()
+	order.resize(total)
+	for i in total:
+		order[i] = i
+	for i in range(1, total):
+		var key := order[i]
+		var j := i - 1
+		while j >= 0:
+			var earlier: int = order[j]
+			var later := false
+			if seqs[earlier] != seqs[key]:
+				later = seqs[earlier] > seqs[key]
+			elif ts[earlier] != ts[key]:
+				later = ts[earlier] > ts[key]
+			elif kind[earlier] != kind[key]:
+				later = kind[earlier] > kind[key]
+			else:
+				later = earlier > key
+			if not later:
+				break
+			order[j + 1] = earlier
+			j -= 1
+		order[j + 1] = key
+	var skip := false
+	var skip_seq := 0
+	for n in order.size():
+		var ev: int = order[n]
+		var seq: int = seqs[ev]
+		if skip and seq == skip_seq:
+			continue
+		skip = false
+		var reflected := false
+		if kind[ev] == 0:
+			if store[ev] == 0:
+				var bullet: int = reflector_grid.hit_bullets[index[ev]]
+				reflected = _try_reflect(bullet, index[ev])
+				if reflected:
+					_note_return(0, bullet, _reflected_t[_reflected_count - 1])
+			else:
+				reflected = _try_reflect_native(zslot[index[ev]], zzone[index[ev]], zt[index[ev]])
+		elif store[ev] == 0:
+			var k: int = index[ev]
+			_apply_hit(grid.hit_bullets[k], grid.hit_targets[k], grid.hit_t[k])
+		else:
+			native.commit_pending_hit(index[ev])
+		if reflected:
+			skip = true
+			skip_seq = seq
+	for r in _ret_count:
+		if _ret_native[r] != 0:
+			var slot := _ret_slot[r]
+			var first := native.return_hit_count()
+			native.begin_return(slot, delta, _ret_t[r])
+			var last := native.return_hit_count()
+			for h in range(first, last):
+				native.commit_return_hit(h)
+			native.finish_return(slot)
+		else:
+			_continue_one(_ret_slot[r], _ret_t[r], delta)
+
+
+func _note_return(is_native: int, slot: int, reflected_t: float) -> void:
+	if _ret_count >= _ret_slot.size():
+		var n := maxi(_ret_count * 2, 8)
+		_ret_native.resize(n)
+		_ret_slot.resize(n)
+		_ret_t.resize(n)
+	_ret_native[_ret_count] = is_native
+	_ret_slot[_ret_count] = slot
+	_ret_t[_ret_count] = reflected_t
+	_ret_count += 1
+
+
+func _try_reflect_native(slot: int, zone_index: int, t: float) -> bool:
+	if zone_index < 0 or zone_index >= _native_zones.size() or not native.is_slot_alive(slot):
+		return false
+	var zone := _native_zones[zone_index]
+	if zone == null or not is_instance_valid(zone):
+		return false
+	var impact := native.previous_at(slot).lerp(native.position_at(slot), t)
+	var cap := zone.effective_limit(pool)
+	var decision := zone.evaluate(native.owner_at(slot), native.velocity_at(slot), native.reflect_count_at(slot), impact, cap)
+	if not decision.ok:
+		return false
+	var new_owner: int = decision.new_owner
+	var heading: Vector2 = decision.heading
+	var speed: float = decision.speed
+	var new_damage: float = decision.damage
+	var keep: bool = decision.keep_script
+	if not native.apply_reflect(slot, new_owner, Layers.hostile_to(new_owner), Layers.bullet_color(new_owner), new_damage, keep, cap, heading, speed, impact):
+		return false
+	native.cancel_outbound_wall(slot)
+	_note_return(1, slot, t * native.wall_clip_at(slot))
+	last_reflect_count += 1
+	zone.reflected_total += 1
+	zone.bullet_reflected.emit(native.id_of_slot(slot), new_owner)
+	return true
+
+
 ## Lets every bullet reflected this tick fly on from its impact point along its new
 ## velocity for the rest of the tick (the part after the reflection, `(1 - t) *
 ## delta`), against walls and against the hurtboxes of its *new* side, in time
@@ -1145,40 +1250,43 @@ func _try_reflect(bullet: int, k: int) -> bool:
 ## A bullet is reflected at most once per tick, so zones are not consulted again.
 func _continue_reflected(delta: float) -> void:
 	for r in _reflected_count:
-		var slot := _reflected_slots[r]
-		if pool.dead_reason[slot] != 0:
-			continue
-		var start := pool.pos[slot]  # the impact point (BulletPool.teleport)
-		var d := pool.vel[slot] * (1.0 - _reflected_t[r]) * delta
-		var wall_t := -1.0
-		if pool.collide_world[slot] != 0 and d != Vector2.ZERO:
-			wall_t = walls.first_hit(start, d, pool.radius[slot])
-			if wall_t >= 0.0:
-				d *= wall_t
-				_return_wall_normal[slot] = walls.last_normal
-				_return_wall_hit[slot] = 1
-		pool.prev_pos[slot] = start
-		pool.pos[slot] = start + d
-		var first := grid.hit_count
-		# Like HurtboxGrid.collide_bullets(): a bullet whose hits can be vetoed lists
-		# spare hits, so a vetoed target does not hide the next one on the return leg.
-		var max_hits: int = pool.pierce[slot] + 1
-		if pool.can_hit_veto[slot] != 0:
-			max_hits += BulletPool.VETO_MAX_HITS - 1
-		var added := grid.sweep_segment(
-			pool, slot, start, d, pool.radius[slot], pool.hit_mask[slot], max_hits
-		)
-		last_hit_count += added
-		for k in range(first, first + added):
-			_apply_hit(slot, grid.hit_targets[k], grid.hit_t[k])
+		_continue_one(_reflected_slots[r], _reflected_t[r], delta)
+
+
+func _continue_one(slot: int, reflected_t: float, delta: float) -> void:
+	if slot < 0 or slot >= pool.count or pool.dead_reason[slot] != 0:
+		return
+	var start := pool.pos[slot]  # the impact point (BulletPool.teleport)
+	var d := pool.vel[slot] * (1.0 - reflected_t) * delta
+	var wall_t := -1.0
+	if pool.collide_world[slot] != 0 and d != Vector2.ZERO:
+		wall_t = walls.first_hit(start, d, pool.radius[slot])
 		if wall_t >= 0.0:
-			if pool.dead_reason[slot] != 0:
-				# A hurtbox (or a guard) ended the bullet before the wall: it never got
-				# there, so no hook is told it hit that wall.
-				_return_wall_hit[slot] = 0
-				_return_wall_normal[slot] = Vector2.ZERO
-			else:
-				pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
+			d *= wall_t
+			_return_wall_normal[slot] = walls.last_normal
+			_return_wall_hit[slot] = 1
+	pool.prev_pos[slot] = start
+	pool.pos[slot] = start + d
+	var first := grid.hit_count
+	# Like HurtboxGrid.collide_bullets(): a bullet whose hits can be vetoed lists
+	# spare hits, so a vetoed target does not hide the next one on the return leg.
+	var max_hits: int = pool.pierce[slot] + 1
+	if pool.can_hit_veto[slot] != 0:
+		max_hits += BulletPool.VETO_MAX_HITS - 1
+	var added := grid.sweep_segment(
+		pool, slot, start, d, pool.radius[slot], pool.hit_mask[slot], max_hits
+	)
+	last_hit_count += added
+	for k in range(first, first + added):
+		_apply_hit(slot, grid.hit_targets[k], grid.hit_t[k])
+	if wall_t >= 0.0:
+		if pool.dead_reason[slot] != 0:
+			# A hurtbox (or a guard) ended the bullet before the wall: it never got
+			# there, so no hook is told it hit that wall.
+			_return_wall_hit[slot] = 0
+			_return_wall_normal[slot] = Vector2.ZERO
+		else:
+			pool.mark_dead(slot, BulletPool.DespawnReason.WALL)
 
 
 func _collect_targets() -> void:

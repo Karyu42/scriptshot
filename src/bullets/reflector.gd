@@ -112,6 +112,37 @@ func effective_limit(pool: BulletPool) -> int:
 	return max_reflections
 
 
+## The reflection this zone would apply to a bullet with this owner, velocity and
+## reflect count, or `{ok: false}`. Shared by the pool and the native sim so the
+## guard, the arc and the new heading cannot drift. `reflection_cap` is
+## `effective_limit`: 0 = unlimited, > 0 = at most that many.
+func evaluate(owner_layer: int, velocity: Vector2, reflect_count_now: int, impact: Vector2, reflection_cap: int) -> Dictionary:
+	if not is_active() or not velocity.is_finite():
+		return { "ok": false }
+	if reflection_cap > 0 and reflect_count_now >= reflection_cap:
+		return { "ok": false }
+	var from_center := impact - global_position
+	# Only bullets coming in are reflected: leaving or stationary ones pass.
+	if velocity.dot(from_center) >= 0.0:
+		return { "ok": false }
+	if arc_degrees < 360.0 and absf(facing().angle_to(from_center)) > deg_to_rad(arc_degrees) * 0.5:
+		return { "ok": false }
+	var new_owner := Layers.hostile_to(owner_layer)
+	if new_owner == 0:
+		return { "ok": false }
+	var speed := minf(velocity.length() * _safe_multiplier(), BulletLimits.MAX_SPEED)
+	var heading := _new_heading(velocity, from_center, impact)
+	return {
+		"ok": true,
+		"new_owner": new_owner,
+		"speed": speed,
+		"heading": heading,
+		"damage": reflected_damage,
+		"keep_script": keep_script,
+		"limit": reflection_cap,
+	}
+
+
 ## Called by the bullet manager when bullet `slot` of `pool` touched the zone at
 ## `impact`. Applies every rule (guard, direction, arc) and, if they pass,
 ## changes owner / colour / velocity. Returns true if the bullet was reflected.
@@ -123,22 +154,17 @@ func reflect_bullet(pool: BulletPool, slot: int, impact: Vector2) -> bool:
 	if not pool.sanitize(slot):
 		return false
 	var limit := effective_limit(pool)
-	if limit > 0 and pool.reflect_count[slot] >= limit:
+	var decision := evaluate(pool.owner_layer[slot], pool.vel[slot], pool.reflect_count[slot], impact, limit)
+	if not decision.ok:
 		return false
-	var from_center := impact - global_position
-	var velocity := pool.vel[slot]
-	# Only bullets coming in are reflected: leaving or stationary ones pass.
-	if velocity.dot(from_center) >= 0.0:
-		return false
-	if arc_degrees < 360.0 and absf(facing().angle_to(from_center)) > deg_to_rad(arc_degrees) * 0.5:
-		return false
-	var old_owner := pool.owner_layer[slot]
-	var new_owner := Layers.hostile_to(old_owner)
-	if new_owner == 0 or not pool.reflect(slot, new_owner, false, reflected_damage, keep_script, limit):
+	var new_owner: int = decision.new_owner
+	var new_damage: float = decision.damage
+	var keep: bool = decision.keep_script
+	if not pool.reflect(slot, new_owner, false, new_damage, keep, limit):
 		return false
 	# speed_multiplier can be up to 20x: the speed ceiling applies to the result.
-	var speed := minf(velocity.length() * _safe_multiplier(), BulletLimits.MAX_SPEED)
-	var heading := _new_heading(velocity, from_center, impact)
+	var speed: float = decision.speed
+	var heading: Vector2 = decision.heading
 	pool.set_velocity(slot, heading * speed)
 	if speed > 0.0:
 		pool.rot[slot] = heading

@@ -1390,7 +1390,8 @@ func adopt_native(row: Dictionary) -> int:
 	var head_v: int = row["hit_head"]
 	hit_mask[i] = mask_v
 	owner_layer[i] = owner
-	reflect_count[i] = 0
+	var reflected: int = row.get("reflect_count", 0)
+	reflect_count[i] = reflected
 	pierces_script_invuln[i] = 1 if flags_v != 0 else 0
 	can_hit_veto[i] = 0
 	behavior[i] = 0
