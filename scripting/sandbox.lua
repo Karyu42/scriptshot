@@ -31,6 +31,7 @@ return function(host)
 	end
 
 	-- Lua runs __gc with hooks disabled. A spinning finalizer would escape the watchdog.
+	-- Lua 5.4 reads __gc only when the metatable is set, so it is checked here.
 	local real_setmetatable = setmetatable
 	env.setmetatable = function(t, mt)
 		if type(mt) == "table" and rawget(mt, "__gc") ~= nil then
@@ -271,6 +272,10 @@ return function(host)
 					end
 					if not writable then
 						error("column '" .. name .. "' is read-only", 2)
+					end
+					-- Type checked in Lua before the store.
+					if type(value) ~= "number" then
+						error("column '" .. name .. "': value must be a number", 2)
 					end
 					arr[i] = value
 				end,
