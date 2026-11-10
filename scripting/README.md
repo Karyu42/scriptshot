@@ -173,6 +173,23 @@ the per-tick path, while a behaviour that overrides `on_update` still pays it,
 is a Gameplay Engineer change. This adapter keeps `mask_from_names` and
 `hook_mask_exact`, and does not set `HOOK_ALL`.
 
+### Lua `call_hook` vs this gated path
+
+The table above is the **GDScript** empty `on_update` path. It is not the cost of
+a Lua per-bullet call. Gameplay Engineer profiling for
+[#54](https://github.com/Karyu42/scriptshot/issues/54) (not on the gated
+benchmark path) measured an empty `ScriptHost.call_hook` at about **18 µs** on
+one profiling VM: 5,000 calls took 89.2 ms total, with lua-gdextension 0.8.2 and
+Godot 4.7.2 headless. That is a single-machine sample, not a CI gate.
+
+At that rate, empty per-bullet Lua hooks do not scale to thousands of bullets in
+a 16.6 ms frame (roughly 900 empty calls fill the frame; real bodies leave less
+headroom). Prefer `on_batch` for behaviour applied to many bullets; keep
+per-bullet Lua hooks for small counts or rare events. The player-facing writeup
+is `docs/scripting/api.md`, *Per-frame logic: tick vs batch*. The spike's older
+~1.6–2.1 µs/bullet A-path figure is a different harness and should not be read
+as the shipped `call_hook` cost; the gap to ~18 µs is unresolved.
+
 ## Deferred
 
 The rest of the shot API (`spawn {}`, `wait`, the player proxy, the capability
