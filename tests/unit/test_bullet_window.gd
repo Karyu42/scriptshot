@@ -2,6 +2,10 @@ extends GutTest
 ## The bullet window keeps its size and recentres on the camera.
 
 const DT := 1.0 / 60.0
+## Fixed physics ticks after the teleport. Enough that the camera is still
+## easing (a settled camera would make a stale sample look correct) and few
+## enough that one follow step is still several pixels.
+const FOLLOW_STEPS := 8
 
 var manager: BulletManager
 
@@ -50,6 +54,50 @@ func test_follow_uses_the_camera_centre() -> void:
 	assert_eq(manager.world_bounds.size, Vector2(2624, 1504))
 	assert_almost_eq(manager.world_bounds.get_center().x, centre.x, 0.5)
 	assert_almost_eq(manager.world_bounds.get_center().y, centre.y, 0.5)
+
+
+## Interpolation refreshes Camera2D.get_screen_center_position() on idle, at a
+## wall-clock fraction. The window is copied on the physics tick, so it has to
+## follow the pose FollowCamera just wrote (position + shake offset), not that
+## getter. A teleport cuts the camera, then an aim swing makes the next ticks
+## ease. The centre after FOLLOW_STEPS ticks is compared to that pose.
+func test_window_matches_the_physics_camera_centre_after_a_teleport() -> void:
+	var interpolation: bool = ProjectSettings.get_setting("physics/common/physics_interpolation")
+	assert_true(interpolation, "physics interpolation is on")
+	var player := (load("res://scenes/player.tscn") as PackedScene).instantiate() as Player
+	player.position = Vector2.ZERO
+	player.aim_direction = Vector2.RIGHT
+	add_child_autofree(player)
+	# Headless mouse aim would move the look-ahead every tick. Hold the pose.
+	player.set_physics_process(false)
+	var cam := FollowCamera.new()
+	# Idle is what physics interpolation overrides, and that override is an error
+	# in this project. The class sets physics mode in _init; set it here too.
+	cam.process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
+	add_child_autofree(cam)
+	cam.make_current()
+	cam.target = player
+	assert_true(cam.is_physics_interpolated(), "the camera interpolates in this project")
+	manager.bounds_center = cam
+	manager.auto_step = true
+	var far := Vector2(4000.0, -1200.0)
+	player.teleport(far)
+	var snapped := cam.global_position
+	assert_eq(snapped, far + Vector2.RIGHT * cam.look_ahead, "teleport cuts the camera")
+	# Not another teleport: the camera eases toward the new look-ahead.
+	# Trauma makes the shake offset nonzero, so a centre that drops it fails.
+	player.aim_direction = Vector2.DOWN
+	cam.add_trauma(1.0)
+	var goal := far + Vector2.DOWN * cam.look_ahead
+	await wait_physics_frames(FOLLOW_STEPS)
+	var physics_centre := cam.global_position + cam.offset
+	assert_gt(cam.offset.length(), 0.5, "shake offset is part of the physics pose")
+	assert_gt(physics_centre.distance_to(snapped), 1.0, "follow moved the camera off the cut")
+	assert_gt(physics_centre.distance_to(goal), 1.0, "still easing, so the sample is not a settled pose")
+	assert_eq(manager.world_bounds.size, Vector2(2624, 1504), "the cull margin is the window size")
+	var centre := manager.world_bounds.get_center()
+	assert_almost_eq(centre.x, physics_centre.x, 0.001)
+	assert_almost_eq(centre.y, physics_centre.y, 0.001)
 
 
 func test_recenter_keeps_walls_and_they_still_stop_bullets() -> void:

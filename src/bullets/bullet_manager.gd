@@ -38,8 +38,12 @@ static var _managers: Array[Node2D] = []
 ## bounds_center null and keep whatever rect they set.
 @export var world_bounds := Rect2(-1312, -752, 2624, 1504)
 ## When set, step() recentres world_bounds on this node without changing its
-## size. A Camera2D contributes its screen centre (look-ahead and shake
-## included). Null keeps the rect where it is.
+## size (the cull margin around the centre stays put). A Camera2D contributes
+## its physics-tick screen centre, FollowCamera.physics_screen_center: position
+## plus offset, which is the focus and shake `_physics_process` just wrote.
+## It does not read Camera2D.get_screen_center_position(); with physics
+## interpolation that cache is refreshed on idle and lags the pose. Null keeps
+## the rect where it is. Both bullet backends receive the recentred rect.
 var bounds_center: Node2D
 ## Spatial hash cell size for collision, in pixels.
 @export var cell_size := 64.0
@@ -1176,8 +1180,11 @@ func _follow_bounds() -> void:
 	if bounds_center == null:
 		return
 	var center := bounds_center.global_position
-	if bounds_center is Camera2D:
-		center = (bounds_center as Camera2D).get_screen_center_position()
+	var camera := bounds_center as Camera2D
+	if camera != null:
+		# Physics-tick pose, not the idle-interpolated screen-centre cache.
+		# recenter_world_bounds forwards the same rect to the native sim.
+		center = FollowCamera.physics_screen_center(camera)
 	recenter_world_bounds(center)
 
 
