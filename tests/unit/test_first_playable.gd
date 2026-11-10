@@ -83,7 +83,14 @@ func test_leaving_the_safe_zone_arms_the_herald_and_the_window_follows() -> void
 	await wait_physics_frames(2)
 	assert_signal_emit_count(herald, "herald_armed", 1, "walking back does not arm again")
 	player.teleport(Vector2(4000, -1200))
-	await wait_physics_frames(2)
+	# Teleport snaps the follow camera, then each physics tick eases it toward
+	# aim look-ahead (rate 8). The bullet window copies get_screen_center_position()
+	# on that tick, but the getter is the physics-interpolated centre and the
+	# fraction is wall-clock, so after wait_physics_frames(2) the rect and the
+	# getter can sit a fraction of one follow step apart. macOS missed by 1.33 px.
+	# Publish the snapped centre and copy it with one fixed step instead.
+	cam.force_update_scroll()
+	bullets.step(_STEP)
 	assert_eq(bullets.world_bounds.size, Vector2(2624, 1504))
 	var centre := bullets.world_bounds.get_center()
 	var screen := cam.get_screen_center_position()
