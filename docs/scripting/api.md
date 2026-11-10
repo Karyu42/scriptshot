@@ -241,7 +241,7 @@ All optional. Unspecified fields take engine defaults.
 | `on_wall(b, wall)` | see *Hits* (today this is `on_death` with `why == "wall"`; no normal yet) |
 | `on_expire(b)` | sugar for `on_death` with `why == "lifetime"` |
 | `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (`DespawnReason.INVALID`, value 6, added by PR #8, on `main`; the bullet was killed because a hook wrote a NaN or inf)** |
-| `on_tick(b, dt)` | per-bullet tick (hook option A). **Metered, opt-in**; combine with `tick_every = n` (the engine skips natively, so skipped ticks cost ~0). ~1.6-2.1 us per bullet per call |
+| `on_tick(b, dt)` | per-bullet tick (hook option A). **Metered, opt-in**; combine with `tick_every = n` (the engine skips natively, so skipped ticks cost ~0). Prefer `on_batch` at scale; see *Per-frame logic: tick vs batch* |
 | `on_batch(v, dt)` | once per behaviour per tick, with every live bullet of that script; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
 
@@ -594,18 +594,48 @@ Reads see the state at the start of the tick (before this tick's player writes a
 
 ## Per-frame logic: tick vs batch
 
-Measured in the spike on Godot 4.7.2 (release template, see spike-results.md): Lua per-bullet
-work is dominated by Variant crossings and per-element packed-array reads (~124 ns each), not
-by the Lua VM. So per-frame logic comes in three grades:
+Per-frame logic comes in three grades. Prefer declarative fields when you can, then
+`on_batch` when many bullets share the same per-tick behaviour, and keep per-bullet
+hooks for small counts or rare events.
 
-| Grade | How | Cost (release, 4000 scripted bullets/tick) | Use for |
+| Grade | How | Cost | Use for |
 |---|---|---|---|
 | **C declarative** | spawn fields (`spin`, `accel`, `homing`, ...) | 0 Lua | everything that can be data |
-| **B batch** | `on_batch(v, dt)` once per behaviour per tick, every live bullet | one callback per tick | steering many bullets every tick (sine waves, orbits, flocking) |
-| **A per-bullet** | `on_tick(b, dt)` | ~6.2 ms, **~1.6-2.1 us/bullet** | rare, small counts, convenience |
+| **B batch** | `on_batch(v, dt)` once per behaviour per tick, every live bullet | one Lua entry per tick for the whole set | steering many bullets every tick (sine waves, orbits, flocking) |
+| **A per-bullet** | `on_tick(b, dt)` or any path that calls `ScriptHost.call_hook` once per bullet | see costs below | rare events, small counts, convenience |
 
-The spike measured throttling (`tick_every = 4`, `batch_slice = 4`). That is **not**
-current behaviour: see *Current behaviour* below. A batch hook runs every tick, for every live bullet.
+**Shipped `ScriptHost.call_hook` (profiling sample, not a gate).** Gameplay Engineer
+profiling for [#54](https://github.com/Karyu42/scriptshot/issues/54) / PR #59, on
+`main` `6004797` with Godot 4.7.2 headless and stock lua-gdextension 0.8.2, measured an
+**empty** per-bullet `call_hook` at a median of about **16–17 µs** (mean of N≈30 samples
+≈ **17.7 µs** → about **88.5 ms** per 5,000 calls). That path is **not** the CI hooked
+benchmark (see `scripting/README.md`, "Hook cost"): the gated tier runs a GDScript
+`NoopHook.on_update` and never enters Lua. The figure is a single-machine profiling
+sample, not a CI bar. Coroutine-layer rows used N=30–40 per process (stock 0.8.2 cannot
+create unbounded GDScript `LuaCoroutine`s in one process).
+
+Most of that empty-call cost is host overhead, not the Lua VM: the return path / pending
+drain is about **4–8 µs** (largest share), a fresh coroutine plus watchdog `set_hook` about
+**2.7 µs**, `make_bullet` about **1.5 µs**, the `call_hook` frame about **2.6 µs**, and
+Callable dispatch about **0.6 µs**. A bare empty `LuaFunction.invoke` is only about
+**0.1 µs** (about **0.4 µs** with seven float args).
+
+At ~17 µs, even empty calls fill a 16.6 ms frame after roughly **900–1,000** bullets.
+Real callback bodies cost more, so the usable count is lower. **Rule of thumb
+(approximate):** use `on_batch` when the same per-tick behaviour would apply to more than
+a few hundred bullets, or whenever you are thinking in thousands; keep per-bullet Lua
+hooks for small live counts or rare events (`on_hit`, `on_death`, …). Optimisation of
+`call_hook` is planned with a target of about **3–6 µs** per empty call (reuse
+coroutine/table, fast-path empty sanitize); even then, **`on_batch` remains the scale
+path**.
+
+**Why the spike looked cheaper.** The older spike Option A (~1.6–2.1 µs/bullet at 4,000;
+see spike-results.md) timed a **direct** `LuaFunction.invoke(...)` on the tick body with
+**no** `ScriptHost`, coroutine, watchdog, `make_bullet`, or pending sanitize. Its empty
+invoke alone is the ~0.1–0.4 µs above; the rest was Lua work inside the tick. Do not treat
+the spike µs as the cost of a shipped per-bullet Lua call. The spike also measured
+throttling (`tick_every = 4`, `batch_slice = 4`); that is **not** current behaviour: see
+*Current behaviour* below. A batch hook runs every tick, for every live bullet.
 
 ```lua
 return {
@@ -662,7 +692,9 @@ pool by default, because the GDScript backend is the default. There, one `on_bat
 21–25 ms p95 at 5,000 and about 41–47 ms at 10,000 on the machines sampled so far (single runs have reported 20.7 / 40.9 ms
 and 24.8 / 47.0 ms), which is over the 16.6 ms frame budget at 5,000. With the opt-in native backend the same work is
 about 1.5–2.3 ms at 5,000 and about 4 ms at 10,000 (single runs have reported 1.51 ms and 2.25 ms at 5,000). These are
-one-machine samples and may change. Routing `on_batch` to native by default is part of the default-backend decision and
+one-machine samples and may change. Even so, one `on_batch` entry for thousands of bullets is the scalable Lua shape:
+5,000 empty per-bullet `call_hook` calls alone were about 88–89 ms on the [#54](https://github.com/Karyu42/scriptshot/issues/54) / PR #59
+profiling sample above. Routing `on_batch` to native by default is part of the default-backend decision and
 is tracked in [#34](https://github.com/Karyu42/scriptshot/issues/34).
 
 | Member | Meaning |
