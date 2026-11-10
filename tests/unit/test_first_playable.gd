@@ -115,6 +115,14 @@ func test_a_regular_dies_to_the_bullet_manager() -> void:
 	assert_true(bullets.emitter.request_shot(_still_shot(enemy.global_position, 30.0)))
 	bullets.step(_STEP)
 	assert_false(is_instance_valid(enemy) and enemy.is_alive())
+	# The killing hit queue_frees the body from inside step(). This test does
+	# not await, so that free is still pending when GUT free()s the scene.
+	# On the Windows native run that dangling delete-queue id survives until
+	# process exit and segfaults (exit 139) after the suite has already passed.
+	# Empty the pool, queue the scene, and let the frame flush both.
+	bullets.clear_bullets()
+	main.queue_free()
+	await wait_physics_frames(1)
 
 
 func _open_main() -> Main:
