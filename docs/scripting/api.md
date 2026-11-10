@@ -715,7 +715,8 @@ Rules for both backings (a script that follows them behaves the same on both):
 1. **Columns are indexable objects**, `col[i]` with a 0-based integer `i`; `v.px` and friends are fetched once per call and
    can be kept in locals (the un-hoisted `v.px[i]` form works and costs about 5% more, measured). Do not rely on `#col`,
    `pairs` or `ipairs` on a column; use `v.n`.
-2. **Reads and writes are plain numbers.** Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
+2. **Reads and writes are plain numbers.** Writing anything else (a string, table, boolean, `nil`, function) raises
+   (`column '<name>': value must be a number`). Writes to `vx`, `vy`, `pa`, `pb` are visible to later reads in the same callback and
    are applied when the callback returns; a callback that errors or is stopped by the watchdog applies nothing (as for
    `player` writes). The host sanitizes written values at commit, on both backings: **velocities are clamped to the engine's speed limit, and a NaN or inf
    written to `vx`, `vy`, `pa` or `pb` kills that bullet** (despawn reason `INVALID`, counted in `BulletPool.invalid_total` on the pool and `NativeBulletSim` invalid total on the sim) and is reported in the script
