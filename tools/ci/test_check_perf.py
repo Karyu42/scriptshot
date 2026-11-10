@@ -690,7 +690,7 @@ class PushParentBaseTest(unittest.TestCase):
     def test_parent_present_pass_logs_the_parent_base(self):
         code, out, summ = run_ab(pair(7.5, 15.0), pair(11.5, 23.0), pair(7.5, 15.0), pair(11.5, 23.0), *self.PUSH)
         self.assertEqual(code, 0, out)
-        self.assertIn(f"perf base: parent commit {'a' * 40} (push to main, previous main tip), same job, same runner",
+        self.assertIn(f"perf base: parent commit {'a' * 40} (previous branch tip: main on push, the dispatched branch on workflow_dispatch), same job, same runner",
                       out)
         self.assertIn("perf mode: plain 5000: mode=raw", out)
         self.assertIn("perf mode: hooked 5000: mode=raw", out)

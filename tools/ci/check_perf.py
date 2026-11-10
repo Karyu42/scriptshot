@@ -465,7 +465,7 @@ def main(argv=None):
             mode_lines.append(f"perf base: parent commit{sha} (push to main), but its benchmark is unusable "
                               f"-> FALLBACK mode=raw: raw bars only, no relative check")
         else:
-            mode_lines.append(f"perf base: parent commit{sha} (push to main, previous main tip), same job, same runner")
+            mode_lines.append(f"perf base: parent commit{sha} (previous branch tip: main on push, the dispatched branch on workflow_dispatch), same job, same runner")
     for name, modes in (("plain", plain_modes), ("hooked", hooked_modes if a.hooked_report else {})):
         if modes is None:
             mode_lines.append(f"perf mode: {name}: mode=raw (no usable same-run base)")

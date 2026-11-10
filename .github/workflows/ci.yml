@@ -237,7 +237,7 @@ jobs:
               base="$BEFORE_SHA"
               echo "baseline = github.event.before (main tip before this push): $base"
               if [ -n "$parent" ] && [ "$parent" != "$base" ]; then
-                echo "::notice::github.event.before ($base) is not HEAD^1 ($parent): multi-commit push; the base is the previous main tip"
+                echo "::notice::github.event.before ($base) is not HEAD^1 ($parent): multi-commit push or force-push; the base is the previous branch tip"
               fi
             else
               echo "::warning::github.event.before $BEFORE_SHA could not be fetched; trying HEAD^1"
