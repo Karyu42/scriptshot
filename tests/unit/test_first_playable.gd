@@ -2,6 +2,11 @@ extends GutTest
 ## L0/L1 on scenes/main.tscn: safe zone, three targets, hostiles you can kill.
 
 const _SAVE := "user://gut_first_playable.cfg"
+## Fixed physics step. The probe must not depend on the live frame clock.
+const _STEP := 1.0 / 60.0
+## First regular already overlaps a later body (a swarmer 6 px away). A pierce-0
+## bullet at that point hits the neighbour and this body stays at 6 hp.
+const _OVERLAP_SEED := 1053
 
 
 func before_each() -> void:
@@ -87,56 +92,83 @@ func test_leaving_the_safe_zone_arms_the_herald_and_the_window_follows() -> void
 
 
 func test_a_regular_dies_to_the_bullet_manager() -> void:
-	var main := _open_main()
+	# A fresh save rolls world_seed with randi(). On some seeds the first regular
+	# already overlaps a later body, and a pierce-0 bullet is consumed by
+	# whichever hurtbox the spatial hash visits first. Seed 1053 is one of
+	# those: the probe hits the neighbour and this swarmer stays at 6. Other
+	# hurtboxes are turned off, and the manager is stepped with a fixed delta
+	# instead of the live physics clock or the camera window.
+	var main := _open_seeded_main(_OVERLAP_SEED)
 	add_child_autofree(main)
-	var player := main.get_node("Player") as Player
 	var bullets := main.get_node("BulletManager") as BulletManager
-	var hostiles := main.get_tree().get_nodes_in_group(RegularEnemy.GROUP)
-	var enemy: RegularEnemy = null
-	for node: Node in hostiles:
-		var body := node as RegularEnemy
-		if body == null or not body.is_alive() or body is EliteEnemy:
-			continue
-		enemy = body
-		break
+	bullets.auto_step = false
+	bullets.bounds_center = null
+	var enemy := _first_regular(main)
 	assert_not_null(enemy, "a regular body is in the ring")
-	player.teleport(enemy.global_position + Vector2(-80, 0))
-	# A woken Swarmer pack jitters. Freeze the bodies and centre the window on
-	# this one so the 4 px bullet is still on it when the manager steps, including
-	# when the first group in the ring is an elite and this regular sits further out.
-	for node: Node in hostiles:
-		var body := node as RegularEnemy
-		if body != null:
-			body.set_physics_process(false)
+	_silence_other_hurtboxes(enemy)
 	bullets.recenter_world_bounds(enemy.global_position)
 	var hp := enemy.health.hp
-	var req := ShotRequest.polar(enemy.global_position, 0.0, 0.0)
-	req.damage = 1.0
-	req.owner_layer = Layers.PLAYER
-	req.hit_mask = Layers.ENEMY
-	req.lifetime = 2.0
-	bullets.emitter.request_shot(req)
-	await wait_physics_frames(2)
+	assert_true(bullets.emitter.request_shot(_still_shot(enemy.global_position, 1.0)))
+	bullets.step(_STEP)
 	assert_true(is_instance_valid(enemy))
 	assert_almost_eq(enemy.health.hp, hp - 1.0, 0.01)
-	# A woken pack stacks, so the killing shot pierces the bodies on that point.
-	var lethal := ShotRequest.polar(enemy.global_position, 0.0, 0.0)
-	lethal.damage = 30.0
-	lethal.pierce = 16
-	lethal.owner_layer = Layers.PLAYER
-	lethal.hit_mask = Layers.ENEMY
-	lethal.lifetime = 2.0
-	assert_true(bullets.emitter.request_shot(lethal))
-	await wait_physics_frames(2)
+	assert_true(bullets.emitter.request_shot(_still_shot(enemy.global_position, 30.0)))
+	bullets.step(_STEP)
 	assert_false(is_instance_valid(enemy) and enemy.is_alive())
 
 
 func _open_main() -> Main:
 	# The previous test's scene frees after after_each and writes this path.
 	_discard_save(_SAVE)
+	return _main_with_save(_SAVE)
+
+
+func _open_seeded_main(world_seed: int) -> Main:
+	_discard_save(_SAVE)
+	var cfg := ConfigFile.new()
+	cfg.set_value("world", "world_seed", world_seed)
+	var err := cfg.save(_SAVE)
+	assert_eq(err, OK, "overlap seed could not be written")
+	return _main_with_save(_SAVE)
+
+
+func _main_with_save(path: String) -> Main:
 	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
-	main.save_path = _SAVE
+	main.save_path = path
 	return main
+
+
+func _first_regular(main: Main) -> RegularEnemy:
+	for node: Node in main.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
+		var body := node as RegularEnemy
+		if body == null or not body.is_alive() or body is EliteEnemy:
+			continue
+		body.set_physics_process(false)
+		return body
+	return null
+
+
+## One stationary bullet. Pierce stays 0: the body under test is the only live target.
+func _still_shot(at: Vector2, damage: float) -> ShotRequest:
+	var req := ShotRequest.polar(at, 0.0, 0.0)
+	req.damage = damage
+	req.owner_layer = Layers.PLAYER
+	req.hit_mask = Layers.ENEMY
+	req.lifetime = 2.0
+	return req
+
+
+func _silence_other_hurtboxes(keep: RegularEnemy) -> void:
+	for node: Node in keep.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
+		var body := node as RegularEnemy
+		if body == null:
+			continue
+		body.set_physics_process(false)
+		if body == keep:
+			continue
+		var hurtbox := body.get_node_or_null("Hurtbox") as Hurtbox
+		if hurtbox != null:
+			hurtbox.active = false
 
 
 func _discard_save(path: String) -> void:
