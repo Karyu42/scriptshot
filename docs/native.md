@@ -244,13 +244,25 @@ host guards 10 passing, unit and integration 1088 passing and 0 pending.
 pip install scons==4.10.1
 ./tools/build_native.sh                 # linux debug + release
 ./tools/build_native.sh linux release   # -> bin/linux.x86_64/libscriptshot_native.linux.template_release.x86_64.so
-./tools/build_native.sh windows         # MinGW cross on Linux, or MSVC on Windows
+./tools/build_native.sh windows         # Windows host (Git Bash) with MSVC. Same invocation as CI.
+./tools/build_native.sh windows --dev-mingw   # dev-only MinGW cross-build, not for release
 ./tools/build_native.sh macos           # macOS host, universal
 source /path/to/emsdk/emsdk_env.sh      # Emscripten 4.0.20
 ./tools/build_native.sh web             # wasm32, threads=no
 ./tools/build_native.sh android         # NDK r29, arm64
 ./tools/check_extension_api.sh          # godot-cpp API json == this Godot binary's dump
 ```
+
+`./tools/build_native.sh windows` is what `GUT (windows, native)` runs on
+`windows-latest`. On that host, with MSVC visible to SCons, the script invokes
+`scons platform=windows target=template_debug` and `target=template_release`
+with `arch=x86_64 use_static_cpp=yes` and does not pass `use_mingw`. godot-cpp
+then selects MSVC (`use_static_cpp=yes` is `/MT`). The library lands in
+`bin/windows.x86_64/libscriptshot_native.windows.template_{debug,release}.x86_64.dll`.
+On Linux or macOS the same command fails: the shipped Windows lib is
+MSVC-built on Windows. `--dev-mingw` opts into the MinGW cross-build (on Linux
+the script still prefers `x86_64-w64-mingw32-g++-posix`, because the win32
+thread model has no `std::thread`). That flag is dev-only and not for release.
 
 `SCRIPTSHOT_NATIVE_LTO` overrides godot-cpp's `lto=auto` (full on Linux, MinGW,
 and web). `SCRIPTSHOT_NATIVE_JOBS` overrides the job count.
