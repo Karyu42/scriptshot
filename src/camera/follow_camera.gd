@@ -29,11 +29,32 @@ var _noise := FastNoiseLite.new()
 var _clock := 0.0
 
 
+func _init() -> void:
+	# Set before ENTER_TREE. Physics interpolation forces physics mode and warns
+	# if the callback is still idle when the camera enters the tree.
+	process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
+
+
 func _ready() -> void:
 	process_callback = Camera2D.CAMERA2D_PROCESS_PHYSICS
 	_noise.frequency = 1.0
 	_noise.seed = 1337
 	snap_to_target()
+
+
+## World-space centre of a camera's physics-tick pose: `global_position`
+## (this script writes the smoothed focus there, aim look-ahead included) plus
+## `offset` (shake). BulletManager recentres the bullet window on this once
+## per physics tick and does not change the window's size, so the cull margin
+## around the centre stays the same.
+##
+## This is not Camera2D.get_screen_center_position(). With physics interpolation
+## on, that getter is a cache refreshed on idle from the blend of the previous
+## and current camera transforms at the wall-clock physics fraction. A sample
+## taken on the physics tick then trails the pose `_physics_process` just wrote
+## by part of one follow step.
+static func physics_screen_center(camera: Camera2D) -> Vector2:
+	return camera.global_position + camera.offset
 
 
 ## A Player target announces teleports and respawns; the camera cuts to it.
