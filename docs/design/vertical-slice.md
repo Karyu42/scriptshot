@@ -92,7 +92,7 @@ Arena centre `(9664, 0)` is chunk `(4, 0)` (`WorldGen.chunk_of`). That chunk's c
 
 G0 is the join to the procedural world. Past it, `ChunkStream` runs the existing tier-0 rules (2 encounters, Drifter + Swarmer, 4% common elite, elites never respawn, 5-minute regular absence). This slice does **not** turn on tier-1 chunk spawns and does **not** implement the region boss pass. It does write `starter_consumed = true` on the Warden kill so that pass, when it lands, does not place a second starter. **Decided (CoS call, Karyu may override), Q25:** this common Warden counts as the save's starter boss.
 
-**Herald clamp, on top of the existing one.** `HeraldDirector` still uses `58 + 20·u` seconds and the 1,200 px heading step, then the clamps in spawning §3.6. The slice's **first** Herald always ends inside walled room C (`(4096, -1024, 2560, 2048)`), not in an open chunk. No regular pack anchor, scripted or procedural, is within **800 px** of that point. The point that satisfies both is `(4500, 880)` (about 902 px from the Drifter anchor at `(4700, 0)`, and farther from the other three packs). Still one Herald, still `herald_done`, still not a chunk bit.
+**Herald clamp, on top of the existing one.** `HeraldDirector` still uses `58 + 20·u` seconds and the 1,200 px heading step, then the clamps in spawning §3.6. The slice's **first** Herald always ends inside walled room C (`(4096, -1024, 2560, 2048)`). Its point is a seeded candidate inside that room with no regular pack anchor within **800 px**. For this layout that candidate is `(4500, 880)` (about 902 px from the Drifter anchor at `(4700, 0)`, and farther from the other three packs). Packs are not moved, hidden, or held asleep. A pack that wakes and joins the fight is intended pressure. Still one Herald, still `herald_done`, still not a chunk bit.
 
 ## 3. Regular enemies
 
@@ -143,12 +143,15 @@ Q23 affixes only: **Splitting, Summoner, Bulwark, Phasing, Null-shot**. Mirrored
 
 **Summoner (PR #83, issue #81).** Common, including the Herald and a natural T0 Summoner elite: every **6 s**, max **2** alive, **1 HP** each (one BasicShot hit, and one Straight hit). They spawn at **±90°** from the line to the player and drift until they hold about **20 px** off that flank, out of the firing lane. Rare: every **4 s**, **2** per wave, max **8** alive. Legendary uses the common count and cooldown; Hydra's signature body is still a half-HP Drifter. Herald HP stays **75**.
 
-Seed 1 rolls Summoner (`hash_u(1, "herald", "eaff")` ≥ 0.5). Acceptance is measured on that seed in `scenes/main.tscn`, not in an isolated arena. No standoff distance is required.
+Seed 1 rolls Summoner (`hash_u(1, "herald", "eaff")` ≥ 0.5). Issue #81 has two checks. Both use these times. No standoff distance is required.
 
-| Weapon | Where | Time to kill the first Herald |
+| Weapon | Where | Time to kill |
 |---|---|---|
 | Straight starter, cooldown 0.25 s | about **220 px**, strafing | **≤ 25 s** |
 | Spread starter, or the split starter | same | **≤ 15 s** |
+
+1. **Isolated Summoner Herald.** The Herald alone, no other pack in the fight.
+2. **Slice.** The first Herald in walled room C, seed 1, in `scenes/main.tscn`. Measured once GE row 6 (the room C redirect) has landed.
 
 Room D rare intensity (spawning §3.4): Bulwark arc **150°**, rotates toward the player at **45°/s**, absorb; Summoner every **4 s**, **2** Swarmers, max **8** alive, no drops. One escort Drifter 48 px from the elite (the first-playable escort). The escort, summons, and any split halves grant no shard and no gate. G5 watches the elite body only. Wake when the player crosses G4.
 
@@ -533,7 +536,7 @@ Ordered. Each row is done when its acceptance passes. Dependencies are other row
 3. **Absorb arc.** Per-hurtbox response `ABSORB` with facing and arc, `DespawnReason.ABSORBED`, as first-playable L4. Acceptance: the L4 Bulwark test, and the room-A dummy. Include `REFLECT` in the enum; do not ship Mirrored. Depends: `Hurtbox`.
 4. **Room A dummy and room B pad/plate.** Numbers in §7. Acceptance: straight shots deal 0 to the shielded dummy; a shot with `spin` 2.2 kills it; the pad deals 1 pip after 0.6 s and only when HP is 5; the plate reports the overlapping bullet's speed. Every dummy death, including the three in S, emits `GameEvents.enemy_killed` with `kind` `"dummy"`; a respawned dummy's later death has `first_death` false. Depends: rows 1 and 3.
 5. **Lesson flags and gates.** `SliceProgress` saved on `SaveGame` (`slice_lesson` bits, gate bits, field absent timestamps). Death does not clear them. Acceptance: the §7 checkers, then G1–G4 open in order; dying in C respawns at the origin with G1–G3 still open. Depends: rows 1–4, `RespawnPoints`, `Main.respawn_delay`.
-6. **Herald redirect.** Acceptance: the first Herald spawns inside room C at `(4500, 880)`, ≥ 800 px from every regular pack anchor; `herald_done` still blocks a second. Depends: `HeraldDirector`, row 1.
+6. **Herald redirect.** Acceptance: the first Herald spawns inside room C at `(4500, 880)`, a seeded candidate ≥ 800 px from every regular pack anchor; packs are left where they are; `herald_done` still blocks a second. The slice half of the #81 times is measured in `scenes/main.tscn` once this row has landed. Depends: `HeraldDirector`, row 1.
 7. **Room D rare elite.** 120 HP Drifter, Bulwark rare + Summoner rare, escort, cue tier rare, `slice_rare_dead`, shards +3, G5. Acceptance: arc is 150° and turns at 45°/s; summons cap at 8; killing a summon does not open G5; reload does not respawn the body. Depends: rows 3 and 5, `EliteEnemy`, `RarityCue` rare tier.
 8. **Warden phase 1.** 900 HP, gap, 3 husks, Lance, aggro line at `x = 8736`, tithe 50, solid bodies. Acceptance: before aggro, shots deal 0; with the player pressed against the near husk from outside, the nearest centre is that husk; a shot into the core centre deals ×0.1 and a shot into the gap tick deals full damage; a husk death adds 50 HP unless the core hit 0; Lance telegraph is 0.6 s, the bullet has `pierces_script_invuln` false, it deals 1 pip, and it deals 0 during a dash. Depends: rows 1 and 5.
 9. **Phases 2–3 and Habituation flag.** Fan, phasing husks, broken ring, turn caps, `boss_habituation` default true. Acceptance: phase 2 starts the first tick HP ≤ 630; phasing husks take damage only inside the 0.4 s window; the ring has a 50° gap and its bullets deal 1 pip; with the flag on, a single signature loses damage as §5.2; with the flag off, a single signature does not. Depends: row 8.
@@ -571,7 +574,7 @@ The first playable combat run does not wait on Senses or on phase 3.
 
 ## 13. Product decisions
 
-Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12. **Not open:** which Sense the Warden grants. That is `sense.enemies_in`, Level I, in the api.md table. `nearest_enemy` stays the free Sense after 3 `first_death` kills. Q5, Q6, Q7, Q14, and Q15 stay as they are in pillars. Q17–Q24 stay decided.
+Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12. **Not open:** which Sense the Warden grants. That is `sense.enemies_in`, Level I, in the api.md table. `nearest_enemy` stays the free Sense after 3 `first_death` kills. Q5, Q6, Q7, Q14, Q15, and Q27 stay as they are in pillars. Q17–Q24 stay decided.
 
 ### Q25. Is the slice's first boss a guaranteed common Warden, or a seed roll?
 
