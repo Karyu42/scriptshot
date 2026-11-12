@@ -13,7 +13,7 @@ extends BulletBehavior
 ## ShotEmitter.request_child_shot_id after the callback returns. A callback that
 ## errors or is stopped by the budget commits nothing.
 
-const REASON_NAMES: PackedStringArray = ["lifetime", "bounds", "hit", "manual", "cleared", "wall", "invalid"]
+const REASON_NAMES: PackedStringArray = ["lifetime", "bounds", "hit", "manual", "cleared", "wall", "invalid", "absorbed"]
 
 var host: ScriptHost
 var last_result: ScriptHost.RunResult

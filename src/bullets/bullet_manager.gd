@@ -1914,6 +1914,18 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 	if not checked and not pool.sanitize(bullet):
 		return
 	var impact: Vector2 = pool.prev_pos[bullet].lerp(pool.pos[bullet], t)
+	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
+	# Absorb arc (Hurtbox.Response). NORMAL hurtboxes pay this one compare; the
+	# angle test is Hurtbox.absorbs(), the same call NativeBulletSim.commit_hit
+	# makes, so both backends agree. An absorbed bullet stops at the contact point
+	# and despawns as ABSORBED, piercing or not, with no damage and no on_hit.
+	if hurtbox.response != Hurtbox.Response.NORMAL and hurtbox.absorbs(impact):
+		pool.pos[bullet] = impact
+		_return_wall_hit[bullet] = 0
+		hurtbox.receive_absorb(impact, pool.vel[bullet], pool.id_of(bullet), flags)
+		pool.mark_dead(bullet, BulletPool.DespawnReason.ABSORBED)
+		pool.claim_from_bounds(bullet, BulletPool.DespawnReason.ABSORBED)
+		return
 	var piercing := pool.pierce[bullet] > 0
 	if not piercing:
 		# The bullet stops where it touched the target.
@@ -1921,7 +1933,6 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		# A reflected bullet that this hit consumes does not reach the wall at the end
 		# of its return leg (on_hit already must not report it).
 		_return_wall_hit[bullet] = 0
-	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if pool.pierces_script_invuln[bullet] != 0 else 0
 	hurtbox.receive_hit(pool.damage[bullet], impact, pool.vel[bullet], pool.id_of(bullet), flags)
 	var id := pool.behavior[bullet]
 	if id != 0:

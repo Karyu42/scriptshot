@@ -112,6 +112,7 @@ void NativeBulletSim::_bind_methods() {
 	BIND_ENUM_CONSTANT(REASON_CLEARED);
 	BIND_ENUM_CONSTANT(REASON_WALL);
 	BIND_ENUM_CONSTANT(REASON_INVALID);
+	BIND_ENUM_CONSTANT(REASON_ABSORBED);
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,7 +1003,7 @@ void NativeBulletSim::mark_dead(int slot, int reason) {
 void NativeBulletSim::remove_at(int i) {
 	const int last = count - 1;
 	const int reason = dead[i] - 1;
-	if (reason >= 0 && reason < 7) {
+	if (reason >= 0 && reason < REASON_COUNT) {
 		despawn_counts[reason]++;
 	}
 	if (wall_report[i] != 0) {
@@ -1432,6 +1433,30 @@ void NativeBulletSim::commit_hit(const HitEvent &h) {
 	if (active.get_type() == Variant::BOOL && !(bool)active) {
 		return;
 	}
+	// Absorb arc (Hurtbox.Response): one property read per hit. Only a non-NORMAL
+	// hurtbox is asked Hurtbox.absorbs(), the same method BulletManager._apply_hit
+	// calls for GD bullets, so both backends decide identically. An absorbed bullet
+	// stops at the contact point and despawns as ABSORBED, piercing or not, with
+	// no damage and no hit event.
+	const Variant response = target->get("response");
+	if (response.get_type() == Variant::INT && (int64_t)response != 0) {
+		const Vector2 contact(h.x, h.y);
+		const Variant absorbed = target->call("absorbs", contact);
+		if (absorbed.get_type() == Variant::BOOL && (bool)absorbed) {
+			px[s] = h.x;
+			py[s] = h.y;
+			if (return_wall_pending[s] != 0) {
+				return_wall_pending[s] = 0;
+				wall_report[s] = 0;
+				wall_nx[s] = 0.0f;
+				wall_ny[s] = 0.0f;
+			}
+			target->call("receive_absorb", contact, Vector2(h.vx, h.vy), h.bullet_id, h.flags);
+			mark_dead(s, REASON_ABSORBED);
+			claim_from_bounds(s, REASON_ABSORBED);
+			return;
+		}
+	}
 	const bool piercing = pierce[s] > 0;
 	if (!piercing) {
 		px[s] = h.x;
@@ -1595,8 +1620,8 @@ int NativeBulletSim::upload(const RID &p_multimesh, int p_allocated, bool p_inte
 
 PackedInt32Array NativeBulletSim::get_despawn_counts() const {
 	PackedInt32Array out;
-	out.resize(7);
-	for (int k = 0; k < 7; k++) {
+	out.resize(REASON_COUNT);
+	for (int k = 0; k < REASON_COUNT; k++) {
 		out[k] = (int32_t)despawn_counts[k];
 	}
 	return out;
