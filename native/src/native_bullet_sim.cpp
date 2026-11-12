@@ -54,6 +54,10 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("find_seq", "seq"), &NativeBulletSim::find_seq);
 	ClassDB::bind_method(D_METHOD("set_seq_at", "slot", "seq"), &NativeBulletSim::set_seq_at);
 	ClassDB::bind_method(D_METHOD("export_states"), &NativeBulletSim::export_states);
+	ClassDB::bind_method(D_METHOD("extract_behavior", "behavior"), &NativeBulletSim::extract_behavior);
+	ClassDB::bind_method(D_METHOD("get_velocity_of", "id"), &NativeBulletSim::get_velocity_of);
+	ClassDB::bind_method(D_METHOD("get_param_a_of", "id"), &NativeBulletSim::get_param_a_of);
+	ClassDB::bind_method(D_METHOD("get_param_b_of", "id"), &NativeBulletSim::get_param_b_of);
 	ClassDB::bind_method(D_METHOD("set_zones", "pos", "radius", "owners", "count"), &NativeBulletSim::set_zones);
 	ClassDB::bind_method(D_METHOD("get_zone_hit_count"), &NativeBulletSim::get_zone_hit_count);
 	ClassDB::bind_method(D_METHOD("get_zone_hit_slots"), &NativeBulletSim::get_zone_hit_slots);
@@ -822,40 +826,75 @@ Dictionary NativeBulletSim::gather_batch(int p_behavior) const {
 }
 
 static void clamp_speed(float &x, float &y, float cap) {
-	if (!(cap > 0.0f)) {
+	if (!(cap > 0.0f) || !std::isfinite(x) || !std::isfinite(y)) {
 		return;
 	}
-	float ax = std::fabs(x);
-	float ay = std::fabs(y);
-	float m = ax > ay ? ax : ay;
-	if (m > 1.0e20f) {
-		x /= m;
-		y /= m;
+	const float ax = std::fabs(x);
+	const float ay = std::fabs(y);
+	const float m = ax > ay ? ax : ay;
+	if (!(m > 0.0f)) {
+		return;
 	}
-	const float sp = std::sqrt(x * x + y * y);
-	if (sp > cap && sp > 0.0f) {
-		const float k = cap / sp;
-		x *= k;
-		y *= k;
+	// A component past ~1e19 squares to infinity in float32, so the length is
+	// taken after scaling by the largest component (same as BulletLimits.clamp_velocity).
+	// The old path divided by m and then treated the unit vector as the final
+	// velocity, so vx=vy=3e38 became about (1, 1) and skipped the cap.
+	float sx = x;
+	float sy = y;
+	if (m > 1.0e18f) {
+		sx = x / m;
+		sy = y / m;
 	}
+	const float sp = std::sqrt(sx * sx + sy * sy);
+	const float length = (m > 1.0e18f) ? sp * m : sp;
+	if (!(length > cap) || !(sp > 0.0f) || !std::isfinite(sp)) {
+		return;
+	}
+	const float k = cap / sp;
+	x = sx * k;
+	y = sy * k;
 }
 
-int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
+// Same test as BulletLimits.exceeds: length_squared in double, so a float32
+// component near 1e30 does not overflow the compare the way a float square would.
+static bool speed_exceeds(float x, float y, float cap) {
+	const double dx = (double)x;
+	const double dy = (double)y;
+	const double cap2 = (double)cap * (double)cap;
+	return !(dx * dx + dy * dy <= cap2);
+}
+
+static Dictionary batch_report(int vel_nf, int pa_nf, int pb_nf, const PackedFloat32Array &clamp_vx, const PackedFloat32Array &clamp_vy) {
+	Dictionary d;
+	d["killed"] = vel_nf + pa_nf + pb_nf;
+	d["vel_nonfinite"] = vel_nf;
+	d["pa_nonfinite"] = pa_nf;
+	d["pb_nonfinite"] = pb_nf;
+	d["clamp_vx"] = clamp_vx;
+	d["clamp_vy"] = clamp_vy;
+	return d;
+}
+
+Dictionary NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
 		const PackedFloat32Array &p_pa, const PackedFloat32Array &p_pb) {
 	int n = (int)p_ids.size();
 	n = std::min(n, (int)p_vx.size());
 	n = std::min(n, (int)p_vy.size());
 	n = std::min(n, (int)p_pa.size());
 	n = std::min(n, (int)p_pb.size());
+	PackedFloat32Array clamp_vx;
+	PackedFloat32Array clamp_vy;
 	if (n <= 0) {
-		return 0;
+		return batch_report(0, 0, 0, clamp_vx, clamp_vy);
 	}
 	const int64_t *ids = p_ids.ptr();
 	const float *wvx = p_vx.ptr();
 	const float *wvy = p_vy.ptr();
 	const float *wpa = p_pa.ptr();
 	const float *wpb = p_pb.ptr();
-	int killed = 0;
+	int vel_nf = 0;
+	int pa_nf = 0;
+	int pb_nf = 0;
 	for (int i = 0; i < n; i++) {
 		const int s = slot_of(ids[i]);
 		// slot_of fails when the generation changed, so a reused slot is not written.
@@ -866,21 +905,47 @@ int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloa
 		float nvy = wvy[i];
 		const float npa = wpa[i];
 		const float npb = wpb[i];
-		if (!std::isfinite(nvx) || !std::isfinite(nvy) || !std::isfinite(npa) || !std::isfinite(npb)) {
+		// NaN != NaN, matching the GDScript dirty check before set_velocity / sanitize.
+		const bool vel_dirty = nvx != vx[s] || nvy != vy[s];
+		const bool pa_dirty = npa != param_a[s];
+		const bool pb_dirty = npb != param_b[s];
+		if (vel_dirty && (!std::isfinite(nvx) || !std::isfinite(nvy))) {
 			vx[s] = 0.0f;
 			vy[s] = 0.0f;
 			mark_dead(s, REASON_INVALID);
 			invalid_total++;
-			killed++;
+			vel_nf++;
 			continue;
 		}
-		clamp_speed(nvx, nvy, max_speed);
-		vx[s] = nvx;
-		vy[s] = nvy;
-		param_a[s] = npa;
-		param_b[s] = npb;
+		if (vel_dirty && speed_exceeds(nvx, nvy, max_speed)) {
+			clamp_vx.push_back(nvx);
+			clamp_vy.push_back(nvy);
+		}
+		if ((pa_dirty && !std::isfinite(npa)) || (pb_dirty && !std::isfinite(npb))) {
+			vx[s] = 0.0f;
+			vy[s] = 0.0f;
+			mark_dead(s, REASON_INVALID);
+			invalid_total++;
+			if (pa_dirty && !std::isfinite(npa)) {
+				pa_nf++;
+			} else {
+				pb_nf++;
+			}
+			continue;
+		}
+		if (std::isfinite(nvx) && std::isfinite(nvy)) {
+			clamp_speed(nvx, nvy, max_speed);
+			vx[s] = nvx;
+			vy[s] = nvy;
+		}
+		if (std::isfinite(npa)) {
+			param_a[s] = npa;
+		}
+		if (std::isfinite(npb)) {
+			param_b[s] = npb;
+		}
 	}
-	return killed;
+	return batch_report(vel_nf, pa_nf, pb_nf, clamp_vx, clamp_vy);
 }
 
 bool NativeBulletSim::teleport_id(int64_t p_id, float p_x, float p_y) {
@@ -1590,40 +1655,83 @@ PackedInt32Array NativeBulletSim::get_dropped_by_limit() const {
 	return out;
 }
 
+Dictionary NativeBulletSim::bullet_row(int i) const {
+	Dictionary row;
+	row["pos"] = Vector2(px[i], py[i]);
+	row["prev"] = Vector2(qx[i], qy[i]);
+	row["vel"] = Vector2(vx[i], vy[i]);
+	row["rot"] = Vector2(rx[i], ry[i]);
+	row["radius"] = radius[i];
+	row["age"] = age[i];
+	row["lifetime"] = lifetime[i];
+	row["accel"] = accel[i];
+	row["turn"] = turn[i];
+	row["damage"] = damage[i];
+	row["param_a"] = param_a[i];
+	row["param_b"] = param_b[i];
+	row["behavior"] = behavior[i];
+	row["color"] = Color(col[4 * i], col[4 * i + 1], col[4 * i + 2], col[4 * i + 3]);
+	row["hit_mask"] = hit_mask[i];
+	row["pierce"] = pierce[i];
+	row["owner"] = owner_layer[i];
+	row["collide"] = collide_world[i] != 0;
+	row["flags"] = (int)source_flags[i];
+	row["seq"] = seq[i];
+	row["reflect_count"] = (int)reflect_count[i];
+	PackedInt64Array mem;
+	const int n = hit_mem_count[i];
+	mem.resize(n);
+	const uint64_t *base = &hit_mem[(size_t)i * HIT_MEMORY];
+	for (int k = 0; k < n; k++) {
+		mem[k] = (int64_t)base[k];
+	}
+	row["hit_mem"] = mem;
+	row["hit_head"] = (int)hit_mem_head[i];
+	return row;
+}
+
 Array NativeBulletSim::export_states() const {
 	Array out;
 	for (int i = 0; i < count; i++) {
-		Dictionary row;
-		row["pos"] = Vector2(px[i], py[i]);
-		row["prev"] = Vector2(qx[i], qy[i]);
-		row["vel"] = Vector2(vx[i], vy[i]);
-		row["rot"] = Vector2(rx[i], ry[i]);
-		row["radius"] = radius[i];
-		row["age"] = age[i];
-		row["lifetime"] = lifetime[i];
-		row["accel"] = accel[i];
-		row["turn"] = turn[i];
-		row["damage"] = damage[i];
-		row["color"] = Color(col[4 * i], col[4 * i + 1], col[4 * i + 2], col[4 * i + 3]);
-		row["hit_mask"] = hit_mask[i];
-		row["pierce"] = pierce[i];
-		row["owner"] = owner_layer[i];
-		row["collide"] = collide_world[i] != 0;
-		row["flags"] = (int)source_flags[i];
-		row["seq"] = seq[i];
-		row["reflect_count"] = (int)reflect_count[i];
-		PackedInt64Array mem;
-		const int n = hit_mem_count[i];
-		mem.resize(n);
-		const uint64_t *base = &hit_mem[(size_t)i * HIT_MEMORY];
-		for (int k = 0; k < n; k++) {
-			mem[k] = (int64_t)base[k];
-		}
-		row["hit_mem"] = mem;
-		row["hit_head"] = (int)hit_mem_head[i];
-		out.push_back(row);
+		out.push_back(bullet_row(i));
 	}
 	return out;
+}
+
+Array NativeBulletSim::extract_behavior(int p_behavior) {
+	// A kill only marks the slot. Compacting first keeps that bullet from being
+	// swapped into another slot's pending index and then never removed.
+	compact();
+	Array out;
+	int i = 0;
+	while (i < count) {
+		if (dead[i] != 0 || behavior[i] != p_behavior) {
+			i++;
+			continue;
+		}
+		out.push_back(bullet_row(i));
+		// remove_at retires the seq and frees the id. No despawn reason: dead is 0.
+		remove_at(i);
+	}
+	return out;
+}
+
+Vector2 NativeBulletSim::get_velocity_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	if (s < 0) {
+		return Vector2();
+	}
+	return Vector2(vx[s], vy[s]);
+}
+
+float NativeBulletSim::get_param_a_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	return s < 0 ? 0.0f : param_a[s];
+}
+
+float NativeBulletSim::get_param_b_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	return s < 0 ? 0.0f : param_b[s];
 }
 
 Array NativeBulletSim::get_last_despawns() const {

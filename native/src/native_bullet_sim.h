@@ -113,6 +113,14 @@ public:
 	void set_seq_at(int p_slot, int p_seq);
 	// Full state of every live bullet, for moving them into the GDScript pool.
 	godot::Array export_states() const;
+	// Removes every live bullet of `p_behavior` without a despawn reason and
+	// returns the same rows as export_states. Used when a batch-only weapon
+	// gains a per-bullet hook and those bullets must move to the GDScript pool.
+	godot::Array extract_behavior(int p_behavior);
+	godot::Vector2 get_velocity_of(int64_t p_id) const;
+	float get_param_a_of(int64_t p_id) const;
+	float get_param_b_of(int64_t p_id) const;
+	godot::Dictionary bullet_row(int p_slot) const;
 
 	// Reflector zones for this tick (circle, owner mask). Empty disables the
 	// zone sweep. BulletManager passes the active Reflector list, in registry
@@ -167,10 +175,12 @@ public:
 	// Packed copies of every alive bullet with this behavior id, in slot order.
 	// The id column is the stable id. A later write is applied only if it still matches.
 	godot::Dictionary gather_batch(int p_behavior) const;
-	// Writes velocity and params for each id. A stale generation, a dead bullet,
-	// or a non-finite value does not land on a replacement. Non-finite kills as
-	// INVALID. Returns how many of those kills happened.
-	int apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
+	// Writes velocity and params for each id. A stale generation or a dead bullet
+	// is skipped. Non-finite velocity or params kill as INVALID. The dictionary
+	// is the whole commit's warning totals (no per-row callback):
+	// killed, vel_nonfinite, pa_nonfinite, pb_nonfinite, and clamp_vx/clamp_vy
+	// for each finite over-cap velocity, in row order.
+	godot::Dictionary apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
 			const godot::PackedFloat32Array &p_vy, const godot::PackedFloat32Array &p_pa,
 			const godot::PackedFloat32Array &p_pb);
 	bool teleport_id(int64_t p_id, float p_x, float p_y);

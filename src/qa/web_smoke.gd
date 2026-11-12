@@ -74,7 +74,9 @@ func _run() -> void:
 		_fail("bullet backend is %s, expected gdscript" % manager.backend)
 		return
 	print("SMOKE_LUA_OK bullets=%d backend=%s on_spawn=%d chunk=%s" % [spawned, manager.backend, hooks, loaded.chunk_name])
-	print("SMOKE_BACKEND backend=%s requested=%s fallback_warnings=%d" % [manager.backend, NativeBackend.opted_backend(), NativeBackend.missing_warnings])
+	# wanted_backend is gdscript on web unless native was named explicitly.
+	# opted_backend() still says native for the built-in default, which is not what this run asked the sim to do.
+	print("SMOKE_BACKEND backend=%s requested=%s fallback_warnings=%d" % [manager.backend, NativeBackend.wanted_backend(manager.backend_preference), NativeBackend.missing_warnings])
 	print("SMOKE_DONE ok")
 
 

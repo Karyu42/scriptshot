@@ -157,6 +157,7 @@ func test_faction_colours_are_distinct() -> void:
 
 func _manager() -> BulletManager:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.auto_step = false
 	m.render_enabled = false
 	add_child_autofree(m)

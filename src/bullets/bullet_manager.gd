@@ -70,15 +70,18 @@ var emitter: ShotEmitter
 ## "native" when the C++ NativeBulletSim simulates hook-free bullets, otherwise
 ## "gdscript" (everything in `pool`). Chosen in _ready(); see backend_preference.
 var backend := "gdscript"
-## Which backend to use. "gdscript" (the default) keeps every bullet in the pool,
-## including when the project setting or SCRIPTSHOT_BULLET_BACKEND says native:
-## tests and a scene that did not opt in do not move because the library loaded.
-## "native" sends hook-free bullets to NativeBulletSim when the extension is
-## loaded, and falls back to GDScript (one warning) when it is not. "auto"
-## follows, in order, `--bullet-backend=`, SCRIPTSHOT_BULLET_BACKEND, then the
-## project setting `scriptshot/bullets/backend`. Unset stays on GDScript.
-## Set before _ready. The main scene and the benchmark use "auto".
-@export_enum("auto", "gdscript", "native") var backend_preference := "gdscript"
+## Which backend to use. "auto" (the default) follows `--bullet-backend=`, then
+## SCRIPTSHOT_BULLET_BACKEND, then `scriptshot/bullets/backend` when that setting
+## is `gdscript` or `native`. Otherwise native is used wherever the library
+## loads. Plain, declarative and batch-only bullets go there. A per-bullet hook
+## stays on the GDScript pool. Web stays on GDScript and does not try to load
+## the library (no warning: that is expected). Android has no separate path; a
+## missing library uses the same fallback as anywhere else. A missing library
+## or a sim that fails to instantiate falls back to GDScript with one warning
+## per run. "gdscript" and "native" force that backend and ignore the CLI, the
+## env var and the project setting. Set before _ready. The shipped scenes use
+## "auto".
+@export_enum("auto", "gdscript", "native") var backend_preference := "auto"
 var native: NativeBackend
 
 ## Duration of the last step() call in microseconds.
@@ -443,9 +446,50 @@ func _wants_batch_callback(b: BulletBehavior) -> bool:
 
 
 func _sync_batch_routing(id: int) -> void:
+	var batch_only := _is_batch_only(id)
 	if pool != null:
-		pool.set_batch_only(id, _is_batch_only(id))
+		pool.set_batch_only(id, batch_only)
+	# A batch-only weapon that gains a per-bullet hook would otherwise leave its
+	# live sim bullets with neither callback. Move them onto the pool first.
+	if not batch_only:
+		_migrate_native_behavior(id)
 	_batch_ids_dirty = true
+
+
+## Copies this behavior's live native bullets into the pool and drops them from
+## the sim. State and the script-invulnerability flag are kept. The native id
+## is retired; the pool bullet gets a new id and a new seq.
+func _migrate_native_behavior(behavior_id: int) -> void:
+	if native == null or behavior_id <= 0:
+		return
+	if native.count_with_behavior(behavior_id) <= 0:
+		return
+	var rows: Array = native.extract_behavior(behavior_id)
+	_sync_pool_external()
+	var veto := false
+	var behavior := _get_behavior(behavior_id)
+	if behavior != null:
+		veto = (_hooks_of(behavior_id, behavior) & BulletBehavior.HOOK_CAN_HIT) != 0
+	for i in rows.size():
+		var item: Variant = rows[i]
+		if not item is Dictionary:
+			continue
+		@warning_ignore("unsafe_cast")
+		var row := item as Dictionary
+		var slot := pool.adopt_native(row)
+		if slot < 0:
+			ScriptWarnings.warn(
+				"BulletManager.migrate",
+				"BulletManager.migrate: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
+			)
+			continue
+		pool.behavior[slot] = behavior_id
+		if veto and pool.can_hit_veto[slot] == 0:
+			pool.can_hit_veto[slot] = 1
+			pool.veto_count += 1
+		# extract_behavior already retired the native seq. This bullet needs its own.
+		pool.seq[slot] = _alloc_order()
+	_sync_pool_external()
 
 
 func _ensure_batch_ids() -> void:
@@ -787,7 +831,9 @@ func commit_batch(view: BatchView) -> void:
 	if view == null or view.discard or view.n == 0 and view.command_count() == 0:
 		return
 	if view.native_rows > 0 and native != null:
-		native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb)
+		# One sim call for every row. The dictionary is counts (and the over-cap
+		# velocities); the warnings below are the same keys the pool prints.
+		_emit_native_batch_warnings(native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb))
 	if view.n > view.native_rows:
 		_commit_pool_columns(view)
 	_commit_batch_commands(view)
@@ -922,6 +968,13 @@ func _batch_kill(view: BatchView, bullet_id: int) -> bool:
 
 func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> void:
 	if native != null and (bullet_id & NativeBackend.ID_FLAG) != 0:
+		if not native.is_alive(bullet_id):
+			return
+		if not is_finite(x + y):
+			BulletPool.report_removed("BatchView.teleport", "a non-finite position")
+			# teleport_id rejects the position, zeros velocity and counts INVALID.
+			native.teleport_id(bullet_id, x, y)
+			return
 		native.teleport_id(bullet_id, x, y)
 		return
 	var slot := pool.slot_of(bullet_id)
@@ -929,11 +982,32 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 		return
 	if not is_finite(x + y):
 		pool.invalid_total += 1
-		ScriptWarnings.warn("BatchView.teleport", "BatchView.teleport: a non-finite position, the bullet was removed (DespawnReason.INVALID)")
+		BulletPool.report_removed("BatchView.teleport", "a non-finite position")
 		pool.vel[slot] = Vector2.ZERO
 		pool.mark_dead(slot, BulletPool.DespawnReason.INVALID)
 		return
 	pool.teleport(slot, Vector2(x, y))
+
+
+## Turns apply_batch's totals into the same ScriptWarnings the pool raises per
+## bullet. One pass over the counts, not one sim call per row.
+func _emit_native_batch_warnings(report: Dictionary) -> void:
+	var vel_nf: int = report["vel_nonfinite"]
+	var pa_nf: int = report["pa_nonfinite"]
+	var pb_nf: int = report["pb_nonfinite"]
+	@warning_ignore("unsafe_cast")
+	var clamp_vx := report["clamp_vx"] as PackedFloat32Array
+	@warning_ignore("unsafe_cast")
+	var clamp_vy := report["clamp_vy"] as PackedFloat32Array
+	for _i in vel_nf:
+		BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+	var clamps := mini(clamp_vx.size(), clamp_vy.size())
+	for i in clamps:
+		BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[i], clamp_vy[i]))
+	for _i in pa_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+	for _i in pb_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
@@ -1270,9 +1344,16 @@ func snapshot() -> Dictionary:
 
 
 func _select_backend() -> void:
-	var wanted := backend_preference
-	if wanted == "auto":
-		wanted = NativeBackend.opted_backend()
+	var wanted := NativeBackend.wanted_backend(backend_preference)
+	# Web does not ship NativeBulletSim and does not construct it. The built-in
+	# default is silent there. An explicit native request still logs the one
+	# process-wide fallback warning. Android is not special-cased: a missing
+	# library takes the fallback below.
+	if NativeBackend.is_web():
+		if wanted == "native":
+			NativeBackend.warn_missing()
+		backend = "gdscript"
+		return
 	# Explicit "gdscript", or "auto" that resolved to it: the pool only.
 	if wanted != "native":
 		backend = "gdscript"
@@ -1282,6 +1363,11 @@ func _select_backend() -> void:
 		backend = "gdscript"
 		return
 	native = NativeBackend.new(capacity, world_bounds, cell_size)
+	if native.sim == null:
+		native = null
+		NativeBackend.warn_missing()
+		backend = "gdscript"
+		return
 	native.set_limits(pool.logical_cap, pool.enemy_reserve)
 	pool.alloc_order = _assign_pool_seq
 	pool.retire_order = _retire_pool_bullet

@@ -88,6 +88,22 @@ the numbers cover CPU-side simulation and buffer preparation, not GPU time.
 To include a real renderer run it windowed:
 `godot --path . res://tests/benchmark/bullet_benchmark.tscn -- --bullets=5000,10000`.
 
+The benchmark's omitted `--backend` is **gdscript**. That pin keeps the plain 16.6 ms and hooked 22.0 ms bars on the GDScript pool (per-bullet hooks stay on that pool either way). `--backend=auto` follows the game default below. `--backend=native` measures the C++ pool for plain and `on_batch` bullets.
+
+## Bullet backend
+
+Plain bullets, declarative bullets, and `on_batch` scripts run on the C++ pool (`NativeBulletSim`) when that library has loaded. Bullets with a per-bullet hook (`on_spawn`, `on_update`, `on_hit`, `can_hit`, `on_despawn`) stay on the GDScript pool. If the library is missing or fails to instantiate, the game stays on GDScript and logs **one** warning for the whole run (`push_warning`), not one per bullet or frame.
+
+Web builds do not try to load the native library (it is not shipped) and do not warn. An explicit native request on web still stays on GDScript, does not construct the sim, and logs that one warning. Android has no separate bullet path: a missing library uses the same automatic fallback.
+
+Force a backend with any of:
+
+* `SCRIPTSHOT_BULLET_BACKEND=gdscript` or `native`
+* `--bullet-backend=gdscript` or `native`
+* project setting `scriptshot/bullets/backend` set to `gdscript` or `native`
+
+The committed setting is `auto`, which means native when the library loads. `BulletManager.backend_preference = "gdscript"` or `"native"` forces that backend and ignores the three overrides above. Details: [`docs/native.md`](docs/native.md).
+
 ## Exports
 
 `export_presets.cfg` is committed (it holds no credentials; `export_credentials.cfg`

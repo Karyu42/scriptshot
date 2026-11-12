@@ -16,6 +16,10 @@ extends RefCounted
 ## tick's integrate and before collision. Each write is checked against the
 ## stable id captured here. A despawn, or a slot reused under a new generation,
 ## drops that row. A callback that fails applies nothing (`discard`).
+##
+## Row order is unspecified. When a behavior has bullets in both stores, the
+## native sim's rows come first and the GDScript pool's rows follow. Do not
+## assume index 0 is the oldest bullet.
 
 
 const CMD_KILL := 0

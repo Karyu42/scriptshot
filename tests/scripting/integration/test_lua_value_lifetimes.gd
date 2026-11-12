@@ -14,6 +14,7 @@ func before_each() -> void:
 
 func _new_manager() -> void:
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-2000, -2000, 4000, 4000)
 	manager.render_enabled = false

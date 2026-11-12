@@ -38,6 +38,7 @@ class Plain:
 func before_each() -> void:
 	_tick = DT
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-500, -500, 1000, 1000)
 	manager.render_enabled = false

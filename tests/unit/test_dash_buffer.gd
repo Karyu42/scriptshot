@@ -174,6 +174,7 @@ class ChargeShot:
 
 func _with_charge_weapon() -> ChargeShot:
 	var bullets := BulletManager.new()
+	bullets.backend_preference = "gdscript"
 	bullets.render_enabled = false
 	add_child_autofree(bullets)
 	player.emitter = bullets.emitter

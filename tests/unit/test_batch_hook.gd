@@ -668,3 +668,185 @@ func test_reflect_before_the_batch_hook_matches_on_both_stores() -> void:
 		return
 	_expect_reflect_before_batch(_reflect_before_batch("native", false), false)
 	_expect_reflect_before_batch(_reflect_before_batch("native", true), true)
+
+
+func test_native_batch_parity_clamp_huge_inf_and_nan() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var modes: PackedStringArray = PackedStringArray(["huge", "inf", "nan"])
+	for mode: String in modes:
+		var gd := _clamp_case("gdscript", mode)
+		var nat := _clamp_case("native", mode)
+		assert_eq(nat.alive, gd.alive, mode)
+		assert_eq(nat.invalid, gd.invalid, mode)
+		assert_eq(nat.speed_warns, gd.speed_warns, mode)
+		assert_eq(nat.velocity_warns, gd.velocity_warns, mode)
+		assert_almost_eq(nat.vel.x, gd.vel.x, 0.05, mode)
+		assert_almost_eq(nat.vel.y, gd.vel.y, 0.05, mode)
+		if mode == "huge":
+			assert_almost_eq(nat.vel.length(), BulletLimits.MAX_SPEED, 0.05, "huge finite speed is capped, not left at length 1")
+			assert_eq(nat.speed_warns, 1)
+		else:
+			assert_eq(nat.alive, 0, mode)
+			assert_eq(nat.velocity_warns, 1)
+
+
+func test_native_batch_parity_migrate_on_per_bullet_hook() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var gd := _migrate_case("gdscript")
+	var nat := _migrate_case("native")
+	assert_eq(nat.rows, gd.rows, "live sim bullets must join the pool when a per-bullet hook appears")
+	assert_eq(nat.alive, gd.alive)
+	assert_true(nat.moved, "the native bullets left the sim")
+	assert_eq(nat.invuln, 1)
+
+
+func test_native_batch_parity_kill_then_extract() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var manager := _manager("native")
+	var behavior := _MigrateBatch.new()
+	var id := manager.register_behavior(behavior)
+	var killed := manager.spawn(_shot(id, Vector2(10.0, 0.0)))
+	var live := manager.spawn(_shot(id, Vector2(20.0, 0.0)))
+	assert_true(manager.native.kill(killed))
+	assert_true(manager.native.has_id(killed), "a kill waits for compact")
+	behavior.hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+	manager.refresh_behavior(id)
+	assert_false(manager.native.has_id(killed), "the killed bullet was compacted, not left in a pending slot")
+	assert_false(manager.native.is_alive(live))
+	assert_eq(manager.native.count(), 0)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.alive_count(), 1)
+	assert_eq(manager.pool.behavior[0], id)
+	assert_eq(manager.pool.vel[0], Vector2(20.0, 0.0))
+
+
+func test_native_batch_parity_migrate_warns_when_adopt_fails() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	ScriptWarnings.reset()
+	var manager := _manager("native")
+	var behavior := _MigrateBatch.new()
+	var id := manager.register_behavior(behavior)
+	var bullet := manager.spawn(_shot(id, Vector2(30.0, 0.0)))
+	assert_true(manager.is_native_id(bullet))
+	# adopt_native refuses when the pool's physical count is already at capacity.
+	manager.pool.capacity = 0
+	behavior.hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+	manager.refresh_behavior(id)
+	assert_eq(ScriptWarnings.count("BulletManager.migrate"), 1)
+	assert_string_contains(ScriptWarnings.last_message("BulletManager.migrate"), "was dropped")
+	assert_eq(manager.alive_count(), 0)
+	assert_false(manager.native.has_id(bullet))
+
+
+func _clamp_case(preference: String, mode: String) -> _ClampResult:
+	ScriptWarnings.reset()
+	var manager := _manager(preference)
+	var behavior := _ClampBatch.new()
+	behavior.mode = mode
+	var id := manager.register_behavior(behavior)
+	manager.spawn(_shot(id, Vector2(30.0, 0.0)))
+	manager.step(DT)
+	var result := _ClampResult.new()
+	result.alive = manager.alive_count()
+	result.invalid = manager.pool.invalid_total + (manager.native.invalid_total() if manager.native != null else 0)
+	var snap := manager.snapshot()
+	var velocities: PackedVector2Array = snap["vel"]
+	if velocities.size() > 0:
+		result.vel = velocities[0]
+	result.speed_warns = ScriptWarnings.count("BulletPool.set_velocity.clamp.speed")
+	result.velocity_warns = ScriptWarnings.count("BulletPool.set_velocity")
+	return result
+
+
+func _migrate_case(preference: String) -> _MigrateResult:
+	var manager := _manager(preference)
+	var behavior := _MigrateBatch.new()
+	var id := manager.register_behavior(behavior)
+	var req := _shot(id, Vector2(40.0, 0.0))
+	req.pierces_script_invuln = true
+	var first := manager.spawn(req)
+	manager.step(DT)
+	behavior.hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+	manager.refresh_behavior(id)
+	var result := _MigrateResult.new()
+	result.moved = preference != "native" or (manager.native.count() == 0 and manager.pool.count == 1)
+	if preference == "native":
+		assert_false(manager.native.is_alive(first), "the old native id is retired")
+		for i in manager.pool.count:
+			if manager.pool.behavior[i] == id and manager.pool.pierces_script_invuln[i] != 0:
+				result.invuln = 1
+	manager.spawn(_shot(id, Vector2(10.0, 0.0)))
+	manager.step(DT)
+	result.rows = _sorted_rows(manager, id)
+	result.alive = manager.alive_count()
+	return result
+
+
+func _sorted_rows(manager: BulletManager, behavior_id: int) -> Array:
+	var view := manager.gather_batch(behavior_id, DT)
+	var rows: Array[String] = []
+	for i in view.n:
+		rows.append("%.3f,%.3f,%.3f,%.3f" % [view.px[i], view.py[i], view.vx[i], view.vy[i]])
+	rows.sort()
+	var out: Array = []
+	for row in rows:
+		out.append(row)
+	return out
+
+
+class _ClampResult:
+	var alive := 0
+	var invalid := 0
+	var vel := Vector2.ZERO
+	var speed_warns := 0
+	var velocity_warns := 0
+
+
+class _MigrateResult:
+	var rows: Array = []
+	var alive := 0
+	var moved := false
+	var invuln := 0
+
+
+class _ClampBatch:
+	extends BulletBehavior
+	var mode := "huge"
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+
+	func on_update_batch(batch: BatchView) -> void:
+		if batch.n == 0:
+			return
+		if mode == "huge":
+			batch.vx[0] = 3.0e38
+			batch.vy[0] = 3.0e38
+		elif mode == "inf":
+			batch.vx[0] = INF
+		else:
+			batch.vy[0] = NAN
+
+
+class _MigrateBatch:
+	extends BulletBehavior
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+		hook_mask = 0
+		hook_mask_exact = true
+
+	func on_update_batch(batch: BatchView) -> void:
+		for i in batch.n:
+			batch.vx[i] = batch.vx[i] + 100.0
+
+	func on_despawn(_pool: BulletPool, _index: int, _reason: int) -> void:
+		pass

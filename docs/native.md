@@ -3,17 +3,19 @@
 Hybrid C++ migration. A small GDExtension (`NativeBulletSim`, `native/`)
 advances **hook-free** bullets: plain shots, declarative ones (kinematics
 only, no per-bullet hook), and **batch-hook** bullets. Bullets with a
-per-bullet hook stay in the GDScript `BulletPool`, and that pool remains the
-default and the fallback.
+per-bullet hook stay in the GDScript `BulletPool`. Native is the default
+wherever that library loads. The pool is the fallback, and the only backend
+on web.
 
-**Status: opt-in.** The library can be built for Linux x86_64, Windows x86_64,
+**Status: default when the library loads.** The library can be built for Linux x86_64, Windows x86_64,
 macOS universal, web wasm32 (no threads, matching the export preset), and
 Android arm64. CI builds Linux, Windows (MSVC), macOS universal and web on
 every PR and runs the full GUT suite with the library loaded on Linux, Windows
-and macOS (see [CI](#ci)); Android is not built in CI yet. The game does not move bullets unless
-native is opted in and that platform's library loaded. Hooked bullets never
-move to C++. A missing or failed library logs one warning and stays on the
-GDScript pool.
+and macOS (see [CI](#ci)); Android is not built in CI yet. Plain, declarative and `on_batch` bullets use native when that platform's library loaded.
+Per-bullet hooks stay on the GDScript pool. A missing library, or a sim that
+fails to instantiate, logs **one** warning per run and stays on that pool.
+Web does not try to load the library and does not warn. Android has no
+separate path: it uses the same fallback.
 
 ## What this PR does
 
@@ -102,7 +104,10 @@ GDScript pool.
      and both run.
   6. **Hook spawns stay on the pool for life.** A bullet spawned inside a hook,
      including `on_update_batch`, is born on the GDScript pool and is not
-     migrated into the sim later.
+     migrated into the sim later. The other direction does happen: a batch-only
+     weapon that gains a per-bullet hook moves its live sim bullets onto the
+     pool (state and `pierces_script_invuln` kept, native id retired).
+  **Batch row order is unspecified.** Sim rows are listed before pool rows.
   **Zero-copy stays off.** The columns are packed copies through stock
   lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
   Packed copies are the backing that was measured. Native batch work p95 on the
@@ -119,13 +124,12 @@ GDScript pool.
   clock and the 64 MB memory cap are unchanged. Those limits are provisional
   and may change. A hot reload that adds `on_batch` does not move bullets that
   already have `behavior_id` 0 into the batch.
-  **Default backend cost (provisional).** With the default GDScript backend,
-  `on_batch` bullets stay on the GD pool. That path is about 21–25 ms p95 at
-  5,000 and about 41–47 ms at 10,000 on the machines sampled so far (single
-  runs have reported 20.7 / 40.9 ms and 24.8 / 47.0 ms), over the 16.6 ms frame
-  budget at 5,000. Routing them to native by default belongs to the
-  default-backend decision, tracked in
-  [#34](https://github.com/Karyu42/scriptshot/issues/34).
+  **Default backend.** Plain bullets and `on_batch` bullets use native when the
+  library loads ([#34](https://github.com/Karyu42/scriptshot/issues/34)). On the
+  machines sampled so far that native batch is about 1.5–2.3 ms p95 at 5,000
+  and about 4 ms at 10,000, inside the 16.6 ms frame. Forcing the GDScript
+  backend leaves `on_batch` on the pool, about 21–25 ms p95 at 5,000 and about
+  41–47 ms at 10,000 (single runs have reported 20.7 / 40.9 ms and 24.8 / 47.0 ms).
 - Hits from both stores in one tick are delivered in shared seq order, the
   order a single pool would walk. A hurtbox turned off by an earlier bullet
   is skipped for the later one, on both backends.
@@ -135,12 +139,17 @@ GDScript pool.
 - Spawn limits match `BulletLimits`: `NativeBackend` clamps with those
   constants and passes `MAX_SPEED` into `configure`. The extension does not
   hard-code a second ceiling. A non-finite shot is refused.
-- GDScript is the fallback and the default. `backend_preference` defaults to
-  `"gdscript"`, so loading the library does not move bullets on a manager that
-  did not opt in. `"native"` uses the extension or, if it is missing, logs
-  **one** warning and stays on GDScript. `"auto"` (the main scene and the
-  benchmark) resolves `--bullet-backend=`, then `SCRIPTSHOT_BULLET_BACKEND`,
-  then the project setting `scriptshot/bullets/backend` (default `gdscript`).
+- Native is the default when `NativeBulletSim` loads. GDScript is the fallback.
+  `backend_preference` defaults to `"auto"`. `"native"` uses the extension or,
+  if it is missing or fails to instantiate, logs **one** warning per run and
+  stays on GDScript. `"gdscript"` forces the pool and does not warn. `"auto"`
+  (the shipped scenes) resolves `--bullet-backend=`, then
+  `SCRIPTSHOT_BULLET_BACKEND`, then the project setting
+  `scriptshot/bullets/backend` when that value is `gdscript` or `native`.
+  The committed setting is `auto`, which is not an override, so the built-in
+  choice is native. Web stays on GDScript and does not warn for that default.
+  An explicit native request on web still does not construct the sim; it logs
+  the one fallback warning.
 
 `spawn()` returns a pool slot for GDScript bullets and a native id for plain
 native bullets. `ShotEmitter.request_shot_id()` / `is_bullet_alive()` understand
@@ -152,14 +161,16 @@ both. `alive_count()`, `spawned_total()`, and `snapshot()` cover both stores.
 
 | value | result |
 |---|---|
-| `"gdscript"` (export default) | pool only. Ignores the CLI, the env var and the project setting. |
-| `"native"` | hook-free bullets in `NativeBulletSim` if the extension loaded, otherwise GDScript plus one warning |
-| `"auto"` | `--bullet-backend=`, else `SCRIPTSHOT_BULLET_BACKEND`, else `scriptshot/bullets/backend`, else GDScript |
+| `"auto"` (export default) | `--bullet-backend=`, else `SCRIPTSHOT_BULLET_BACKEND`, else `scriptshot/bullets/backend` when that is `gdscript` or `native`, else **native** if the library loads. Any other env or setting value is ignored, with no extra warning. Web: GDScript, no attempt, no warning. Missing library or a failed instantiate: GDScript plus one warning per run. |
+| `"gdscript"` | pool only. Ignores the CLI, the env var and the project setting. No warning. |
+| `"native"` | hook-free bullets in `NativeBulletSim` if the extension loaded and instantiated, otherwise GDScript plus one warning. On web: GDScript, no instantiate, one warning. |
 
-`spawn()` on the native backend returns a native id, not a pool slot. The
-unit tests that index the pool are written for GDScript and leave the
-preference at the default, so do not point the whole suite at native with the
-environment variable. The native tests set `"native"` themselves.
+Plain, declarative and batch-only bullets take the native path. A per-bullet
+hook (`on_spawn`, `on_update`, `on_hit`, `can_hit`, `on_despawn`) stays on the
+GDScript pool. `spawn()` on the native backend returns a native id, not a pool
+slot. The unit tests that index the pool set `backend_preference` to
+`"gdscript"`. Do not point the whole suite at native with the environment
+variable. The native tests set `"native"` themselves.
 
 ```
 ./tools/build_native.sh
@@ -167,8 +178,10 @@ environment variable. The native tests set `"native"` themselves.
 ./tools/run_tests.sh                         # extension built: the same tests run
 ./tools/run_tests.sh -gselect=native         # the opt-in tests only
 
-# Benchmark. Hooked bullets stay on GDScript either way. Do not change the
-# 22 ms hooked gate; these flags only select the pool under measurement.
+# Benchmark. Omitted --backend is gdscript, pinned so the plain 16.6 ms and
+# hooked 22.0 ms bars keep measuring the GDScript pool. Per-bullet hooks stay
+# on that pool even when native is selected. Do not change the 22 ms hooked gate.
+./tools/run_benchmark.sh
 ./tools/run_benchmark.sh --backend=gdscript --hooked=0
 ./tools/run_benchmark.sh --backend=gdscript --hooked=1
 ./tools/run_benchmark.sh --backend=native --hooked=0
@@ -176,17 +189,18 @@ environment variable. The native tests set `"native"` themselves.
 # One batch hook steering every bullet (GD pool vs native sim). Not the hooked gate.
 ./tools/run_benchmark.sh --backend=gdscript --batch=1 --bullets=5000,10000
 ./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000
-# Same opt-in as the game, because the benchmark's default preference is auto:
-./tools/run_benchmark.sh --bullet-backend=native
+# Game default: native when the library loaded, otherwise GDScript plus one warning.
+./tools/run_benchmark.sh --backend=auto
+./tools/run_benchmark.sh --backend=auto --batch=1 --bullets=5000,10000
 # Reflection workload (default --mirrors=0 is the original bench):
 ./tools/run_benchmark.sh --backend=native --mirrors=8 --bullets=5000
 ```
 
 The shipped scenes (`scenes/main.tscn`, `scenes/sandbox.tscn`) set
-`backend_preference` to `auto`. With the project setting left at `gdscript`
-and no flag, they stay on the pool. To try native locally: build the library,
-then either set `scriptshot/bullets/backend` to `native` or launch with
-`--bullet-backend=native`.
+`backend_preference` to `auto`. With the project setting left at `auto` and
+no flag, they use native when the library loaded. To force a backend, set
+`scriptshot/bullets/backend` to `gdscript` or `native`, export
+`SCRIPTSHOT_BULLET_BACKEND`, or launch with `--bullet-backend=`.
 
 `bin/` is gitignored. `scriptshot_native.gdextension` lists debug, editor, and
 release for each release target. Editor and debug both point at the
@@ -208,26 +222,30 @@ are both `./tools/build_native.sh <platform>` (the default target word is
 | macOS universal | `bin/macos.universal/libscriptshot_native.macos.template_{debug,release}.universal.dylib` | `./tools/build_native.sh macos` on macOS. `arch=universal`, deployment target 10.13 (Godot 4.7.2's x86_64 floor; arm64 Godot is 11.0 and loads that dylib). Unsigned. The exporter ad-hoc signs it with the app. | Not built (no Apple SDK in this environment). Not run. |
 | Web, no threads | `bin/web.wasm32/libscriptshot_native.web.template_{debug,release}.wasm32.nothreads.wasm` | Emscripten **4.0.20**, `threads=no`. `./tools/build_native.sh web` | Debug and release built (`dylink` side modules, no pthread import). Not loaded in a browser. |
 | Web, threads | `bin/web.wasm32/libscriptshot_native.web.template_{debug,release}.wasm32.wasm` | `scons platform=web arch=wasm32 threads=yes` | Not built. The `.threads.` gdextension keys exist so a threads export does not load the no-threads wasm. A missing file fails the load and the pool is used. |
-| Android arm64 | `bin/android.arm64/libscriptshot_native.android.template_{debug,release}.arm64.so` | `./tools/build_native.sh android` with NDK **29.0.14206865** (`ndk_version=29.0.14206865`, API 24). godot-cpp's own default NDK is r28b; this script passes r29. | Not built. Device runs stay deferred. |
+| Android arm64 | `bin/android.arm64/libscriptshot_native.android.template_{debug,release}.arm64.so` | `./tools/build_native.sh android` with NDK **29.0.14206865** (`ndk_version=29.0.14206865`, API 24). godot-cpp's own default NDK is r28b; this script passes r29. | Not built. Device runs stay deferred. No Android-specific bullet path: a missing library uses the desktop fallback (GDScript, one warning). |
 
 The shipping Web preset is `variant/thread_support=false` and
 `variant/extensions_support=true` (the `web_dlink_nothreads` template, needed
 for the Lua GDExtension). The no-threads wasm matches that thread mode, but the
 preset's `exclude_filter` keeps this library out of web exports for now (see
-[Web export](#web-export)). Selecting native (or `auto` that resolves to
-native) on web logs one warning and runs the GDScript pool.
+[Web export](#web-export)). The built-in default on web does not try to
+construct `NativeBulletSim` and does not warn. An explicit native request
+(`--bullet-backend=native`, `SCRIPTSHOT_BULLET_BACKEND=native`, the project
+setting `native`, or `backend_preference = "native"`) stays on the GDScript
+pool, does not instantiate the sim, and logs one warning.
 
-Fallback is the same on every platform: `NativeBulletSim` is not registered,
-so `BulletManager` logs one warning per process and spawns into the pool.
-That includes a wasm side module that fails to load. Script invulnerability
-(`pierces_script_invuln` / `SOURCE_PIERCES_SCRIPT_INVULN`) stays the pool's
-flag. The default preference remains `gdscript`.
+Desktop and Android share one fallback: the library missing, or
+`NativeBulletSim` failing to instantiate, logs one warning per process and
+spawns into the pool. Android has no separate native path. Web does not take
+that path for the default, because GDScript there is expected. Script
+invulnerability (`pierces_script_invuln` / `SOURCE_PIERCES_SCRIPT_INVULN`)
+stays the pool's flag on the fallback. The default preference is `auto`.
 
 The libraries in the table were built with `SCRIPTSHOT_NATIVE_LTO=none`
 (godot-cpp's `lto=auto` is full on Linux, MinGW, and web). GUT on this
-machine is two processes. Unbuilt: host guards 10 passing, unit and
-integration 1014 passing and 74 pending. Built, on the Linux debug library:
-host guards 10 passing, unit and integration 1088 passing and 0 pending.
+machine is two processes. Unbuilt: host 17 passing, unit and integration
+1029 passing and 84 pending. Built, on the Linux debug library: host 17
+passing, unit and integration 1113 passing and 0 pending.
 
 ## Build pins
 
@@ -270,15 +288,20 @@ and web). `SCRIPTSHOT_NATIVE_JOBS` overrides the job count.
 ## Tests
 
 - `tests/unit/test_native_backend.gd`: load/switch, the project setting and the
-  CLI flag, one warning when the library is missing, declarative vs hooked
-  routing, hook spawns staying in the pool, the shared cap and enemy reserve,
-  walls, swept hits, speed clamp, despawn, snapshot. Pending when the extension
-  is not built (the missing-library warning test runs either way).
+  CLI flag, the default (native when the library loads, GDScript on the web
+  feature tag and when forced), one warning when the library is missing or
+  fails to instantiate, declarative vs hooked routing, hook spawns staying in
+  the pool, the shared cap and enemy reserve, walls, swept hits, speed clamp,
+  despawn, snapshot. The native-loaded cases are pending when the extension
+  is not built. The fallback and web tests run either way.
+  `test_default_backend_falls_back_once_when_native_is_unavailable` forces the
+  class to look unregistered, and separately forces instantiate to fail, and
+  checks the default `auto` path warns once (not per bullet or frame) and keeps
+  `pierces_script_invuln` on the pool bullet.
   `test_unregistered_class_falls_back_once_and_keeps_pool_semantics` also runs
-  either way: it forces the class to look unregistered, checks native and auto
-  share one warning, checks an explicit gdscript preference and an auto that
-  resolves to gdscript do not warn, and checks the bullet stays in the pool
-  with `pierces_script_invuln` set.
+  either way: it checks an explicit native request and auto share one warning,
+  checks an explicit gdscript preference and an auto that resolves to gdscript
+  do not warn, and checks the bullet stays in the pool.
 - `tests/unit/test_native_reflection.gd`: wall normals (faces, corners, grazing,
   inside, index ties), per-tick reflection parity, `max_reflections` including
   0, pierce plus reflect, mixed-store hit order, dynamic zones, script
@@ -290,8 +313,10 @@ and web). `SCRIPTSHOT_NATIVE_JOBS` overrides the job count.
 - `tests/unit/test_native_parity.gd`: the same scenarios on both backends.
   Seeded positions within 0.01 and velocities within 0.05, hit signatures,
   kinematics after 90 ticks, slow-overlap impact, pierce hit-memory, wall and
-  despawn order, the camera window, saturation counts, damage flags. Pending
-  when the extension is not built.
+  despawn order, the camera window, saturation counts, damage flags. The
+  `on_batch` case uses a fixed seed and fixed 1/60 steps and compares
+  positions, velocities, lifetimes and hits. Pending when the extension is
+  not built.
 - `tests/unit/test_bullet_manager.gd` forces `"gdscript"` and still inspects
   the pool. Hook masks, `sweep_cross_writes()`, and the speed clamp on that
   path are untouched.
@@ -347,7 +372,13 @@ the pool.
 
 That table is one machine. Across the machines sampled so far the same native
 batch is about 1.5–2.3 ms at 5,000, and the GD pool path is about 21–25 ms at
-5,000 and about 41–47 ms at 10,000. Provisional; may change.
+5,000 and about 41–47 ms at 10,000. Provisional; may change. A later run on
+this tree, after batch warnings became totals from `apply_batch` instead of a
+sim call per row, measured native on_batch work p95 **1.62 ms at 5,000** and
+**2.81 ms at 10,000** (the same machine before that change was 8.65 ms and
+17.01 ms). Gate it with
+`./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000`
+(5k floor 16.6 ms). CI does not run that row yet.
 
 `--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
 keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the
@@ -366,8 +397,12 @@ web export: every exported `.gdextension` wasm is copied and listed in
 (issue #40). The exclude filter is what keeps this library out. With it, the
 `.gdextension` file, its wasm and its `extension_list.cfg` line are all left out
 of the export, whether or not the file has `web.*` keys. The web build runs the
-GDScript pool; `--bullet-backend=native` logs the single fallback warning.
-`tools/ci/web_smoke.sh` checks both (docs/qa/release-builds.md section 4.1).
+GDScript pool and does not warn for that default, because the library is not
+shipped and the game does not try to construct it. `--bullet-backend=native`
+still stays on GDScript, does not instantiate the sim, and logs the single
+fallback warning. `tools/ci/web_smoke.sh` checks both: the default run expects
+`fallback_warnings=0`, and the explicit native run expects exactly one warning
+(docs/qa/release-builds.md section 4.1).
 Shipping native on web means removing that filter entry and passing the #36
 smoke (side module loads, backend resolves to native).
 

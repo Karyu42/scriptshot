@@ -38,6 +38,7 @@ func test_bare_pool_has_no_extra_limits() -> void:
 
 func test_manager_defaults_are_10k_cap_and_30_percent_reserve() -> void:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.render_enabled = false
 	m.auto_step = false
 	add_child_autofree(m)
@@ -48,6 +49,7 @@ func test_manager_defaults_are_10k_cap_and_30_percent_reserve() -> void:
 
 func test_logical_cap_is_clamped_to_the_physical_capacity() -> void:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.capacity = 100
 	m.render_enabled = false
 	m.auto_step = false
@@ -190,6 +192,7 @@ func test_emitter_reports_drops_by_owner_and_limit() -> void:
 
 func _manager(capacity: int, cap: int, reserve: int) -> BulletManager:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.capacity = capacity
 	m.logical_cap = cap
 	m.enemy_reserve = reserve
@@ -423,6 +426,7 @@ func test_first_reason_wins_over_invalid() -> void:
 
 func test_the_stress_test_stays_inside_the_players_share_instead_of_hitting_the_cap() -> void:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.render_enabled = false
 	m.auto_step = false
 	add_child_autofree(m)

@@ -5,8 +5,9 @@ compatibility_minimum = "4.7"
 reloadable = false
 
 ; Libraries are build output (gitignored) from ./tools/build_native.sh.
-; A missing or unloadable library is not fatal: BulletManager logs one warning
-; and stays on the GDScript pool. See docs/native.md.
+; A missing or unloadable library is not fatal. On desktop and Android,
+; BulletManager logs one warning and stays on the GDScript pool. Web does not
+; try to construct the sim and does not warn for that default. See docs/native.md.
 ;
 ; Web: the shipping preset is no-threads (variant/thread_support=false), so the
 ; plain wasm32 entries are the .nothreads side modules. The .threads. keys are

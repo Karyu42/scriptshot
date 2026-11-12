@@ -213,6 +213,7 @@ class NormalLog:
 
 func _manager() -> BulletManager:
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.capacity = 64
 	m.world_bounds = Rect2(-500, -500, 1000, 1000)
 	m.render_enabled = false

@@ -20,6 +20,7 @@ class Counter:
 
 func before_each() -> void:
 	m = BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.auto_step = false
 	m.render_enabled = false
 	add_child_autofree(m)

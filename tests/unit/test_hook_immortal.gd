@@ -23,6 +23,7 @@ class Poke:
 func _run(field: String) -> Array[int]:
 	ScriptWarnings.reset()
 	var m := BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.capacity = 16
 	m.world_bounds = Rect2(-2000, -2000, 4000, 4000)
 	m.render_enabled = false

@@ -68,6 +68,7 @@ func before_each() -> void:
 	_target_hits = 0
 	pool = BulletPool.new(64)
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-1000, -1000, 2000, 2000)
 	manager.render_enabled = false

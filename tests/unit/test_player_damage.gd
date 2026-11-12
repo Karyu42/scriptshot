@@ -11,6 +11,8 @@ var bullets: BulletManager
 
 func before_each() -> void:
 	main = (load("res://scenes/sandbox.tscn") as PackedScene).instantiate()
+	# These tests read BulletPool slots. The scene default is auto (native when the library loads).
+	(main.get_node("BulletManager") as BulletManager).backend_preference = "gdscript"
 	add_child_autofree(main)
 	for turret: Turret in main.get_node("Turrets").get_children():
 		turret.emitter = null

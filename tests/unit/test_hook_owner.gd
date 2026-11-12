@@ -38,6 +38,7 @@ class Spawner:
 func before_each() -> void:
 	ScriptWarnings.reset()
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-1000, -1000, 2000, 2000)
 	manager.render_enabled = false
