@@ -566,7 +566,7 @@ rectangle `x, y, w, h`), and reads of your own shots (`b.*`, `shots_in(pos, rang
 **Gated behind Senses (`sense.*`, earned with Fragments, PR #1 section 4).** A Sense you have not earned is
 `nil`; scripts must work when it is missing. Senses are tied to boss *types*, not to kill order:
 
-| Sense | Unlocked by | Level I (any boss kill) | Level II (clean kill) |
+| Sense | Unlocked by | Level I (any boss kill) | Level II (rare or legendary kill of that boss, or 25 Shards) |
 |---|---|---|---|
 | `sense.nearest_enemy(pos, range?, opts?)` | free after the first 3 kills | nearest enemy or `nil`; `opts.exclude` (set keyed by entity), `opts.filter(e)` | same |
 | `sense.enemies_in(pos, r, opts?)` | Warden (pool A, tier 0-1) | positions within 600 px (capped, see limits) | positions, velocities and hp in any radius |
@@ -574,6 +574,8 @@ rectangle `x, y, w, h`), and reads of your own shots (`b.*`, `shots_in(pos, rang
 | `sense.terrain` (`:raycast(from, to)` -> `{ pos, normal }` or `nil`) | Prism (pool A, tier 0-1) | walls near a point | full raycast |
 | `sense.boss` | Lattice (pool B, tier 2-3) | phase, weak point | + telegraphs |
 | `sense.world` (seed, chunk coords) | Archivist (pool C, tier 4+) | | |
+
+**Level II is not a clean kill.** Q15/Q16 dropped clean-kill gating, tags, and leaderboards. Per Q19 and pillars §12.4, Level II of a boss's Sense comes from a **rare or legendary kill of that boss type**, or from **Shards at 25 per token** (Mantle, which has no Sense, gives a token). `nearest_enemy` does not grow at Level II (the cell stays "same"). The vertical slice ([`../design/vertical-slice.md`](../design/vertical-slice.md)) ships Level I only: `nearest_enemy` after 3 kills, `enemies_in` from the common Warden. Level II fields stay absent there.
 
 Gating is a *data* gate in the facade (the entry is `nil` / the query is absent), enforced natively;
 no script can read an ungranted sense. Entity (enemy) fields: `e.pos`, `e.radius`, `e.kind`, `e:alive()`;
