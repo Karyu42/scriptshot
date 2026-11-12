@@ -85,6 +85,8 @@ func summon_alive() -> int:
 
 
 func _ready() -> void:
+	# Elites, halves and the Herald do not walk through world walls.
+	collide_walls = true
 	super._ready()
 	if is_half:
 		woken = true
