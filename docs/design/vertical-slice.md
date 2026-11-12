@@ -92,7 +92,7 @@ Arena centre `(9664, 0)` is chunk `(4, 0)` (`WorldGen.chunk_of`). That chunk's c
 
 G0 is the join to the procedural world. Past it, `ChunkStream` runs the existing tier-0 rules (2 encounters, Drifter + Swarmer, 4% common elite, elites never respawn, 5-minute regular absence). This slice does **not** turn on tier-1 chunk spawns and does **not** implement the region boss pass. It does write `starter_consumed = true` on the Warden kill so that pass, when it lands, does not place a second starter. **Decided (CoS call, Karyu may override), Q25:** this common Warden counts as the save's starter boss.
 
-**Herald clamp, on top of the existing one.** `HeraldDirector` still uses `58 + 20·u` seconds, 1,200 px along heading, tier-0 and outside the safe disk. If that point lies in S, A, B, D, E, or the alcove, or inside a slice wall, place the Herald at `(4700, 180)` (room C, beside the Drifter pack). A point already in C, or outside the footprint, is kept. Still one Herald, still `herald_done`, still not a chunk bit.
+**Herald clamp, on top of the existing one.** `HeraldDirector` still uses `58 + 20·u` seconds and the 1,200 px heading step, then the clamps in spawning §3.6. The slice's **first** Herald always ends inside walled room C (`(4096, -1024, 2560, 2048)`), not in an open chunk. No regular pack anchor, scripted or procedural, is within **800 px** of that point. The point that satisfies both is `(4500, 880)` (about 902 px from the Drifter anchor at `(4700, 0)`, and farther from the other three packs). Still one Herald, still `herald_done`, still not a chunk bit.
 
 ## 3. Regular enemies
 
@@ -136,32 +136,23 @@ Q23 affixes only: **Splitting, Summoner, Bulwark, Phasing, Null-shot**. Mirrored
 
 | Placement | Tier stamp | Rarity | Base | Affixes | HP / speed | Shards | Respawn |
 |---|---|---|---|---|---|---|---|
-| Herald (existing) | 0 | common | Drifter | Splitting **or** Summoner, the existing `herald` / `eaff` roll | 75 / 90. Summoner HP may be lower so the #81 times hold | 1 | never (`herald_done`) |
+| Herald (existing) | 0 | common | Drifter | Splitting **or** Summoner, the existing `herald` / `eaff` roll | **75** / 90. HP stays 75 | 1 | never (`herald_done`) |
 | Natural elites outside the footprint | 0 | common | Drifter | Splitting or Summoner | 75 / 90 | 1 | never (chunk bit) |
 | Room D | 0 (authored, not rolled) | rare | Drifter | **Bulwark + Summoner** (Defensive + Spawn; not an excluded pair) | 30 × 4 = **120** / 90 | 3 | never (`slice_rare_dead`) |
 | Alcove | 0 | legendary | Drifter | **Hydra**: Splitting + Summoner, the exclusion exception | 30 × 7 = **210** / 99 | 10 | never (`hydra_dead`). Skipping it is the 15–25 min path |
 
-**Summoner Herald (issue #81).** Seed 1 rolls Summoner (`hash_u(1, "herald", "eaff")` ≥ 0.5). Its summons must not sit in the firing lane and soak the starter. These replace the common Summoner cap of 6 on the Herald, and on a natural T0 Summoner elite (same affix). Room D's rare cap (8) and Hydra's cap (6) stay as written below.
+**Summoner (PR #83, issue #81).** Common, including the Herald and a natural T0 Summoner elite: every **6 s**, max **2** alive, **1 HP** each (one BasicShot hit, and one Straight hit). They spawn at **±90°** from the line to the player and drift until they hold about **20 px** off that flank, out of the firing lane. Rare: every **4 s**, **2** per wave, max **8** alive. Legendary uses the common count and cooldown; Hydra's signature body is still a half-HP Drifter. Herald HP stays **75**.
 
-| Rule | Target |
-|---|---|
-| Alive at once | At most **2** |
-| Summon HP | Dies to **one** `BasicShot` hit (1 damage). A Straight hit does the same |
-| Where they appear | On the flanks, **±90°** from the line to the player, at the existing 48 px offset. They then drift toward the player. They do not park in the firing lane |
-| Cooldown | **≥ 4 s**. The common 6 s interval still qualifies |
+Seed 1 rolls Summoner (`hash_u(1, "herald", "eaff")` ≥ 0.5). Acceptance is measured on that seed in `scenes/main.tscn`, not in an isolated arena. No standoff distance is required.
 
-Herald HP starts at 75. That number is the knob: lower it if the times below need it. The Splitting Herald is unchanged except that seed 1 is the Summoner case.
-
-Acceptance, seed 1, first Herald, no required standoff (strafing at the body still kills it):
-
-| Weapon | Where | Time to kill |
+| Weapon | Where | Time to kill the first Herald |
 |---|---|---|
 | Straight starter, cooldown 0.25 s | about **220 px**, strafing | **≤ 25 s** |
 | Spread starter, or the split starter | same | **≤ 15 s** |
 
 Room D rare intensity (spawning §3.4): Bulwark arc **150°**, rotates toward the player at **45°/s**, absorb; Summoner every **4 s**, **2** Swarmers, max **8** alive, no drops. One escort Drifter 48 px from the elite (the first-playable escort). The escort, summons, and any split halves grant no shard and no gate. G5 watches the elite body only. Wake when the player crosses G4.
 
-Hydra uses **common** affix numbers plus the signature (spawning §3.5 does not put legendary affixes on the rare-intensity column). Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every 6 s, 2 bodies, max 6 alive, and each summon is a **half-HP Drifter** (105 HP, 90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
+Hydra uses **common** affix numbers plus the signature (spawning §3.5 does not put legendary affixes on the rare-intensity column). Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every 6 s, 2 bodies, max **2** alive (the common cap), and each summon is a **half-HP Drifter** (105 HP, 90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
 
 Phasing is on the first-run path: the Warden's phase-2 husks use it (§5). Null-shot is the one Q23 affix **not** on that path:
 
@@ -542,13 +533,13 @@ Ordered. Each row is done when its acceptance passes. Dependencies are other row
 3. **Absorb arc.** Per-hurtbox response `ABSORB` with facing and arc, `DespawnReason.ABSORBED`, as first-playable L4. Acceptance: the L4 Bulwark test, and the room-A dummy. Include `REFLECT` in the enum; do not ship Mirrored. Depends: `Hurtbox`.
 4. **Room A dummy and room B pad/plate.** Numbers in §7. Acceptance: straight shots deal 0 to the shielded dummy; a shot with `spin` 2.2 kills it; the pad deals 1 pip after 0.6 s and only when HP is 5; the plate reports the overlapping bullet's speed. Every dummy death, including the three in S, emits `GameEvents.enemy_killed` with `kind` `"dummy"`; a respawned dummy's later death has `first_death` false. Depends: rows 1 and 3.
 5. **Lesson flags and gates.** `SliceProgress` saved on `SaveGame` (`slice_lesson` bits, gate bits, field absent timestamps). Death does not clear them. Acceptance: the §7 checkers, then G1–G4 open in order; dying in C respawns at the origin with G1–G3 still open. Depends: rows 1–4, `RespawnPoints`, `Main.respawn_delay`.
-6. **Herald redirect.** Acceptance: a heading that would land in S, A, B, D, or E spawns the Herald at `(4700, 180)`; a heading that lands in open C keeps the point; `herald_done` still blocks a second. Depends: `HeraldDirector`, row 1.
+6. **Herald redirect.** Acceptance: the first Herald spawns inside room C at `(4500, 880)`, ≥ 800 px from every regular pack anchor; `herald_done` still blocks a second. Depends: `HeraldDirector`, row 1.
 7. **Room D rare elite.** 120 HP Drifter, Bulwark rare + Summoner rare, escort, cue tier rare, `slice_rare_dead`, shards +3, G5. Acceptance: arc is 150° and turns at 45°/s; summons cap at 8; killing a summon does not open G5; reload does not respawn the body. Depends: rows 3 and 5, `EliteEnemy`, `RarityCue` rare tier.
 8. **Warden phase 1.** 900 HP, gap, 3 husks, Lance, aggro line at `x = 8736`, tithe 50, solid bodies. Acceptance: before aggro, shots deal 0; with the player pressed against the near husk from outside, the nearest centre is that husk; a shot into the core centre deals ×0.1 and a shot into the gap tick deals full damage; a husk death adds 50 HP unless the core hit 0; Lance telegraph is 0.6 s, the bullet has `pierces_script_invuln` false, it deals 1 pip, and it deals 0 during a dash. Depends: rows 1 and 5.
 9. **Phases 2–3 and Habituation flag.** Fan, phasing husks, broken ring, turn caps, `boss_habituation` default true. Acceptance: phase 2 starts the first tick HP ≤ 630; phasing husks take damage only inside the 0.4 s window; the ring has a 50° gap and its bullets deal 1 pip; with the flag on, a single signature loses damage as §5.2; with the flag off, a single signature does not. Depends: row 8.
 10. **Victory and the open world.** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: after the kill, respawn position is `(9664, 0)`; G0 is open; a fresh `chunk_encounters` outside the footprint is unchanged; `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
 11. **HUD.** Pips, dash arc, sense marks, boss arc (§14). Acceptance: 5 pips track `Health`; the dash arc matches `DashState.cooldown_left`; sense marks fill only when the book says so; the boss arc fraction matches HP and is absent when the Warden is dead. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
-12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
+12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 2; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
 13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
 
 ## 11. SE build list
