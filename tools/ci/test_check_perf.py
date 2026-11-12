@@ -998,6 +998,8 @@ class AutoInformationalTierTest(unittest.TestCase):
         self.assertIn("perf mode: auto: informational", out)
         self.assertIn("_Informational tier (auto)", summ)
         self.assertNotIn(":x:", summ)
+        self.assertNotIn("FAIL", summ)  # the comparison and tier tables too (PR #64 run 43203745392)
+        self.assertIn("warning (informational) (regression, over bar)", summ)
 
     def test_auto_that_did_not_resolve_native_still_fails(self):
         code, out, _ = run_tier(pair(2.0, 4.0), None, head_meta={"backend": "gdscript", "batch": 0}, args=AUTO_ARGS)

@@ -599,7 +599,8 @@ def main(argv=None):
     if a.informational:
         annotations = [m.replace("::error::", "::warning::", 1) if m.startswith("::error::") else m
                        for m in annotations]
-        summary = [s_.replace(":x: **FAIL**", ":warning: **WARNING (informational)**") for s_ in summary]
+        summary = [s_.replace(":x: **FAIL**", ":warning: **WARNING (informational)**")
+                   .replace("**FAIL**", "warning (informational)") for s_ in summary]
         summary = [f"_Informational tier ({tier}): misses are warnings and never fail the job._", ""] + summary
         code = 0
     if meta_errors:
