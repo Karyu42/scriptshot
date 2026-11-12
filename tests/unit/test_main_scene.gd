@@ -55,10 +55,14 @@ func test_move_input_accelerates_player() -> void:
 func test_holding_fire_spawns_bullets_at_weapon_rate() -> void:
 	var bullets: BulletManager = main.get_node("BulletManager")
 	assert_eq(bullets.alive_count(), 0)
+	var player: Player = main.get_node("Player")
+	assert_true(player.weapon is LuaShot, "Main equips shots/default.lua (the Straight starter)")
+	var interval := player.weapon.fire_interval
 	Input.action_press("fire")
 	await wait_physics_frames(30)
-	# 30 ticks = 0.5 s at 0.11 s interval -> ~5 shots.
-	assert_between(bullets.spawned_total(), 4, 6)
+	# 30 ticks = 0.5 s; Straight fires every 0.25 s -> ~3 shots (one on the press).
+	var expected := ceili(0.5 / interval)
+	assert_between(bullets.spawned_total(), expected - 1, expected + 1)
 
 
 func test_player_bullets_only_target_enemies() -> void:
