@@ -889,7 +889,7 @@ class NativeOnBatchTierTest(unittest.TestCase):
         with open(os.path.join(here, "..", "..", ".github", "workflows", "ci.yml")) as f:
             ci = f.read()
         for want in (f"--p95-ms {ONBATCH} --p95-target-ms {ONBATCH_10K}", f"--reference-ms {ONBATCH_REF}",
-                     f"--onbatch-target-ms={ONBATCH})", f"head raw p95 <= {ONBATCH} ms at 5k, {ONBATCH_10K} ms at 10k",
+                     f"--onbatch-target-ms={ONBATCH} ", f"head raw p95 <= {ONBATCH} ms at 5k, {ONBATCH_10K} ms at 10k",
                      f"F = base on_batch 5k p95 / {ONBATCH_REF} ms"):
             self.assertTrue(want in ci, f"ci.yml does not contain {want!r}")
 
