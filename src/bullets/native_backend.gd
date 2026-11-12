@@ -263,6 +263,16 @@ func spawn(r: ShotRequest, seq: int) -> int:
 	var dmg := clampf(r.damage, 0.0, BulletLimits.MAX_DAMAGE)
 	var pa := clampf(r.param_a, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
 	var pb := clampf(r.param_b, -BulletLimits.MAX_PARAM, BulletLimits.MAX_PARAM)
+	var mask := r.hit_mask
+	if r.owner_layer != 0:
+		mask &= ~r.owner_layer
+	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if r.pierces_script_invuln else 0
+	var id: int = sim.spawn(r.position, velocity, r.angle, life, radius, dmg, mask, r.color, acc, turn, r.pierce,
+		r.collide_world, r.owner_layer, flags, seq, r.behavior_id, pa, pb)
+	# The pool warns only after admission. A full store refuses the shot and
+	# does not count a clamp warning for it.
+	if id < 0:
+		return -1
 	if (
 		velocity != r.velocity
 		or radius != r.radius
@@ -274,12 +284,6 @@ func spawn(r: ShotRequest, seq: int) -> int:
 		or pb != r.param_b
 	):
 		BulletPool._warn_clamped_request("BulletPool.spawn", r)
-	var mask := r.hit_mask
-	if r.owner_layer != 0:
-		mask &= ~r.owner_layer
-	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if r.pierces_script_invuln else 0
-	var id: int = sim.spawn(r.position, velocity, r.angle, life, radius, dmg, mask, r.color, acc, turn, r.pierce,
-		r.collide_world, r.owner_layer, flags, seq, r.behavior_id, pa, pb)
 	return id
 
 

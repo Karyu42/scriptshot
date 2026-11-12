@@ -997,27 +997,64 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 ## Emits apply_batch's offending rows in warn_row order, which is the order the
 ## pool would warn. pa and pb share BulletPool.hook_write, so the first LIMIT
 ## prints and the last message follow this list. One sim call per commit.
-## A report without warn_code (an older library) uses the totals instead.
+## The row list is used only when it agrees with the totals. Anything else
+## (an older library, a short list, a bad code) emits from the totals.
 func _emit_native_batch_warnings(report: Dictionary) -> void:
 	var codes := _report_ints(report, "warn_code")
-	if codes.is_empty():
-		_emit_native_batch_warnings_from_totals(report)
-		return
 	var rows := _report_ints(report, "warn_row")
+	if _warn_rows_consistent(report, rows, codes):
+		_emit_native_batch_warnings_from_rows(report, rows, codes)
+	else:
+		_emit_native_batch_warnings_from_totals(report)
+
+
+## True when warn_row and warn_code describe the same events as the totals:
+## equal lengths, every row >= 0, codes 1-4 only, and each code's count matches
+## vel_nonfinite / the clamp arrays / pa_nonfinite / pb_nonfinite.
+func _warn_rows_consistent(report: Dictionary, rows: PackedInt32Array, codes: PackedInt32Array) -> bool:
+	if codes.is_empty() or rows.size() != codes.size():
+		return false
+	var vel := 0
+	var speed := 0
+	var pa := 0
+	var pb := 0
+	for i in codes.size():
+		if rows[i] < 0:
+			return false
+		match codes[i]:
+			BATCH_WARN_VELOCITY:
+				vel += 1
+			BATCH_WARN_SPEED:
+				speed += 1
+			BATCH_WARN_PA:
+				pa += 1
+			BATCH_WARN_PB:
+				pb += 1
+			_:
+				return false
 	var clamp_vx := _report_floats(report, "clamp_vx")
 	var clamp_vy := _report_floats(report, "clamp_vy")
-	var n := mini(rows.size(), codes.size())
+	if speed != clamp_vx.size() or speed != clamp_vy.size():
+		return false
+	if vel != _report_count(report, "vel_nonfinite"):
+		return false
+	if pa != _report_count(report, "pa_nonfinite"):
+		return false
+	if pb != _report_count(report, "pb_nonfinite"):
+		return false
+	return true
+
+
+func _emit_native_batch_warnings_from_rows(report: Dictionary, rows: PackedInt32Array, codes: PackedInt32Array) -> void:
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
 	var clamp_i := 0
-	for i in n:
-		var row := rows[i]
-		if row < 0:
-			continue
+	for i in rows.size():
 		match codes[i]:
 			BATCH_WARN_VELOCITY:
 				BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
 			BATCH_WARN_SPEED:
-				if clamp_i < clamp_vx.size() and clamp_i < clamp_vy.size():
-					BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[clamp_i], clamp_vy[clamp_i]))
+				BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[clamp_i], clamp_vy[clamp_i]))
 				clamp_i += 1
 			BATCH_WARN_PA:
 				BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
