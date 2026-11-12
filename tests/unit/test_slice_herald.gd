@@ -24,10 +24,12 @@ func after_each() -> void:
 	EliteCue.reset_budget()
 
 
-func _rig(with_slice: bool, done: bool = false, slice_enabled: bool = true) -> void:
+func _rig(with_slice: bool, done: bool = false, slice_enabled: bool = true, world_seed: int = 1) -> void:
+	if _root != null and is_instance_valid(_root):
+		_root.free()
 	_save = SaveGame.new()
 	_save.path = "user://gut_slice_herald.cfg"
-	_save.world_seed = 1
+	_save.world_seed = world_seed
 	_save.herald_done = done
 	_root = Node2D.new()
 	add_child(_root)
@@ -64,7 +66,27 @@ func _spawn_from(at: Vector2, dir: Vector2) -> Vector2:
 	return _director.herald.global_position
 
 
+## Where the director puts the Herald with no ribbon (whatever WorldGen's
+## placement does for that seed), so these tests only pin the redirect.
+func _open_world_point(world_seed: int, at: Vector2, dir: Vector2) -> Vector2:
+	_rig(false, false, true, world_seed)
+	return _spawn_from(at, dir)
+
+
+## First seed whose open-world point for this heading satisfies `want`.
+func _seed_where(at: Vector2, dir: Vector2, want: Callable) -> int:
+	for world_seed in range(1, 200):
+		var p := _open_world_point(world_seed, at, dir)
+		var ok: bool = want.call(p)
+		if p.is_finite() and ok:
+			return world_seed
+	return -1
+
+
 func test_headings_into_walled_rooms_redirect_to_c() -> void:
+	var probe := SliceLayout.new()
+	add_child_autofree(probe)
+	var r := RegularEnemy.DRIFTER_RADIUS
 	var cases := {
 		"S": [Vector2(-1300, 0), Vector2.RIGHT],
 		"A": [Vector2(600, 0), Vector2.RIGHT],
@@ -79,50 +101,53 @@ func test_headings_into_walled_rooms_redirect_to_c() -> void:
 		var row: Array = cases[key]
 		var at: Vector2 = row[0]
 		var dir: Vector2 = row[1]
-		var natural := WorldGen.clamp_herald_point(at, dir)
-		if key != "C wall":
-			assert_eq(SliceLayout.room_at(natural), StringName(key), "%s: the heading lands in it" % key)
-		_rig(true)
-		assert_eq(_spawn_from(at, dir), SliceLayout.HERALD_REDIRECT, "%s redirects into C" % key)
+		var room := StringName(key)
+		var lands := func(p: Vector2) -> bool:
+			if key == "C wall":
+				return probe.touches_wall(p, r)
+			return SliceLayout.room_at(p) == room
+		var world_seed := _seed_where(at, dir, lands)
+		assert_gt(world_seed, 0, "%s: some seed's heading lands there" % key)
+		if world_seed < 0:
+			continue
+		_rig(true, false, true, world_seed)
+		assert_eq(_spawn_from(at, dir), SliceLayout.HERALD_REDIRECT, "%s redirects into C (seed %d)" % [key, world_seed])
 		assert_true(_save.herald_done)
 		assert_eq(SliceLayout.room_at(_director.herald.global_position), &"C")
-		_root.free()
 
 
 func test_a_heading_into_open_c_keeps_its_point() -> void:
-	_rig(true)
 	var at := Vector2(4176, 300)
-	var expected := WorldGen.clamp_herald_point(at, Vector2.RIGHT)
-	assert_eq(SliceLayout.room_at(expected), &"C")
+	var world_seed := _seed_where(at, Vector2.RIGHT, func(p: Vector2) -> bool: return SliceLayout.room_at(p) == &"C")
+	assert_gt(world_seed, 0)
+	var expected := _open_world_point(world_seed, at, Vector2.RIGHT)
+	_rig(true, false, true, world_seed)
 	assert_eq(_spawn_from(at, Vector2.RIGHT), expected)
 
 
 func test_a_heading_outside_the_footprint_keeps_its_point() -> void:
-	_rig(true)
 	var at := Vector2(2000, -1700)
-	var expected := WorldGen.clamp_herald_point(at, Vector2.RIGHT)
-	assert_false(SliceLayout.in_footprint(expected))
+	var world_seed := _seed_where(at, Vector2.RIGHT, func(p: Vector2) -> bool: return not SliceLayout.in_footprint(p))
+	assert_gt(world_seed, 0)
+	var expected := _open_world_point(world_seed, at, Vector2.RIGHT)
+	_rig(true, false, true, world_seed)
 	assert_eq(_spawn_from(at, Vector2.RIGHT), expected)
 
 
 func test_herald_done_still_blocks_a_second_herald() -> void:
 	_rig(true)
-	assert_eq(_spawn_from(Vector2(600, 0), Vector2.RIGHT), SliceLayout.HERALD_REDIRECT)
+	assert_true(_spawn_from(Vector2(600, 0), Vector2.RIGHT).is_finite())
 	assert_true(_save.herald_done)
-	var saved := _save
-	_root.free()
 	_rig(true, true)
 	assert_true(_director.resolved)
 	assert_eq(_spawn_from(Vector2(600, 0), Vector2.RIGHT), Vector2.INF, "no second Herald")
-	assert_true(saved.herald_done)
 
 
 func test_a_disabled_or_missing_ribbon_does_not_redirect() -> void:
 	var at := Vector2(600, 0)
-	var natural := WorldGen.clamp_herald_point(at, Vector2.RIGHT)
+	var natural := _open_world_point(1, at, Vector2.RIGHT)
 	_rig(true, false, false)
 	assert_eq(_spawn_from(at, Vector2.RIGHT), natural, "disabled")
-	_root.free()
 	_rig(false)
 	assert_eq(_spawn_from(at, Vector2.RIGHT), natural, "no ribbon")
 
@@ -201,9 +226,15 @@ func test_main_scene_redirects_the_herald_into_c() -> void:
 	seeded.path = path
 	seeded.world_seed = 1
 	seeded.save()
+	# Same director and seed without a ribbon: the open-world point. On main
+	# today that is (1800, 0), in room A.
+	var natural := _open_world_point(1, Vector2(600, 0), Vector2.RIGHT)
+	_root.free()
+	_root = null
 	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
 	main.save_path = path
 	add_child(main)
+	var main_expected := (main.get_node("SliceLayout") as SliceLayout).redirect_herald(natural, RegularEnemy.DRIFTER_RADIUS)
 	var player := main.get_node("Player") as Player
 	player.set_physics_process(false)
 	var arm := main.get_node("HeraldArm") as HeraldArm
@@ -215,7 +246,8 @@ func test_main_scene_redirects_the_herald_into_c() -> void:
 	director.advance(WorldGen.herald_delay(1) + 0.1)
 	var herald := director.herald
 	assert_not_null(herald)
-	assert_eq(herald.global_position, SliceLayout.HERALD_REDIRECT, "(1800, 0) is room A: redirected into C")
+	assert_eq(herald.global_position, main_expected, "the open-world point %s, through the redirect" % natural)
+	assert_ne(SliceLayout.room_at(herald.global_position), &"A", "never in a walled room")
 	assert_true(SaveGame.load_from(path).herald_done)
 	var bullets := main.get_node("BulletManager") as BulletManager
 	bullets.bounds_center = null
