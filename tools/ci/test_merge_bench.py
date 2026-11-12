@@ -83,6 +83,20 @@ class MergeBenchTest(unittest.TestCase):
             self.assertEqual(code, 1, raw)
             self.assertIn("::error::merge_bench.py: cannot read", out)
 
+    def test_backend_and_batch_must_match_in_every_round(self):
+        a = {"backend": "native", "batch": 1, "results": [row(5000, 1.0, 2.0, 3.0)]}
+        b = {"backend": "native", "batch": 1, "results": [row(5000, 1.0, 2.2, 3.0)]}
+        c = {"backend": "gdscript", "batch": 1, "results": [row(5000, 1.0, 9.0, 10.0)]}
+        _, _, m = run(a, b)
+        self.assertEqual((m["backend"], m["batch"]), ("native", 1))
+        _, _, m = run(a, c)
+        self.assertIsNone(m["backend"])  # a fallback round must not pass as native
+        self.assertEqual(m["batch"], 1)
+        _, _, m = run(a, dict(b, batch=0))
+        self.assertIsNone(m["batch"])
+        _, _, m = run({"results": [row(5000, 1.0, 2.0, 3.0)]})
+        self.assertNotIn("backend", m)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -12,7 +12,9 @@ Used by tools/ci/perf_ab.sh, which runs base (main) and head alternately in roun
   * A count missing from any round is left out (check_perf.py then reports "no result").
   * work_p95_samples_ms: every round's p95, for the summary/artifact.
 Top-level keys come from the first file, plus "rounds". hooked_fraction must be identical in every file,
-otherwise it is set to null (check_perf.py then fails the hooked tier). Exit 1 on an unreadable input.
+otherwise it is set to null (check_perf.py then fails the hooked tier). The same holds for "backend" and "batch"
+(a round whose native library did not load must not hide behind a native round; check_perf.py --expect-backend /
+--expect-batch then fails the head or drops the base). Exit 1 on an unreadable input.
 """
 import json
 import math
@@ -32,6 +34,10 @@ def merge(docs):
     fracs = [d.get("hooked_fraction") for d in docs]
     if "hooked_fraction" in docs[0] or any(f is not None for f in fracs):
         out["hooked_fraction"] = fracs[0] if all(f == fracs[0] and type(f) is type(fracs[0]) for f in fracs) else None
+    for key in ("backend", "batch"):
+        vals = [d.get(key) for d in docs]
+        if key in docs[0] or any(v is not None for v in vals):
+            out[key] = vals[0] if all(v == vals[0] and type(v) is type(vals[0]) for v in vals) else None
     per = [{int(r["bullets"]): r for r in d["results"]} for d in docs]
     counts = sorted(set(per[0]).intersection(*per[1:]))
     results = []

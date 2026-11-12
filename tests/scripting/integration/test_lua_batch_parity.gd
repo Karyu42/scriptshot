@@ -273,6 +273,214 @@ func test_native_batch_parity_mixed_kill_warning_order() -> void:
 	assert_true(saw_pa and saw_pb, "the printed subset includes both param fields")
 
 
+## An older library sends totals and no warn_row / warn_code. That must not
+## raise, and it still emits from the totals.
+func test_batch_warnings_without_warn_keys_use_totals() -> void:
+	ScriptWarnings.reset()
+	var manager := _mgr("gdscript")
+	var before := _tracked_warning_lines().size()
+	manager._emit_native_batch_warnings({
+		"vel_nonfinite": 1,
+		"pa_nonfinite": 2,
+		"pb_nonfinite": 2,
+		"clamp_vx": PackedFloat32Array([5000.0]),
+		"clamp_vy": PackedFloat32Array([0.0]),
+	})
+	var lines := _warning_slice(before)
+	assert_eq(ScriptWarnings.count("BulletPool.set_velocity"), 1)
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write"), 4)
+	assert_eq(ScriptWarnings.count("BulletPool.set_velocity.clamp.speed"), 1)
+	assert_eq(lines.size(), 5)
+	assert_string_contains(lines[0], "non-finite velocity")
+	assert_string_contains(lines[1], "speed")
+	assert_string_contains(lines[2], "param_a")
+	assert_string_contains(lines[3], "param_a")
+	assert_string_contains(lines[4], "param_b")
+	assert_string_contains(ScriptWarnings.last_message("BulletPool.hook_write"), "param_b")
+
+
+## A consistent row list is the pool order. Totals of the same counts would
+## print every param_a before param_b.
+func test_consistent_warn_rows_keep_pool_order() -> void:
+	ScriptWarnings.reset()
+	var manager := _mgr("gdscript")
+	var before := _tracked_warning_lines().size()
+	manager._emit_native_batch_warnings({
+		"warn_row": PackedInt32Array([0, 1, 2]),
+		"warn_code": PackedInt32Array([
+			BulletManager.BATCH_WARN_PA,
+			BulletManager.BATCH_WARN_PB,
+			BulletManager.BATCH_WARN_PA,
+		]),
+		"vel_nonfinite": 0,
+		"pa_nonfinite": 2,
+		"pb_nonfinite": 1,
+		"clamp_vx": PackedFloat32Array(),
+		"clamp_vy": PackedFloat32Array(),
+	})
+	var lines := _warning_slice(before)
+	assert_eq(lines.size(), ScriptWarnings.LIMIT)
+	assert_string_contains(lines[0], "param_a")
+	assert_string_contains(lines[1], "param_b")
+	assert_string_contains(lines[2], "param_a")
+	assert_string_contains(ScriptWarnings.last_message("BulletPool.hook_write"), "param_a")
+
+
+## Each broken row list falls back to the totals. A negative row is one of
+## those breaks; it is not skipped in place.
+func test_inconsistent_warn_rows_fall_back_to_totals() -> void:
+	var totals_only := {
+		"vel_nonfinite": 1,
+		"pa_nonfinite": 2,
+		"pb_nonfinite": 1,
+		"clamp_vx": PackedFloat32Array([5000.0]),
+		"clamp_vy": PackedFloat32Array([0.0]),
+	}
+	var full_codes := PackedInt32Array([
+		BulletManager.BATCH_WARN_VELOCITY,
+		BulletManager.BATCH_WARN_SPEED,
+		BulletManager.BATCH_WARN_PA,
+		BulletManager.BATCH_WARN_PA,
+		BulletManager.BATCH_WARN_PB,
+	])
+	var full_rows := PackedInt32Array([0, 1, 2, 3, 4])
+	var expected := _warning_snapshot(totals_only)
+	var missing_rows := totals_only.duplicate()
+	missing_rows["warn_code"] = full_codes
+	var short_rows := totals_only.duplicate()
+	short_rows["warn_code"] = full_codes
+	short_rows["warn_row"] = PackedInt32Array([0, 1])
+	var negative_row := totals_only.duplicate()
+	negative_row["warn_code"] = full_codes
+	negative_row["warn_row"] = PackedInt32Array([0, 1, 2, -1, 4])
+	var unknown_code := totals_only.duplicate()
+	unknown_code["warn_code"] = PackedInt32Array([
+		BulletManager.BATCH_WARN_VELOCITY,
+		BulletManager.BATCH_WARN_SPEED,
+		9,
+		BulletManager.BATCH_WARN_PA,
+		BulletManager.BATCH_WARN_PB,
+	])
+	unknown_code["warn_row"] = full_rows
+	var extra_speeds := {
+		"vel_nonfinite": 0,
+		"pa_nonfinite": 0,
+		"pb_nonfinite": 0,
+		"clamp_vx": PackedFloat32Array([5000.0]),
+		"clamp_vy": PackedFloat32Array([0.0]),
+		"warn_code": PackedInt32Array([BulletManager.BATCH_WARN_SPEED, BulletManager.BATCH_WARN_SPEED]),
+		"warn_row": PackedInt32Array([0, 1]),
+	}
+	var tally := {
+		"vel_nonfinite": 0,
+		"pa_nonfinite": 2,
+		"pb_nonfinite": 0,
+		"clamp_vx": PackedFloat32Array(),
+		"clamp_vy": PackedFloat32Array(),
+		"warn_code": PackedInt32Array([BulletManager.BATCH_WARN_PA]),
+		"warn_row": PackedInt32Array([0]),
+	}
+	var cases: Array[Dictionary] = [missing_rows, short_rows, negative_row, unknown_code, extra_speeds, tally]
+	for report in cases:
+		assert_eq(_warning_snapshot(report), _warning_snapshot(_totals_only(report)))
+	assert_eq(_warning_snapshot(missing_rows), expected)
+
+
+func test_native_spawn_clamp_warnings_stop_when_the_store_is_full() -> void:
+	if not _need_native():
+		return
+	var gd := _capped_clamp_warnings("gdscript")
+	var nat := _capped_clamp_warnings("native")
+	assert_eq(nat, gd, "refused over-cap shots are not clamp warnings")
+
+
+func test_native_spawn_clamp_matches_the_pool() -> void:
+	if not _need_native():
+		return
+	var gd := _spawn_clamp_warnings("gdscript")
+	var nat := _spawn_clamp_warnings("native")
+	assert_eq(nat, gd, "spawn-time clamp warnings")
+
+
+func _spawn_clamp_warnings(preference: String) -> Dictionary:
+	ScriptWarnings.reset()
+	var manager := _mgr(preference)
+	var plain := ShotRequest.with_velocity(Vector2(4, 0), Vector2(40, 0))
+	plain.lifetime = 5.0
+	assert_gte(manager.spawn(plain), 0)
+	var plain_warns := _warn_text()
+	var over := ShotRequest.with_velocity(Vector2(10, 0), Vector2(9000, 0))
+	over.lifetime = 1000.0
+	over.radius = 1.0e9
+	over.param_a = 1.0e31
+	assert_gte(manager.spawn(over), 0)
+	var speed := ScriptWarnings.count("BulletPool.spawn.clamp.speed")
+	var radius := ScriptWarnings.count("BulletPool.spawn.clamp.radius")
+	var life := ScriptWarnings.count("BulletPool.spawn.clamp.lifetime")
+	var pa := ScriptWarnings.count("BulletPool.spawn.clamp.param_a")
+	assert_eq(plain_warns, "", "an in-range spawn stays silent")
+	assert_gt(speed, 0)
+	assert_gt(radius, 0)
+	assert_gt(life, 0)
+	assert_gt(pa, 0)
+	return {
+		"speed": speed,
+		"radius": radius,
+		"life": life,
+		"pa": pa,
+		"speed_msg": ScriptWarnings.last_message("BulletPool.spawn.clamp.speed"),
+		"radius_msg": ScriptWarnings.last_message("BulletPool.spawn.clamp.radius"),
+		"life_msg": ScriptWarnings.last_message("BulletPool.spawn.clamp.lifetime"),
+		"pa_msg": ScriptWarnings.last_message("BulletPool.spawn.clamp.param_a"),
+	}
+
+
+func _capped_clamp_warnings(preference: String) -> Dictionary:
+	ScriptWarnings.reset()
+	var manager := _mgr(preference)
+	manager.set_bullet_limits(4, 0)
+	var speeds: Array[float] = [5000.0, 6000.0, 7000.0, 8000.0, 9000.0, 11000.0, 13000.0, 15000.0]
+	var spawned := 0
+	for i in speeds.size():
+		var req := ShotRequest.with_velocity(Vector2(float(i), 0.0), Vector2(speeds[i], 0.0))
+		req.lifetime = 5.0
+		if manager.spawn(req) >= 0:
+			spawned += 1
+	var count := ScriptWarnings.count("BulletPool.spawn.clamp.speed")
+	var last := ScriptWarnings.last_message("BulletPool.spawn.clamp.speed")
+	assert_eq(spawned, 4)
+	assert_eq(manager.alive_count(), 4)
+	assert_eq(count, 4)
+	assert_string_contains(last, "8000")
+	return {
+		"spawned": spawned,
+		"alive": manager.alive_count(),
+		"count": count,
+		"last": last,
+	}
+
+
+func _totals_only(report: Dictionary) -> Dictionary:
+	var copy := report.duplicate()
+	copy.erase("warn_row")
+	copy.erase("warn_code")
+	return copy
+
+
+func _warning_snapshot(report: Dictionary) -> Dictionary:
+	ScriptWarnings.reset()
+	var manager := _mgr("gdscript")
+	manager._emit_native_batch_warnings(report)
+	return {
+		"vel": ScriptWarnings.count("BulletPool.set_velocity"),
+		"hook": ScriptWarnings.count("BulletPool.hook_write"),
+		"speed": ScriptWarnings.count("BulletPool.set_velocity.clamp.speed"),
+		"vel_msg": ScriptWarnings.last_message("BulletPool.set_velocity"),
+		"hook_msg": ScriptWarnings.last_message("BulletPool.hook_write"),
+		"speed_msg": ScriptWarnings.last_message("BulletPool.set_velocity.clamp.speed"),
+	}
+
+
 func _tracked_warning_lines() -> Array[String]:
 	var tracker: Object = gut.error_tracker
 	var out: Array[String] = []
