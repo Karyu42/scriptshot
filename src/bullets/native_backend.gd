@@ -99,6 +99,23 @@ static func opted_backend() -> String:
 	return "native"
 
 
+## What `_select_backend` asks for, before the library is opened. Web stays on
+## GDScript unless native was named explicitly (that request still does not
+## construct the sim; it only logs the one fallback warning). An unrecognised
+## env value or project setting is not a request: it is ignored, with no warning.
+static func wanted_backend(preference: String) -> String:
+	var wanted := preference
+	if wanted == "auto":
+		wanted = opted_backend()
+	if is_web():
+		if wanted == "native" and explicit_native(preference):
+			return "native"
+		return "gdscript"
+	if wanted == "native":
+		return "native"
+	return "gdscript"
+
+
 ## True when `preference` names native, or "auto" resolved to native because the
 ## CLI, the env var, or the project setting said so. The built-in default is
 ## false. Web uses this so the default stays silent, while an explicit native
@@ -426,6 +443,26 @@ func gather_batch(behavior_id: int) -> Dictionary:
 func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> int:
 	var n: int = sim.apply_batch(ids, vx, vy, pa, pb)
 	return n
+
+
+func extract_behavior(behavior_id: int) -> Array:
+	var rows: Array = sim.extract_behavior(behavior_id)
+	return rows
+
+
+func velocity_of(id: int) -> Vector2:
+	var v: Vector2 = sim.get_velocity_of(id)
+	return v
+
+
+func param_a_of(id: int) -> float:
+	var v: float = sim.get_param_a_of(id)
+	return v
+
+
+func param_b_of(id: int) -> float:
+	var v: float = sim.get_param_b_of(id)
+	return v
 
 
 func teleport_id(id: int, x: float, y: float) -> bool:

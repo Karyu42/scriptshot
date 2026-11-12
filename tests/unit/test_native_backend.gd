@@ -375,6 +375,41 @@ func test_default_backend_falls_back_once_when_native_is_unavailable() -> void:
 	assert_eq(inst_warnings, 1, "a failed instantiate warns once, same as a missing library")
 
 
+func test_invalid_backend_names_are_ignored() -> void:
+	var saved_setting := str(ProjectSettings.get_setting(NativeBackend.SETTING, ""))
+	var saved_env := OS.get_environment(NativeBackend.ENV_VAR)
+	ProjectSettings.set_setting(NativeBackend.SETTING, "lua")
+	OS.set_environment(NativeBackend.ENV_VAR, "nope")
+	NativeBackend.missing_warned = false
+	NativeBackend.missing_warnings = 0
+	var ignored := _bare_manager("auto")
+	var ignored_backend := ignored.backend
+	var ignored_warnings := NativeBackend.missing_warnings
+	ProjectSettings.set_setting(NativeBackend.SETTING, "gdscript")
+	OS.set_environment(NativeBackend.ENV_VAR, "native-please")
+	NativeBackend.missing_warned = false
+	NativeBackend.missing_warnings = 0
+	var forced := _bare_manager("auto")
+	var forced_backend := forced.backend
+	var forced_warnings := NativeBackend.missing_warnings
+	OS.set_environment(NativeBackend.ENV_VAR, "native")
+	ProjectSettings.set_setting(NativeBackend.SETTING, "not-a-backend")
+	var from_env := _bare_manager("auto")
+	var env_backend := from_env.backend
+	ProjectSettings.set_setting(NativeBackend.SETTING, saved_setting)
+	OS.set_environment(NativeBackend.ENV_VAR, saved_env)
+	if NativeBackend.is_available():
+		assert_eq(ignored_backend, "native", "an unrecognised env and setting leave the built-in default")
+		assert_eq(ignored_warnings, 0)
+		assert_eq(env_backend, "native", "SCRIPTSHOT_BULLET_BACKEND=native still wins over a bad setting")
+	else:
+		assert_eq(ignored_backend, "gdscript")
+		assert_eq(ignored_warnings, 1, "the missing library warns once; the bad name does not add another")
+		assert_eq(env_backend, "gdscript")
+	assert_eq(forced_backend, "gdscript", "a bad env value does not override an explicit gdscript setting")
+	assert_eq(forced_warnings, 0, "ignoring a bad name does not warn")
+
+
 func test_emitter_id_tracks_a_plain_native_bullet_and_hook_spawns_stay_in_the_pool() -> void:
 	if not _need_native():
 		return

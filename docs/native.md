@@ -104,7 +104,10 @@ separate path: it uses the same fallback.
      and both run.
   6. **Hook spawns stay on the pool for life.** A bullet spawned inside a hook,
      including `on_update_batch`, is born on the GDScript pool and is not
-     migrated into the sim later.
+     migrated into the sim later. The other direction does happen: a batch-only
+     weapon that gains a per-bullet hook moves its live sim bullets onto the
+     pool (state and `pierces_script_invuln` kept, native id retired).
+  **Batch row order is unspecified.** Sim rows are listed before pool rows.
   **Zero-copy stays off.** The columns are packed copies through stock
   lua-gdextension. There is no lua-gdextension fork and no zero-copy view.
   Packed copies are the backing that was measured. Native batch work p95 on the
@@ -158,7 +161,7 @@ both. `alive_count()`, `spawned_total()`, and `snapshot()` cover both stores.
 
 | value | result |
 |---|---|
-| `"auto"` (export default) | `--bullet-backend=`, else `SCRIPTSHOT_BULLET_BACKEND`, else `scriptshot/bullets/backend` when that is `gdscript` or `native`, else **native** if the library loads. Web: GDScript, no attempt, no warning. Missing library or a failed instantiate: GDScript plus one warning per run. |
+| `"auto"` (export default) | `--bullet-backend=`, else `SCRIPTSHOT_BULLET_BACKEND`, else `scriptshot/bullets/backend` when that is `gdscript` or `native`, else **native** if the library loads. Any other env or setting value is ignored, with no extra warning. Web: GDScript, no attempt, no warning. Missing library or a failed instantiate: GDScript plus one warning per run. |
 | `"gdscript"` | pool only. Ignores the CLI, the env var and the project setting. No warning. |
 | `"native"` | hook-free bullets in `NativeBulletSim` if the extension loaded and instantiated, otherwise GDScript plus one warning. On web: GDScript, no instantiate, one warning. |
 
@@ -241,8 +244,8 @@ stays the pool's flag on the fallback. The default preference is `auto`.
 The libraries in the table were built with `SCRIPTSHOT_NATIVE_LTO=none`
 (godot-cpp's `lto=auto` is full on Linux, MinGW, and web). GUT on this
 machine is two processes. Unbuilt: host 17 passing, unit and integration
-1028 passing and 76 pending. Built, on the Linux debug library: host 17
-passing, unit and integration 1104 passing and 0 pending.
+1029 passing and 82 pending. Built, on the Linux debug library: host 17
+passing, unit and integration 1111 passing and 0 pending.
 
 ## Build pins
 

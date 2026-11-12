@@ -54,6 +54,10 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("find_seq", "seq"), &NativeBulletSim::find_seq);
 	ClassDB::bind_method(D_METHOD("set_seq_at", "slot", "seq"), &NativeBulletSim::set_seq_at);
 	ClassDB::bind_method(D_METHOD("export_states"), &NativeBulletSim::export_states);
+	ClassDB::bind_method(D_METHOD("extract_behavior", "behavior"), &NativeBulletSim::extract_behavior);
+	ClassDB::bind_method(D_METHOD("get_velocity_of", "id"), &NativeBulletSim::get_velocity_of);
+	ClassDB::bind_method(D_METHOD("get_param_a_of", "id"), &NativeBulletSim::get_param_a_of);
+	ClassDB::bind_method(D_METHOD("get_param_b_of", "id"), &NativeBulletSim::get_param_b_of);
 	ClassDB::bind_method(D_METHOD("set_zones", "pos", "radius", "owners", "count"), &NativeBulletSim::set_zones);
 	ClassDB::bind_method(D_METHOD("get_zone_hit_count"), &NativeBulletSim::get_zone_hit_count);
 	ClassDB::bind_method(D_METHOD("get_zone_hit_slots"), &NativeBulletSim::get_zone_hit_slots);
@@ -822,22 +826,33 @@ Dictionary NativeBulletSim::gather_batch(int p_behavior) const {
 }
 
 static void clamp_speed(float &x, float &y, float cap) {
-	if (!(cap > 0.0f)) {
+	if (!(cap > 0.0f) || !std::isfinite(x) || !std::isfinite(y)) {
 		return;
 	}
-	float ax = std::fabs(x);
-	float ay = std::fabs(y);
-	float m = ax > ay ? ax : ay;
-	if (m > 1.0e20f) {
-		x /= m;
-		y /= m;
+	const float ax = std::fabs(x);
+	const float ay = std::fabs(y);
+	const float m = ax > ay ? ax : ay;
+	if (!(m > 0.0f)) {
+		return;
 	}
-	const float sp = std::sqrt(x * x + y * y);
-	if (sp > cap && sp > 0.0f) {
-		const float k = cap / sp;
-		x *= k;
-		y *= k;
+	// A component past ~1e19 squares to infinity in float32, so the length is
+	// taken after scaling by the largest component (same as BulletLimits.clamp_velocity).
+	// The old path divided by m and then treated the unit vector as the final
+	// velocity, so vx=vy=3e38 became about (1, 1) and skipped the cap.
+	float sx = x;
+	float sy = y;
+	if (m > 1.0e18f) {
+		sx = x / m;
+		sy = y / m;
 	}
+	const float sp = std::sqrt(sx * sx + sy * sy);
+	const float length = (m > 1.0e18f) ? sp * m : sp;
+	if (!(length > cap) || !(sp > 0.0f) || !std::isfinite(sp)) {
+		return;
+	}
+	const float k = cap / sp;
+	x = sx * k;
+	y = sy * k;
 }
 
 int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
@@ -1590,40 +1605,80 @@ PackedInt32Array NativeBulletSim::get_dropped_by_limit() const {
 	return out;
 }
 
+Dictionary NativeBulletSim::bullet_row(int i) const {
+	Dictionary row;
+	row["pos"] = Vector2(px[i], py[i]);
+	row["prev"] = Vector2(qx[i], qy[i]);
+	row["vel"] = Vector2(vx[i], vy[i]);
+	row["rot"] = Vector2(rx[i], ry[i]);
+	row["radius"] = radius[i];
+	row["age"] = age[i];
+	row["lifetime"] = lifetime[i];
+	row["accel"] = accel[i];
+	row["turn"] = turn[i];
+	row["damage"] = damage[i];
+	row["param_a"] = param_a[i];
+	row["param_b"] = param_b[i];
+	row["behavior"] = behavior[i];
+	row["color"] = Color(col[4 * i], col[4 * i + 1], col[4 * i + 2], col[4 * i + 3]);
+	row["hit_mask"] = hit_mask[i];
+	row["pierce"] = pierce[i];
+	row["owner"] = owner_layer[i];
+	row["collide"] = collide_world[i] != 0;
+	row["flags"] = (int)source_flags[i];
+	row["seq"] = seq[i];
+	row["reflect_count"] = (int)reflect_count[i];
+	PackedInt64Array mem;
+	const int n = hit_mem_count[i];
+	mem.resize(n);
+	const uint64_t *base = &hit_mem[(size_t)i * HIT_MEMORY];
+	for (int k = 0; k < n; k++) {
+		mem[k] = (int64_t)base[k];
+	}
+	row["hit_mem"] = mem;
+	row["hit_head"] = (int)hit_mem_head[i];
+	return row;
+}
+
 Array NativeBulletSim::export_states() const {
 	Array out;
 	for (int i = 0; i < count; i++) {
-		Dictionary row;
-		row["pos"] = Vector2(px[i], py[i]);
-		row["prev"] = Vector2(qx[i], qy[i]);
-		row["vel"] = Vector2(vx[i], vy[i]);
-		row["rot"] = Vector2(rx[i], ry[i]);
-		row["radius"] = radius[i];
-		row["age"] = age[i];
-		row["lifetime"] = lifetime[i];
-		row["accel"] = accel[i];
-		row["turn"] = turn[i];
-		row["damage"] = damage[i];
-		row["color"] = Color(col[4 * i], col[4 * i + 1], col[4 * i + 2], col[4 * i + 3]);
-		row["hit_mask"] = hit_mask[i];
-		row["pierce"] = pierce[i];
-		row["owner"] = owner_layer[i];
-		row["collide"] = collide_world[i] != 0;
-		row["flags"] = (int)source_flags[i];
-		row["seq"] = seq[i];
-		row["reflect_count"] = (int)reflect_count[i];
-		PackedInt64Array mem;
-		const int n = hit_mem_count[i];
-		mem.resize(n);
-		const uint64_t *base = &hit_mem[(size_t)i * HIT_MEMORY];
-		for (int k = 0; k < n; k++) {
-			mem[k] = (int64_t)base[k];
-		}
-		row["hit_mem"] = mem;
-		row["hit_head"] = (int)hit_mem_head[i];
-		out.push_back(row);
+		out.push_back(bullet_row(i));
 	}
 	return out;
+}
+
+Array NativeBulletSim::extract_behavior(int p_behavior) {
+	Array out;
+	int i = 0;
+	while (i < count) {
+		if (dead[i] != 0 || behavior[i] != p_behavior) {
+			i++;
+			continue;
+		}
+		out.push_back(bullet_row(i));
+		// remove_at retires the seq and frees the id. No despawn reason: dead is 0.
+		remove_at(i);
+	}
+	return out;
+}
+
+Vector2 NativeBulletSim::get_velocity_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	if (s < 0) {
+		return Vector2();
+	}
+	return Vector2(vx[s], vy[s]);
+}
+
+float NativeBulletSim::get_param_a_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	return s < 0 ? 0.0f : param_a[s];
+}
+
+float NativeBulletSim::get_param_b_of(int64_t p_id) const {
+	const int s = slot_of(p_id);
+	return s < 0 ? 0.0f : param_b[s];
 }
 
 Array NativeBulletSim::get_last_despawns() const {

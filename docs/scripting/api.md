@@ -700,7 +700,7 @@ for thousands of bullets is still the scalable Lua shape: 5,000 empty per-bullet
 
 | Member | Meaning |
 |---|---|
-| `v.n` | number of bullets in this call, integer. Valid indices are `0 .. v.n - 1`. There is no slicing: every live bullet is here |
+| `v.n` | number of bullets in this call, integer. Valid indices are `0 .. v.n - 1`. There is no slicing: every live bullet is here. **Row order is unspecified.** The native backing lists sim rows before pool rows, so index 0 is not necessarily the oldest bullet |
 | `v.dt` | the same tick delta as the `dt` argument, in seconds |
 | `v.id[i]` | stable bullet id (integer), read-only. The commit does not use a value written here |
 | `v.px[i]`, `v.py[i]` | position, read-only (a jump is a teleport: use `v:teleport`, never a write) |
@@ -1082,6 +1082,11 @@ Save the file and the game reloads it, no restart needed.
 - New fires use the new code immediately.
 - A hot reload that adds `on_batch` does not reach bullets already in flight with `behavior_id` 0. Those stay plain
   until they die. Only shots spawned after the reload join the batch.
+- A hot reload that adds a per-bullet hook (`on_spawn`, `on_update`, `on_hit`, `can_hit`, `on_despawn`) to a weapon
+  whose live bullets are in the native sim moves those bullets onto the GDScript pool. Position, previous position,
+  velocity, age, lifetime, radius, damage, acceleration, turn, params, pierce memory and `pierces_script_invuln` are
+  kept, and both the batch callback and the new hook then see them (the same as a weapon that was already on the pool).
+  The native id is retired; the pool bullet has a new id. Row order in the next `on_batch` stays unspecified.
 - Shots **already in flight** keep running their old callbacks until they die (default),
   because mixing versions mid-flight would be surprising. Option: `reload = "migrate"`
   at the top of the weapon table to make in-flight shots switch to the new callbacks,

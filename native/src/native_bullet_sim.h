@@ -113,6 +113,14 @@ public:
 	void set_seq_at(int p_slot, int p_seq);
 	// Full state of every live bullet, for moving them into the GDScript pool.
 	godot::Array export_states() const;
+	// Removes every live bullet of `p_behavior` without a despawn reason and
+	// returns the same rows as export_states. Used when a batch-only weapon
+	// gains a per-bullet hook and those bullets must move to the GDScript pool.
+	godot::Array extract_behavior(int p_behavior);
+	godot::Vector2 get_velocity_of(int64_t p_id) const;
+	float get_param_a_of(int64_t p_id) const;
+	float get_param_b_of(int64_t p_id) const;
+	godot::Dictionary bullet_row(int p_slot) const;
 
 	// Reflector zones for this tick (circle, owner mask). Empty disables the
 	// zone sweep. BulletManager passes the active Reflector list, in registry

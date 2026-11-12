@@ -876,9 +876,24 @@ static func _fmt_number(x: float) -> String:
 ## Speed over BulletLimits.MAX_SPEED. The length is taken in a way that cannot
 ## overflow (a velocity component near 1e30 would square to inf).
 func _warn_speed_clamped(where: String, v: Vector2) -> void:
+	report_speed_clamp(where, v)
+
+
+## Same text as a pool set_velocity / hook_write removal. Native batch commits
+## call this so both backings share one message.
+static func report_removed(key: String, what: String) -> void:
+	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+
+
+## Same text as `_note_clamp` for a speed ceiling. `where` is the code path
+## ("BulletPool.set_velocity", "BulletPool.hook_write", ...).
+static func report_speed_clamp(where: String, v: Vector2) -> void:
 	var m := maxf(absf(v.x), absf(v.y))
 	var speed := (v / m).length() * m if m > 0.0 else 0.0
-	_note_clamp(where, "speed", speed, BulletLimits.MAX_SPEED, "MAX_SPEED")
+	ScriptWarnings.warn(
+		"%s.clamp.speed" % where,
+		"%s: speed %s is outside its allowed range and was clamped to %s (BulletLimits.MAX_SPEED)" % [where, _fmt_number(speed), _fmt_number(BulletLimits.MAX_SPEED)]
+	)
 
 
 ## spawn_simple(): the clamped fields are velocity, lifetime and radius.
@@ -939,7 +954,7 @@ func _non_finite_field(i: int) -> String:
 
 func _kill_invalid(i: int, key: String, what: String) -> void:
 	invalid_total += 1
-	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+	report_removed(key, what)
 	vel[i] = Vector2.ZERO
 	# Nothing non-finite stays in a slot that is still readable this tick (the
 	# on_despawn hook, the renderer).
@@ -1401,6 +1416,12 @@ func adopt_native(row: Dictionary) -> int:
 	damage[i] = damage_v
 	param_a[i] = 0.0
 	param_b[i] = 0.0
+	if row.has("param_a"):
+		var pa_v: float = row["param_a"]
+		param_a[i] = pa_v
+	if row.has("param_b"):
+		var pb_v: float = row["param_b"]
+		param_b[i] = pb_v
 	var color_v: Color = row["color"]
 	color[i] = color_v
 	var mask_v: int = row["hit_mask"]
@@ -1415,6 +1436,9 @@ func adopt_native(row: Dictionary) -> int:
 	pierces_script_invuln[i] = 1 if flags_v != 0 else 0
 	can_hit_veto[i] = 0
 	behavior[i] = 0
+	if row.has("behavior"):
+		var behavior_v: int = row["behavior"]
+		behavior[i] = behavior_v
 	pierce[i] = pierce_v
 	var collides: bool = row["collide"]
 	collide_world[i] = 1 if collides else 0
