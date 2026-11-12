@@ -244,8 +244,8 @@ stays the pool's flag on the fallback. The default preference is `auto`.
 The libraries in the table were built with `SCRIPTSHOT_NATIVE_LTO=none`
 (godot-cpp's `lto=auto` is full on Linux, MinGW, and web). GUT on this
 machine is two processes. Unbuilt: host 17 passing, unit and integration
-1029 passing and 84 pending. Built, on the Linux debug library: host 17
-passing, unit and integration 1113 passing and 0 pending.
+1033 passing and 87 pending. Built, on the Linux debug library: host 17
+passing, unit and integration 1120 passing and 0 pending.
 
 ## Build pins
 
