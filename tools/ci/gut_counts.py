@@ -11,7 +11,8 @@ and pending per process and in total.
 --expect-native: exit 1 unless every process printed its totals and ran at least one test, nothing failed, and Risky/Pending is 0. The
 native-only GUT tests (test_native_backend, test_native_reflection, test_native_parity, the native half of
 test_batch_hook) are pending when NativeBulletSim is not registered, so pending > 0 means the library did not load.
-Linux reference: built 10 host + 1088 unit, 0 pending; unbuilt 10 + 1014 passing, 74 pending.
+Linux reference (main 119c0925, after #63): 1113 tests, of which 17 are Lua host guards. With the library built
+1113 passing / 0 pending; without it 1029 passing / 84 pending.
 """
 import argparse
 import json

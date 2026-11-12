@@ -849,5 +849,161 @@ class FloatFlagTest(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+# The CI invocation of the native on_batch tier (.github/workflows/ci.yml, "Enforce the native on_batch budget").
+ONBATCH = check_perf.NATIVE_ON_BATCH_FLOOR_MS
+ONBATCH_10K = check_perf.NATIVE_ON_BATCH_TARGET_MS
+ONBATCH_REF = check_perf.REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS
+ONBATCH_ARGS = ["--tier-name", "native on_batch", "--title", "Native on_batch bullet benchmark",
+                "--p95-ms", str(ONBATCH), "--p95-target-ms", str(ONBATCH_10K), "--reference-ms", str(ONBATCH_REF),
+                "--floor-bullets", "5000", "--target-bullets", "10000",
+                "--rel-tolerance-pct", "10", "--slow-runner-cap", "1.5",
+                "--expect-backend", "native", "--expect-batch", "1"]
+NATIVE = {"backend": "native", "batch": 1}
+
+
+def run_tier(head, base, *extra, head_meta=NATIVE, base_meta=NATIVE, args=ONBATCH_ARGS):
+    """One tier report plus an optional same-run base (FABRICATED values). Returns (exit_code, stdout, summary)."""
+    with tempfile.TemporaryDirectory() as d:
+        def w(name, rows, meta):
+            path = os.path.join(d, name)
+            with open(path, "w") as f:
+                json.dump(dict({"godot": "test", "results": rows}, **meta), f, allow_nan=True)
+            return path
+        argv = [w("bench-onbatch.json", head, head_meta), "--summary", os.path.join(d, "summary.md"), *args]
+        if base is not None:
+            argv += ["--base-report", w("base-bench-onbatch.json", base, base_meta)]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = check_perf.main(argv + list(extra))
+        with open(os.path.join(d, "summary.md")) as f:
+            return code, out.getvalue(), f.read()
+
+
+class NativeOnBatchTierTest(unittest.TestCase):
+    """The native on_batch tier keeps the #42 rules (CoS ruling): hard raw bar at 5k, slow-runner only when the
+    same-run base also misses, capped at 1.5x, relative check head <= base x 1.10 always. All numbers FABRICATED
+    except where a comment names a run."""
+
+    def test_ci_yml_passes_the_constants(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "..", "..", ".github", "workflows", "ci.yml")) as f:
+            ci = f.read()
+        for want in (f"--p95-ms {ONBATCH} --p95-target-ms {ONBATCH_10K}", f"--reference-ms {ONBATCH_REF}",
+                     f"--onbatch-target-ms={ONBATCH})", f"head raw p95 <= {ONBATCH} ms at 5k, {ONBATCH_10K} ms at 10k",
+                     f"F = base on_batch 5k p95 / {ONBATCH_REF} ms"):
+            self.assertTrue(want in ci, f"ci.yml does not contain {want!r}")
+
+    def test_bars_are_well_below_16_6_and_a_10_ms_5k_run_cannot_pass_in_any_mode(self):
+        self.assertLess(ONBATCH, 16.6)
+        self.assertLess(ONBATCH_10K, 16.6)
+        self.assertLess(ONBATCH * 1.5, 10.0)  # the slow-runner cap cannot lift the 5k bar to 10 ms
+
+    def test_healthy_native_run_passes_in_raw_mode_and_logs_the_mode(self):
+        code, out, summ = run_tier(pair(2.5, 5.0), pair(2.5, 5.0))
+        self.assertEqual(code, 0, out)
+        self.assertIn("perf mode: native on_batch 5000: mode=raw", out)
+        self.assertIn("perf mode: native on_batch 10000: mode=raw", out)
+        self.assertIn("| native on_batch | 5000 | floor |", summ)
+        self.assertIn(f"Runner speed factor F = base native on_batch p95 2.50 ms / reference {ONBATCH_REF:g} ms", summ)
+        self.assertIn(f"budget p95 <= {ONBATCH} ms at 5000, {ONBATCH_10K} ms at 10000", summ)
+
+    def test_10_ms_5k_regression_fails_raw_bar_and_relative(self):
+        # The regressed #63 head (1322ebcc) measured ~10 ms at 5k / ~20 ms at 10k locally; main ~2 / ~4.5 ms.
+        code, out, _ = run_tier(pair(10.0, 20.0), pair(2.2, 4.5))
+        self.assertEqual(code, 1)
+        self.assertIn(f"::error::[native on_batch] p95 10.00 ms > budget {ONBATCH:.2f} ms at 5000 bullets "
+                      "(hard floor), mode=raw", out)
+        self.assertIn("::error::[native on_batch] p95 regressed vs main on the same runner at 5000 bullets "
+                      "(hard floor): 2.20 -> 10.00 ms", out)
+
+    def test_10_ms_5k_fails_without_a_base(self):
+        code, out, _ = run_tier(pair(10.0, 20.0), None)
+        self.assertEqual(code, 1)
+        self.assertIn(f"::error::[native on_batch] p95 10.00 ms > budget {ONBATCH} ms at 5000 bullets (hard floor)",
+                      out)
+
+    def test_10_ms_5k_fails_even_on_the_slowest_runner_the_cap_allows(self):
+        # Base itself over the bar: slow-runner mode, bar x 1.5 at most, still under 10 ms.
+        base5 = ONBATCH * 1.6
+        code, out, _ = run_tier(pair(10.0, 20.0), pair(base5, base5 * 2))
+        self.assertEqual(code, 1)
+        self.assertIn("perf mode: native on_batch 5000: mode=slow-runner", out)
+        self.assertIn(f"> budget {ONBATCH * 1.5:.2f} ms at 5000 bullets (hard floor), mode=slow-runner", out)
+
+    def test_slow_runner_only_when_the_base_also_misses(self):
+        over = ONBATCH + 0.5
+        code, out, _ = run_tier(pair(over, 6.0), pair(ONBATCH - 0.1, 6.0))
+        self.assertEqual(code, 1)
+        self.assertIn("perf mode: native on_batch 5000: mode=raw", out)
+        code, out, _ = run_tier(pair(over, 6.0), pair(over, 6.0))
+        self.assertEqual(code, 0, out)
+        self.assertIn("perf mode: native on_batch 5000: mode=slow-runner", out)
+
+    def test_relative_check_has_no_slack(self):
+        code, _, _ = run_tier(pair(2.2, 4.0), pair(2.0, 4.0))
+        self.assertEqual(code, 0)
+        code, out, _ = run_tier(pair(2.21, 4.0), pair(2.0, 4.0))
+        self.assertEqual(code, 1)
+        self.assertIn("2.00 -> 2.21 ms, limit 2.20 ms (+10%)", out)
+
+    def test_10k_uses_its_own_bar_and_only_warns(self):
+        code, out, _ = run_tier(pair(2.0, ONBATCH_10K + 1), pair(2.0, ONBATCH_10K + 1))
+        self.assertEqual(code, 0, out)
+        code, out, _ = run_tier(pair(2.0, ONBATCH_10K + 1), None)
+        self.assertEqual(code, 0, out)
+        self.assertIn(f"::warning::[native on_batch] p95 {ONBATCH_10K + 1:.2f} ms > budget {ONBATCH_10K} ms at 10000",
+                      out)
+        code, out, _ = run_tier(pair(2.0, ONBATCH - 0.1), None)  # the 5k bar is not used at 10k
+        self.assertEqual(code, 0)
+        self.assertNotIn("::warning::", out)
+
+    def test_a_gdscript_fallback_head_fails_even_when_fast(self):
+        code, out, _ = run_tier(pair(2.0, 4.0), pair(2.0, 4.0), head_meta={"backend": "gdscript", "batch": 1})
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[native on_batch] \"backend\" is 'gdscript', expected 'native'", out)
+        code, out, _ = run_tier(pair(2.0, 4.0), None, head_meta={"backend": None, "batch": 1})  # merge_bench mix
+        self.assertEqual(code, 1)
+        code, out, _ = run_tier(pair(2.0, 4.0), None, head_meta={"backend": "native", "batch": 0})
+        self.assertEqual(code, 1)
+        self.assertIn("\"batch\" is 0, expected 1", out)
+
+    def test_a_base_that_is_not_native_is_unusable(self):
+        # A GDScript base would look "slow" and loosen the bar via slow-runner mode; it is dropped instead.
+        code, out, _ = run_tier(pair(ONBATCH + 1, 8.0), pair(ONBATCH + 2, 8.0),
+                                base_meta={"backend": "gdscript", "batch": 1})
+        self.assertEqual(code, 1)
+        self.assertIn("mode=raw (no usable base) and no relative check", out)
+        self.assertIn("perf mode: native on_batch: mode=raw (no usable same-run base)", out)
+
+    def test_plain_invocation_output_is_unchanged_by_the_tier_options(self):
+        _, out, summ = run(PLAIN_OK)
+        self.assertNotIn("perf mode:", out)
+        self.assertIn("### Bullet benchmark (headless CPU work per tick, budget p95 <= 16.6 ms)", summ)
+
+
+AUTO_ARGS = ["--tier-name", "auto", "--title", "Auto backend bullet benchmark (informational)",
+             "--p95-ms", "16.6", "--floor-bullets", "5000", "--target-bullets", "10000",
+             "--rel-tolerance-pct", "10", "--slow-runner-cap", "1.5", "--reference-ms", str(ONBATCH_REF),
+             "--expect-backend", "native", "--expect-batch", "0", "--informational"]
+AUTO = {"backend": "native", "batch": 0}
+
+
+class AutoInformationalTierTest(unittest.TestCase):
+    def test_misses_are_warnings_only(self):
+        code, out, summ = run_tier(pair(20.0, 40.0), pair(2.0, 4.0), head_meta=AUTO, base_meta=AUTO, args=AUTO_ARGS)
+        self.assertEqual(code, 0, out)
+        self.assertNotIn("::error::", out)
+        self.assertIn("::warning::[auto] p95 20.00 ms > budget 16.60 ms at 5000", out)
+        self.assertIn("::warning::[auto] p95 regressed vs main", out)
+        self.assertIn("perf mode: auto: informational", out)
+        self.assertIn("_Informational tier (auto)", summ)
+        self.assertNotIn(":x:", summ)
+
+    def test_auto_that_did_not_resolve_native_still_fails(self):
+        code, out, _ = run_tier(pair(2.0, 4.0), None, head_meta={"backend": "gdscript", "batch": 0}, args=AUTO_ARGS)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::[auto] \"backend\" is 'gdscript', expected 'native'", out)
+
+
 if __name__ == "__main__":
     unittest.main()

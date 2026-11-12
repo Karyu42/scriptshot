@@ -10,8 +10,8 @@
 #   ./tools/run_benchmark.sh --bullets=2000,5000,10000,20000 --frames=1200
 #   ./tools/run_benchmark.sh --floor-bullets=5000 --target-bullets=10000
 #   ./tools/run_benchmark.sh --json=/tmp/bench.json
-#   # Native on_batch gate. 5k work p95 must stay <= 16.6 ms. Not wired into CI;
-#   # QA owns tools/ci/perf_ab.sh if this row should run on every PR.
+#   # Native on_batch tier. CI (perf-native job, tools/ci/perf_ab.sh --tiers=onbatch)
+#   # gates it with tools/ci/check_perf.py on its own bars, not on this exit code.
 #   ./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000
 #
 # Uses $GODOT if set, otherwise `godot` from PATH (Godot 4.7.2).
