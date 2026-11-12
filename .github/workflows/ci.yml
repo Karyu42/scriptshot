@@ -460,6 +460,33 @@ jobs:
             # The base benchmark then fails to load native: check_perf.py drops it (raw bars, logged).
             echo "::warning::base native library build failed; the on_batch tier falls back to the raw bars"
           fi
+      - name: Warm the import cache (head and base; one retry on a crashed cold import)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # The first run of this job (PR #64, run 43199386255) lost the head's cold `godot --import` to
+          # "double free or corruption" after the reimport (the base tree imported fine; 4/4 local cold imports
+          # with the library pass). That is the import, not the measured sim, so a crashed cold import is retried
+          # once here and logged. run_benchmark.sh still imports (warm) and fails on import/script errors.
+          warm() {  # warm <dir> <name>
+            local attempt log
+            bash "$1/tools/ci/fetch_native_libs.sh" linux.x86_64 || return 1
+            for attempt in 1 2; do
+              log="$RUNNER_TEMP/import-$2-$attempt.log"
+              if "$GODOT" --headless --path "$1" --import >"$log" 2>&1; then
+                echo "$2: import ok (attempt $attempt)"
+                return 0
+              fi
+              echo "::warning::$2: cold godot --import crashed or failed (attempt $attempt); last lines:"
+              tail -n 5 "$log"
+            done
+            return 1
+          }
+          warm "$GITHUB_WORKSPACE" head || { echo "::error::head import failed twice"; exit 1; }
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            warm "$PERF_BASE_DIR" base || echo "::warning::base import failed twice; perf_ab.sh drops the base if its run fails"
+          fi
       - name: Run benchmarks (native on_batch + auto; base and head alternating on this runner)
         run: |
           mkdir -p reports
