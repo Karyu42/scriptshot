@@ -191,3 +191,42 @@ func test_regulars_do_not_collide_yet() -> void:
 	var body := (preload("res://scenes/regular_enemy.tscn") as PackedScene).instantiate() as RegularEnemy
 	assert_false(body.collide_walls, "row 2 decides the regular wall rule")
 	body.free()
+
+
+func test_main_scene_redirects_the_herald_into_c() -> void:
+	var path := "user://gut_slice_herald_main.cfg"
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+	var seeded := SaveGame.new()
+	seeded.path = path
+	seeded.world_seed = 1
+	seeded.save()
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = path
+	add_child(main)
+	var player := main.get_node("Player") as Player
+	player.set_physics_process(false)
+	var arm := main.get_node("HeraldArm") as HeraldArm
+	var director := main.get_node("HeraldDirector") as HeraldDirector
+	assert_eq(director.slice, main.get_node("SliceLayout"))
+	player.teleport(Vector2(600, 0))
+	player.velocity = Vector2(100, 0)
+	arm.advance(0.0)
+	director.advance(WorldGen.herald_delay(1) + 0.1)
+	var herald := director.herald
+	assert_not_null(herald)
+	assert_eq(herald.global_position, SliceLayout.HERALD_REDIRECT, "(1800, 0) is room A: redirected into C")
+	assert_true(SaveGame.load_from(path).herald_done)
+	var bullets := main.get_node("BulletManager") as BulletManager
+	bullets.bounds_center = null
+	bullets.recenter_world_bounds(herald.global_position)
+	var hp := herald.health.hp
+	var r := ShotRequest.with_velocity(herald.global_position + Vector2(-6, 0), Vector2(400, 0))
+	r.damage = 1.0
+	assert_gte(bullets.spawn(r), 0)
+	bullets.step(DT)
+	assert_almost_eq(herald.health.hp, hp - 1.0, 0.01, "fightable where it landed")
+	bullets.clear_bullets()
+	main.free()
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
