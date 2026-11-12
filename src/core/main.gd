@@ -40,8 +40,10 @@ func _ready() -> void:
 		for mirror: Mirror in mirrors.get_children():
 			mirror.target = _player
 	_bind_open_world()
+	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
+	GameEvents.run_started.emit()
 
 
 func _bind_open_world() -> void:
@@ -110,6 +112,7 @@ func _on_natural_shard() -> void:
 
 
 func _exit_tree() -> void:
+	WorldQuery.unbind_bullets(_bullets)
 	_on_absent_changed()
 
 
