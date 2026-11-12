@@ -179,11 +179,10 @@ public:
 	// is skipped. Non-finite velocity or params kill as INVALID. The dictionary
 	// is the whole commit (no per-row callback): totals killed, vel_nonfinite,
 	// pa_nonfinite, pb_nonfinite, and clamp_vx/clamp_vy for each finite over-cap
-	// velocity. warn_row, warn_key, warn_what, warn_vx and warn_vy are the same
-	// events in row order (row index, ScriptWarnings key, the removal text or
-	// empty, and the pre-clamp velocity). A row can record a speed clamp and
-	// then a param kill. Emission walks that list so the printed subset matches
-	// the pool.
+	// velocity. warn_row and warn_code are the same events in row order.
+	// Codes match BulletManager: 1 velocity, 2 speed clamp, 3 param_a, 4 param_b.
+	// A row can record a speed clamp and then a param kill. No strings are built
+	// here; GDScript formats a warning only when it will be printed.
 	godot::Dictionary apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
 			const godot::PackedFloat32Array &p_vy, const godot::PackedFloat32Array &p_pa,
 			const godot::PackedFloat32Array &p_pb);

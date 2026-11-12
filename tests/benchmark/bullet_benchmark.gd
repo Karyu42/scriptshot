@@ -29,6 +29,8 @@ extends Node
 ##                          live in the sim. On GDScript they stay in the pool.
 ##                          Native on_batch gate (5k p95 must stay <= --target-ms, 16.6):
 ##                          --backend=native --batch=1 --bullets=5000,10000
+##   --bad=1                with --batch=1, write a non-finite pb on every row.
+##                          Those bullets are removed and replaced each frame.
 ##   --backend=gdscript     bullet backend. Omitted is gdscript, pinned so the
 ##                          plain 16.6 ms and hooked 22.0 ms bars keep measuring
 ##                          the GDScript pool (per-bullet hooks stay there either
@@ -76,6 +78,8 @@ var json_path := ""
 var hooked_fraction := 0.0
 ## 1 when every bullet is driven by one batch hook (see --batch).
 var batch_mode := 0
+## 1 writes a non-finite pb on every batch row (they die and are replaced).
+var bad_rows := 0
 ## "gdscript" (pinned default), "native", or "auto" (the game default).
 ## Omitted --backend stays on gdscript so the existing bars do not follow the
 ## game's native default. See docs/native.md.
@@ -122,10 +126,17 @@ class NoopHook:
 class BatchSteer:
 	extends BulletBehavior
 
+	var spoil := false
+
 	func _init() -> void:
 		update_mode = UpdateMode.BATCH
 
 	func on_update_batch(batch: BatchView) -> void:
+		if spoil:
+			var pb := batch.pb
+			for i in batch.n:
+				pb[i] = NAN
+			return
 		var vx := batch.vx
 		var age := batch.age
 		var dt := batch.dt
@@ -157,7 +168,9 @@ func _ready() -> void:
 	# Only when measuring the batch path. Registering it would mark the pool as
 	# having a batch-only behavior and add a check to every hooked bullet.
 	if batch_mode > 0:
-		_batch_behavior_id = _manager.register_behavior(BatchSteer.new())
+		var steer := BatchSteer.new()
+		steer.spoil = bad_rows > 0
+		_batch_behavior_id = _manager.register_behavior(steer)
 	_build_walls()
 	_build_mirrors()
 	for i in TARGET_COUNT:
@@ -166,8 +179,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | preference: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | pierce fraction %.2f (pierce %d)"
-		% [Engine.get_version_info().string, _manager.backend, backend_preference, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, PIERCE_FRACTION, PIERCE_EXTRA])
+	print("[bench] Godot %s | backend: %s | preference: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | bad %d | pierce fraction %.2f (pierce %d)"
+		% [Engine.get_version_info().string, _manager.backend, backend_preference, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, bad_rows, PIERCE_FRACTION, PIERCE_EXTRA])
 	_next_count()
 
 
@@ -402,6 +415,10 @@ func _parse_args() -> String:
 				batch_mode = int(kv[1])
 				if batch_mode != 0 and batch_mode != 1:
 					return "--batch must be 0 or 1, got '%s'" % kv[1]
+			"bad":
+				bad_rows = int(kv[1])
+				if bad_rows != 0 and bad_rows != 1:
+					return "--bad must be 0 or 1, got '%s'" % kv[1]
 			"backend":
 				if not kv[1] in ["auto", "gdscript", "native"]:
 					return "--backend must be auto, gdscript or native, got '%s'" % kv[1]
