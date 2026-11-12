@@ -49,19 +49,19 @@ jobs:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: scriptshot-linux-*
-          path: dist
+          path: dist/linux
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: scriptshot-windows-*
-          path: dist
+          path: dist/windows
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: scriptshot-web-*
-          path: dist
+          path: dist/web
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ github.token }}
       - name: Verify shipping artifacts and pack zips
@@ -69,11 +69,12 @@ jobs:
           SHA7: ${{ steps.ids.outputs.sha7 }}
         run: |
           set -euo pipefail
-          # download-artifact writes each artifact to dist/<artifact-name>/.
-          linux="$(find dist -maxdepth 1 -type d -name 'scriptshot-linux-*' | head -1)"
-          windows="$(find dist -maxdepth 1 -type d -name 'scriptshot-windows-*' | head -1)"
-          web="$(find dist -maxdepth 1 -type d -name 'scriptshot-web-*' | head -1)"
-          test -n "$linux" && test -n "$windows" && test -n "$web" \
+          # A pattern matching exactly one artifact is extracted flat into its
+          # path, so each platform gets its own fixed directory (no find/head).
+          linux=dist/linux
+          windows=dist/windows
+          web=dist/web
+          test -s "$linux/Scriptshot.x86_64" && test -s "$windows/Scriptshot.exe" && test -s "$web/index.html" \
             || { echo "::error::expected Linux, Windows and web artifacts"; ls -laR dist; exit 1; }
           python3 tools/ci/check_nightly_artifacts.py --linux "$linux" --windows "$windows" --web "$web"
           mkdir -p zips web-pages pack/linux pack/windows
