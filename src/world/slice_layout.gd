@@ -273,18 +273,29 @@ func gate_body(id: StringName) -> StaticBody2D:
 
 # --- Herald redirect (§2 "Herald clamp", §10 row 6) ------------------------------
 
-## The Herald's spawn point for `p` (a body of `radius`). Kept when it is in
-## open C or outside the footprint; HERALD_REDIRECT when the body would land
-## in S, A, B, D, E, the alcove, a corridor, or touch a slice wall or a shut
-## gate. A point inside the footprint but outside every room and corridor
-## (the open ground between rooms) is kept, like a point outside it.
+## The Herald's spawn point for `p` (a body of `radius`).
+##
+## While G0 is shut (before the Warden; the GD ruling on #81: the slice's
+## Herald spawns in walled room C), only a point in open C is kept. Every other
+## point redirects to HERALD_REDIRECT: outside the footprint, the open ground
+## between rooms, S, A, B, D, E, the alcove, a corridor, or a body touching a
+## slice wall or shut gate.
+##
+## Once G0 is open (is_gate_open, so the debug force counts too), a point in
+## open C or outside the rooms (outside the footprint, or the open ground
+## between rooms) is kept, and only walled rooms, corridors and wall contact
+## redirect.
 func redirect_herald(p: Vector2, radius: float) -> Vector2:
 	if not p.is_finite():
 		return HERALD_REDIRECT
 	if touches_wall(p, radius):
 		return HERALD_REDIRECT
 	var room := room_at(p)
-	if room == &"" or room == ROOM_C:
+	if room == ROOM_C:
+		return p
+	if not is_gate_open(GATE_G0):
+		return HERALD_REDIRECT
+	if room == &"":
 		return p
 	return HERALD_REDIRECT
 

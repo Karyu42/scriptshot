@@ -1,7 +1,8 @@
 extends GutTest
 ## Vertical-slice Herald redirect (§2 "Herald clamp", §10 row 6) and elite wall
-## collision: a point that lands in a walled room goes to (4700, 180) in C, a
-## point in open C or outside the footprint is kept, herald_done still blocks
+## collision: while G0 is shut every point outside open C goes to (4700, 180);
+## once G0 is open a point in open C or outside the rooms is kept and only
+## walled rooms, corridors and walls redirect. herald_done still blocks
 ## a second Herald, and a disabled ribbon changes nothing. Elites (and so the
 ## Herald) do not walk through the ribbon's walls or a shut gate.
 
@@ -125,13 +126,44 @@ func test_a_heading_into_open_c_keeps_its_point() -> void:
 	assert_eq(_spawn_from(at, Vector2.RIGHT), expected)
 
 
-func test_a_heading_outside_the_footprint_keeps_its_point() -> void:
-	var at := Vector2(2000, -1700)
-	var world_seed := _seed_where(at, Vector2.RIGHT, func(p: Vector2) -> bool: return not SliceLayout.in_footprint(p))
-	assert_gt(world_seed, 0)
+func _outside(p: Vector2) -> bool:
+	return not SliceLayout.in_footprint(p)
+
+
+func _between_rooms(p: Vector2) -> bool:
+	return SliceLayout.in_footprint(p) and SliceLayout.room_at(p) == &""
+
+
+## Heading from `at` whose open-world point satisfies `where`: redirected
+## while G0 is shut, kept once G0 is open.
+func _shut_redirects_open_keeps(at: Vector2, where: Callable, label: String) -> void:
+	var world_seed := _seed_where(at, Vector2.RIGHT, where)
+	assert_gt(world_seed, 0, "%s: some seed lands there" % label)
+	if world_seed < 0:
+		return
 	var expected := _open_world_point(world_seed, at, Vector2.RIGHT)
 	_rig(true, false, true, world_seed)
-	assert_eq(_spawn_from(at, Vector2.RIGHT), expected)
+	assert_false(_slice.is_gate_open(&"G0"))
+	assert_eq(_spawn_from(at, Vector2.RIGHT), SliceLayout.HERALD_REDIRECT, "%s, G0 shut: into C" % label)
+	_rig(true, false, true, world_seed)
+	_slice.open_gate(&"G0")
+	assert_eq(_spawn_from(at, Vector2.RIGHT), expected, "%s, G0 open: kept" % label)
+
+
+func test_a_heading_outside_the_footprint_redirects_until_g0_opens() -> void:
+	_shut_redirects_open_keeps(Vector2(2000, -1700), _outside, "outside the footprint")
+
+
+func test_a_heading_between_rooms_redirects_until_g0_opens() -> void:
+	_shut_redirects_open_keeps(Vector2(-400, 400), _between_rooms, "between rooms")
+
+
+func test_walled_rooms_still_redirect_once_g0_is_open() -> void:
+	var world_seed := _seed_where(Vector2(600, 0), Vector2.RIGHT, func(p: Vector2) -> bool: return SliceLayout.room_at(p) == &"A")
+	assert_gt(world_seed, 0)
+	_rig(true, false, true, world_seed)
+	_slice.open_gate(&"G0")
+	assert_eq(_spawn_from(Vector2(600, 0), Vector2.RIGHT), SliceLayout.HERALD_REDIRECT, "room A")
 
 
 func test_herald_done_still_blocks_a_second_herald() -> void:
@@ -158,9 +190,20 @@ func test_redirect_rules_on_points() -> void:
 	assert_eq(_slice.redirect_herald(Vector2(5400, 600), r), Vector2(5400, 600), "open C")
 	assert_eq(_slice.redirect_herald(Vector2(4100, 300), r), SliceLayout.HERALD_REDIRECT, "on C's west wall")
 	assert_eq(_slice.redirect_herald(Vector2(-775, 300), r), SliceLayout.HERALD_REDIRECT, "outside, but touching S's wall")
-	assert_eq(_slice.redirect_herald(Vector2(-800, 300), r), Vector2(-800, 300), "outside and clear")
-	assert_eq(_slice.redirect_herald(Vector2(896, 300), r), Vector2(896, 300), "open ground between rooms")
 	assert_eq(_slice.redirect_herald(Vector2(896, 0), r), SliceLayout.HERALD_REDIRECT, "G1 corridor")
+	# G0 shut: only open C is kept.
+	assert_eq(_slice.redirect_herald(Vector2(-800, 300), r), SliceLayout.HERALD_REDIRECT, "outside, G0 shut")
+	assert_eq(_slice.redirect_herald(Vector2(0, -3000), r), SliceLayout.HERALD_REDIRECT, "far outside, G0 shut")
+	assert_eq(_slice.redirect_herald(Vector2(896, 300), r), SliceLayout.HERALD_REDIRECT, "between rooms, G0 shut")
+	# G0 open (after the Warden): outside the rooms is kept again.
+	_slice.open_gate(&"G0")
+	assert_eq(_slice.redirect_herald(Vector2(-800, 300), r), Vector2(-800, 300), "outside, G0 open")
+	assert_eq(_slice.redirect_herald(Vector2(896, 300), r), Vector2(896, 300), "between rooms, G0 open")
+	assert_eq(_slice.redirect_herald(Vector2(5400, 600), r), Vector2(5400, 600), "open C, G0 open")
+	assert_eq(_slice.redirect_herald(Vector2(1664, 0), r), SliceLayout.HERALD_REDIRECT, "room A, G0 open")
+	assert_eq(_slice.redirect_herald(Vector2(896, 0), r), SliceLayout.HERALD_REDIRECT, "G1 corridor, G0 open")
+	assert_eq(_slice.redirect_herald(Vector2(-775, 300), r), SliceLayout.HERALD_REDIRECT, "touching S's wall, G0 open")
+	_slice.close_gate(&"G0")
 	assert_false(_slice.touches_wall(SliceLayout.HERALD_REDIRECT, r), "the target itself is clear")
 	assert_eq(SliceLayout.room_at(SliceLayout.HERALD_REDIRECT), &"C")
 
