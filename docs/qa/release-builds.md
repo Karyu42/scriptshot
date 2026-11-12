@@ -14,7 +14,7 @@ must have passed) uploads three Actions artifacts, kept for 90 days:
 
 Open the CI run for that commit (Actions → CI → the push to `main`, or the checks on the commit) and download
 the artifact. The first 7 characters of the commit SHA are in the name, for example `scriptshot-linux-08f3c94`.
-There is no GitHub Release and no GitHub Pages site; these are CI artifacts only. Windows builds are unsigned,
+There is no GitHub Release and no GitHub Pages site; these are CI artifacts only. A rolling nightly pre-release and a Pages web build are prepared in `.github/workflows/nightly-pages.yml` but are not enabled (see section 10). Windows builds are unsigned,
 so SmartScreen will warn on first launch (**More info > Run anyway**). Linux: `chmod +x Scriptshot.x86_64`
 (artifact download strips the executable bit) then run it.
 
@@ -268,3 +268,27 @@ Checked on this box with Godot 4.7.2 and the official templates, a clean copy of
 succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm (before #40; the dlink export is in section 4), Android debug APK 28 MB with arm64-v8a libs only, macOS zip 61 MB
 containing a code-signed universal `.app`), with the debug keystore and editor settings generated exactly as the job does. Not verified locally:
 Android with build-tools 36.1.0 (the box has 35.0.1), the first-launch steps on real macOS, running the APK on a device, and the `native-libs` job.
+
+## 10. Nightly pre-release and GitHub Pages (not enabled)
+
+A workflow (`.github/workflows/nightly-pages.yml`) is prepared to, after each successful CI
+push to `main`, replace a rolling **pre-release** tagged `nightly` with Linux, Windows and
+web zips, and to deploy the web tree to GitHub Pages.
+
+**This is not live.** Publishing waits on Karyu's approval. Do not merge that workflow until
+then. Until it is merged and the settings below are set, the only downloadable builds are the
+90-day Actions artifacts described in the introduction.
+
+Repo settings the workflow needs (change them only when Karyu approves publishing):
+
+* **Actions → General → Workflow permissions:** the `GITHUB_TOKEN` must be allowed
+  `contents: write` so the workflow can create and replace the `nightly` pre-release
+  (the workflow file requests that permission; some organisations also require the
+  repository default to be "Read and write").
+* **Settings → Pages → Source:** GitHub Actions. Without this, the Pages deploy step fails.
+  Do not add environment protection on `github-pages` unless an extra approval each night
+  is wanted.
+
+The workflow runs only on a successful CI **push** to `main`. It does not run on pull
+requests, and a `workflow_dispatch` of CI does not publish. Builds stay unsigned.
+
