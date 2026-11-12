@@ -4,9 +4,9 @@ extends RegularEnemy
 ## body. 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
 ## Splitting and Summoner come from AffixDef. Halves are not elites: 40% HP,
 ## ×1.3 speed, radius 12, already awake, no cue, no shard, no further split.
-## Summoner adds are SummonAdd bodies: one hit at common, a per-tier cap
-## (common 2, rare from AffixDef's rare column), spawned on the flanks of the
-## elite-to-player line (issue #81).
+## Summoner adds are SummonAdd bodies, spawned on the flanks of the
+## elite-to-player line (issue #81). Per-tier columns on AffixDef: common 2
+## one-hit Swarmers, rare 8, legendary (Hydra) 6 Drifters at 105 HP.
 ## Nothing here fires a bullet. Adds are bodies. Plain shots stay plain.
 
 signal shard_dropped
@@ -40,6 +40,7 @@ var _summon_interval := 6.0
 var _summon_batch := 2
 var _summon_cap := 2
 var _summon_hp := 1.0
+var _summon_kind := ARCH_SWARMER
 var _summon_serial := 0
 var _summons: Array[RegularEnemy] = []
 var _glyph := EliteCue.GLYPH_CIRCLE
@@ -164,7 +165,8 @@ func _apply_stats() -> void:
 		_summon_interval = _affix_def.summon_interval(rarity)
 		_summon_batch = _affix_def.summon_count(rarity)
 		_summon_cap = _affix_def.summon_cap(rarity)
-		_summon_hp = _affix_def.summon_hp
+		_summon_hp = _affix_def.summon_hp_for(rarity)
+		_summon_kind = _affix_def.summon_kind(rarity)
 		_summon_wait = _summon_interval
 
 
@@ -240,13 +242,16 @@ func _spawn_one_summon() -> void:
 	# Alternate flanks: even serials left of the elite-to-player line, odd right.
 	var side := 1.0 if _summon_serial % 2 == 0 else -1.0
 	var pos := RegularEnemy.push_centre_outside(
-		summon_spawn_point(side), RegularEnemy.SWARMER_RADIUS
+		summon_spawn_point(side), RegularEnemy.radius_of(_summon_kind)
 	)
 	body.name = "HeraldSummon%d" % _summon_serial
 	body.summoner = self
 	body.side = side
 	body.summon_hp = _summon_hp
-	body.configure(ARCH_SWARMER, pos, pos, world_seed, chunk, -1, _summon_serial, player)
+	# Swarmer adds hold their flank; legendary (Hydra) Drifter adds chase as
+	# plain Drifters (vertical-slice §4).
+	body.holds_flank = _summon_kind == ARCH_SWARMER
+	body.configure(_summon_kind, pos, pos, world_seed, chunk, -1, _summon_serial, player)
 	body.woken = woken
 	_summon_serial += 1
 	parent.add_child(body)

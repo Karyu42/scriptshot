@@ -78,7 +78,7 @@ func after_each() -> void:
 func test_common_cap_is_two_and_rare_cap_comes_from_the_rare_column() -> void:
 	var def := AffixCatalog.get_affix(AffixCatalog.SUMMONER)
 	assert_eq(def.summon_cap(AffixDef.RARITY_COMMON), 2)
-	assert_eq(def.summon_cap(AffixDef.RARITY_LEGENDARY), 2, "legendary uses the common numbers")
+	assert_eq(def.summon_cap(AffixDef.RARITY_LEGENDARY), 6, "the Hydra keeps max 6 (vertical-slice §4)")
 	assert_eq(def.summon_cap(AffixDef.RARITY_RARE), def.rare_max_alive)
 	assert_eq(def.rare_max_alive, 8)
 	var player := _node_player(FAR + Vector2(0, 300))
@@ -96,6 +96,57 @@ func test_common_cap_is_two_and_rare_cap_comes_from_the_rare_column() -> void:
 		rare._physics_process(rare.summon_interval())
 		assert_lte(rare.summon_alive(), 8)
 	assert_eq(rare.summon_alive(), 8)
+
+
+func test_legendary_column_is_six_drifters_at_105_hp() -> void:
+	# vertical-slice §4 and §10 row 12: every 6 s, 2 bodies, max 6 alive, each a
+	# half-HP Drifter (105 HP, 90 px/s, radius 16), kind drifter.
+	var def := AffixCatalog.get_affix(AffixCatalog.SUMMONER)
+	assert_eq(def.summon_cap(AffixDef.RARITY_LEGENDARY), 6)
+	assert_eq(def.summon_count(AffixDef.RARITY_LEGENDARY), 2)
+	assert_almost_eq(def.summon_interval(AffixDef.RARITY_LEGENDARY), 6.0, 0.0001)
+	assert_almost_eq(def.summon_hp_for(AffixDef.RARITY_LEGENDARY), 105.0, 0.0001)
+	assert_eq(def.summon_kind(AffixDef.RARITY_LEGENDARY), RegularEnemy.ARCH_DRIFTER)
+	assert_eq(def.summon_kind(AffixDef.RARITY_COMMON), RegularEnemy.ARCH_SWARMER)
+	assert_eq(def.summon_kind(AffixDef.RARITY_RARE), RegularEnemy.ARCH_SWARMER)
+	var player := _node_player(FAR + Vector2(0, 3000))
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	assert_eq(hydra.summon_cap(), 6)
+	assert_almost_eq(hydra.summon_interval(), 6.0, 0.0001)
+	hydra._physics_process(5.9)
+	assert_eq(hydra.summon_alive(), 0)
+	hydra._physics_process(0.1)
+	assert_eq(hydra.summon_alive(), 2, "2 per wave")
+	for _wave in 6:
+		hydra._physics_process(6.0)
+		assert_lte(hydra.summon_alive(), 6)
+	assert_eq(hydra.summon_alive(), 6)
+	var adds := _adds(hydra.get_parent())
+	assert_eq(adds.size(), 6)
+	for add: SummonAdd in adds:
+		assert_eq(add.archetype, RegularEnemy.ARCH_DRIFTER, "kind drifter")
+		assert_almost_eq(add.health.max_hp, 105.0, 0.0001)
+		assert_almost_eq(add.health.hp, 105.0, 0.0001)
+		assert_almost_eq(add.body_radius, RegularEnemy.DRIFTER_RADIUS, 0.0001)
+		assert_almost_eq(add._hurtbox.radius, RegularEnemy.DRIFTER_RADIUS, 0.0001)
+		assert_almost_eq(add._move_speed(), RegularEnemy.DRIFTER_SPEED, 0.0001)
+		assert_false(add.holds_flank)
+		assert_false(add.is_in_group(EliteEnemy.GROUP_ELITE))
+	# A woken Hydra add chases straight at the player like a Drifter.
+	var add := adds[0]
+	add.woken = true
+	player.global_position = add.global_position + Vector2(500, 0)
+	var x0 := add.global_position.x
+	add._physics_process(1.0)
+	assert_almost_eq(add.global_position.x - x0, RegularEnemy.DRIFTER_SPEED, 0.5)
+	assert_almost_eq(add.global_position.y, player.global_position.y, 0.5)
+	# 105 HP: a 1-damage stream needs 105 hits. Waves stack on the same two
+	# flank points, so clear the other adds out of the line first.
+	for other: SummonAdd in adds:
+		if other != add:
+			other.health.damage(other.health.max_hp)
+	var manager := _manager()
+	assert_eq(_shots_to_kill_up_to(manager, add, BasicShot.new(), 200), 105)
 
 
 func test_rare_column_is_configurable() -> void:
@@ -344,13 +395,17 @@ func _kill_all(parent: Node) -> void:
 
 
 func _shots_to_kill(manager: BulletManager, enemy: RegularEnemy, shot: ShotPattern) -> int:
+	return _shots_to_kill_up_to(manager, enemy, shot, 20)
+
+
+func _shots_to_kill_up_to(manager: BulletManager, enemy: RegularEnemy, shot: ShotPattern, limit: int) -> int:
 	var ctx := ShotContext.new()
 	ctx.aim_direction = Vector2.RIGHT
 	ctx.aim_angle = 0.0
 	ctx.shooter_velocity = Vector2.ZERO
 	ctx.target_mask = Layers.ENEMY
 	var n := 0
-	while enemy.is_alive() and n < 20:
+	while enemy.is_alive() and n < limit:
 		ctx.muzzle_position = enemy.global_position + Vector2(-6.0, 0.0)
 		shot.fire(ctx, manager.emitter)
 		manager.step(DT)

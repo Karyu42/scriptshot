@@ -1,7 +1,9 @@
 class_name SummonAdd
 extends RegularEnemy
-## One Summoner add (issue #81). A Swarmer body (radius 8, `kind` swarmer) with
-## the HP the affix gives it (1 at common: one BasicShot hit). It spawns on a
+## One Summoner add (issue #81). Common and rare: a Swarmer body (radius 8,
+## `kind` swarmer) with the HP the affix gives it (1: one BasicShot hit).
+## Legendary (Hydra): a Drifter body (radius 16, `kind` drifter, 90 px/s) with
+## 105 HP that chases like any Drifter (`holds_flank` false). A flank add spawns on a
 ## flank of the summoner-to-player line and drifts toward the player on that
 ## side, so it never parks in the player's firing lane: it aims at a point
 ## FLANK_STANDOFF px off the player on its own side, perpendicular to that
@@ -26,6 +28,9 @@ var summoner: Node2D
 ## +1 or -1: which side of the summoner-to-player line this add keeps.
 var side := 1.0
 var summon_hp := 1.0
+## True: drift to the flank point and hold off the lane. False: RegularEnemy
+## movement for its archetype (the Hydra's Drifter adds).
+var holds_flank := true
 
 
 func _apply_stats() -> void:
@@ -35,10 +40,15 @@ func _apply_stats() -> void:
 
 
 func _move_speed() -> float:
+	if not holds_flank:
+		return super._move_speed()
 	return DRIFT_SPEED
 
 
 func _chase(delta: float, to_player: Vector2) -> void:
+	if not holds_flank:
+		super._chase(delta, to_player)
+		return
 	if player == null:
 		return
 	var hold := FLANK_STANDOFF
