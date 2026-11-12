@@ -386,9 +386,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
-      - name: Unit-test the perf gate (check_perf.py, merge_bench.py)
+      - name: Unit-test the perf gate (check_perf.py, merge_bench.py, cold_import.sh)
         working-directory: tools/ci
-        run: python3 -m unittest test_check_perf test_merge_bench -v
+        run: python3 -m unittest test_check_perf test_merge_bench test_cold_import -v
       - name: Pick the same-run base (PR base main; push / dispatch with perf_parent_base = parent commit)
         if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.perf_parent_base)
         env:
@@ -460,32 +460,24 @@ jobs:
             # The base benchmark then fails to load native: check_perf.py drops it (raw bars, logged).
             echo "::warning::base native library build failed; the on_batch tier falls back to the raw bars"
           fi
-      - name: Warm the import cache (head and base; one retry on a crashed cold import)
+      - name: Cold import (head and base; ONE retry, only if Godot died on a signal)
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          # The first run of this job (PR #64, run 43199386255) lost the head's cold `godot --import` to
-          # "double free or corruption" after the reimport (the base tree imported fine; 4/4 local cold imports
-          # with the library pass). That is the import, not the measured sim, so a crashed cold import is retried
-          # once here and logged. run_benchmark.sh still imports (warm) and fails on import/script errors.
-          warm() {  # warm <dir> <name>
-            local attempt log
-            bash "$1/tools/ci/fetch_native_libs.sh" linux.x86_64 || return 1
-            for attempt in 1 2; do
-              log="$RUNNER_TEMP/import-$2-$attempt.log"
-              if "$GODOT" --headless --path "$1" --import >"$log" 2>&1; then
-                echo "$2: import ok (attempt $attempt)"
-                return 0
-              fi
-              echo "::warning::$2: cold godot --import crashed or failed (attempt $attempt); last lines:"
-              tail -n 5 "$log"
-            done
-            return 1
-          }
-          warm "$GITHUB_WORKSPACE" head || { echo "::error::head import failed twice"; exit 1; }
+          # tools/ci/cold_import.sh: exit >= 128 (signal, e.g. 134 SIGABRT) on the first attempt -> ::warning:: with the
+          # crash excerpt, the full log kept in reports/import-logs/ (perf-native-reports artifact), one more attempt.
+          # Any other non-zero exit is a real import error and fails at once. This is the ONLY retry in this job:
+          # the benchmarks, the unit tests and check_perf.py run once. Background: PR #64 run 43199386255 (head cold
+          # import: "double free or corruption (!prev)", exit 134); issue #7.
+          mkdir -p reports/import-logs
+          bash tools/ci/fetch_native_libs.sh linux.x86_64
+          tools/ci/cold_import.sh "$GITHUB_WORKSPACE" head reports/import-logs || exit 1
           if [ -n "${PERF_BASE_DIR:-}" ]; then
-            warm "$PERF_BASE_DIR" base || echo "::warning::base import failed twice; perf_ab.sh drops the base if its run fails"
+            if ! bash "$PERF_BASE_DIR/tools/ci/fetch_native_libs.sh" linux.x86_64 \
+              || ! tools/ci/cold_import.sh "$PERF_BASE_DIR" base reports/import-logs; then
+              echo "::warning::base cold import failed; perf_ab.sh drops the base when its run fails (raw bars only)"
+            fi
           fi
       - name: Run benchmarks (native on_batch + auto; base and head alternating on this runner)
         run: |
@@ -495,9 +487,9 @@ jobs:
           # The benchmark's own exit code is ignored: check_perf.py is the gate.
           set -o pipefail
           tiers="--tiers=onbatch,auto"
-          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0)
+          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
           if [ -n "${PERF_BASE_DIR:-}" ]; then
-            args=(--out=reports --rounds=4 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0)
+            args=(--out=reports --rounds=4 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
           fi
           ./tools/ci/perf_ab.sh "${args[@]}" 2>&1 | tee reports/bench-native.log
       - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 10.0 ms at 10k warn; vs same-run base)

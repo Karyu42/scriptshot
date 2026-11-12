@@ -2,7 +2,7 @@
 # Same-runner A/B bullet benchmark for the CI perf gate (tools/ci/check_perf.py).
 #
 #   tools/ci/perf_ab.sh --out=reports [--base=PATH_TO_BASE_CHECKOUT] [--rounds=2] [--tiers=plain,hooked]
-#                       [--onbatch-target-ms=16.6]
+#                       [--onbatch-target-ms=16.6] [--native-frames=N]
 #
 # Runs the tiers of ./tools/run_benchmark.sh named by --tiers (default plain,hooked, the "Bullet benchmark" job):
 #   plain    --bullets=2000,5000,10000                       -> bench.json         (GDScript; omitted --backend)
@@ -10,7 +10,8 @@
 #   onbatch  --backend=native --batch=1 --bullets=5000,10000 -> bench-onbatch.json (native lib must be built)
 #   auto     --backend=auto --bullets=5000,10000             -> bench-auto.json    (native where it loads)
 # --onbatch-target-ms is passed to the onbatch run's --target-ms (it only changes the benchmark's own printout and
-# exit code; check_perf.py is the gate). The native tiers need bin/linux.x86_64 in BOTH trees. With --base (a checkout of the PR base, e.g. a git worktree of main), the base
+# exit code; check_perf.py is the gate). --native-frames=N passes --frames=N to the onbatch and auto tiers only (default:
+# the benchmark's 600); plain and hooked always use the default. The native tiers need bin/linux.x86_64 in BOTH trees. With --base (a checkout of the PR base, e.g. a git worktree of main), the base
 # and the head are run alternately on this same runner, ABBA order per round so slow drift cancels out:
 #   round 1: base, head    round 2: head, base    round 3: base, head ...
 # Each tree runs its own tools/run_benchmark.sh and its own benchmark scene. Rounds are merged per count with
@@ -23,7 +24,7 @@
 # A benchmark's own non-zero exit (its built-in 16.6 ms floor check) is ignored here: check_perf.py is the gate.
 set -uo pipefail
 HEAD_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT="" BASE="" ROUNDS=2 TIERS="plain,hooked" ONBATCH_MS="16.6"
+OUT="" BASE="" ROUNDS=2 TIERS="plain,hooked" ONBATCH_MS="16.6" NATIVE_FRAMES=""
 for arg in "$@"; do
 	case "$arg" in
 		--out=*) OUT="${arg#--out=}" ;;
@@ -31,12 +32,15 @@ for arg in "$@"; do
 		--rounds=*) ROUNDS="${arg#--rounds=}" ;;
 		--tiers=*) TIERS="${arg#--tiers=}" ;;
 		--onbatch-target-ms=*) ONBATCH_MS="${arg#--onbatch-target-ms=}" ;;
+		--native-frames=*) NATIVE_FRAMES="${arg#--native-frames=}" ;;
 		*) echo "perf_ab.sh: unknown argument $arg" >&2; exit 2 ;;
 	esac
 done
 [ -n "$OUT" ] || { echo "perf_ab.sh: --out=DIR is required" >&2; exit 2; }
 [[ "$ROUNDS" =~ ^[1-9][0-9]*$ ]] || { echo "perf_ab.sh: --rounds must be a positive integer" >&2; exit 2; }
 [[ "$ONBATCH_MS" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "perf_ab.sh: --onbatch-target-ms must be a number" >&2; exit 2; }
+[ -z "$NATIVE_FRAMES" ] || [[ "$NATIVE_FRAMES" =~ ^[1-9][0-9]*$ ]] \
+	|| { echo "perf_ab.sh: --native-frames must be a positive integer" >&2; exit 2; }
 IFS=, read -r -a TIER_LIST <<<"$TIERS"
 [ "${#TIER_LIST[@]}" -gt 0 ] || { echo "perf_ab.sh: --tiers is empty" >&2; exit 2; }
 for t in "${TIER_LIST[@]}"; do
@@ -61,6 +65,10 @@ ONBATCH_ARGS=(--backend=native --batch=1 --bullets=5000,10000 --floor-bullets=50
 	--target-ms="$ONBATCH_MS")
 # shellcheck disable=SC2054
 AUTO_ARGS=(--backend=auto --bullets=5000,10000 --floor-bullets=5000 --target-bullets=10000 --target-ms=16.6)
+if [ -n "$NATIVE_FRAMES" ]; then
+	ONBATCH_ARGS+=(--frames="$NATIVE_FRAMES")
+	AUTO_ARGS+=(--frames="$NATIVE_FRAMES")
+fi
 base_ok=1
 
 # Output name of a tier: plain -> bench.json, the others -> bench-<tier>.json.
