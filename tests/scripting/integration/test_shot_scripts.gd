@@ -268,12 +268,22 @@ func test_the_watcher_follows_the_equipped_file_after_a_failed_load() -> void:
 	assert_eq(_swapped, ["default.lua:file"] as Array[String])
 	assert_eq(_scripts.weapon.title, "Spread")
 	assert_eq(notices.size(), 0)
+	# The successful reload of default.lua set selected = equipped. Re-break
+	# other.lua so the second half really has selected != equipped.
+	_scripts.save("other.lua", "return { name = 'Broken', on_fire = function(ctx)")
+	_scripts.flush_pending()
+	assert_eq(_scripts.selected, "other.lua")
+	assert_eq(_scripts.equipped, "default.lua")
+	assert_ne(_scripts.selected, _scripts.equipped)
+	assert_eq(_scripts.watched_file(), "default.lua")
+	_saved.clear()
+	_failed.clear()
 	# A disk change to the selected-but-not-equipped file is only a notice.
 	_write_outside("other.lua", "return { name = 'Other' }")
 	assert_false(_scripts.poll_files(2000), "selected is not the watch target")
 	_scripts.flush_pending()
 	assert_eq(notices, ["other.lua"] as Array[String])
-	assert_eq(_saved, ["default.lua:file"] as Array[String], "script_saved stays on the equipped file")
+	assert_eq(_saved.size(), 0, "script_saved stays on the equipped file")
 	assert_eq(_scripts.weapon.title, "Spread")
 	assert_eq(_failed.size(), 0)
 	assert_eq(_scripts.equipped, "default.lua")
@@ -297,3 +307,43 @@ func test_the_watcher_still_reloads_when_basic_shot_is_running() -> void:
 	assert_eq(_scripts.equipped, "default.lua")
 	assert_eq(_scripts.weapon.title, "Spiral")
 	assert_eq(_saved, ["default.lua:file"] as Array[String])
+
+
+func test_the_watcher_follows_selected_when_basic_shot_is_running() -> void:
+	# start() failed, so the player is on BasicShot (equipped == "") and
+	# ScriptLibrary.equipped_file() is still default.lua. Saving a broken
+	# other.lua updates selected but not the saved equipped file. The
+	# watcher must follow selected so a later fix of other.lua can load.
+	ScriptLibrary.seed_default()
+	ScriptLibrary.write("default.lua", "return { on_fire = function(ctx) spawn { angle = 1 2 } end }")
+	assert_false(_scripts.start())
+	assert_true(_player.weapon is BasicShot)
+	assert_eq(_scripts.equipped, "")
+	assert_eq(_scripts.selected, "default.lua")
+	assert_eq(ScriptLibrary.equipped_file(), "default.lua")
+	_scripts.save("other.lua", "return { name = 'Broken', on_fire = function(ctx)")
+	_scripts.flush_pending()
+	assert_eq(_scripts.selected, "other.lua")
+	assert_eq(_scripts.equipped, "")
+	assert_eq(ScriptLibrary.equipped_file(), "default.lua", "a failed load does not update the saved equipped file")
+	assert_eq(_scripts.watched_file(), "other.lua")
+	_saved.clear()
+	_failed.clear()
+	var notices: Array[String] = []
+	_scripts.unequipped_file_saved.connect(func(f: String) -> void: notices.append(f))
+	# A disk change to the last saved equipped file is only a notice.
+	_write_outside("default.lua", ScriptLibrary.starter("spread").source)
+	assert_false(_scripts.poll_files(1000), "the saved equipped file is not the watch target")
+	_scripts.flush_pending()
+	assert_eq(notices, ["default.lua"] as Array[String])
+	assert_eq(_saved.size(), 0)
+	assert_true(_player.weapon is BasicShot)
+	# A fix of the selected file still loads.
+	_write_outside("other.lua", "return { name = 'Other' }")
+	assert_true(_scripts.poll_files(2000), "the selected file is still watched")
+	_scripts.flush_pending()
+	assert_eq(_saved, ["other.lua:file"] as Array[String])
+	assert_eq(_player.weapon, _scripts.weapon)
+	assert_eq(_scripts.equipped, "other.lua")
+	assert_eq(_scripts.weapon.title, "Other")
+	assert_eq(_failed.size(), 0)

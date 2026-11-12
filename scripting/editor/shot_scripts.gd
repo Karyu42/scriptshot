@@ -168,10 +168,11 @@ func _process(_delta: float) -> void:
 
 
 ## The file hot reload and `script_saved` follow: the one the weapon runs,
-## or the last intended equipped file when that load failed and BasicShot
-## is running.
+## or `selected` when BasicShot is running (equipped is empty). start()
+## seeds `selected`; a later failed load of a different file updates it,
+## so a fix of that file can still load. Does not re-read editor.cfg.
 func watched_file() -> String:
-	return equipped if not equipped.is_empty() else ScriptLibrary.equipped_file()
+	return equipped if not equipped.is_empty() else selected
 
 
 ## Checks shots/ for outside changes now (the watcher calls this every
