@@ -145,7 +145,7 @@ Room D rare intensity (spawning §3.4): Bulwark arc **150°**, rotates toward th
 
 Hydra uses **common** affix numbers plus the signature (spawning §3.5 does not put legendary affixes on the rare-intensity column). Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every 6 s, 2 bodies, max 6 alive, and each summon is a **half-HP Drifter** (105 HP, 90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
 
-Phasing and Null-shot are in the slice's affix set and **not** on the first-run path:
+Phasing is on the first-run path: the Warden's phase-2 husks use it (§5). Null-shot is the one Q23 affix **not** on that path:
 
 | Affix | Common intensity (the one to ship) | Where the player meets it in this slice |
 |---|---|---|
@@ -211,7 +211,7 @@ The bar is on the body, not a screen widget. A 2 px arc at radius 78, boss hue, 
 When core HP hits 0:
 
 1. Husks despawn. 1.2 s: the core's ring scales to 0. Time scale stays 1 during this.
-2. `SenseBook.grant(&"enemies_in", 1)`. Save `sense_enemies_in = 1`. Level II is not granted.
+2. **Fragment.** `SenseBook.grant(&"enemies_in", 1)` **is** the Warden's Fragment: Level I of `enemies_in`. Save `sense_enemies_in = 1`. Level II is not granted. There is no separate inventory item. Playtest check: after this step the field is non-nil and the save int is 1.
 3. Shards +5 (common boss, spawning §7.2). A white mote, same as the elite stub.
 4. `RespawnPoints.register_arena_cleared(Vector2(9664, 0))`.
 5. `warden_dead = true`, `starter_consumed = true`.
