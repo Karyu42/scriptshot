@@ -187,6 +187,49 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 	return -1
 
 
+## Every target on `layer_mask` whose circle overlaps the circle `center`,
+## `query_radius` (touching counts), as their `ref`s (see add_circle()), in the
+## order they were added; each target once. Unlike query_circle(), which only
+## looks at the cell under `center`, this walks every cell the query circle
+## covers (clamped to the grid). Only targets bucketed this tick are seen: the
+## grid window is the range limit. Targets added without a ref are skipped.
+## Not on the bullet path; allocates the result. GDScript-only: the refs are
+## Objects (Hurtboxes), so never hand this result to a script (#50); build
+## plain data from it first.
+func query_radius(center: Vector2, query_radius_px: float, layer_mask: int) -> Array:
+	var out: Array = []
+	if target_count == 0 or not center.is_finite() or is_nan(query_radius_px) or query_radius_px < 0.0:
+		return out
+	var r := minf(query_radius_px, bounds.size.length())
+	var x0 := clampi(floori((center.x - r - _origin.x) * _inv_cell), 0, cols - 1)
+	var x1 := clampi(floori((center.x + r - _origin.x) * _inv_cell), 0, cols - 1)
+	var y0 := clampi(floori((center.y - r - _origin.y) * _inv_cell), 0, rows - 1)
+	var y1 := clampi(floori((center.y + r - _origin.y) * _inv_cell), 0, rows - 1)
+	var found := PackedByteArray()
+	found.resize(target_count)
+	var any := false
+	for cy in range(y0, y1 + 1):
+		for cx in range(x0, x1 + 1):
+			var cell := cy * cols + cx
+			if _occupied[cell] == 0:
+				continue
+			var e := _heads[cell]
+			while e != -1:
+				var t := _entry_target[e]
+				if found[t] == 0 and (target_layer[t] & layer_mask) != 0:
+					var rr := target_radius[t] + query_radius_px
+					if (target_pos[t] - center).length_squared() <= rr * rr:
+						found[t] = 1
+						any = true
+				e = _entry_next[e]
+	if not any:
+		return out
+	for t in target_count:
+		if found[t] != 0 and target_ref[t] != null:
+			out.append(target_ref[t])
+	return out
+
+
 ## Tests every alive bullet in `pool` against the targets. Fills hit_bullets /
 ## hit_targets / hit_t and returns the hit count. A bullet has at most one hit
 ## per call, except a piercing bullet (pierce = n), which can have up to n + 1,

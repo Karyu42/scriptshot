@@ -41,3 +41,8 @@ func _draw() -> void:
 	draw_circle(Vector2.ZERO, body_radius - 7.0, Color("d9e6f2"))
 	var frac := clampf(health / max_health, 0.0, 1.0)
 	draw_arc(Vector2.ZERO, body_radius - 3.0, -PI * 0.5, -PI * 0.5 + TAU * frac, 32, Color("14161c"), 3.0, true)
+
+
+## Sandbox body, not a slice enemy: no WorldQuery entry, no enemy_killed.
+func reports_as_enemy() -> bool:
+	return false
