@@ -40,7 +40,7 @@ Each layer is playable on its own. Do not start a layer before the previous laye
 Two cuts forced by `main` (no absorb arc on `Hurtbox`; Lua gameplay is not in `src/` yet):
 
 - L0 targets are plain `TrainingDummy` nodes. The shielded dummy is L4, placed in room A of the vertical slice (the origin three stay plain).
-- "Default/example script" means `BasicShot` (`src/player/basic_shot.gd`: 1 damage, interval 0.11 s) until `shots/default.lua` is wired. Both Herald affixes are solvable by that single bullet (sustained damage; Summoner keeps at most 2 adds, 1 HP each). Do not retune `BasicShot` or `Health`. Herald HP stays 75.
+- "Default/example script" means `BasicShot` (`src/player/basic_shot.gd`: 1 damage, interval 0.11 s) until `shots/default.lua` is wired. Both Herald affixes are solvable by that single bullet. Summoner columns: **common** 2 alive, 1 HP, every 6 s; **rare** 4 s, 2 per wave, max 8; **legendary** (Hydra) 6 s, 2 per wave, max 6, 105 HP Drifters. Do not retune `BasicShot` or `Health`. Herald HP stays 75.
 
 Combat already on `main`, do not retune: 5 HP, regen +1 / 3 s after 5 s quiet, 0.75 s hit i-frames, dash 160 px / 0.2 s i-frames / 1.5 s cooldown, reflected bullets are enemy-owned and deal 1, respawn keeps everything (`Main.respawn_delay` 1.5 s, `RespawnPoints`).
 
@@ -94,7 +94,7 @@ Spawn:
 | Stats | T0 common: HP `30 × 1.0 × 2.5 = 75`, speed `90 × 1.0`, wake 700 px, contact damage 1 |
 | Affix roll | `hash_u(seed, "herald", "eaff")` over the two-affix set, uniform (§5 tags) |
 | Splitting | On death, **2 halves**: 40% HP each (30), speed ×1.3 (117 px/s), no further splits, no Shard, no elite bit. Already awake |
-| Summoner | Every **6 s**, **2** summons, max **2** alive, **1 HP** each. They spawn at **±90°** and drift to hold about **20 px** off the player's flank, out of the firing lane. They drop nothing |
+| Summoner | Every **6 s**, **2** summons, max **2** alive, **1 HP** each. They spawn at **±90°**, spread along that flank so a wave does not stack, and drift to hold about **20 px** off the player's flank, out of the firing lane. They drop nothing |
 | Cue | Common elite: thin ring at **1.35×** body radius, outline **3 px**, ring `#F2F2F2`, body keeps Drifter hue, one orbiting **circle** glyph (Spawn). On wake: rising-fifth triangle sting, **0.4 s**, plus a **0.3 s** ring brighten (the visual equivalent) |
 | Once | One per save. Killing the Herald does not clear the flag (it is already set). Killing any other elite first also sets it (step 2) |
 
