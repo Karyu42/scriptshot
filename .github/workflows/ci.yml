@@ -131,6 +131,9 @@ jobs:
       # that second call is a no-op when the pin file is already present.
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
 
       # Mid-suite GUT stalls (#67) are not covered by the #41 exit-after-results
@@ -198,6 +201,9 @@ jobs:
           chmod +x godot
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
       - name: Unit-test the perf gate (tools/ci/check_perf.py)
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
@@ -819,6 +825,9 @@ jobs:
       # the gdextension file, not by a second download.
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
       - name: Native bullet libraries built and tested in this run
         env:
