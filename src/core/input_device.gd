@@ -15,6 +15,8 @@ const AXIS_THRESHOLD := 0.5
 const MOUSE_MOTION_THRESHOLD := 3.0
 
 var current: Kind = Kind.KEYBOARD_MOUSE
+## True while a menu that needs the OS cursor (the script editor) is open.
+var ui_cursor := false
 
 
 func _ready() -> void:
@@ -57,6 +59,12 @@ static func classify_event(event: InputEvent) -> int:
 	return -1
 
 
+## Shows the OS cursor for a menu (the script editor) and hides it again.
+func set_ui_cursor(on: bool) -> void:
+	ui_cursor = on
+	_apply_cursor_mode()
+
+
 func _apply_cursor_mode() -> void:
-	# The game draws its own reticle for both devices.
-	Input.mouse_mode = Input.MOUSE_MODE_HIDDEN
+	# The game draws its own reticle for both devices; menus get the OS cursor.
+	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if ui_cursor else Input.MOUSE_MODE_HIDDEN
