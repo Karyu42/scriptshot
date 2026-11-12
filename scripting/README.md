@@ -67,8 +67,50 @@ return {
 }
 ```
 
-`b.id`, `b.x` and `b.y` are a snapshot taken when the callback starts. `why` is
-`lifetime`, `bounds`, `hit`, `manual`, `cleared`, `wall` or `invalid`.
+`b.id`, `b.x`, `b.y`, `b.vx` and `b.vy` are a snapshot taken when the callback
+starts. `why` is `lifetime`, `bounds`, `hit`, `manual`, `cleared`, `wall` or
+`invalid`.
+
+## The player's weapon (`LuaShot`) and `on_fire`
+
+`LuaShot` (a `ShotPattern`) is the player's scripted weapon. The weapon table's
+`cooldown`, `speed`, `lifetime`, `damage` and `radius` are the defaults (read
+with `rawget`, clamped). Its bullet callbacks ride on every shot through a
+`LuaBulletBehavior`.
+
+`on_fire(ctx)` runs once per trigger pull under the same budget as a hook.
+`spawn { angle, speed, damage, lifetime, radius, spin, accel, pos = {x, y} }`
+records a shot; unset fields fall back to the weapon's. Records are committed
+after `on_fire` returns cleanly: an error or a stop spawns nothing that pull.
+At most `ScriptHost.FIRE_SPAWN_CAP` (256) per call; the rest return `false`
+and log one warning. `spin` maps to `turn_rate` and `accel` to
+`acceleration`. `spawn` outside `on_fire`, and per-spawn callbacks
+(`spawn { on_hit = ... }`), are not in this version: weapon-level callbacks
+apply to every spawned shot. `ctx` has `aim`, `aim_dir`, `pos`/`x`/`y`,
+`time`, `n`/`shot_count`, `pressed`, `just_pressed`, `just_released`,
+`held_time` and `dt`. `TAU`, `PI` and `rad()` are globals, and `sense` is an
+empty table until a Sense is granted (`SenseBook`).
+
+For the player's weapon a bullet callback that errors is skipped until the
+next successful load, and three guard stops suspend the script (the weapon
+falls back to its plain shot) until the next load. `on_fire` errors are
+counted and rate-limited but it keeps being called. Raw `LuaBulletBehavior`s
+keep the old behaviour (`skip_failed_callbacks` is off).
+
+Hot reload (`LuaShot.apply`) runs at a frame boundary. A version with live
+hooked shots is kept as its own generation (at most `MAX_GENERATIONS`, 3,
+since Lua states are pinned), so shots in flight finish on the chunk they were
+fired with. When all three are busy the current one reloads in place; the
+callbacks are matched by name, so that is safe. TODO: once GE's
+`hooked_count_for_owner` / `strip_hooks_for_owner` land, use them for the
+"all busy" case instead.
+
+`scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
+folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and
+the `script_saved` / `weapon_swapped` / `load_failed` signals lesson checkers
+use), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
+error lines) and `SenseBook` (the Sense-unlock hook point). The panel is
+`src/ui/script_editor_panel.gd`. Player docs: `docs/scripting/editor.md`.
 
 ## Hook cost
 

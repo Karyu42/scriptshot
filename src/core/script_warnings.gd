@@ -24,6 +24,10 @@ static var _window_start: Dictionary[String, int] = {}
 static var _window_printed: Dictionary[String, int] = {}
 static var _window_suppressed: Dictionary[String, int] = {}
 
+## Bumped on every report (printed or suppressed). The in-game script editor
+## polls it to notice new warnings without a callback on this path.
+static var revision := 0
+
 ## Tests set this (milliseconds, >= 0) to control the clock; -1 = real time.
 static var clock_override_msec := -1
 
@@ -49,6 +53,7 @@ const _LAZY_CLAMP := 3
 ## and (via keep_*) the last message still move.
 static func begin(key: String) -> bool:
 	var now := _now_msec()
+	revision += 1
 	_counts[key] = _counts.get(key, 0) + 1
 	var carried := 0
 	if not _window_start.has(key) or now - _window_start[key] >= WINDOW_MSEC:
@@ -165,6 +170,11 @@ static func _render_lazy(key: String, kind: int) -> String:
 	return clamp_message(where_c, field, asked, kept, limit_name)
 
 
+## Every key reported so far, in first-report order.
+static func keys() -> PackedStringArray:
+	return PackedStringArray(_counts.keys())
+
+
 ## How many times `key` was reported (printed or suppressed).
 static func count(key: String) -> int:
 	return _counts.get(key, 0)
@@ -188,6 +198,7 @@ static func printed_count(key: String) -> int:
 
 
 static func reset() -> void:
+	revision = 0
 	_counts.clear()
 	_last.clear()
 	_printed.clear()
