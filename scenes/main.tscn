@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=16 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/open_ground.gd" id="2_ground"]
@@ -14,6 +14,7 @@
 [ext_resource type="Script" path="res://src/world/herald_director.gd" id="12_director"]
 [ext_resource type="PackedScene" path="res://scenes/elite_enemy.tscn" id="13_elite"]
 [ext_resource type="Script" path="res://src/fx/rarity_preview.gd" id="14_preview"]
+[ext_resource type="Script" path="res://src/world/slice_layout.gd" id="15_slice"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -21,6 +22,10 @@ script = ExtResource("1_main")
 [node name="OpenGround" type="Node2D" parent="."]
 z_index = -100
 script = ExtResource("2_ground")
+
+[node name="SliceLayout" type="Node2D" parent="."]
+z_index = -90
+script = ExtResource("15_slice")
 
 [node name="Dummies" type="Node2D" parent="."]
 
@@ -46,6 +51,7 @@ backend_preference = "auto"
 
 [node name="StressTest" type="Node" parent="."]
 script = ExtResource("6_stress")
+collide_world = false
 
 [node name="AimReticle" type="Node2D" parent="."]
 script = ExtResource("8_ret")

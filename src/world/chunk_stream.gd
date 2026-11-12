@@ -30,6 +30,12 @@ var seed := 0
 var player: Node2D
 ## When >= 0, this unix time is used instead of the system clock. Tests pin it.
 var pinned_time := -1.0
+## Encounters whose anchor lies inside this rect are not spawned and not
+## tracked (the vertical-slice footprint; Main sets it to SliceLayout.FOOTPRINT
+## when the scene has the ribbon). Rect2.has_point: left/top edges count as
+## inside. Empty (the default) drops nothing. Other encounters of the same
+## chunk keep their index, so chunk bits and absent records are unchanged.
+var footprint := Rect2()
 
 class _EncounterLive:
 	extends RefCounted
@@ -73,6 +79,11 @@ func update_streaming() -> void:
 	_center = center
 	_has_center = true
 	_apply_ring(center)
+
+
+## True when an encounter anchored at `anchor` is dropped by `footprint`.
+func drops_anchor(anchor: Vector2) -> bool:
+	return footprint.has_area() and footprint.has_point(anchor)
 
 
 func loaded_coords() -> Array[Vector2i]:
@@ -189,6 +200,8 @@ func _load(c: Vector2i) -> void:
 	live.root = root
 	var now := _now()
 	for spec: EncounterSpec in specs:
+		if drops_anchor(spec.anchor):
+			continue
 		var enc_root := Node2D.new()
 		enc_root.name = "Encounter%d" % spec.index
 		root.add_child(enc_root)
