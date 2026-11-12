@@ -245,6 +245,15 @@ All optional. Unspecified fields take engine defaults.
 | `on_batch(v, dt)` | once per behaviour per tick, with every live bullet of that script; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
 
+**Callback results [main].** The engine reads only a callback's first return value (for example `can_hit`'s
+boolean, or the weapon table a script chunk returns). Any further return values are ignored, and so are values
+the host has no use for. So `can_hit` returning `false, "why"` vetoes the hit (before, the extra value let the
+hit through). When a callback raises an error value that is a table or userdata, the error is reported as
+`error value (table): 0x…` or `error value (userdata): 0x…` (the address varies). The script's own `pcall`,
+`xpcall`, `coroutine.resume` and `coroutine.close` still get back the value that was raised; a `__close`
+handler sees the reported (wrapped) value instead. To-be-closed variables in a script coroutine that errors are
+now closed, as in stock Lua 5.4.
+
 #### Which engine hooks a script gets: the hook mask (adapter contract)
 
 The engine calls only the event hooks a behaviour *has* (`on_spawn`, `on_hit`, `can_hit`, `on_despawn`;

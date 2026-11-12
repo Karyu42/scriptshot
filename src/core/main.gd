@@ -18,6 +18,12 @@ extends Node2D
 ## Set a different path before the node enters the tree to use another file.
 @export var save_path := ""
 
+## The player's scripted weapon (LuaShot), the shots/ files it comes from
+## (lesson checkers listen to its script_saved / weapon_swapped signals), and
+## the in-game editor.
+var weapon: LuaShot
+var shot_scripts: ShotScripts
+var editor: ScriptEditorPanel
 var _respawn_timer := 0.0
 var _herald: HeraldArm
 var _herald_director: HeraldDirector
@@ -28,6 +34,7 @@ var _slice: SliceLayout
 
 func _ready() -> void:
 	_player.emitter = _bullets.emitter
+	_bind_script_weapon()
 	_stress.emitter = _bullets.emitter
 	_camera.target = _player
 	_reticle.player = _player
@@ -41,8 +48,25 @@ func _ready() -> void:
 		for mirror: Mirror in mirrors.get_children():
 			mirror.target = _player
 	_bind_open_world()
+	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
+	GameEvents.run_started.emit()
+
+
+## Equips shots/<saved file> (shots/default.lua on a fresh save) through
+## ShotScripts, and connects the editor. A missing or broken file leaves the
+## player on BasicShot (one printed line) until a good save.
+func _bind_script_weapon() -> void:
+	shot_scripts = ShotScripts.new()
+	add_child(shot_scripts)
+	shot_scripts.setup(_bullets, _player)
+	shot_scripts.start()
+	weapon = shot_scripts.weapon
+	editor = get_node_or_null("ScriptEditor") as ScriptEditorPanel
+	if editor != null:
+		editor.shards_source = func() -> int: return _save.shards if _save != null else 0
+		editor.bind(shot_scripts)
 
 
 func _bind_open_world() -> void:
@@ -121,6 +145,7 @@ func _on_natural_shard() -> void:
 
 
 func _exit_tree() -> void:
+	WorldQuery.unbind_bullets(_bullets)
 	_on_absent_changed()
 
 
@@ -155,7 +180,10 @@ func _update_hud() -> void:
 	if _save != null:
 		shards = _save.shards
 	var chunk := WorldGen.chunk_of(_player.global_position)
-	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]\nzone %s   herald %s   shards %d   chunk %d,%d  tier %d" % [
+	var script_name := weapon.title if shot_scripts != null and shot_scripts.has_script() else "basic"
+	var script_problems := editor.runtime_problem_total() if editor != null else 0
+	var script_note := "   %d script problem%s" % [script_problems, "" if script_problems == 1 else "s"] if script_problems > 0 else ""
+	_hud.text = "%d fps   bullets %d / %d (player %d, enemy %d, dropped %d)   sim %.2f ms   hp %.0f / %.0f   dash %s\ninput: %s   stress test [F1 / Back]: %s, target %d [F2 / Y]   script [E / X]: %s%s\nzone %s   herald %s   shards %d   chunk %d,%d  tier %d" % [
 		Engine.get_frames_per_second(),
 		_bullets.alive_count(),
 		_bullets.pool.logical_cap,
@@ -169,6 +197,8 @@ func _update_hud() -> void:
 		device,
 		stress,
 		_stress.get_target_count(),
+		script_name,
+		script_note,
 		zone,
 		herald,
 		shards,

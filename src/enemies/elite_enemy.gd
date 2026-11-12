@@ -22,6 +22,10 @@ var affix := StringName()
 var is_herald := false
 var is_half := false
 var grants_shard := false
+## EnemyKinds.RARITY_*. From the EncounterSpec for a natural elite (ChunkStream
+## sets it before the body enters the tree); the Herald is common. Halves report
+## RARITY_NONE: they are not elites.
+var rarity := EnemyKinds.RARITY_COMMON
 var cue: EliteCue
 var sting: EliteSting
 
@@ -75,6 +79,10 @@ func configure_elite(
 	)
 
 
+func enemy_rarity() -> int:
+	return EnemyKinds.RARITY_NONE if is_half else rarity
+
+
 func summon_alive() -> int:
 	var kept: Array[RegularEnemy] = []
 	for body: RegularEnemy in _summons:
@@ -102,6 +110,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	super._exit_tree()
 	if cue != null:
 		cue.release()
 		cue = null

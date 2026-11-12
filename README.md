@@ -110,7 +110,7 @@ The committed setting is `auto`, which means native when the library loads. `Bul
 stays ignored) with the presets `Windows Desktop`, `macOS`, `Linux`, `Web` and `Android`, all
 exporting into the git-ignored `build/` directory, e.g.
 `godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64`.
-macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses the no-threads template; Android is arm64 only and CI builds a debug-signed APK. See `docs/qa/release-builds.md`.
+macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses the no-threads template; Android is arm64 only and a debug-signed APK. On every green push to `main`, CI uploads unsigned Linux, Windows and web artifacts (`scriptshot-linux-<sha7>` and the windows/web equivalents, 90 days). The full matrix, including macOS and Android, is still a manual workflow dispatch. See `docs/qa/release-builds.md`.
 
 ## Android emulator smoke (manual CI)
 
