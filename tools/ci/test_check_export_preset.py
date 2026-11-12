@@ -173,7 +173,7 @@ class CommittedPresetsTest(unittest.TestCase):
         root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
         path = os.path.join(root, "export_presets.cfg")
         self.assertTrue(os.path.isfile(path), path)
-        for name in ("Windows Desktop", "macOS", "Linux", "Web", "Android", "Web (smoke)"):
+        for name in ("Windows Desktop", "macOS", "Linux", "Web", "Android", "Web (smoke)", "Web (playtest)"):
             out = io.StringIO()
             with redirect_stdout(out):
                 rc = c.main(["x", path, name])
