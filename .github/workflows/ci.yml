@@ -128,7 +128,13 @@ jobs:
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
 
+      # Mid-suite GUT stalls (#67) are not covered by the #41 exit-after-results
+      # guard in tools/run_tests.sh. A step timeout fails the step with
+      # "The action has timed out" instead of sitting until the job timeout.
+      # 6 minutes is just over 4x the slowest successful Linux GUT step in
+      # recent CI (77s).
       - name: Run GUT tests (headless)
+        timeout-minutes: 6
         run: |
           mkdir -p reports
           # run_tests.sh = `godot --headless --import` + `-s res://addons/gut/gut_cmdln.gd -gexit`.
@@ -751,7 +757,10 @@ jobs:
           unzip -q "$zip" && rm "$zip"
           mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
           chmod +x godot
+      # Same mid-suite stall as Import + GUT (#67). 6 minutes is just over 4x
+      # the slowest successful Linux native GUT step in recent CI (77s).
       - name: Run GUT tests with the native library (headless)
+        timeout-minutes: 6
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -950,7 +959,11 @@ jobs:
       - name: run_tests.sh guard cases (fake godot, Git Bash)
         run: |
           RUN_TESTS_BASH="$(cygpath -w "$(command -v bash)")" python -m unittest tools/ci/test_run_tests_guard.py -v
+      # Same mid-suite stall (#67) can sit until the 50-minute job timeout.
+      # 8 minutes is just over 4x the slowest successful Windows GUT step in
+      # recent CI (105s), with a minute of runner-variance headroom.
       - name: Run GUT tests with the native library (headless, Git Bash)
+        timeout-minutes: 8
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
@@ -1057,7 +1070,10 @@ jobs:
           "$GODOT" --headless --version
       - name: run_tests.sh guard cases (fake godot, /bin/bash 3.2)
         run: RUN_TESTS_BASH=/bin/bash python3 -m unittest tools/ci/test_run_tests_guard.py -v
+      # Same mid-suite stall (#67). 7 minutes is just over 4x the slowest
+      # successful macOS GUT step in recent CI (94s).
       - name: Run GUT tests with the native library (headless, /bin/bash 3.2)
+        timeout-minutes: 7
         shell: /bin/bash -o pipefail {0}
         env:
           GITHUB_TOKEN: ${{ github.token }}
