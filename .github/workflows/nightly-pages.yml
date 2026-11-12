@@ -1,0 +1,178 @@
+# Rolling "nightly" pre-release (Linux/Windows/web zips) and GitHub Pages for the web build.
+# Triggered only after a successful CI run on main (a push, not a pull request or a dispatch).
+#
+# The release is always a pre-release, never "Latest". macOS is not included.
+# Job-level permissions only: contents: write on the release job; pages: write and
+# id-token: write on the Pages job. This workflow is the only publisher.
+name: Nightly + Pages
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+
+# Restrictive default. Each job requests only what it needs.
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: nightly-pages
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: Collect and verify shipping builds
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      sha: ${{ steps.ids.outputs.sha }}
+      sha7: ${{ steps.ids.outputs.sha7 }}
+    steps:
+      - name: Artifact identity
+        id: ids
+        env:
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          echo "sha7=${HEAD_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: scriptshot-linux-*
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: scriptshot-windows-*
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: scriptshot-web-*
+          path: dist
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ github.token }}
+      - name: Verify shipping artifacts and pack zips
+        env:
+          SHA7: ${{ steps.ids.outputs.sha7 }}
+        run: |
+          set -euo pipefail
+          # download-artifact writes each artifact to dist/<artifact-name>/.
+          linux="$(find dist -maxdepth 1 -type d -name 'scriptshot-linux-*' | head -1)"
+          windows="$(find dist -maxdepth 1 -type d -name 'scriptshot-windows-*' | head -1)"
+          web="$(find dist -maxdepth 1 -type d -name 'scriptshot-web-*' | head -1)"
+          test -n "$linux" && test -n "$windows" && test -n "$web" \
+            || { echo "::error::expected Linux, Windows and web artifacts"; ls -laR dist; exit 1; }
+          python3 tools/ci/check_nightly_artifacts.py --linux "$linux" --windows "$windows" --web "$web"
+          mkdir -p zips web-pages pack/linux pack/windows
+          cp -a "$linux"/. pack/linux/
+          cp -a "$windows"/. pack/windows/
+          chmod +x pack/linux/Scriptshot.x86_64
+          (cd pack && zip -r -q "../zips/scriptshot-linux-${SHA7}.zip" linux)
+          (cd pack && zip -r -q "../zips/scriptshot-windows-${SHA7}.zip" windows)
+          (cd "$web" && zip -r -q "$PWD/../../zips/scriptshot-web-${SHA7}.zip" .)
+          cp -a "$web"/. web-pages/
+          ls -lh zips web-pages
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-zips
+          path: zips/
+          if-no-files-found: error
+          retention-days: 5
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: nightly-web-pages
+          path: web-pages/
+          if-no-files-found: error
+          retention-days: 5
+
+  release:
+    name: Nightly pre-release
+    needs: collect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-zips
+          path: zips
+      - name: Replace rolling nightly pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ needs.collect.outputs.sha }}
+          SHA7: ${{ needs.collect.outputs.sha7 }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          # Always a pre-release, never "Latest". --latest=false is required:
+          # gh otherwise may promote a new tag to Latest by date.
+          test -s "zips/scriptshot-linux-${SHA7}.zip"
+          test -s "zips/scriptshot-windows-${SHA7}.zip"
+          test -s "zips/scriptshot-web-${SHA7}.zip"
+          gh release delete nightly --repo "${GITHUB_REPOSITORY}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create nightly \
+            --repo "${GITHUB_REPOSITORY}" \
+            --prerelease \
+            --latest=false \
+            --target "$SHA" \
+            --title "Unsigned nightly ${SHA7}" \
+            --notes "$(printf '%s\n' \
+              "This is an unsigned nightly pre-release at \`${SHA}\`." \
+              "" \
+              "It is a pre-release, not Latest. macOS is not included." \
+              "" \
+              "Linux, Windows and Web zips are attached. A playable web build is also on GitHub Pages: https://karyu42.github.io/scriptshot/" \
+              "" \
+              "Source CI run: ${RUN_URL}" \
+              "" \
+              "Windows: SmartScreen will warn on first launch (More info > Run anyway)." \
+              "Linux: \`chmod +x Scriptshot.x86_64\` after unzip, then run it." \
+            )" \
+            "zips/scriptshot-linux-${SHA7}.zip" \
+            "zips/scriptshot-windows-${SHA7}.zip" \
+            "zips/scriptshot-web-${SHA7}.zip"
+          # Belt and braces: never leave this tag as a full release or Latest.
+          gh release edit nightly --repo "${GITHUB_REPOSITORY}" --prerelease --latest=false
+
+  pages:
+    name: GitHub Pages web build
+    needs: collect
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: nightly-web-pages
+          path: web-pages
+      - name: Confirm shipping web tree
+        run: |
+          set -euo pipefail
+          test -s web-pages/index.html && test -s web-pages/index.pck
+          test ! -e web-pages/libscriptshot_native.web.template_release.wasm32.nothreads.wasm
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: web-pages
+      - id: pages
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

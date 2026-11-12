@@ -1,22 +1,40 @@
 # Release builds
 
 Release targets: **Windows, macOS, Linux, Web and Android (arm64)**. iOS is not a release target.
-Everything here is built by the manual `export` job of `.github/workflows/ci.yml`
-(Actions > CI > Run workflow > tick `run_export`) from the presets in `export_presets.cfg`.
-Nothing is code-signed with a paid identity: macOS is ad-hoc signed only (no Apple developer account),
-Windows is unsigned, Android is a debug-signed APK.
+Builds come from the `export` job of `.github/workflows/ci.yml` and the presets in `export_presets.cfg`.
+Nothing is code-signed with a paid identity: **Windows and Linux are unsigned**, macOS is ad-hoc signed only
+(no Apple developer account, not notarized), and Android is a debug-signed APK.
+
+**Where to download playable Linux, Windows and web builds:** every successful push to `main` (Import + GUT
+must have passed) uploads three Actions artifacts, kept for 90 days:
+
+* `scriptshot-linux-<sha7>` — `Scriptshot.x86_64` plus the native bullet `.so` and the Lua GDExtension `.so`
+* `scriptshot-windows-<sha7>` — `Scriptshot.exe` plus the native bullet DLL and the Lua GDExtension DLL
+* `scriptshot-web-<sha7>` — the web tree (`index.html`, wasm, pck, Lua side module)
+
+Open the CI run for that commit (Actions → CI → the push to `main`, or the checks on the commit) and download
+the artifact. The first 7 characters of the commit SHA are in the name, for example `scriptshot-linux-08f3c94`.
+Those 90-day Actions artifacts stay available. After this workflow is on `main`, each successful CI push to `main` also replaces a rolling **pre-release** tagged `nightly` (unsigned Linux, Windows and web zips; never Latest; macOS is not included) and deploys the web tree to GitHub Pages (see section 10). Windows builds are unsigned,
+so SmartScreen will warn on first launch (**More info > Run anyway**). Linux: `chmod +x Scriptshot.x86_64`
+(artifact download strips the executable bit) then run it.
+
+The full matrix, including macOS and Android, is still manual: Actions → CI → Run workflow → tick `run_export`.
+A mid-suite GUT hang (issue #67) fails the test job and skips the export; rerun that workflow rather than
+expecting a build from a red commit.
 
 ## 1. What the job produces
 
-All five exports run on `ubuntu-24.04` with the pinned headless Godot 4.7.2 and its export templates
+Exports run on `ubuntu-24.04` with the pinned headless Godot 4.7.2 and its export templates
 (checksum-verified). The template cache stores only the files the matrix needs, not the full tpz
-(see below). Each artifact is uploaded as `scriptshot-<preset>`.
+(see below). Each artifact is the ready-to-run folder (`build/<platform>/`) and is named
+`scriptshot-<slug>-<sha7>` (`linux`, `windows`, `web`, and on a manual full run also `macos` and `android`),
+retained 90 days. Pull requests do not run this job.
 
 | Preset | Output (git-ignored `build/`) | Contents | Signing |
 |---|---|---|---|
-| Windows Desktop | `build/windows/Scriptshot.exe` | single x86_64 exe (`embed_pck=true`) plus a console wrapper if the preset enables it | none (SmartScreen warns on first run) |
-| macOS | `build/macos/Scriptshot.zip` | `Scriptshot.app`, universal (x86_64 + arm64) | ad-hoc (`codesign/codesign=1`), not notarized |
-| Linux | `build/linux/Scriptshot.x86_64` | single x86_64 executable (`embed_pck=true`) | none |
+| Windows Desktop | `build/windows/Scriptshot.exe` | x86_64 exe (`embed_pck=true`, no separate `.pck`) plus `libscriptshot_native.windows.template_release.x86_64.dll` and `libluagdextension.windows.template_release.x86_64.dll` | none (SmartScreen warns on first run) |
+| macOS | `build/macos/Scriptshot.zip` | `Scriptshot.app`, universal (x86_64 + arm64), including the native dylib | ad-hoc (`codesign/codesign=1`), not notarized |
+| Linux | `build/linux/Scriptshot.x86_64` | x86_64 executable (`embed_pck=true`, no separate `.pck`) plus `libscriptshot_native.linux.template_release.x86_64.so` and `libluagdextension.linux.template_release.x86_64.so` | none |
 | Web | `build/web/index.html` + `index.js`, `index.wasm` (dlink main module), `index.side.wasm` (engine side module), `libluagdextension.web.template_release.wasm32.nothreads.wasm` (Lua), `index.pck`, audio worklets, icons. No native bullet wasm (see section 4) | static site | n/a |
 | Android | `build/android/Scriptshot-debug.apk` (+ `.idsig`) | arm64-v8a only, minSdk 24, targetSdk 36 | debug keystore generated in CI |
 
@@ -30,7 +48,7 @@ with the message "ETC2/ASTC texture compression is required".
 The release Android artifact above is **arm64-v8a only** (phones). GitHub-hosted runners are x86_64, so CI emulator smoke uses the **Lua spike** dual-ABI APK instead — see `.github/workflows/android-emulator-smoke.yml` and `docs/scripting/testing.md` §2.4. Dispatch it from Actions; it does not run on PRs.
 
 `tools/ci/check_export_preset.py` runs in the `test` job on every pull request and push, once per preset
-(Windows Desktop, macOS, Linux, Web, Android, Web (smoke)), and again before each manual export. It fails on: any password
+(Windows Desktop, macOS, Linux, Web, Android, Web (smoke)), and again before each export. It fails on: any password
 in the committed `export_presets.cfg`, committed Android keystore paths, an Android preset that is not arm64-only
 or uses Gradle, a macOS preset whose `codesign/codesign` is not `1` or that enables notarization, and an iOS preset.
 `codesign/codesign=3` (Xcode codesign) is rejected: that mode exists only on a macOS editor host, and CI exports
@@ -250,3 +268,27 @@ Checked on this box with Godot 4.7.2 and the official templates, a clean copy of
 succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm (before #40; the dlink export is in section 4), Android debug APK 28 MB with arm64-v8a libs only, macOS zip 61 MB
 containing a code-signed universal `.app`), with the debug keystore and editor settings generated exactly as the job does. Not verified locally:
 Android with build-tools 36.1.0 (the box has 35.0.1), the first-launch steps on real macOS, running the APK on a device, and the `native-libs` job.
+
+## 10. Nightly pre-release and GitHub Pages
+
+After each successful CI **push** to `main` (Import + GUT must have passed, so the export
+job has run), `.github/workflows/nightly-pages.yml` replaces the rolling pre-release
+tagged `nightly` with unsigned Linux, Windows and web zips, and deploys the same web
+tree to GitHub Pages.
+
+* Release: https://github.com/Karyu42/scriptshot/releases/tag/nightly
+  Title `Unsigned nightly <sha7>`, body “This is an unsigned nightly pre-release at `<sha>`.”
+  Always a pre-release, never Latest. macOS is not included.
+* Pages: https://karyu42.github.io/scriptshot/
+
+The workflow verifies the Linux, Windows and web artifacts with
+`tools/ci/check_nightly_artifacts.py` before publishing: ready-to-run binaries and
+libs are present, and `src/qa/*` (the web smoke scene and the playtest autoplay)
+is not packed. A pull request or a `workflow_dispatch` of CI does not publish.
+GitHub only runs this `workflow_run` workflow from the default branch, so a
+feature branch cannot publish.
+
+Permissions are job-level only: `contents: write` on the release job; `pages: write`
+and `id-token: write` on the Pages job. The repository Actions default can stay
+“Read repository contents.” Settings → Pages → Source must be GitHub Actions.
+
