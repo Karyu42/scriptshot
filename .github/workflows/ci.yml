@@ -498,9 +498,9 @@ jobs:
           # The benchmark's own exit code is ignored: check_perf.py is the gate.
           set -o pipefail
           tiers="--tiers=onbatch,auto"
-          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
+          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
           if [ -n "${PERF_BASE_DIR:-}" ]; then
-            args=(--out=reports --rounds=6 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
+            args=(--out=reports --rounds=4 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
           fi
           "$PERF_HEAD_DIR/tools/ci/perf_ab.sh" "${args[@]}" 2>&1 | tee reports/bench-native.log
       - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 10.0 ms at 10k warn; vs same-run base)
