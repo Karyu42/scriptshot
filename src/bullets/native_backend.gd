@@ -440,8 +440,9 @@ func gather_batch(behavior_id: int) -> Dictionary:
 	return d
 
 
-## One dictionary for the whole commit: killed, vel_nonfinite, pa_nonfinite,
-## pb_nonfinite, clamp_vx, clamp_vy. Warning totals, not per-row calls.
+## One dictionary for the whole commit, not a sim call per row. Totals:
+## killed, vel_nonfinite, pa_nonfinite, pb_nonfinite, plus clamp_vx/clamp_vy.
+## warn_row/warn_key/warn_what/warn_vx/warn_vy are those events in row order.
 func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> Dictionary:
 	var d: Dictionary = sim.apply_batch(ids, vx, vy, pa, pb)
 	return d

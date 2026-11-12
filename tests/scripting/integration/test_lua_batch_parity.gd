@@ -212,6 +212,93 @@ func _reload(preference: String) -> _Run:
 	return result
 
 
+## pa and pb share BulletPool.hook_write. More than LIMIT of that key, mixed
+## with a non-finite velocity and a speed clamp, so the printed subset and the
+## last message follow row order. Native stays pending without the library.
+func test_native_batch_parity_mixed_kill_warning_order() -> void:
+	if not _need_native():
+		return
+	var code := """
+		return {
+			on_batch = function(v, dt)
+				local kind = { "pa", "pb", "pa", "pb", "vx", "pa", "clamp", "pb", "pa", "pa" }
+				for i = 0, v.n - 1 do
+					local k = kind[i + 1]
+					if k == "pa" then
+						v.pa[i] = 0/0
+					elseif k == "pb" then
+						v.pb[i] = 0/0
+					elseif k == "vx" then
+						v.vx[i] = 0/0
+					else
+						v.vx[i] = 1e6
+						v.vy[i] = -2e6
+					end
+				end
+			end
+		}
+	""".dedent()
+	var before := _tracked_warning_lines().size()
+	var gd := _run("gdscript", code, 10, 1)
+	var gd_printed := _warning_slice(before)
+	var gd_last := _last_warnings()
+	var gd_hook := ScriptWarnings.count("BulletPool.hook_write")
+	var gd_hook_printed := ScriptWarnings.printed_count("BulletPool.hook_write")
+	var mid := _tracked_warning_lines().size()
+	var nat := _run("native", code, 10, 1)
+	var nat_printed := _warning_slice(mid)
+	assert_gt(gd_hook, ScriptWarnings.LIMIT, "past the print cap, the subset depends on order")
+	assert_eq(gd_hook_printed, ScriptWarnings.LIMIT)
+	assert_eq(nat.alive, gd.alive, "mixed kills")
+	assert_eq(nat.invalid, gd.invalid, "mixed kills")
+	assert_eq(nat.warn, gd.warn, "mixed kill counts")
+	assert_eq(ScriptWarnings.count("BulletPool.hook_write"), gd_hook)
+	assert_eq(ScriptWarnings.printed_count("BulletPool.hook_write"), gd_hook_printed)
+	assert_eq(_last_warnings(), gd_last, "last message per key, including warnings past the cap")
+	assert_eq(nat_printed, gd_printed, "printed warning order and subset")
+	assert_string_contains(gd_printed[0], "param_a")
+	assert_string_contains(gd_printed[1], "param_b")
+	var saw_pa := false
+	var saw_pb := false
+	var hook_lines := 0
+	for line in gd_printed:
+		if not line.begins_with("BulletPool.hook_write:"):
+			continue
+		hook_lines += 1
+		if "param_a" in line:
+			saw_pa = true
+		if "param_b" in line:
+			saw_pb = true
+	assert_eq(hook_lines, ScriptWarnings.LIMIT, "only the first LIMIT hook_write lines are printed")
+	assert_true(saw_pa and saw_pb, "the printed subset includes both param fields")
+
+
+func _tracked_warning_lines() -> Array[String]:
+	var tracker: Object = gut.error_tracker
+	var out: Array[String] = []
+	for e: Object in tracker.call("get_errors_for_test"):
+		var text := str(e.get("code"))
+		if text.begins_with("BulletPool.hook_write:") or text.begins_with("BulletPool.set_velocity"):
+			out.append(text)
+	return out
+
+
+func _warning_slice(from_index: int) -> Array[String]:
+	var lines := _tracked_warning_lines()
+	var out: Array[String] = []
+	for i in range(from_index, lines.size()):
+		out.append(lines[i])
+	return out
+
+
+func _last_warnings() -> Dictionary:
+	return {
+		"BulletPool.hook_write": ScriptWarnings.last_message("BulletPool.hook_write"),
+		"BulletPool.set_velocity": ScriptWarnings.last_message("BulletPool.set_velocity"),
+		"BulletPool.set_velocity.clamp.speed": ScriptWarnings.last_message("BulletPool.set_velocity.clamp.speed"),
+	}
+
+
 class _Weapon:
 	var behavior: LuaBulletBehavior
 	var id := 0
