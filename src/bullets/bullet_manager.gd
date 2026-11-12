@@ -478,6 +478,10 @@ func _migrate_native_behavior(behavior_id: int) -> void:
 		var row := item as Dictionary
 		var slot := pool.adopt_native(row)
 		if slot < 0:
+			ScriptWarnings.warn(
+				"BulletManager.migrate",
+				"BulletManager.migrate: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
+			)
 			continue
 		pool.behavior[slot] = behavior_id
 		if veto and pool.can_hit_veto[slot] == 0:
@@ -827,12 +831,9 @@ func commit_batch(view: BatchView) -> void:
 	if view == null or view.discard or view.n == 0 and view.command_count() == 0:
 		return
 	if view.native_rows > 0 and native != null:
-		var explained := _report_native_batch_writes(view)
-		var killed := native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb)
-		# apply_batch counts NaN/inf kills. The report above uses the same rows;
-		# anything it did not name still has to reach the script console.
-		for _extra in maxi(killed - explained, 0):
-			BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+		# One sim call for every row. The dictionary is counts (and the over-cap
+		# velocities); the warnings below are the same keys the pool prints.
+		_emit_native_batch_warnings(native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb))
 	if view.n > view.native_rows:
 		_commit_pool_columns(view)
 	_commit_batch_commands(view)
@@ -988,39 +989,25 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 	pool.teleport(slot, Vector2(x, y))
 
 
-## Same ScriptWarnings the pool commit raises from set_velocity and sanitize.
-## Returns how many of those warnings are NaN/inf kills (apply_batch's count).
-func _report_native_batch_writes(view: BatchView) -> int:
-	var kills := 0
-	var rows := mini(view.native_rows, view._commit_id.size())
-	for i in rows:
-		var bullet_id := view._commit_id[i]
-		if not native.is_alive(bullet_id):
-			continue
-		if i >= view.vx.size() or i >= view.vy.size():
-			break
-		var cur := native.velocity_of(bullet_id)
-		var nv := Vector2(view.vx[i], view.vy[i])
-		var vel_dirty := nv != cur
-		var pa_dirty := i < view.pa.size() and view.pa[i] != native.param_a_of(bullet_id)
-		var pb_dirty := i < view.pb.size() and view.pb[i] != native.param_b_of(bullet_id)
-		if vel_dirty and not nv.is_finite():
-			BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
-			kills += 1
-			continue
-		if vel_dirty and BulletLimits.exceeds(nv):
-			BulletPool.report_speed_clamp("BulletPool.set_velocity", nv)
-		if not pa_dirty and not pb_dirty:
-			continue
-		var field := ""
-		if pa_dirty and not is_finite(view.pa[i]):
-			field = "param_a"
-		elif pb_dirty and i < view.pb.size() and not is_finite(view.pb[i]):
-			field = "param_b"
-		if field != "":
-			BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to %s" % field)
-			kills += 1
-	return kills
+## Turns apply_batch's totals into the same ScriptWarnings the pool raises per
+## bullet. One pass over the counts, not one sim call per row.
+func _emit_native_batch_warnings(report: Dictionary) -> void:
+	var vel_nf: int = report["vel_nonfinite"]
+	var pa_nf: int = report["pa_nonfinite"]
+	var pb_nf: int = report["pb_nonfinite"]
+	@warning_ignore("unsafe_cast")
+	var clamp_vx := report["clamp_vx"] as PackedFloat32Array
+	@warning_ignore("unsafe_cast")
+	var clamp_vy := report["clamp_vy"] as PackedFloat32Array
+	for _i in vel_nf:
+		BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+	var clamps := mini(clamp_vx.size(), clamp_vy.size())
+	for i in clamps:
+		BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[i], clamp_vy[i]))
+	for _i in pa_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+	for _i in pb_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:

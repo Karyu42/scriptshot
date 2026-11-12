@@ -440,9 +440,11 @@ func gather_batch(behavior_id: int) -> Dictionary:
 	return d
 
 
-func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> int:
-	var n: int = sim.apply_batch(ids, vx, vy, pa, pb)
-	return n
+## One dictionary for the whole commit: killed, vel_nonfinite, pa_nonfinite,
+## pb_nonfinite, clamp_vx, clamp_vy. Warning totals, not per-row calls.
+func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> Dictionary:
+	var d: Dictionary = sim.apply_batch(ids, vx, vy, pa, pb)
+	return d
 
 
 func extract_behavior(behavior_id: int) -> Array:

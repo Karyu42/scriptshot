@@ -855,22 +855,46 @@ static void clamp_speed(float &x, float &y, float cap) {
 	y = sy * k;
 }
 
-int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
+// Same test as BulletLimits.exceeds: length_squared in double, so a float32
+// component near 1e30 does not overflow the compare the way a float square would.
+static bool speed_exceeds(float x, float y, float cap) {
+	const double dx = (double)x;
+	const double dy = (double)y;
+	const double cap2 = (double)cap * (double)cap;
+	return !(dx * dx + dy * dy <= cap2);
+}
+
+static Dictionary batch_report(int vel_nf, int pa_nf, int pb_nf, const PackedFloat32Array &clamp_vx, const PackedFloat32Array &clamp_vy) {
+	Dictionary d;
+	d["killed"] = vel_nf + pa_nf + pb_nf;
+	d["vel_nonfinite"] = vel_nf;
+	d["pa_nonfinite"] = pa_nf;
+	d["pb_nonfinite"] = pb_nf;
+	d["clamp_vx"] = clamp_vx;
+	d["clamp_vy"] = clamp_vy;
+	return d;
+}
+
+Dictionary NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloat32Array &p_vx, const PackedFloat32Array &p_vy,
 		const PackedFloat32Array &p_pa, const PackedFloat32Array &p_pb) {
 	int n = (int)p_ids.size();
 	n = std::min(n, (int)p_vx.size());
 	n = std::min(n, (int)p_vy.size());
 	n = std::min(n, (int)p_pa.size());
 	n = std::min(n, (int)p_pb.size());
+	PackedFloat32Array clamp_vx;
+	PackedFloat32Array clamp_vy;
 	if (n <= 0) {
-		return 0;
+		return batch_report(0, 0, 0, clamp_vx, clamp_vy);
 	}
 	const int64_t *ids = p_ids.ptr();
 	const float *wvx = p_vx.ptr();
 	const float *wvy = p_vy.ptr();
 	const float *wpa = p_pa.ptr();
 	const float *wpb = p_pb.ptr();
-	int killed = 0;
+	int vel_nf = 0;
+	int pa_nf = 0;
+	int pb_nf = 0;
 	for (int i = 0; i < n; i++) {
 		const int s = slot_of(ids[i]);
 		// slot_of fails when the generation changed, so a reused slot is not written.
@@ -881,21 +905,47 @@ int NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const PackedFloa
 		float nvy = wvy[i];
 		const float npa = wpa[i];
 		const float npb = wpb[i];
-		if (!std::isfinite(nvx) || !std::isfinite(nvy) || !std::isfinite(npa) || !std::isfinite(npb)) {
+		// NaN != NaN, matching the GDScript dirty check before set_velocity / sanitize.
+		const bool vel_dirty = nvx != vx[s] || nvy != vy[s];
+		const bool pa_dirty = npa != param_a[s];
+		const bool pb_dirty = npb != param_b[s];
+		if (vel_dirty && (!std::isfinite(nvx) || !std::isfinite(nvy))) {
 			vx[s] = 0.0f;
 			vy[s] = 0.0f;
 			mark_dead(s, REASON_INVALID);
 			invalid_total++;
-			killed++;
+			vel_nf++;
 			continue;
 		}
-		clamp_speed(nvx, nvy, max_speed);
-		vx[s] = nvx;
-		vy[s] = nvy;
-		param_a[s] = npa;
-		param_b[s] = npb;
+		if (vel_dirty && speed_exceeds(nvx, nvy, max_speed)) {
+			clamp_vx.push_back(nvx);
+			clamp_vy.push_back(nvy);
+		}
+		if ((pa_dirty && !std::isfinite(npa)) || (pb_dirty && !std::isfinite(npb))) {
+			vx[s] = 0.0f;
+			vy[s] = 0.0f;
+			mark_dead(s, REASON_INVALID);
+			invalid_total++;
+			if (pa_dirty && !std::isfinite(npa)) {
+				pa_nf++;
+			} else {
+				pb_nf++;
+			}
+			continue;
+		}
+		if (std::isfinite(nvx) && std::isfinite(nvy)) {
+			clamp_speed(nvx, nvy, max_speed);
+			vx[s] = nvx;
+			vy[s] = nvy;
+		}
+		if (std::isfinite(npa)) {
+			param_a[s] = npa;
+		}
+		if (std::isfinite(npb)) {
+			param_b[s] = npb;
+		}
 	}
-	return killed;
+	return batch_report(vel_nf, pa_nf, pb_nf, clamp_vx, clamp_vy);
 }
 
 bool NativeBulletSim::teleport_id(int64_t p_id, float p_x, float p_y) {
@@ -1649,6 +1699,9 @@ Array NativeBulletSim::export_states() const {
 }
 
 Array NativeBulletSim::extract_behavior(int p_behavior) {
+	// A kill only marks the slot. Compacting first keeps that bullet from being
+	// swapped into another slot's pending index and then never removed.
+	compact();
 	Array out;
 	int i = 0;
 	while (i < count) {

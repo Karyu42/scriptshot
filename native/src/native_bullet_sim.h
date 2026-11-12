@@ -175,10 +175,12 @@ public:
 	// Packed copies of every alive bullet with this behavior id, in slot order.
 	// The id column is the stable id. A later write is applied only if it still matches.
 	godot::Dictionary gather_batch(int p_behavior) const;
-	// Writes velocity and params for each id. A stale generation, a dead bullet,
-	// or a non-finite value does not land on a replacement. Non-finite kills as
-	// INVALID. Returns how many of those kills happened.
-	int apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
+	// Writes velocity and params for each id. A stale generation or a dead bullet
+	// is skipped. Non-finite velocity or params kill as INVALID. The dictionary
+	// is the whole commit's warning totals (no per-row callback):
+	// killed, vel_nonfinite, pa_nonfinite, pb_nonfinite, and clamp_vx/clamp_vy
+	// for each finite over-cap velocity, in row order.
+	godot::Dictionary apply_batch(const godot::PackedInt64Array &p_ids, const godot::PackedFloat32Array &p_vx,
 			const godot::PackedFloat32Array &p_vy, const godot::PackedFloat32Array &p_pa,
 			const godot::PackedFloat32Array &p_pb);
 	bool teleport_id(int64_t p_id, float p_x, float p_y);

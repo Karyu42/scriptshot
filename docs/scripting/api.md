@@ -690,7 +690,8 @@ callback. The instruction budget for `on_batch` is 100,000 plus 128 per row, cap
 **Performance on the default backend.** Bullets whose behaviour defines `on_batch` and no per-bullet hook use the
 native pool when `NativeBulletSim` has loaded ([#34](https://github.com/Karyu42/scriptshot/issues/34)). On the machines
 sampled so far that path is about 1.5–2.3 ms p95 at 5,000 and about 4 ms at 10,000 (single runs have reported 1.51 ms
-and 2.25 ms at 5,000), inside the 16.6 ms frame. Forcing the GDScript backend (`SCRIPTSHOT_BULLET_BACKEND=gdscript`,
+and 2.25 ms at 5,000; a run after the batch warning totals moved into `apply_batch` measured 1.62 ms at 5,000 and
+2.81 ms at 10,000), inside the 16.6 ms frame. Forcing the GDScript backend (`SCRIPTSHOT_BULLET_BACKEND=gdscript`,
 `--bullet-backend=gdscript`, or `scriptshot/bullets/backend=gdscript`) leaves `on_batch` on the pool, about 21–25 ms
 p95 at 5,000 and about 41–47 ms at 10,000 (single runs have reported 20.7 / 40.9 ms and 24.8 / 47.0 ms). A missing
 library falls back to that pool and logs one warning per run. Web stays on the pool and does not warn. Per-bullet
@@ -1086,7 +1087,9 @@ Save the file and the game reloads it, no restart needed.
   whose live bullets are in the native sim moves those bullets onto the GDScript pool. Position, previous position,
   velocity, age, lifetime, radius, damage, acceleration, turn, params, pierce memory and `pierces_script_invuln` are
   kept, and both the batch callback and the new hook then see them (the same as a weapon that was already on the pool).
-  The native id is retired; the pool bullet has a new id. Row order in the next `on_batch` stays unspecified.
+  The native id is retired; the pool bullet has a new id and a new seq (the native seq was retired with the id).
+  Row order in the next `on_batch` stays unspecified. If the pool has no physical room for one of those bullets, that
+  bullet is dropped and `BulletManager.migrate` warns.
 - Shots **already in flight** keep running their old callbacks until they die (default),
   because mixing versions mid-flight would be surprising. Option: `reload = "migrate"`
   at the top of the weapon table to make in-flight shots switch to the new callbacks,

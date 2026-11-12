@@ -244,8 +244,8 @@ stays the pool's flag on the fallback. The default preference is `auto`.
 The libraries in the table were built with `SCRIPTSHOT_NATIVE_LTO=none`
 (godot-cpp's `lto=auto` is full on Linux, MinGW, and web). GUT on this
 machine is two processes. Unbuilt: host 17 passing, unit and integration
-1029 passing and 82 pending. Built, on the Linux debug library: host 17
-passing, unit and integration 1111 passing and 0 pending.
+1029 passing and 84 pending. Built, on the Linux debug library: host 17
+passing, unit and integration 1113 passing and 0 pending.
 
 ## Build pins
 
@@ -372,7 +372,13 @@ the pool.
 
 That table is one machine. Across the machines sampled so far the same native
 batch is about 1.5–2.3 ms at 5,000, and the GD pool path is about 21–25 ms at
-5,000 and about 41–47 ms at 10,000. Provisional; may change.
+5,000 and about 41–47 ms at 10,000. Provisional; may change. A later run on
+this tree, after batch warnings became totals from `apply_batch` instead of a
+sim call per row, measured native on_batch work p95 **1.62 ms at 5,000** and
+**2.81 ms at 10,000** (the same machine before that change was 8.65 ms and
+17.01 ms). Gate it with
+`./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000`
+(5k floor 16.6 ms). CI does not run that row yet.
 
 `--mirrors=N` adds reflector zones (both factions, pool cap lifted so bullets
 keep bouncing) on top of that workload. With 8 mirrors at 5k plain bullets the

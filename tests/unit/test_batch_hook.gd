@@ -704,6 +704,48 @@ func test_native_batch_parity_migrate_on_per_bullet_hook() -> void:
 	assert_eq(nat.invuln, 1)
 
 
+func test_native_batch_parity_kill_then_extract() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var manager := _manager("native")
+	var behavior := _MigrateBatch.new()
+	var id := manager.register_behavior(behavior)
+	var killed := manager.spawn(_shot(id, Vector2(10.0, 0.0)))
+	var live := manager.spawn(_shot(id, Vector2(20.0, 0.0)))
+	assert_true(manager.native.kill(killed))
+	assert_true(manager.native.has_id(killed), "a kill waits for compact")
+	behavior.hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+	manager.refresh_behavior(id)
+	assert_false(manager.native.has_id(killed), "the killed bullet was compacted, not left in a pending slot")
+	assert_false(manager.native.is_alive(live))
+	assert_eq(manager.native.count(), 0)
+	assert_eq(manager.pool.count, 1)
+	assert_eq(manager.alive_count(), 1)
+	assert_eq(manager.pool.behavior[0], id)
+	assert_eq(manager.pool.vel[0], Vector2(20.0, 0.0))
+
+
+func test_native_batch_parity_migrate_warns_when_adopt_fails() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	ScriptWarnings.reset()
+	var manager := _manager("native")
+	var behavior := _MigrateBatch.new()
+	var id := manager.register_behavior(behavior)
+	var bullet := manager.spawn(_shot(id, Vector2(30.0, 0.0)))
+	assert_true(manager.is_native_id(bullet))
+	# adopt_native refuses when the pool's physical count is already at capacity.
+	manager.pool.capacity = 0
+	behavior.hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+	manager.refresh_behavior(id)
+	assert_eq(ScriptWarnings.count("BulletManager.migrate"), 1)
+	assert_string_contains(ScriptWarnings.last_message("BulletManager.migrate"), "was dropped")
+	assert_eq(manager.alive_count(), 0)
+	assert_false(manager.native.has_id(bullet))
+
+
 func _clamp_case(preference: String, mode: String) -> _ClampResult:
 	ScriptWarnings.reset()
 	var manager := _manager(preference)

@@ -27,6 +27,8 @@ extends Node
 ##                          workload. This is separate from --hooked; the 22 ms gate stays
 ##                          on the per-bullet no-op. On the native backend these bullets
 ##                          live in the sim. On GDScript they stay in the pool.
+##                          Native on_batch gate (5k p95 must stay <= --target-ms, 16.6):
+##                          --backend=native --batch=1 --bullets=5000,10000
 ##   --backend=gdscript     bullet backend. Omitted is gdscript, pinned so the
 ##                          plain 16.6 ms and hooked 22.0 ms bars keep measuring
 ##                          the GDScript pool (per-bullet hooks stay there either
@@ -350,6 +352,8 @@ func _report() -> void:
 	var target_result := _judge(target_bullets)
 	var floor_text: String = ("PASS: " if floor_result.ok else "FAIL: ") + floor_result.text
 	var target_text: String = ("PASS: " if target_result.ok else "WARN: ") + target_result.text
+	if batch_mode > 0 and _manager.backend == "native":
+		print("[bench] NATIVE_ON_BATCH floor %d work p95 must stay <= %.1f ms" % [floor_bullets, target_ms])
 	print("[bench] FLOOR  %s" % floor_text)
 	print("[bench] TARGET %s" % target_text)
 	if not target_result.ok:
