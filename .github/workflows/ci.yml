@@ -10,6 +10,9 @@
 #            tip) benchmarked in the same job as the base (CoS ruling 2026-11-10); if the parent cannot be checked out
 #            or benchmarked, the raw bars only (logged as FALLBACK). Dispatch: the raw bars only, unless the
 #            perf_parent_base input runs the push code path against HEAD^1.
+#   perf-native : "Bullet benchmark (native on_batch, p95 gate)", on every PR and push to main after Native libs (linux):
+#            the native on_batch tier (--backend=native --batch=1) gated by check_perf.py on its own bars (6.0 ms 5k
+#            hard, 10.0 ms 10k warn) with the same #42 rules, plus an informational --backend=auto row. See the job.
 #   web-smoke : on every PR and push to main, tools/ci/web_smoke.sh: exports the shipping "Web" preset and the
 #            "Web (smoke)" preset (release and debug, web_dlink_nothreads templates), checks the files (Lua side
 #            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
@@ -333,6 +336,229 @@ jobs:
           name: perf-reports
           path: reports/
           if-no-files-found: ignore
+
+  # ---- Native on_batch perf tier (after #63: native is the default backend where the library loads) ----------------
+  # Same #42 rules as the "Bullet benchmark" job (CoS ruling), on its own bars, with the native library built:
+  #   * on_batch tier: ./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000 (one on_update_batch
+  #     callback steers every bullet; native apply_batch). Gated by tools/ci/check_perf.py, not by the benchmark's own
+  #     exit code. 5k HARD, 10k warning-only. Bars (check_perf.NATIVE_ON_BATCH_*; see the comment there):
+  #       mode=raw (default): head raw p95 <= 6.0 ms at 5k, 10.0 ms at 10k.
+  #       mode=slow-runner, ONLY when the same-run base's own raw p95 also misses that bar: bar x min(F, 1.5),
+  #       F = base on_batch 5k p95 / 2.0 ms (check_perf.REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS), clamped >= 1.0.
+  #       relative, always: head p95 <= base p95 x 1.10, no absolute slack.
+  #     The report must say backend "native" and batch 1 (a GDScript fallback fails, a GDScript base is unusable).
+  #   * auto row: --backend=auto --bullets=5000,10000 (plain bullets). INFORMATIONAL: bars (16.6 ms) and the relative
+  #     check are warnings only; it fails only if auto did not resolve to native with the library present.
+  # The head library is this run's native-libs-linux.x86_64 artifact. The base (main on a PR, the parent commit on a
+  # push) gets the same library when native/, scriptshot_native.gdextension and tools/build_native.sh are identical
+  # in both trees; otherwise the base is built from its own sources here. No base = raw bars only (logged).
+  # The plain 16.6 / hooked 22.0 ms GDScript rows stay in "Bullet benchmark (headless, p95 gate)", unchanged.
+  perf-native:
+    name: Bullet benchmark (native on_batch, p95 gate)
+    runs-on: ubuntu-24.04
+    needs: [native-linux]
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-libs-linux.x86_64
+          path: bin/linux.x86_64
+      - name: Head native library
+        run: |
+          set -euo pipefail
+          ls -la bin/linux.x86_64/
+          test -s bin/linux.x86_64/libscriptshot_native.linux.template_debug.x86_64.so
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+      - name: Fetch native Lua libraries (linux.x86_64)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: bash tools/ci/fetch_native_libs.sh linux.x86_64
+      - name: Unit-test the perf gate (check_perf.py, merge_bench.py, cold_import.sh)
+        working-directory: tools/ci
+        run: python3 -m unittest test_check_perf test_merge_bench test_cold_import -v
+      - name: Pick the same-run base (PR base main; push / dispatch with perf_parent_base = parent commit)
+        if: github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.perf_parent_base)
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+          # Same choice as the "Bullet benchmark" job: PR = first parent of the test-merge commit (else
+          # pull_request.base.sha); push = github.event.before if it is a real commit, else HEAD^1. Failure = no
+          # base: raw bars only, logged.
+          fallback() {
+            echo "::warning::perf base: none ($1); FALLBACK to the raw on_batch bars only"
+            echo "PERF_NO_BASE_REASON=$1" >> "$GITHUB_ENV"
+            exit 0
+          }
+          base=""
+          if [ "$EVENT" = pull_request ]; then
+            if git rev-parse --verify -q HEAD^2 >/dev/null; then
+              base="$(git rev-parse HEAD^1)"
+            else
+              base="$BASE_SHA"
+              git fetch --no-tags --depth=1 origin "$base" || fallback "pull_request.base.sha $base could not be fetched"
+            fi
+          else
+            echo "PERF_BASE_KIND=push-parent" >> "$GITHUB_ENV"
+            if [[ "$BEFORE_SHA" =~ ^[0-9a-f]{40}$ ]] && [[ ! "$BEFORE_SHA" =~ ^0+$ ]] \
+              && { git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BEFORE_SHA"; }; then
+              base="$BEFORE_SHA"
+            else
+              base="$(git rev-parse --verify -q 'HEAD^1^{commit}' || true)"
+              [ -n "$base" ] || fallback "HEAD has no parent commit"
+            fi
+          fi
+          echo "baseline = $base"
+          git worktree add --detach "$RUNNER_TEMP/perf-base" "$base" || fallback "git worktree add of $base failed"
+          echo "PERF_BASE_DIR=$RUNNER_TEMP/perf-base" >> "$GITHUB_ENV"
+          echo "PERF_BASE_SHA=$base" >> "$GITHUB_ENV"
+          if git diff --quiet "$base" HEAD -- native scriptshot_native.gdextension tools/build_native.sh; then
+            echo "native sources identical in base and head: the base reuses the head library"
+            mkdir -p "$RUNNER_TEMP/perf-base/bin"
+            cp -a bin/linux.x86_64 "$RUNNER_TEMP/perf-base/bin/"
+          else
+            echo "native sources differ: building the base library from $base"
+            echo "PERF_BUILD_BASE=1" >> "$GITHUB_ENV"
+          fi
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: env.PERF_BUILD_BASE == '1'
+        with:
+          python-version: "3.x"
+      - name: Restore SCons objects (base build)
+        if: env.PERF_BUILD_BASE == '1'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/scons-cache
+          key: scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-perf-base
+          restore-keys: |
+            scons-native-${{ runner.os }}-linux-x86_64-debug+release-threads-${{ env.GODOT_CPP_COMMIT }}-scons${{ env.SCONS_VERSION }}-
+      - name: Build the base native library (only when native sources differ)
+        if: env.PERF_BUILD_BASE == '1'
+        run: |
+          set -uo pipefail
+          export SCONS_CACHE="$RUNNER_TEMP/scons-cache"
+          python -m pip install "scons==${SCONS_VERSION}"
+          cd "$PERF_BASE_DIR"
+          if git submodule update --init --depth 1 native/godot-cpp && ./tools/build_native.sh linux debug; then
+            ls -la bin/linux.x86_64/
+          else
+            # The base benchmark then fails to load native: check_perf.py drops it (raw bars, logged).
+            echo "::warning::base native library build failed; the on_batch tier falls back to the raw bars"
+          fi
+      - name: Head tree at a path as long as the base's
+        run: |
+          set -euo pipefail
+          # PR #64 A/A runs (head and base = the same sources and library) showed a per-tree offset that more rounds
+          # did not remove (run 43207146923: base 5k p95 2.39-2.45 ms in all 4 rounds, head 2.08-2.23). One suspect is
+          # the process layout (project path / environment length), so the head is benchmarked from a worktree at
+          # $RUNNER_TEMP/perf-head, the same length as $RUNNER_TEMP/perf-base, instead of the job's checkout.
+          git worktree add --detach "$RUNNER_TEMP/perf-head" HEAD
+          mkdir -p "$RUNNER_TEMP/perf-head/bin"
+          cp -a bin/linux.x86_64 "$RUNNER_TEMP/perf-head/bin/"
+          echo "PERF_HEAD_DIR=$RUNNER_TEMP/perf-head" >> "$GITHUB_ENV"
+      - name: Cold import (head and base; ONE retry, only if Godot died on a signal)
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -uo pipefail
+          # tools/ci/cold_import.sh: exit >= 128 (signal, e.g. 134 SIGABRT) on the first attempt -> ::warning:: with the
+          # crash excerpt, the full log kept in reports/import-logs/ (perf-native-reports artifact), one more attempt.
+          # Any other non-zero exit is a real import error and fails at once. This is the ONLY retry in this job:
+          # the benchmarks, the unit tests and check_perf.py run once. Background: PR #64 run 43199386255 (head cold
+          # import: "double free or corruption (!prev)", exit 134); issue #7.
+          mkdir -p reports/import-logs
+          bash "$PERF_HEAD_DIR/tools/ci/fetch_native_libs.sh" linux.x86_64
+          tools/ci/cold_import.sh "$PERF_HEAD_DIR" head reports/import-logs || exit 1
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            if ! bash "$PERF_BASE_DIR/tools/ci/fetch_native_libs.sh" linux.x86_64 \
+              || ! tools/ci/cold_import.sh "$PERF_BASE_DIR" base reports/import-logs; then
+              echo "::warning::base cold import failed; perf_ab.sh drops the base when its run fails (raw bars only)"
+            fi
+          fi
+      - name: Run benchmarks (native on_batch + auto; base and head alternating on this runner)
+        run: |
+          mkdir -p reports
+          # ABBA rounds like the plain/hooked job, but 8 (median per count), 600 measured frames (the default). PR #64
+          # A/A runs (base and head = the same sources and library): the 5k p95 varies 2.5-15% between processes
+          # (rounds) on the runner whatever the frame count (600 / 2400 frames gave the same spread), so the noise is
+          # per process, not per sample; more rounds shrink the error of the median that the strict +10% check uses.
+          # The benchmark's own exit code is ignored: check_perf.py is the gate.
+          set -o pipefail
+          tiers="--tiers=onbatch,auto"
+          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            args=(--out=reports --rounds=8 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
+          fi
+          "$PERF_HEAD_DIR/tools/ci/perf_ab.sh" "${args[@]}" 2>&1 | tee reports/bench-native.log
+      - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 10.0 ms at 10k warn; vs same-run base)
+        run: |
+          args=(
+            python3 tools/ci/check_perf.py reports/bench-onbatch.json
+            --tier-name "native on_batch" --title "Native on_batch bullet benchmark (--backend=native --batch=1)"
+            --p95-ms 6.0 --p95-target-ms 10.0 --floor-bullets 5000 --target-bullets 10000
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 2.0
+            --expect-backend native --expect-batch 1
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            args+=(--base-report reports/base-bench-onbatch.json)
+          fi
+          if [ "${PERF_BASE_KIND:-}" = push-parent ]; then
+            args+=(--base-kind push-parent --base-sha "${PERF_BASE_SHA:-}")
+            if [ -n "${PERF_NO_BASE_REASON:-}" ]; then
+              args+=(--no-base-reason "$PERF_NO_BASE_REASON")
+            fi
+          fi
+          "${args[@]}"
+      - name: Auto backend row (informational; must resolve to native)
+        if: always() && hashFiles('reports/bench-auto.json') != ''
+        run: |
+          args=(
+            python3 tools/ci/check_perf.py reports/bench-auto.json
+            --tier-name auto --title "Auto backend bullet benchmark (--backend=auto, plain bullets; informational)"
+            --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 2.0
+            --expect-backend native --expect-batch 0 --informational
+            --summary "$GITHUB_STEP_SUMMARY"
+          )
+          if [ -n "${PERF_BASE_DIR:-}" ]; then
+            args+=(--base-report reports/base-bench-auto.json)
+          fi
+          if [ "${PERF_BASE_KIND:-}" = push-parent ]; then
+            args+=(--base-kind push-parent --base-sha "${PERF_BASE_SHA:-}")
+            if [ -n "${PERF_NO_BASE_REASON:-}" ]; then
+              args+=(--no-base-reason "$PERF_NO_BASE_REASON")
+            fi
+          fi
+          "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: perf-native-reports
+          path: reports/
+          if-no-files-found: ignore
+
 
   web-smoke:
     # Static name: meant to become a required check once it has landed (QA sets that).
