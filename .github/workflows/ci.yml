@@ -493,14 +493,16 @@ jobs:
       - name: Run benchmarks (native on_batch + auto; base and head alternating on this runner)
         run: |
           mkdir -p reports
-          # ABBA rounds like the plain/hooked job, but 4 (ABBA ABBA, median per count): at ~2 ms a single 5k p95 of
-          # identical code varies by up to ~30% run to run, so 2 rounds are too noisy for the strict +10% check.
+          # ABBA rounds like the plain/hooked job, but 8 (median per count), 600 measured frames (the default). PR #64
+          # A/A runs (base and head = the same sources and library): the 5k p95 varies 2.5-15% between processes
+          # (rounds) on the runner whatever the frame count (600 / 2400 frames gave the same spread), so the noise is
+          # per process, not per sample; more rounds shrink the error of the median that the strict +10% check uses.
           # The benchmark's own exit code is ignored: check_perf.py is the gate.
           set -o pipefail
           tiers="--tiers=onbatch,auto"
-          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
+          args=(--out=reports --rounds=1 "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
           if [ -n "${PERF_BASE_DIR:-}" ]; then
-            args=(--out=reports --rounds=4 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=2400)
+            args=(--out=reports --rounds=8 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0 --native-frames=600)
           fi
           "$PERF_HEAD_DIR/tools/ci/perf_ab.sh" "${args[@]}" 2>&1 | tee reports/bench-native.log
       - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 10.0 ms at 10k warn; vs same-run base)
