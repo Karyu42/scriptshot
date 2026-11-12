@@ -14,7 +14,7 @@ must have passed) uploads three Actions artifacts, kept for 90 days:
 
 Open the CI run for that commit (Actions → CI → the push to `main`, or the checks on the commit) and download
 the artifact. The first 7 characters of the commit SHA are in the name, for example `scriptshot-linux-08f3c94`.
-There is no GitHub Release and no GitHub Pages site; these are CI artifacts only. A rolling nightly pre-release and a Pages web build are prepared in `.github/workflows/nightly-pages.yml` but are not enabled (see section 10). Windows builds are unsigned,
+Those 90-day Actions artifacts stay available. After this workflow is on `main`, each successful CI push to `main` also replaces a rolling **pre-release** tagged `nightly` (unsigned Linux, Windows and web zips; never Latest; macOS is not included) and deploys the web tree to GitHub Pages (see section 10). Windows builds are unsigned,
 so SmartScreen will warn on first launch (**More info > Run anyway**). Linux: `chmod +x Scriptshot.x86_64`
 (artifact download strips the executable bit) then run it.
 
@@ -269,26 +269,26 @@ succeed (Windows exe 109 MB, Linux 74 MB, Web no-threads 40 MB wasm (before #40;
 containing a code-signed universal `.app`), with the debug keystore and editor settings generated exactly as the job does. Not verified locally:
 Android with build-tools 36.1.0 (the box has 35.0.1), the first-launch steps on real macOS, running the APK on a device, and the `native-libs` job.
 
-## 10. Nightly pre-release and GitHub Pages (not enabled)
+## 10. Nightly pre-release and GitHub Pages
 
-A workflow (`.github/workflows/nightly-pages.yml`) is prepared to, after each successful CI
-push to `main`, replace a rolling **pre-release** tagged `nightly` with Linux, Windows and
-web zips, and to deploy the web tree to GitHub Pages.
+After each successful CI **push** to `main` (Import + GUT must have passed, so the export
+job has run), `.github/workflows/nightly-pages.yml` replaces the rolling pre-release
+tagged `nightly` with unsigned Linux, Windows and web zips, and deploys the same web
+tree to GitHub Pages.
 
-**This is not live.** Publishing waits on Karyu's approval. Do not merge that workflow until
-then. Until it is merged and the settings below are set, the only downloadable builds are the
-90-day Actions artifacts described in the introduction.
+* Release: https://github.com/Karyu42/scriptshot/releases/tag/nightly
+  Title `Unsigned nightly <sha7>`, body “This is an unsigned nightly pre-release at `<sha>`.”
+  Always a pre-release, never Latest. macOS is not included.
+* Pages: https://karyu42.github.io/scriptshot/
 
-Repo settings the workflow needs (change them only when Karyu approves publishing):
+The workflow verifies the Linux, Windows and web artifacts with
+`tools/ci/check_nightly_artifacts.py` before publishing: ready-to-run binaries and
+libs are present, and `src/qa/*` (the web smoke scene and the playtest autoplay)
+is not packed. A pull request or a `workflow_dispatch` of CI does not publish.
+GitHub only runs this `workflow_run` workflow from the default branch, so a
+feature branch cannot publish.
 
-* **Actions → General → Workflow permissions:** the `GITHUB_TOKEN` must be allowed
-  `contents: write` so the workflow can create and replace the `nightly` pre-release
-  (the workflow file requests that permission; some organisations also require the
-  repository default to be "Read and write").
-* **Settings → Pages → Source:** GitHub Actions. Without this, the Pages deploy step fails.
-  Do not add environment protection on `github-pages` unless an extra approval each night
-  is wanted.
-
-The workflow runs only on a successful CI **push** to `main`. It does not run on pull
-requests, and a `workflow_dispatch` of CI does not publish. Builds stay unsigned.
+Permissions are job-level only: `contents: write` on the release job; `pages: write`
+and `id-token: write` on the Pages job. The repository Actions default can stay
+“Read repository contents.” Settings → Pages → Source must be GitHub Actions.
 
