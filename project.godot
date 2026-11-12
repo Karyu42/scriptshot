@@ -14,6 +14,7 @@ config/name="Scriptshot"
 config/description="Top-down 2D twin-stick shooter where you script your own shots in Lua."
 run/main_scene="res://scenes/main.tscn"
 run/main_scene.web_smoke="res://src/qa/web_smoke.tscn"
+run/main_scene.playtest="res://src/qa/playtest_autoplay.tscn"
 config/features=PackedStringArray("4.7", "GL Compatibility")
 config/icon="res://icon.svg"
 

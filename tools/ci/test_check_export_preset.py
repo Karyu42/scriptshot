@@ -185,3 +185,34 @@ class CommittedPresetsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def playtest_pair(excludes=SMOKE_EXCLUDES, features="playtest", **opts):
+    o = dict(WEB_OPTS)
+    o.update(opts)
+    return (cfg("Web", "Web", exclude_filter=WEB_EXCLUDES, **WEB_OPTS) + "\n"
+            + cfg("Web", "Web (playtest)", exclude_filter=excludes, index=1,
+                  custom_features=features, **o))
+
+
+class CheckPlaytestPresetTest(unittest.TestCase):
+    def test_playtest_preset_matching_web_passes(self):
+        rc, out = run(playtest_pair(), "Web (playtest)")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(run(playtest_pair(), "Web")[0], 0)
+
+    def test_playtest_preset_must_not_exclude_qa(self):
+        rc, out = run(playtest_pair(excludes=WEB_EXCLUDES), "Web (playtest)")
+        self.assertEqual(rc, 1)
+        self.assertIn("must not exclude src/qa/", out)
+
+    def test_playtest_preset_needs_the_feature(self):
+        rc, out = run(playtest_pair(features=""), "Web (playtest)")
+        self.assertEqual(rc, 1)
+        self.assertIn("custom_features", out)
+
+    def test_shipping_preset_must_not_set_the_playtest_feature(self):
+        t = cfg("Linux", "Linux", custom_features="playtest")
+        rc, out = run(t, "Linux")
+        self.assertEqual(rc, 1)
+        self.assertIn("playtest", out)

@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://src/qa/playtest_autoplay.gd" id="1_play"]
+
+[node name="PlaytestAutoplay" type="Node"]
+script = ExtResource("1_play")
