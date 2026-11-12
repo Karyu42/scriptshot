@@ -245,6 +245,12 @@ All optional. Unspecified fields take engine defaults.
 | `on_batch(v, dt)` | once per behaviour per tick, with every live bullet of that script; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
 
+**Callback results [main].** The engine reads only a callback's first return value (for example `can_hit`'s
+boolean, or the weapon table a script chunk returns). Any further return values are ignored, and so are values
+the host has no use for. When a callback raises an error value that is a table or userdata, the error is reported as
+`error value (table)` or `error value (userdata)`. The script's own `pcall`, `xpcall`, `coroutine.resume` and
+`coroutine.close` still get back the value that was raised.
+
 #### Which engine hooks a script gets: the hook mask (adapter contract)
 
 The engine calls only the event hooks a behaviour *has* (`on_spawn`, `on_hit`, `can_hit`, `on_despawn`;
