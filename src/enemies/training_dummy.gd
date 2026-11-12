@@ -9,6 +9,9 @@ signal destroyed
 @export var respawn_delay := 1.0
 
 var health := 0.0
+## Times this instance has died. Its first death reports first_death = true
+## to GameEvents.enemy_killed; deaths after a respawn report false.
+var deaths := 0
 
 var _flash := 0.0
 var _respawn_timer := 0.0
@@ -21,6 +24,27 @@ func _ready() -> void:
 	_hurtbox.radius = body_radius
 	_hurtbox.layer = Layers.ENEMY
 	_hurtbox.hit.connect(_on_hit)
+	_register_world()
+
+
+func _enter_tree() -> void:
+	# _ready() registers the first time; this covers a dummy moved to another parent.
+	if is_node_ready() and health > 0.0:
+		_register_world()
+
+
+func _exit_tree() -> void:
+	WorldQuery.unregister_enemy(self)
+
+
+## Registered while standing (alive); unregistered while it waits to respawn.
+func _register_world() -> void:
+	WorldQuery.register_enemy(self, EnemyKinds.DUMMY, EnemyKinds.RARITY_NONE, _tier(), body_radius)
+	WorldQuery.set_hp_frac(self, health / max_health if max_health > 0.0 else 1.0)
+
+
+func _tier() -> int:
+	return WorldGen.tier_at(global_position.x, global_position.y)
 
 
 func _process(delta: float) -> void:
@@ -30,6 +54,7 @@ func _process(delta: float) -> void:
 			health = max_health
 			_hurtbox.active = true
 			show()
+			_register_world()
 	_flash = maxf(_flash - delta * 8.0, 0.0)
 	queue_redraw()
 
@@ -39,10 +64,14 @@ func _on_hit(damage: float, _hit_position: Vector2, _bullet_velocity: Vector2) -
 		return
 	health -= damage
 	_flash = 1.0
+	WorldQuery.set_hp_frac(self, health / max_health if max_health > 0.0 else 0.0)
 	if health <= 0.0:
 		_hurtbox.active = false
 		hide()
 		_respawn_timer = respawn_delay
+		deaths += 1
+		WorldQuery.unregister_enemy(self)
+		GameEvents.enemy_killed.emit(EnemyKinds.DUMMY, EnemyKinds.RARITY_NONE, _tier(), global_position, deaths == 1)
 		destroyed.emit()
 
 

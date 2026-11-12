@@ -7,6 +7,7 @@ var _kinds: Array[StringName] = []
 var _rarities: Array[int] = []
 var _tiers: Array[int] = []
 var _positions: Array[Vector2] = []
+var _firsts: Array[bool] = []
 var _player_deaths := 0
 
 
@@ -15,6 +16,7 @@ func before_each() -> void:
 	_rarities.clear()
 	_tiers.clear()
 	_positions.clear()
+	_firsts.clear()
 	_player_deaths = 0
 	GameEvents.enemy_killed.connect(_on_kill)
 	GameEvents.player_died.connect(_on_player_died)
@@ -25,7 +27,8 @@ func after_each() -> void:
 	GameEvents.player_died.disconnect(_on_player_died)
 
 
-func _on_kill(kind: StringName, rarity: int, tier: int, position: Vector2) -> void:
+func _on_kill(kind: StringName, rarity: int, tier: int, position: Vector2, first_death: bool) -> void:
+	_firsts.append(first_death)
 	_kinds.append(kind)
 	_rarities.append(rarity)
 	_tiers.append(tier)
@@ -48,13 +51,11 @@ func _elite(affix: StringName, at: Vector2, herald: bool) -> EliteEnemy:
 	return body
 
 
-func test_kinds_are_stable_string_names() -> void:
-	assert_eq(EnemyKinds.DRIFTER, &"drifter")
-	assert_eq(EnemyKinds.SWARMER, &"swarmer")
-	assert_eq(EnemyKinds.ELITE_DRIFTER, &"elite_drifter")
-	assert_eq(EnemyKinds.HERALD, &"herald")
-	assert_eq(EnemyKinds.SPLIT_HALF, &"split_half")
+func test_kinds_are_the_spec_string_names() -> void:
+	var want: Array[StringName] = [&"drifter", &"swarmer", &"shieldbearer", &"sniper", &"husk", &"warden", &"dummy"]
+	assert_eq(EnemyKinds.ALL, want)
 	assert_eq(EnemyKinds.WARDEN, &"warden")
+	assert_eq(EnemyKinds.DUMMY, &"dummy")
 	assert_eq(EnemyKinds.DRIFTER, RegularEnemy.ARCH_DRIFTER)
 	assert_eq(EnemyKinds.SWARMER, RegularEnemy.ARCH_SWARMER)
 
@@ -91,7 +92,7 @@ func test_an_elite_kill_carries_its_rarity() -> void:
 	add_child_autoqfree(elite)
 	elite.health.damage(1000.0)
 	assert_eq(_kinds.size(), 1)
-	assert_eq(_kinds[0], &"elite_drifter")
+	assert_eq(_kinds[0], &"drifter")
 	assert_eq(_rarities[0], EnemyKinds.RARITY_COMMON)
 	assert_eq(_tiers[0], 0)
 	assert_eq(_positions[0], at)
@@ -103,7 +104,7 @@ func test_the_herald_and_its_halves_report_their_own_kinds() -> void:
 	add_child_autoqfree(herald)
 	herald.health.damage(1000.0)
 	assert_eq(_kinds.size(), 1)
-	assert_eq(_kinds[0], &"herald")
+	assert_eq(_kinds[0], &"drifter", "the Herald is a drifter body")
 	assert_eq(_rarities[0], EnemyKinds.RARITY_COMMON)
 	var halves: Array[EliteEnemy] = []
 	for child: Node in get_children():
@@ -115,8 +116,39 @@ func test_the_herald_and_its_halves_report_their_own_kinds() -> void:
 		half.health.damage(1000.0)
 		half.queue_free()
 	assert_eq(_kinds.size(), 3)
-	assert_eq(_kinds[1], &"split_half")
+	assert_eq(_kinds[1], &"drifter", "halves are drifters")
 	assert_eq(_rarities[1], EnemyKinds.RARITY_NONE, "halves are not elites")
+
+
+func test_regular_kills_are_first_deaths() -> void:
+	var body := _regular(RegularEnemy.ARCH_DRIFTER, Vector2(900, 0))
+	add_child_autoqfree(body)
+	body.health.damage(1000.0)
+	assert_eq(_firsts, [true] as Array[bool])
+
+
+func test_a_dummy_emits_dummy_kills_and_only_its_first_is_a_first_death() -> void:
+	var dummy := (load("res://scenes/training_dummy.tscn") as PackedScene).instantiate() as TrainingDummy
+	dummy.position = Vector2(300, 0)
+	add_child_autofree(dummy)
+	var hurtbox := dummy.get_node("Hurtbox") as Hurtbox
+	hurtbox.receive_hit(dummy.max_health, Vector2.ZERO, Vector2.ZERO)
+	hurtbox.receive_hit(dummy.max_health, Vector2.ZERO, Vector2.ZERO)
+	assert_eq(_kinds.size(), 1, "a downed dummy does not die twice")
+	assert_eq(_kinds[0], &"dummy")
+	assert_eq(_rarities[0], EnemyKinds.RARITY_NONE)
+	assert_eq(_tiers[0], 0)
+	assert_eq(_positions[0], Vector2(300, 0))
+	dummy._process(dummy.respawn_delay + 0.01)
+	hurtbox.receive_hit(dummy.max_health, Vector2.ZERO, Vector2.ZERO)
+	dummy._process(dummy.respawn_delay + 0.01)
+	hurtbox.receive_hit(dummy.max_health, Vector2.ZERO, Vector2.ZERO)
+	assert_eq(_firsts, [true, false, false] as Array[bool])
+	# A new dummy instance starts over.
+	var other := (load("res://scenes/training_dummy.tscn") as PackedScene).instantiate() as TrainingDummy
+	add_child_autofree(other)
+	(other.get_node("Hurtbox") as Hurtbox).receive_hit(other.max_health, Vector2.ZERO, Vector2.ZERO)
+	assert_eq(_firsts[3], true)
 
 
 func test_player_death_emits_player_died_each_death() -> void:

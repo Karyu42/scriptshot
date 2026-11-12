@@ -18,11 +18,16 @@ extends Node
 ## Registry: an enemy calls register_enemy() when it enters the tree and
 ## unregister_enemy() when it dies or leaves. A boss registers with
 ## is_boss = true and a boss-state provider; see register_enemy().
+##
+## Range limit: while a BulletManager is bound (Main binds its own), only bodies
+## inside its world_bounds (the live hurtbox-grid window around the camera) are
+## in the snapshot, the same bodies HurtboxGrid.query_radius() can see. That
+## window is the only range limit; there is no gameplay cap on calls.
 
 ## After enemies (0), before BulletManager (BulletManager.PHYSICS_PRIORITY = 100).
 const PHYSICS_PRIORITY := 90
-## enemies_in_radius() returns at most this many entries.
-const MAX_RESULTS := 64
+## enemies_in_radius() returns at most this many entries (api.md limits).
+const MAX_RESULTS := 256
 
 
 ## One registered body. Holds the node for the snapshot only; never handed out.
@@ -34,6 +39,9 @@ class Entry:
 	var kind := StringName()
 	var rarity := EnemyKinds.RARITY_NONE
 	var tier := 0
+	var radius := 0.0
+	## Used when `health` is null (a body that keeps hp itself, e.g. TrainingDummy).
+	var hp_frac := 1.0
 	var is_boss := false
 	var boss_state: Callable
 
@@ -44,6 +52,7 @@ var _ids := PackedInt64Array()
 var _pos := PackedVector2Array()
 var _vel := PackedVector2Array()
 var _hp := PackedFloat32Array()
+var _radius := PackedFloat32Array()
 var _kind: Array[StringName] = []
 var _rarity := PackedInt32Array()
 var _tier := PackedInt32Array()
@@ -67,7 +76,8 @@ func _physics_process(delta: float) -> void:
 # --- registry ------------------------------------------------------------------
 
 ## Adds `body` to the registry (or updates it if already there) and returns its
-## id. `health` may be null (hp_frac then reads 1.0). A boss passes is_boss and a
+## id. `radius` is the body's radius in px. `health` may be null: hp_frac then
+## reads what set_hp_frac() last stored (1.0 by default). A boss passes is_boss and a
 ## `boss_state` provider: a Callable taking no arguments that returns a plain
 ## Dictionary with at least `phase` (int), `phase_count` (int) and `weak_points`
 ## (Array of plain data, e.g. [{pos, hp_frac}]). WorldQuery adds id, kind,
@@ -77,6 +87,7 @@ func register_enemy(
 	kind: StringName,
 	rarity: int,
 	tier: int,
+	radius: float,
 	health: Health = null,
 	is_boss: bool = false,
 	boss_state: Callable = Callable(),
@@ -92,9 +103,17 @@ func register_enemy(
 	e.kind = kind
 	e.rarity = rarity
 	e.tier = tier
+	e.radius = radius
 	e.is_boss = is_boss
 	e.boss_state = boss_state
 	return id
+
+
+## hp fraction for a body registered without a Health (clamped to 0..1).
+func set_hp_frac(body: Node2D, frac: float) -> void:
+	var e: Entry = _entries.get(body.get_instance_id(), null)
+	if e != null and not is_nan(frac):
+		e.hp_frac = clampf(frac, 0.0, 1.0)
 
 
 ## Removes `body` from the registry. Safe to call twice or for a body that never
@@ -146,12 +165,16 @@ func refresh(delta: float = 1.0 / 60.0) -> void:
 	_snapshots += 1
 	var gone: Array[int] = []
 	var seen: Dictionary[int, Vector2] = {}
+	var windowed := _bullets != null and is_instance_valid(_bullets)
+	var window := _bullets.world_bounds if windowed else Rect2()
 	for id: int in _entries:
 		var e: Entry = _entries[id]
 		if not is_instance_valid(e.body) or not e.body.is_inside_tree():
 			gone.append(id)
 			continue
 		var p := e.body.global_position
+		if windowed and not window.has_point(p):
+			continue
 		var v := Vector2.ZERO
 		if delta > 0.0 and _last_pos.has(id):
 			v = (p - _last_pos[id]) / delta
@@ -159,7 +182,8 @@ func refresh(delta: float = 1.0 / 60.0) -> void:
 		_ids.append(id)
 		_pos.append(p)
 		_vel.append(v)
-		_hp.append(_hp_frac(e.health))
+		_hp.append(_hp_frac(e.health) if e.health != null else e.hp_frac)
+		_radius.append(e.radius)
 		_kind.append(e.kind)
 		_rarity.append(e.rarity)
 		_tier.append(e.tier)
@@ -185,7 +209,7 @@ func snapshot_size() -> int:
 
 ## Closest enemy to `pos` within `max_range` (inclusive), skipping ids in
 ## `exclude`, or {} when there is none. Returns {id, pos, vel, hp_frac, kind,
-## rarity, tier, is_boss}. `exclude` takes a PackedInt64Array, a
+## radius, rarity, tier, is_boss}. `exclude` takes a PackedInt64Array, a
 ## PackedInt32Array or an Array of ints (the ids as returned; integer-valued
 ## floats are accepted too). Ties on distance go to the lower id.
 func nearest_enemy(pos: Vector2, max_range: float, exclude: Variant = PackedInt64Array()) -> Dictionary:
@@ -298,6 +322,7 @@ func _row_dict(row: int) -> Dictionary:
 		"id": _ids[row],
 		"pos": _pos[row],
 		"vel": _vel[row],
+		"radius": _radius[row],
 		"hp_frac": _hp[row],
 		"kind": _kind[row],
 		"rarity": _rarity[row],
@@ -311,6 +336,7 @@ func _clear_snapshot() -> void:
 	_pos.clear()
 	_vel.clear()
 	_hp.clear()
+	_radius.clear()
 	_kind.clear()
 	_rarity.clear()
 	_tier.clear()

@@ -4,18 +4,21 @@ extends RefCounted
 ## WorldQuery and scripts. These StringNames are save- and script-facing: never
 ## rename one, only add new ones.
 
-## T0 regular Drifter (RegularEnemy.ARCH_DRIFTER).
+## The kinds of this slice (docs/design/vertical-slice.md §6.2). A kind is
+## the body, not its role: elite drifters, the Herald, Splitting halves and
+## Hydra summons are all DRIFTER; Summoner adds are SWARMER. Rarity (below)
+## is what tells an elite from a regular.
 const DRIFTER := &"drifter"
-## T0 regular Swarmer, also the adds a Summoner elite brings in.
 const SWARMER := &"swarmer"
-## Natural common elite (an EliteEnemy that is not the Herald).
-const ELITE_DRIFTER := &"elite_drifter"
-## The guaranteed Herald elite (EliteEnemy with is_herald).
-const HERALD := &"herald"
-## One half of a Splitting elite. Not an elite itself: no cue, no shard.
-const SPLIT_HALF := &"split_half"
-## Reserved for the vertical-slice boss (comes in a later PR).
+const SHIELDBEARER := &"shieldbearer"
+const SNIPER := &"sniper"
+const HUSK := &"husk"
+## The vertical-slice boss (comes in a later PR).
 const WARDEN := &"warden"
+## Tutorial training dummy (TrainingDummy).
+const DUMMY := &"dummy"
+## Every kind above, in the spec's order.
+const ALL: Array[StringName] = [DRIFTER, SWARMER, SHIELDBEARER, SNIPER, HUSK, WARDEN, DUMMY]
 
 ## Rarity of an enemy that is not an elite or a boss (regulars, halves, adds).
 const RARITY_NONE := -1

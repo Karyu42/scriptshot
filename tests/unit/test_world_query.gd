@@ -34,7 +34,7 @@ func _health(hp: float, max_hp: float) -> Health:
 
 func _add(at: Vector2, kind: StringName = EnemyKinds.DRIFTER) -> Node2D:
 	var n := _body(at)
-	wq.register_enemy(n, kind, EnemyKinds.RARITY_NONE, 0)
+	wq.register_enemy(n, kind, EnemyKinds.RARITY_NONE, 0, 16.0)
 	return n
 
 
@@ -86,17 +86,18 @@ func test_nearest_returns_empty_without_enemies() -> void:
 
 func test_nearest_picks_the_closest_within_range_with_the_full_shape() -> void:
 	var near := _body(Vector2(100, 0))
-	wq.register_enemy(near, EnemyKinds.ELITE_DRIFTER, EnemyKinds.RARITY_COMMON, 2, _health(30, 120))
+	wq.register_enemy(near, EnemyKinds.DRIFTER, EnemyKinds.RARITY_COMMON, 2, 16.0, _health(30, 120))
 	_add(Vector2(300, 0))
 	wq.refresh(DT)
 	var r := wq.nearest_enemy(Vector2.ZERO, 500.0)
-	assert_eq(r.keys().size(), 8)
+	assert_eq(r.keys().size(), 9)
+	assert_eq(_f(r, "radius"), 16.0)
 	assert_eq(_id(r), near.get_instance_id())
 	assert_eq(_type(r, "id"), TYPE_INT)
 	assert_eq(_v2(r, "pos"), Vector2(100, 0))
 	assert_eq(_v2(r, "vel"), Vector2.ZERO, "first snapshot has no velocity yet")
 	assert_almost_eq(_f(r, "hp_frac"), 0.25, 0.0001)
-	assert_eq(_sn(r, "kind"), EnemyKinds.ELITE_DRIFTER)
+	assert_eq(_sn(r, "kind"), EnemyKinds.DRIFTER)
 	assert_eq(_type(r, "kind"), TYPE_STRING_NAME)
 	assert_eq(_i(r, "rarity"), EnemyKinds.RARITY_COMMON)
 	assert_eq(_i(r, "tier"), 2)
@@ -164,17 +165,19 @@ func test_radius_is_sorted_by_distance_and_filtered() -> void:
 	for d in got:
 		ids.append(_id(d))
 	assert_eq(ids, [near.get_instance_id(), mid.get_instance_id(), far.get_instance_id()] as Array[int])
-	assert_eq(got[0].size(), 8, "same shape as nearest_enemy")
+	assert_eq(got[0].size(), 9, "same shape as nearest_enemy")
 
 
-func test_radius_cap_is_clamped_to_1_through_64() -> void:
-	for i in 70:
+func test_radius_cap_is_clamped_to_1_through_256() -> void:
+	for i in 300:
 		_add(Vector2(float(i), 0))
 	wq.refresh(DT)
 	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 5).size(), 5)
 	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 0).size(), 1)
 	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, -3).size(), 1)
-	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 1000).size(), WorldQueryScript.MAX_RESULTS)
+	assert_eq(WorldQueryScript.MAX_RESULTS, 256)
+	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 1000).size(), 256)
+	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 256).size(), 256)
 	var capped := wq.enemies_in_radius(Vector2.ZERO, 1000.0, 3)
 	assert_eq(_pos(capped[0]), Vector2(0, 0))
 	assert_eq(_pos(capped[2]), Vector2(2, 0), "the cap keeps the nearest ones")
@@ -252,6 +255,7 @@ func test_enemies_register_on_ready_and_unregister_on_free() -> void:
 		if _id(d) == body.get_instance_id():
 			found = true
 			assert_eq(_sn(d, "kind"), EnemyKinds.SWARMER)
+			assert_eq(_f(d, "radius"), RegularEnemy.SWARMER_RADIUS)
 			assert_eq(_i(d, "rarity"), EnemyKinds.RARITY_NONE)
 			assert_eq(_i(d, "tier"), 0)
 			assert_almost_eq(_f(d, "hp_frac"), 1.0, 0.0001)
@@ -286,7 +290,8 @@ func test_elites_register_their_kind_and_rarity() -> void:
 	for d in WorldQuery.enemies_in_radius(at, 1.0, 64):
 		if _id(d) == elite.get_instance_id():
 			hit = d
-	assert_eq(_sn(hit, "kind"), EnemyKinds.ELITE_DRIFTER)
+	assert_eq(_sn(hit, "kind"), EnemyKinds.DRIFTER, "an elite is a drifter body")
+	assert_eq(_f(hit, "radius"), elite.body_radius)
 	assert_eq(_i(hit, "rarity"), EnemyKinds.RARITY_RARE)
 
 
@@ -302,7 +307,7 @@ func test_a_boss_registers_with_a_state_provider() -> void:
 	var boss := _body(Vector2(0, -300))
 	var provider := func() -> Dictionary:
 		return {"phase": 2, "phase_count": 3, "weak_points": [{"pos": Vector2(10, -300), "hp_frac": 0.5}]}
-	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, _health(50, 200), true, provider)
+	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, 40.0, _health(50, 200), true, provider)
 	wq.refresh(DT)
 	var s := wq.boss_state()
 	assert_eq(_i(s, "id"), boss.get_instance_id())
@@ -318,7 +323,7 @@ func test_a_boss_registers_with_a_state_provider() -> void:
 
 func test_a_boss_without_a_provider_reads_phase_0_of_1() -> void:
 	var boss := _body(Vector2(0, 0))
-	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, null, true)
+	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, 40.0, null, true)
 	wq.refresh(DT)
 	var s := wq.boss_state()
 	assert_eq(_i(s, "phase"), 0)
@@ -329,6 +334,55 @@ func test_a_boss_without_a_provider_reads_phase_0_of_1() -> void:
 
 
 # --- raycast_terrain ---------------------------------------------------------------------
+
+func test_a_bound_manager_window_is_the_range_limit() -> void:
+	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
+	manager.capacity = 16
+	manager.render_enabled = false
+	manager.auto_step = false
+	manager.world_bounds = Rect2(-500, -500, 1000, 1000)
+	add_child_autofree(manager)
+	var inside := _add(Vector2(400, 0))
+	_add(Vector2(900, 0))
+	wq.refresh(DT)
+	assert_eq(wq.enemies_in_radius(Vector2.ZERO, INF, 256).size(), 2, "unbound: every registered body")
+	wq.bind_bullets(manager)
+	wq.refresh(DT)
+	var got := wq.enemies_in_radius(Vector2.ZERO, INF, 256)
+	assert_eq(got.size(), 1)
+	assert_eq(_id(got[0]), inside.get_instance_id())
+	assert_eq(_id(wq.nearest_enemy(Vector2(800, 0), INF)), inside.get_instance_id())
+
+
+func test_a_body_without_health_reports_set_hp_frac() -> void:
+	var n := _add(Vector2(10, 0))
+	wq.refresh(DT)
+	assert_eq(_f(wq.nearest_enemy(Vector2.ZERO, 100.0), "hp_frac"), 1.0)
+	wq.set_hp_frac(n, 0.25)
+	wq.refresh(DT)
+	assert_eq(_f(wq.nearest_enemy(Vector2.ZERO, 100.0), "hp_frac"), 0.25)
+
+
+func test_training_dummies_register_and_leave_while_down() -> void:
+	var dummy := (load("res://scenes/training_dummy.tscn") as PackedScene).instantiate() as TrainingDummy
+	dummy.position = Vector2(300, 0)
+	add_child_autofree(dummy)
+	assert_true(WorldQuery.is_registered(dummy))
+	(dummy.get_node("Hurtbox") as Hurtbox).receive_hit(10.0, Vector2.ZERO, Vector2.ZERO)
+	WorldQuery.refresh(DT)
+	var hit := {}
+	for d in WorldQuery.enemies_in_radius(Vector2(300, 0), 1.0, 256):
+		if _id(d) == dummy.get_instance_id():
+			hit = d
+	assert_eq(_sn(hit, "kind"), EnemyKinds.DUMMY)
+	assert_almost_eq(_f(hit, "hp_frac"), 0.75, 0.0001)
+	assert_eq(_f(hit, "radius"), dummy.body_radius)
+	(dummy.get_node("Hurtbox") as Hurtbox).receive_hit(dummy.max_health, Vector2.ZERO, Vector2.ZERO)
+	assert_false(WorldQuery.is_registered(dummy), "a downed dummy is not a target")
+	dummy._process(dummy.respawn_delay + 0.01)
+	assert_true(WorldQuery.is_registered(dummy), "back after it respawns")
+
 
 func test_raycast_hits_the_first_wall_with_its_normal() -> void:
 	var manager := BulletManager.new()

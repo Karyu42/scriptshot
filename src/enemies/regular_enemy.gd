@@ -119,7 +119,8 @@ func is_alive() -> bool:
 	return _alive
 
 
-## Stable kind for GameEvents and WorldQuery (an EnemyKinds constant).
+## Stable kind for GameEvents and WorldQuery (an EnemyKinds constant). Elites,
+## the Herald and halves are drifter bodies too; rarity tells them apart.
 func enemy_kind() -> StringName:
 	return EnemyKinds.SWARMER if archetype == ARCH_SWARMER else EnemyKinds.DRIFTER
 
@@ -159,7 +160,7 @@ func _exit_tree() -> void:
 func _register_world() -> void:
 	if not _alive:
 		return
-	WorldQuery.register_enemy(self, enemy_kind(), enemy_rarity(), enemy_tier(), health)
+	WorldQuery.register_enemy(self, enemy_kind(), enemy_rarity(), enemy_tier(), body_radius, health)
 
 
 func _physics_process(delta: float) -> void:
@@ -296,7 +297,7 @@ func _on_died() -> void:
 	_alive = false
 	_hurtbox.active = false
 	WorldQuery.unregister_enemy(self)
-	GameEvents.enemy_killed.emit(enemy_kind(), enemy_rarity(), enemy_tier(), global_position)
+	GameEvents.enemy_killed.emit(enemy_kind(), enemy_rarity(), enemy_tier(), global_position, true)
 	died.emit()
 	hide()
 	queue_free()

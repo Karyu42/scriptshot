@@ -79,12 +79,6 @@ func configure_elite(
 	)
 
 
-func enemy_kind() -> StringName:
-	if is_half:
-		return EnemyKinds.SPLIT_HALF
-	return EnemyKinds.HERALD if is_herald else EnemyKinds.ELITE_DRIFTER
-
-
 func enemy_rarity() -> int:
 	return EnemyKinds.RARITY_NONE if is_half else rarity
 
