@@ -46,11 +46,13 @@ var weapon: LuaShot
 var player: Player
 ## The file the weapon runs, "" while on BasicShot.
 var equipped := ""
-## The file the player chose (what start() and the watcher load).
+## The file the player chose (the editor's current file). start() sets this
+## to the saved equipped file; save() sets it before the load. It can differ
+## from `equipped` after a failed load.
 var selected := ScriptLibrary.DEFAULT_FILE
 ## Why the selected file last failed to load, null when it is running.
 var problem: ScriptProblem = null
-## Watch the selected file for outside edits (PC builds; tests turn it on).
+## Watch the equipped file for outside edits (PC builds; tests turn it on).
 var watch_files := OS.has_feature("pc")
 
 var _known_hash: Dictionary[String, int] = {}
@@ -165,15 +167,25 @@ func _process(_delta: float) -> void:
 	poll_files()
 
 
+## The file hot reload and `script_saved` follow: the one the weapon runs,
+## or the last intended equipped file when that load failed and BasicShot
+## is running.
+func watched_file() -> String:
+	return equipped if not equipped.is_empty() else ScriptLibrary.equipped_file()
+
+
 ## Checks shots/ for outside changes now (the watcher calls this every
-## WATCH_SEC). The selected file reloads; a change to any other file only
+## WATCH_SEC). The equipped file reloads; a change to any other file only
 ## raises `unequipped_file_saved` (rate-limited per file) so the player sees
-## it was saved and is not running. True when the selected file changed and a
-## reload was queued. `now_msec` is for tests.
+## it was saved and is not running. When a load failed and BasicShot is
+## running, the intended equipped file is still watched so a later fix can
+## load. True when the equipped file changed and a reload was queued.
+## `now_msec` is for tests.
 func poll_files(now_msec: int = -1) -> bool:
 	var now := now_msec if now_msec >= 0 else Time.get_ticks_msec()
 	var reloaded := false
 	var present: Dictionary[String, bool] = {}
+	var watched := watched_file()
 	for f in ScriptLibrary.list_files():
 		present[f] = true
 		var h := ScriptLibrary.read(f).hash()
@@ -184,7 +196,7 @@ func poll_files(now_msec: int = -1) -> bool:
 		elif _known_hash[f] == h:
 			continue
 		_known_hash[f] = h
-		if f == selected:
+		if f == watched:
 			script_saved.emit(f, ORIGIN_FILE)
 			request_load(f, ORIGIN_FILE)
 			reloaded = true
