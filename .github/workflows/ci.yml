@@ -18,6 +18,8 @@
 #            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
 #            Chromium (boot; a Lua shot through ScriptHost; one fallback warning when native is requested).
 #            docs/qa/release-builds.md section 4.1.
+#   playtest : non-required "Playtest autoplay (headless Linux)" on every PR and push; drives
+#            src/qa/playtest_autoplay.tscn through the first-playable path. docs/qa/playtest-autoplay.md.
 #   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
 #   native-linux / native-web / gut-windows / gut-macos ("Native libs (linux)", "Native libs (web)",
 #            "GUT (windows, native)", "GUT (macos, native)"): on every PR and push to main, build the native bullet core
@@ -92,7 +94,7 @@ jobs:
           test -f export_presets.cfg || { echo "::error::export_presets.cfg is not committed"; exit 1; }
           # Same checker the manual export job runs. Pure Python, so a bad codesign / ABI /
           # keystore flag fails the PR instead of waiting for a workflow_dispatch export.
-          for preset in "Windows Desktop" "macOS" "Linux" "Web" "Android" "Web (smoke)"; do
+          for preset in "Windows Desktop" "macOS" "Linux" "Web" "Android" "Web (smoke)" "Web (playtest)"; do
             python3 tools/ci/check_export_preset.py export_presets.cfg "$preset"
           done
 
@@ -643,6 +645,44 @@ jobs:
         with:
           name: web-smoke
           path: build/web-smoke/
+          if-no-files-found: ignore
+
+
+  playtest:
+    # Non-required. Static name so it can become a check later without renaming.
+    # Not in branch protection. A red run must not block a merge on its own.
+    name: Playtest autoplay (headless Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache-godot
+        with:
+          path: ${{ env.GODOT_DIR }}
+          key: godot-bin-${{ runner.os }}-${{ env.GODOT_VERSION }}-${{ env.GODOT_CHANNEL }}
+      - name: Download Godot (pinned, checksum-verified)
+        if: steps.cache-godot.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          base="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_CHANNEL}"
+          zip="Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64.zip"
+          mkdir -p "$GODOT_DIR" && cd "$GODOT_DIR"
+          curl -fsSL --retry 3 -O "$base/$zip" -O "$base/SHA512-SUMS.txt"
+          grep -F " $zip" SHA512-SUMS.txt | sha512sum -c -
+          unzip -q "$zip" && rm "$zip"
+          mv "Godot_v${GODOT_VERSION}-${GODOT_CHANNEL}_linux.x86_64" godot
+          chmod +x godot
+      - name: Fetch native Lua libraries (linux.x86_64)
+        if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        run: bash tools/ci/fetch_native_libs.sh linux.x86_64
+      - name: Playtest autoplay (headless)
+        run: ./tools/ci/playtest.sh
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: playtest-reports
+          path: reports/playtest/
           if-no-files-found: ignore
 
   export:

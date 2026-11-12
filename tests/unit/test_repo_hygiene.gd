@@ -37,9 +37,9 @@ func test_build_output_directory_is_ignored() -> void:
 
 
 const REQUIRED_PRESETS: Array[String] = ["Windows Desktop", "macOS", "Linux", "Web", "Android"]
-## Not release targets: "Web (smoke)" is the browser smoke build (tools/ci/web_smoke.sh). The release
-## export matrix never lists it, and tools/ci/check_export_preset.py ties it to the Web preset.
-const QA_PRESETS: Array[String] = ["Web (smoke)"]
+## Not release targets. "Web (smoke)" and "Web (playtest)" are QA exports. The release
+## export matrix never lists them, and tools/ci/check_export_preset.py ties each to the Web preset.
+const QA_PRESETS: Array[String] = ["Web (smoke)", "Web (playtest)"]
 
 
 func _preset_names(cfg: ConfigFile) -> Array[String]:
