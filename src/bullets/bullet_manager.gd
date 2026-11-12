@@ -13,6 +13,11 @@ extends Node2D
 ## (ties broken by tree order), so the manager runs after everything at the
 ## default priority of 0.
 const PHYSICS_PRIORITY := 100
+## apply_batch warn_code values. Kept in step with native_bullet_sim.cpp.
+const BATCH_WARN_VELOCITY := 1
+const BATCH_WARN_SPEED := 2
+const BATCH_WARN_PA := 3
+const BATCH_WARN_PB := 4
 ## Managers currently in a tree. Reflector enter/exit notifies each of them.
 ## Node2D, not BulletManager: a static Array of this class cannot be parsed
 ## while the class is still being compiled.
@@ -989,32 +994,76 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 	pool.teleport(slot, Vector2(x, y))
 
 
-## Emits apply_batch's offending rows in the order the pool would warn.
-## pa and pb share BulletPool.hook_write, so the first LIMIT prints and the
-## last message follow this list. One sim call per commit; this walk is only
-## the rows that warned.
+## Emits apply_batch's offending rows in warn_row order, which is the order the
+## pool would warn. pa and pb share BulletPool.hook_write, so the first LIMIT
+## prints and the last message follow this list. One sim call per commit.
+## A report without warn_code (an older library) uses the totals instead.
 func _emit_native_batch_warnings(report: Dictionary) -> void:
-	@warning_ignore("unsafe_cast")
-	var rows := report["warn_row"] as PackedInt32Array
-	@warning_ignore("unsafe_cast")
-	var keys := report["warn_key"] as PackedStringArray
-	@warning_ignore("unsafe_cast")
-	var whats := report["warn_what"] as PackedStringArray
-	@warning_ignore("unsafe_cast")
-	var wvx := report["warn_vx"] as PackedFloat32Array
-	@warning_ignore("unsafe_cast")
-	var wvy := report["warn_vy"] as PackedFloat32Array
-	var n := rows.size()
-	n = mini(n, keys.size())
-	n = mini(n, whats.size())
-	n = mini(n, wvx.size())
-	n = mini(n, wvy.size())
+	var codes := _report_ints(report, "warn_code")
+	if codes.is_empty():
+		_emit_native_batch_warnings_from_totals(report)
+		return
+	var rows := _report_ints(report, "warn_row")
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
+	var n := mini(rows.size(), codes.size())
+	var clamp_i := 0
 	for i in n:
-		var key := keys[i]
-		if key == "BulletPool.set_velocity.clamp.speed":
-			BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(wvx[i], wvy[i]))
-		else:
-			BulletPool.report_removed(key, whats[i])
+		var row := rows[i]
+		if row < 0:
+			continue
+		match codes[i]:
+			BATCH_WARN_VELOCITY:
+				BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+			BATCH_WARN_SPEED:
+				if clamp_i < clamp_vx.size() and clamp_i < clamp_vy.size():
+					BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[clamp_i], clamp_vy[clamp_i]))
+				clamp_i += 1
+			BATCH_WARN_PA:
+				BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+			BATCH_WARN_PB:
+				BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
+
+
+## Category totals, for a library that does not send warn_row / warn_code.
+func _emit_native_batch_warnings_from_totals(report: Dictionary) -> void:
+	var vel_nf := _report_count(report, "vel_nonfinite")
+	var pa_nf := _report_count(report, "pa_nonfinite")
+	var pb_nf := _report_count(report, "pb_nonfinite")
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
+	for _i in vel_nf:
+		BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+	var clamps := mini(clamp_vx.size(), clamp_vy.size())
+	for i in clamps:
+		BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[i], clamp_vy[i]))
+	for _i in pa_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+	for _i in pb_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
+
+
+func _report_count(report: Dictionary, key: String) -> int:
+	var value: Variant = report.get(key, 0)
+	if not value is int:
+		return 0
+	@warning_ignore("unsafe_cast")
+	var n := value as int
+	return n
+
+
+func _report_ints(report: Dictionary, key: String) -> PackedInt32Array:
+	var value: Variant = report.get(key, PackedInt32Array())
+	if value is PackedInt32Array:
+		return value
+	return PackedInt32Array()
+
+
+func _report_floats(report: Dictionary, key: String) -> PackedFloat32Array:
+	var value: Variant = report.get(key, PackedFloat32Array())
+	if value is PackedFloat32Array:
+		return value
+	return PackedFloat32Array()
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:

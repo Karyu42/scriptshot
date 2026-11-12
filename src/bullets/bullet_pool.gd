@@ -858,11 +858,12 @@ func _clamp_into_range(i: int) -> void:
 ## key per field (`<where>.clamp.<field>`), so a script that clamps every tick cannot
 ## flood the log: ScriptWarnings prints each key LIMIT times and then goes quiet.
 ## `where` is the code path ("BulletPool.spawn", "BulletPool.hook_write", ...).
-func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
-	ScriptWarnings.warn(
-		"%s.clamp.%s" % [where, field],
-		"%s: %s %s is outside its allowed range and was clamped to %s (BulletLimits.%s)" % [where, field, _fmt_number(asked), _fmt_number(kept), limit_name]
-	)
+static func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
+	var key := "%s.clamp.%s" % [where, field]
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.clamp_message(where, field, asked, kept, limit_name))
+	else:
+		ScriptWarnings.keep_clamp(key, where, field, asked, kept, limit_name)
 
 
 ## Number for a warning: plain up to 1e7, scientific beyond (1e30 would be 31 digits).
@@ -875,29 +876,31 @@ static func _fmt_number(x: float) -> String:
 
 ## Speed over BulletLimits.MAX_SPEED. The length is taken in a way that cannot
 ## overflow (a velocity component near 1e30 would square to inf).
-func _warn_speed_clamped(where: String, v: Vector2) -> void:
+static func _warn_speed_clamped(where: String, v: Vector2) -> void:
 	report_speed_clamp(where, v)
 
 
 ## Same text as a pool set_velocity / hook_write removal. Native batch commits
 ## call this so both backings share one message.
 static func report_removed(key: String, what: String) -> void:
-	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.removed_message(key, what))
+	else:
+		ScriptWarnings.keep_removed(key, what)
 
 
 ## Same text as `_note_clamp` for a speed ceiling. `where` is the code path
 ## ("BulletPool.set_velocity", "BulletPool.hook_write", ...).
 static func report_speed_clamp(where: String, v: Vector2) -> void:
-	var m := maxf(absf(v.x), absf(v.y))
-	var speed := (v / m).length() * m if m > 0.0 else 0.0
-	ScriptWarnings.warn(
-		"%s.clamp.speed" % where,
-		"%s: speed %s is outside its allowed range and was clamped to %s (BulletLimits.MAX_SPEED)" % [where, _fmt_number(speed), _fmt_number(BulletLimits.MAX_SPEED)]
-	)
+	var key := "%s.clamp.speed" % where
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.speed_message(where, v))
+	else:
+		ScriptWarnings.keep_speed(key, v)
 
 
 ## spawn_simple(): the clamped fields are velocity, lifetime and radius.
-func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> void:
+static func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> void:
 	if BulletLimits.exceeds(v):
 		_warn_speed_clamped(where, v)
 	if r < 0.0 or r > MAX_RADIUS:
@@ -907,7 +910,7 @@ func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> v
 
 
 ## spawn(): names each field of `request` that had to be clamped.
-func _warn_clamped_request(where: String, request: ShotRequest) -> void:
+static func _warn_clamped_request(where: String, request: ShotRequest) -> void:
 	_warn_clamped_fields(where, request.velocity, request.radius, request.lifetime)
 	var acc := request.acceleration
 	if absf(acc) > MAX_ACCELERATION:
