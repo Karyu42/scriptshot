@@ -81,6 +81,7 @@ func _bind_open_world() -> void:
 	_herald_director = get_node_or_null("HeraldDirector") as HeraldDirector
 	if _herald_director != null and _herald != null:
 		_herald_director.bind(_herald, _player, _save)
+		_herald_director.slice = _slice
 	# The bullet window follows the camera. The sandbox scene has no chunk
 	# stream and keeps the fixed rect its walls were built for.
 	_bullets.bounds_center = _camera

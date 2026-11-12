@@ -317,10 +317,15 @@ func test_main_scene_spawns_a_fightable_herald_and_a_reload_does_not() -> void:
 	assert_almost_eq(herald.health.hp, 75.0, 0.01)
 	assert_true(herald.cue.draws_ring())
 	assert_eq(herald.cue.glyph, EliteCue.GLYPH_CIRCLE)
-	assert_almost_eq(herald.global_position.x, 1800.0, 1.5)
+	# East from (600, 0) lands at (1800, 0) in room A, behind shut G1: the
+	# vertical-slice ribbon redirects it into room C (test_slice_herald).
+	assert_eq(herald.global_position, SliceLayout.HERALD_REDIRECT)
 	assert_gte(herald.global_position.length() - herald.body_radius, WorldGen.SAFE_RADIUS - 0.05)
 	assert_eq(WorldGen.tier_at(herald.global_position.x, herald.global_position.y), 0)
 	var bullets := main.get_node("BulletManager") as BulletManager
+	# The bullet window follows the camera at the player; put it on the Herald.
+	bullets.bounds_center = null
+	bullets.recenter_world_bounds(herald.global_position)
 	var hp := herald.health.hp
 	_one_shot(bullets, herald)
 	assert_almost_eq(herald.health.hp, hp - 1.0, 0.01)

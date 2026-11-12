@@ -87,6 +87,9 @@ const GATE_IDS: Array[StringName] = [&"G0", &"G1", &"G2", &"G3", &"G4", &"G5"]
 const ROOM_IDS: Array[StringName] = [&"S", &"A", &"B", &"C", &"D", &"E", &"alcove"]
 
 const GATE_COLOR := Arena.BORDER_COLOR
+## Where the Herald goes when its point would land in a walled room (§2, §10
+## row 6): room C, beside the Drifter pack.
+const HERALD_REDIRECT := Vector2(4700, 180)
 
 ## Forces every gate open while true (debug). The per-gate flags are kept, so
 ## turning it off restores them.
@@ -109,6 +112,7 @@ var _walls_body: StaticBody2D
 var _bullets: BulletManager
 var _bullet_walls_queued := false
 var _built := false
+var _walls_cached: Array[Rect2] = []
 
 
 func _init() -> void:
@@ -265,6 +269,48 @@ func gate_flag(id: StringName) -> bool:
 ## The StaticBody2D of gate `id` (tests, tools), or null.
 func gate_body(id: StringName) -> StaticBody2D:
 	return _gate_bodies[id] if _gate_bodies.has(id) else null
+
+
+# --- Herald redirect (§2 "Herald clamp", §10 row 6) ------------------------------
+
+## The Herald's spawn point for `p` (a body of `radius`). Kept when it is in
+## open C or outside the footprint; HERALD_REDIRECT when the body would land
+## in S, A, B, D, E, the alcove, a corridor, or touch a slice wall or a shut
+## gate. A point inside the footprint but outside every room and corridor
+## (the open ground between rooms) is kept, like a point outside it.
+func redirect_herald(p: Vector2, radius: float) -> Vector2:
+	if not p.is_finite():
+		return HERALD_REDIRECT
+	if touches_wall(p, radius):
+		return HERALD_REDIRECT
+	var room := room_at(p)
+	if room == &"" or room == ROOM_C:
+		return p
+	return HERALD_REDIRECT
+
+
+## True when a circle at `p` of `radius` overlaps a fixed wall or a shut gate.
+func touches_wall(p: Vector2, radius: float) -> bool:
+	if not FOOTPRINT.grow(radius).has_point(p):
+		return false
+	for r in _wall_cache():
+		if _circle_hits(p, radius, r):
+			return true
+	for id in GATE_IDS:
+		if not is_gate_open(id) and _circle_hits(p, radius, gate_rect(id)):
+			return true
+	return false
+
+
+static func _circle_hits(p: Vector2, radius: float, r: Rect2) -> bool:
+	var q := Vector2(clampf(p.x, r.position.x, r.end.x), clampf(p.y, r.position.y, r.end.y))
+	return q.distance_squared_to(p) < radius * radius
+
+
+func _wall_cache() -> Array[Rect2]:
+	if _walls_cached.is_empty():
+		_walls_cached = wall_rects()
+	return _walls_cached
 
 
 # --- bullets -------------------------------------------------------------------------
