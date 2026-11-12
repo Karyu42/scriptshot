@@ -20,7 +20,9 @@ extends Node
 ## and respawned (the same dummy instance dying again).
 signal enemy_killed(kind: StringName, rarity: int, tier: int, position: Vector2, first_death: bool)
 ## A boss died. `boss_kind` is an EnemyKinds constant such as EnemyKinds.WARDEN.
-## A boss emits this instead of enemy_killed.
+## Every death emits enemy_killed (§6.1), a boss's too: the boss emits
+## enemy_killed first (kind = boss_kind, first_death true) and then this, in the
+## same tick, so a boss_defeated listener can assume the kill was counted.
 signal boss_defeated(boss_kind: StringName, rarity: int, tier: int, position: Vector2)
 signal run_started
 signal run_ended(victory: bool)

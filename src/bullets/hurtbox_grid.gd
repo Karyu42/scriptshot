@@ -193,7 +193,9 @@ func query_circle(center: Vector2, query_r: float, layer_mask: int) -> int:
 ## looks at the cell under `center`, this walks every cell the query circle
 ## covers (clamped to the grid). Only targets bucketed this tick are seen: the
 ## grid window is the range limit. Targets added without a ref are skipped.
-## Not on the bullet path; allocates the result.
+## Not on the bullet path; allocates the result. GDScript-only: the refs are
+## Objects (Hurtboxes), so never hand this result to a script (#50); build
+## plain data from it first.
 func query_radius(center: Vector2, query_radius_px: float, layer_mask: int) -> Array:
 	var out: Array = []
 	if target_count == 0 or not center.is_finite() or is_nan(query_radius_px) or query_radius_px < 0.0:

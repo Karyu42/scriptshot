@@ -194,9 +194,11 @@ func test_snapshot_stays_consistent_until_the_next_refresh() -> void:
 	# A body added mid-tick is not in this tick's answers.
 	_add(Vector2(10, 0))
 	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 64).size(), 1)
-	# Unregistering mid-tick does not change this tick's answers either.
+	# A body that dies (unregisters) after the snapshot is skipped at once:
+	# answers are living candidates only.
 	wq.unregister_enemy(a)
-	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 64).size(), 1)
+	assert_eq(wq.enemies_in_radius(Vector2.ZERO, 1000.0, 64).size(), 0)
+	assert_eq(wq.nearest_enemy(Vector2.ZERO, 1000.0), {})
 	wq.refresh(DT)
 	var after := wq.enemies_in_radius(Vector2.ZERO, 1000.0, 64)
 	assert_eq(after.size(), 1)
@@ -296,6 +298,90 @@ func test_elites_register_their_kind_and_rarity() -> void:
 
 
 # --- boss_state ------------------------------------------------------------------------
+
+func test_a_freed_body_is_skipped_before_the_next_snapshot() -> void:
+	var a := _add(Vector2(50, 0))
+	var b := _add(Vector2(80, 0))
+	wq.refresh(DT)
+	a.free()
+	assert_eq(_id(wq.nearest_enemy(Vector2.ZERO, 1000.0)), b.get_instance_id())
+	var got := wq.enemies_in_radius(Vector2.ZERO, 1000.0, 64)
+	assert_eq(got.size(), 1)
+	assert_eq(_pos(got[0]), Vector2(80, 0), "positions of the rest stay frozen")
+
+
+func test_a_real_enemy_killed_after_the_snapshot_is_not_returned() -> void:
+	var body := _regular(RegularEnemy.ARCH_DRIFTER, Vector2(900, 0))
+	add_child_autoqfree(body)
+	WorldQuery.refresh(DT)
+	var me := body.get_instance_id()
+	assert_true(_has_id(WorldQuery.enemies_in_radius(Vector2(900, 0), 1.0, 256), me),
+		"alive in the snapshot before it dies")
+	body.health.damage(1000.0)
+	assert_false(_has_id(WorldQuery.enemies_in_radius(Vector2(900, 0), 1.0, 256), me),
+		"the dead body is gone from this tick's answers")
+
+
+func _has_id(rows: Array[Dictionary], id: int) -> bool:
+	for d: Dictionary in rows:
+		if _id(d) == id:
+			return true
+	return false
+
+
+func test_boss_weak_points_are_rebuilt_as_plain_data() -> void:
+	var boss := _body(Vector2(0, -300))
+	var node := Node2D.new()
+	autofree(node)
+	var provider := func() -> Dictionary:
+		return {
+			"phase": 1.0,
+			"phase_count": 0,
+			"node": node,
+			"weak_points": [
+				{"pos": Vector2(5, -300), "radius": 12, "open": false, "node": node},
+				{"pos": Vector2(-5, -300)},
+				node,
+				{"pos": "not a vector"},
+				{"pos": Vector2(INF, 0)},
+			],
+		}
+	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, 40.0, null, true, provider)
+	wq.refresh(DT)
+	var s := wq.boss_state()
+	assert_false(s.has("node"), "only the documented keys")
+	assert_eq(s.size(), 7)
+	assert_eq(_type(s, "phase"), TYPE_INT)
+	assert_eq(_i(s, "phase"), 1)
+	assert_eq(_i(s, "phase_count"), 1, "clamped to at least 1")
+	var weak: Array = s["weak_points"]
+	assert_eq(weak.size(), 2)
+	var first: Dictionary = weak[0]
+	var second: Dictionary = weak[1]
+	assert_eq(first, {"pos": Vector2(5, -300), "radius": 12.0, "open": false})
+	assert_eq(second, {"pos": Vector2(-5, -300), "radius": 0.0, "open": true})
+	for item: Variant in weak:
+		var d: Dictionary = item
+		for key: String in d:
+			assert_ne(_type(d, key), TYPE_OBJECT)
+
+
+func test_a_boss_that_died_after_the_snapshot_has_no_state() -> void:
+	var boss := _body(Vector2(0, 0))
+	wq.register_enemy(boss, EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, 0, 40.0, null, true)
+	wq.refresh(DT)
+	assert_false(wq.boss_state().is_empty())
+	wq.unregister_enemy(boss)
+	assert_eq(wq.boss_state(), {})
+
+
+func test_sandbox_turrets_and_mirrors_are_not_enemies() -> void:
+	for path: String in ["res://scenes/turret.tscn", "res://scenes/mirror.tscn"]:
+		var body := (load(path) as PackedScene).instantiate() as TrainingDummy
+		add_child_autofree(body)
+		assert_false(body.reports_as_enemy())
+		assert_false(WorldQuery.is_registered(body), path)
+
 
 func test_boss_state_is_empty_without_a_boss() -> void:
 	_add(Vector2(10, 0))

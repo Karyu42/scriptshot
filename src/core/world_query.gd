@@ -10,10 +10,12 @@ extends Node
 ## Consistency: answers come from a snapshot taken once per physics tick, at
 ## PHYSICS_PRIORITY, which is after enemies and the player move (priority 0) and
 ## before BulletManager steps the bullets and runs their hooks (priority 100).
-## Every query in a tick sees the same world, even if bodies move or die later
-## in that tick. A body registered mid-tick shows up in the next snapshot; one
-## that died mid-tick stays in this tick's snapshot (its id is then stale; it is
-## gone from the next one). All positions are world space.
+## Every query in a tick sees the same positions, even if bodies move later in
+## that tick. A body registered mid-tick shows up in the next snapshot. A body
+## that died (unregistered) or was freed after the snapshot is skipped at query
+## time, so the answer is always a living candidate (§6.2); the positions of the
+## others stay frozen. Code that runs before PHYSICS_PRIORITY (the player's
+## weapon at 0) sees the previous tick's positions. All positions are world space.
 ##
 ## Registry: an enemy calls register_enemy() when it enters the tree and
 ## unregister_enemy() when it dies or leaves. A boss registers with
@@ -22,7 +24,10 @@ extends Node
 ## Range limit: while a BulletManager is bound (Main binds its own), only bodies
 ## inside its world_bounds (the live hurtbox-grid window around the camera) are
 ## in the snapshot, the same bodies HurtboxGrid.query_radius() can see. That
-## window is the only range limit; there is no gameplay cap on calls.
+## window is the only range limit; there is no gameplay cap on calls. The window
+## is the one BulletManager used last tick: it recentres on the camera in its own
+## step() (priority 100, after this snapshot), so it lags camera motion by one
+## physics frame.
 
 ## After enemies (0), before BulletManager (BulletManager.PHYSICS_PRIORITY = 100).
 const PHYSICS_PRIORITY := 90
@@ -225,6 +230,8 @@ func nearest_enemy(pos: Vector2, max_range: float, exclude: Variant = PackedInt6
 			continue
 		if not skip.is_empty() and skip.has(_ids[row]):
 			continue
+		if not _alive(row):
+			continue
 		if d < best_d or (d == best_d and _ids[row] < _ids[best]):
 			best = row
 			best_d = d
@@ -248,7 +255,7 @@ func enemies_in_radius(pos: Vector2, r: float, cap: int) -> Array[Dictionary]:
 	for row in _ids.size():
 		var d := pos.distance_squared_to(_pos[row])
 		dist[row] = d
-		if d <= limit:
+		if d <= limit and _alive(row):
 			rows.append(row)
 	var ids := _ids
 	rows.sort_custom(func(a: int, b: int) -> bool:
@@ -261,12 +268,16 @@ func enemies_in_radius(pos: Vector2, r: float, cap: int) -> Array[Dictionary]:
 	return out
 
 
-## The registered boss, or {} when there is none: {id, kind, phase,
-## phase_count, hp_frac, pos, weak_points}. phase / phase_count / weak_points
-## come from the boss's provider; a missing provider or a non-Dictionary answer
-## reads as phase 0 of 1 with no weak points.
+## The registered boss, or {} when there is none (or it died after the
+## snapshot): {id, kind, phase, phase_count, hp_frac, pos, weak_points}.
+## phase / phase_count / weak_points come from the boss's provider and are
+## rebuilt as plain data: phase and phase_count as ints (phase_count >= 1),
+## weak_points as an Array of {pos: Vector2, radius: float, open: bool}. A weak
+## point that is not a Dictionary with a Vector2 `pos` is dropped; nothing the
+## provider returns is passed through. A missing provider or a non-Dictionary
+## answer reads as phase 0 of 1 with no weak points.
 func boss_state() -> Dictionary:
-	if _boss_row < 0:
+	if _boss_row < 0 or not _alive(_boss_row):
 		return {}
 	var id := _ids[_boss_row]
 	var state: Dictionary = {}
@@ -275,14 +286,17 @@ func boss_state() -> Dictionary:
 		var got: Variant = e.boss_state.call()
 		if got is Dictionary:
 			@warning_ignore("unsafe_cast")
-			state = (got as Dictionary).duplicate(true)
-	var phase: int = state.get("phase", 0)
-	var phase_count: int = state.get("phase_count", 1)
-	var weak: Array = []
+			state = got as Dictionary
+	var phase := _as_int(state.get("phase", 0), 0)
+	var phase_count := maxi(_as_int(state.get("phase_count", 1), 1), 1)
+	var weak: Array[Dictionary] = []
 	var weak_v: Variant = state.get("weak_points", [])
 	if weak_v is Array:
 		@warning_ignore("unsafe_cast")
-		weak = weak_v as Array
+		for item: Variant in weak_v as Array:
+			var wp := _weak_point(item)
+			if not wp.is_empty():
+				weak.append(wp)
 	return {
 		"id": id,
 		"kind": _kind[_boss_row],
@@ -329,6 +343,52 @@ func _row_dict(row: int) -> Dictionary:
 		"tier": _tier[row],
 		"is_boss": _boss[row] != 0,
 	}
+
+
+## Snapshot row `row` still belongs to a registered, live body.
+func _alive(row: int) -> bool:
+	var e: Entry = _entries.get(_ids[row], null)
+	return e != null and is_instance_valid(e.body)
+
+
+static func _as_int(v: Variant, fallback: int) -> int:
+	if v is int:
+		@warning_ignore("unsafe_cast")
+		return v as int
+	if v is float:
+		@warning_ignore("unsafe_cast")
+		var f := v as float
+		if is_finite(f):
+			return int(f)
+	return fallback
+
+
+## {pos, radius, open} from one provider entry, or {} if it has no Vector2 pos.
+static func _weak_point(item: Variant) -> Dictionary:
+	if not item is Dictionary:
+		return {}
+	@warning_ignore("unsafe_cast")
+	var d := item as Dictionary
+	var p: Variant = d.get("pos")
+	if not p is Vector2:
+		return {}
+	@warning_ignore("unsafe_cast")
+	var pos := p as Vector2
+	if not pos.is_finite():
+		return {}
+	var radius := 0.0
+	var r: Variant = d.get("radius", 0.0)
+	if r is float or r is int:
+		@warning_ignore("unsafe_cast")
+		radius = float(r as float) if r is float else float(r as int)
+	if not is_finite(radius) or radius < 0.0:
+		radius = 0.0
+	var open := true
+	var o: Variant = d.get("open", true)
+	if o is bool:
+		@warning_ignore("unsafe_cast")
+		open = o as bool
+	return {"pos": pos, "radius": radius, "open": open}
 
 
 func _clear_snapshot() -> void:
