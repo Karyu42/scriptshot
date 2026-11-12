@@ -322,6 +322,68 @@ func test_a_real_enemy_killed_after_the_snapshot_is_not_returned() -> void:
 		"the dead body is gone from this tick's answers")
 
 
+func test_nearest_falls_back_when_the_winners_died_after_the_snapshot() -> void:
+	var a := _add(Vector2(10, 0))
+	var b := _add(Vector2(20, 0))
+	var c := _add(Vector2(30, 0))
+	var d := _add(Vector2(40, 0))
+	wq.refresh(DT)
+	wq.unregister_enemy(a)
+	b.free()
+	assert_eq(_id(wq.nearest_enemy(Vector2.ZERO, 1000.0)), c.get_instance_id(), "next best alive")
+	var skip_c := PackedInt64Array([c.get_instance_id()])
+	assert_eq(_id(wq.nearest_enemy(Vector2.ZERO, 1000.0, skip_c)), d.get_instance_id())
+	wq.unregister_enemy(c)
+	wq.unregister_enemy(d)
+	assert_true(wq.nearest_enemy(Vector2.ZERO, 1000.0).is_empty(), "all dead: none")
+
+
+func test_radius_backfills_dead_rows_and_keeps_the_cap() -> void:
+	var bodies: Array[Node2D] = []
+	for i in 6:
+		bodies.append(_add(Vector2(10 * (i + 1), 0)))
+	wq.refresh(DT)
+	wq.unregister_enemy(bodies[0])
+	bodies[2].free()
+	var got := wq.enemies_in_radius(Vector2.ZERO, 1000.0, 3)
+	assert_eq(got.size(), 3, "cap still filled from the remaining candidates")
+	var want: Array[int] = [bodies[1].get_instance_id(), bodies[3].get_instance_id(), bodies[4].get_instance_id()]
+	var ids: Array[int] = []
+	for e: Dictionary in got:
+		ids.append(_id(e))
+	assert_eq(ids, want, "nearest first, dead rows skipped")
+
+
+func test_query_timing_at_256_and_1000_bodies() -> void:
+	# Printed micro-bench (SE re-review #76): liveness is checked on the winner
+	# only, so a call costs about one pass over the snapshot. Loose bound only.
+	for n: int in [256, 1000]:
+		wq.reset()
+		var holder := Node2D.new()
+		add_child_autofree(holder)
+		var rng := RandomNumberGenerator.new()
+		rng.seed = 7
+		for i in n:
+			var body := Node2D.new()
+			body.position = Vector2(rng.randf_range(-500, 500), rng.randf_range(-500, 500))
+			holder.add_child(body)
+			wq.register_enemy(body, EnemyKinds.DRIFTER, EnemyKinds.RARITY_NONE, 0, 10.0)
+		wq.refresh(DT)
+		var reps := 200
+		var t0 := Time.get_ticks_usec()
+		for k in reps:
+			wq.nearest_enemy(Vector2(k % 50, 0), 10000.0)
+		var t1 := Time.get_ticks_usec()
+		for k in reps:
+			wq.enemies_in_radius(Vector2(k % 50, 0), 10000.0, 16)
+		var t2 := Time.get_ticks_usec()
+		var near_us := float(t1 - t0) / reps
+		var radius_us := float(t2 - t1) / reps
+		gut.p("WorldQuery %d bodies: nearest_enemy %.1f us, enemies_in_radius(cap 16) %.1f us" % [n, near_us, radius_us])
+		assert_lt(near_us, 5000.0, "nearest_enemy stays a single cheap pass")
+		holder.free()
+
+
 func _has_id(rows: Array[Dictionary], id: int) -> bool:
 	for d: Dictionary in rows:
 		if _id(d) == id:

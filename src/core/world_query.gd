@@ -222,22 +222,30 @@ func nearest_enemy(pos: Vector2, max_range: float, exclude: Variant = PackedInt6
 		return {}
 	var skip := _exclude_set(exclude)
 	var limit := max_range * max_range
-	var best := -1
-	var best_d := INF
-	for row in _ids.size():
-		var d := pos.distance_squared_to(_pos[row])
-		if d > limit:
-			continue
-		if not skip.is_empty() and skip.has(_ids[row]):
-			continue
-		if not _alive(row):
-			continue
-		if d < best_d or (d == best_d and _ids[row] < _ids[best]):
+	# Find the winner on snapshot data alone, then check only it is still alive
+	# (it may have died after the snapshot); if not, rescan without it.
+	var dead: Dictionary[int, bool] = {}
+	for _attempt in _ids.size() + 1:
+		var best := -1
+		var best_d := INF
+		for row in _ids.size():
+			var d := pos.distance_squared_to(_pos[row])
+			if d > limit:
+				continue
+			if d > best_d or (d == best_d and _ids[row] > _ids[best]):
+				continue
+			if not skip.is_empty() and skip.has(_ids[row]):
+				continue
+			if not dead.is_empty() and dead.has(row):
+				continue
 			best = row
 			best_d = d
-	if best < 0:
-		return {}
-	return _row_dict(best)
+		if best < 0:
+			return {}
+		if _alive(best):
+			return _row_dict(best)
+		dead[best] = true
+	return {}
 
 
 ## Enemies within `r` of `pos` (inclusive), nearest first (ties: lower id
@@ -255,7 +263,7 @@ func enemies_in_radius(pos: Vector2, r: float, cap: int) -> Array[Dictionary]:
 	for row in _ids.size():
 		var d := pos.distance_squared_to(_pos[row])
 		dist[row] = d
-		if d <= limit and _alive(row):
+		if d <= limit:
 			rows.append(row)
 	var ids := _ids
 	rows.sort_custom(func(a: int, b: int) -> bool:
@@ -263,8 +271,13 @@ func enemies_in_radius(pos: Vector2, r: float, cap: int) -> Array[Dictionary]:
 			return dist[a] < dist[b]
 		return ids[a] < ids[b]
 	)
-	for k in mini(n, rows.size()):
-		out.append(_row_dict(rows[k]))
+	# Liveness is checked only while filling: a body that died after the
+	# snapshot is dropped and the next sorted candidate takes its place.
+	for row in rows:
+		if out.size() >= n:
+			break
+		if _alive(row):
+			out.append(_row_dict(row))
 	return out
 
 
