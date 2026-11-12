@@ -263,3 +263,148 @@ func test_native_batch_owner_counts_drains_and_strips() -> void:
 	m.step(DT)
 	m.step(DT)
 	assert_eq(_drained, [owner] as Array[int])
+
+
+# --- re-entrant drain listeners (SE review #76, blocker) ---------------------------
+
+## The hot-reload listener: release the generation that just drained.
+func _release_on_drain(m: BulletManager) -> void:
+	m.hooked_owner_drained.connect(func(id: int) -> void: m.release_behavior(id))
+
+
+func test_a_listener_that_releases_does_not_double_fire_gd() -> void:
+	# GD stand-in for the native case: owner b sits in the native watch with no
+	# native store, the state a batch-only owner is in once its sim rows are gone.
+	_release_on_drain(manager)
+	var a := manager.register_behavior(Steer.new())
+	var b := manager.register_behavior(Batch.new())
+	_spawn(a, Vector2(10, 0), 0.5 * DT)
+	manager._native_owner_watch[b] = true
+	manager.step(DT)
+	_drained.sort()
+	assert_eq(_drained, [a, b] as Array[int], "each owner exactly once")
+	manager.step(DT)
+	assert_eq(_drained.size(), 2)
+
+
+func test_listeners_calling_strip_and_clear_do_not_double_fire() -> void:
+	var a := manager.register_behavior(Steer.new())
+	var b := manager.register_behavior(Steer.new())
+	var c := manager.register_behavior(Steer.new())
+	manager.hooked_owner_drained.connect(func(id: int) -> void:
+		manager.strip_hooks_for_owner(id)
+		manager.strip_hooks_for_owner(c)
+		manager.clear_bullets()
+	)
+	_spawn(a, Vector2(10, 0), 0.5 * DT)
+	_spawn(b, Vector2(10, 0), 0.5 * DT)
+	_spawn(c, Vector2(10, 0), 5.0)
+	manager._native_owner_watch[b] = true
+	manager.step(DT)
+	var counts: Dictionary[int, int] = {}
+	for id in _drained:
+		var n: int = counts.get(id, 0)
+		counts[id] = n + 1
+	assert_eq(counts, {a: 1, b: 1, c: 1} as Dictionary[int, int])
+
+
+func test_a_listener_that_spawns_again_keeps_the_owner_alive() -> void:
+	var a := manager.register_behavior(Steer.new())
+	var respawned := [false]
+	manager.hooked_owner_drained.connect(func(id: int) -> void:
+		if not respawned[0]:
+			respawned[0] = true
+			manager.spawn(_shot(id))
+	)
+	_spawn(a, Vector2(10, 0), 0.5 * DT)
+	manager.step(DT)
+	assert_eq(_drained, [a] as Array[int])
+	assert_eq(manager.hooked_count_for_owner(a), 1)
+
+
+func test_native_two_owners_drain_in_one_tick_and_the_listener_releases() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	var m := _make_manager("native")
+	_release_on_drain(m)
+	var a := m.register_behavior(Steer.new())
+	var b := m.register_behavior(Batch.new())
+	assert_false(m.is_native_id(m.spawn(_shot(a, Vector2(10, 0), 0.5 * DT))))
+	assert_true(m.is_native_id(m.spawn(_shot(b, Vector2(10, 0), 0.5 * DT))))
+	m.step(DT)
+	_drained.sort()
+	assert_eq(_drained, [a, b] as Array[int], "each owner exactly once")
+	# And the other order: native first in the watch, pool second.
+	_drained.clear()
+	var c := m.register_behavior(Batch.new())
+	var d := m.register_behavior(Steer.new())
+	assert_true(m.is_native_id(m.spawn(_shot(c, Vector2(10, 0), 0.5 * DT))))
+	m.spawn(_shot(d, Vector2(10, 0), 0.5 * DT))
+	m.step(DT)
+	_drained.sort()
+	assert_eq(_drained, [c, d] as Array[int])
+
+
+# --- native drains by hit and by wall -------------------------------------------------
+
+func _native_or_pending() -> BulletManager:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return null
+	return _make_manager("native")
+
+
+func test_native_batch_owner_drains_by_hit() -> void:
+	var m := _native_or_pending()
+	if m == null:
+		return
+	var hb := Hurtbox.new()
+	hb.radius = 16.0
+	hb.layer = Layers.ENEMY
+	hb.position = Vector2(30, 0)
+	add_child_autofree(hb)
+	var owner := m.register_behavior(Batch.new())
+	assert_true(m.is_native_id(m.spawn(_shot(owner, Vector2(600, 0), 5.0))))
+	for _i in 10:
+		m.step(DT)
+		if not _drained.is_empty():
+			break
+	assert_eq(_drained, [owner] as Array[int])
+	assert_eq(m.hooked_count_for_owner(owner), 0)
+
+
+func test_native_batch_owner_drains_by_wall() -> void:
+	var m := _native_or_pending()
+	if m == null:
+		return
+	m.add_wall(Rect2(60, -100, 40, 200))
+	var owner := m.register_behavior(Batch.new())
+	assert_true(m.is_native_id(m.spawn(_shot(owner, Vector2(600, 0), 5.0))))
+	for _i in 10:
+		m.step(DT)
+		if not _drained.is_empty():
+			break
+	assert_eq(_drained, [owner] as Array[int])
+	assert_eq(m.hooked_count_for_owner(owner), 0)
+
+
+func test_gd_owner_drains_by_hit_and_by_wall() -> void:
+	var hb := Hurtbox.new()
+	hb.radius = 16.0
+	hb.layer = Layers.ENEMY
+	hb.position = Vector2(30, 0)
+	add_child_autofree(hb)
+	manager.add_wall(Rect2(60, 200, 40, 200))
+	var by_hit := manager.register_behavior(Steer.new())
+	var by_wall := manager.register_behavior(Steer.new())
+	manager.spawn(_shot(by_hit, Vector2(600, 0), 5.0))
+	var r := _shot(by_wall, Vector2(600, 0), 5.0)
+	r.position = Vector2(0, 300)
+	manager.spawn(r)
+	for _i in 10:
+		manager.step(DT)
+	_drained.sort()
+	var want: Array[int] = [by_hit, by_wall]
+	want.sort()
+	assert_eq(_drained, want)

@@ -202,6 +202,9 @@ var _order_count := 0
 ## Owner ids with live bullets in the native sim (batch-only behaviours), so
 ## a drain that happens there is noticed. Usually empty.
 var _native_owner_watch: Dictionary[int, bool] = {}
+## _emit_drained() nesting depth and the owners it still has to announce.
+var _drain_depth := 0
+var _drain_queue: Array[int] = []
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -1443,8 +1446,10 @@ func strip_hooks_for_owner(owner_id: int) -> int:
 ## strip_hooks_for_owner(), then forgets the behaviour itself: its table entry
 ## becomes an inert behaviour with no hooks, so the manager no longer holds the
 ## BulletBehavior (for a LuaBulletBehavior, its ScriptHost and Lua chunk). The
-## id is never reused; a shot that still names it spawns a bullet whose hooks
-## do nothing. Returns how many bullets were stripped.
+## id is never reused; a late shot that still names it becomes a GDScript-pool
+## bullet whose hooks do nothing. The table keeps one small inert entry per
+## released id (one per hot-reload generation). Returns how many bullets were
+## stripped.
 func release_behavior(owner_id: int) -> int:
 	if owner_id <= 0 or owner_id >= _behaviors.size():
 		return 0
@@ -1487,10 +1492,35 @@ func _adopt_native_plain(behavior_id: int) -> int:
 	return n
 
 
+## Announces owners whose live count is 0. Re-entrant safe: a listener that
+## calls strip_hooks_for_owner(), release_behavior() or clear_bullets() runs this
+## again from inside the emit loop. The nested call only queues what it finds
+## (watch entries are erased while collecting, so nothing is found twice) and
+## the outer loop emits it, each owner at most once per call.
 func _emit_drained() -> void:
-	var ids := pool.take_drained()
+	_collect_drained()
+	if _drain_depth > 0:
+		return
+	_drain_depth += 1
+	var done: Dictionary[int, bool] = {}
+	var k := 0
+	while k < _drain_queue.size():
+		var id := _drain_queue[k]
+		k += 1
+		# A listener may have spawned for it again; then it has not drained.
+		if done.has(id) or hooked_count_for_owner(id) != 0:
+			continue
+		done[id] = true
+		hooked_owner_drained.emit(id)
+	_drain_queue.clear()
+	_drain_depth -= 1
+
+
+## Appends to _drain_queue every owner from the pool's drained list and the
+## native watch whose total is 0 now, erasing its watch entry.
+func _collect_drained() -> void:
 	var check: Array[int] = []
-	for id in ids:
+	for id in pool.take_drained():
 		if not check.has(id):
 			check.append(id)
 	for id: int in _native_owner_watch.keys():
@@ -1498,12 +1528,13 @@ func _emit_drained() -> void:
 			check.append(id)
 	for id in check:
 		var native_n := 0
-		if native != null and _native_owner_watch.has(id):
-			native_n = native.count_with_behavior(id)
+		if _native_owner_watch.has(id):
+			if native != null:
+				native_n = native.count_with_behavior(id)
 			if native_n == 0:
 				_native_owner_watch.erase(id)
-		if native_n == 0 and pool.live_with_behavior(id) == 0:
-			hooked_owner_drained.emit(id)
+		if native_n == 0 and pool.live_with_behavior(id) == 0 and not _drain_queue.has(id):
+			_drain_queue.append(id)
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).
