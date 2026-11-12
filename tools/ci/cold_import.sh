@@ -7,10 +7,11 @@
 # and for the same-run base. Nothing else in that job retries: the benchmarks (perf_ab.sh / run_benchmark.sh), the
 # unit tests and check_perf.py run once.
 #   * exit 0                         -> ok.
-#   * exit >= 128 (killed by a signal, e.g. 134 SIGABRT, 139 SIGSEGV) on the FIRST attempt -> a ::warning:: annotation
-#     with the signal and a crash excerpt (the double-free / crash-handler / backtrace lines and the log tail), the
-#     full log is kept as <log_dir>/import-<name>-1-crashed.log, and the import runs once more. Background: PR #64
-#     run 43199386255, the head's cold import aborted with "double free or corruption (!prev)"; see issue #7.
+#   * 128 < exit < 160 (killed by a signal, e.g. 134 SIGABRT, 139 SIGSEGV) on the FIRST attempt -> a ::warning::
+#     annotation with the signal and a crash excerpt (the double-free / crash-handler / backtrace lines and the log
+#     tail), the full log is kept as <log_dir>/import-<name>-1-crashed.log, and the import runs once more. rc=255
+#     (a plain exit(-1)) is not in this range and is not retried. Background: PR #64 run 43199386255, the head's
+#     cold import aborted with "double free or corruption (!prev)"; see issue #69.
 #   * any other non-zero exit        -> a real import error: ::error::, exit 1, no retry.
 #   * a second failure of any kind   -> ::error::, exit 1.
 # The import's own script/resource errors are still caught by run_benchmark.sh's import check afterwards.
@@ -44,14 +45,15 @@ for attempt in 1 2; do
 		echo "cold_import.sh: $name: import ok (attempt $attempt)"
 		exit 0
 	fi
-	if [ "$rc" -lt 128 ]; then
+	# Signals are 128 + n for n in 1..31. rc=128 and rc>=160 (including 255, a plain exit(-1)) are not retried.
+	if [ "$rc" -le 128 ] || [ "$rc" -ge 160 ]; then
 		annotate error "$name cold import failed" "$name: godot --import exited $rc (not a signal): a real import error, not retried.
 $(excerpt "$log")"
 		exit 1
 	fi
 	if [ "$attempt" -eq 1 ]; then
 		mv "$log" "$logdir/import-$name-1-crashed.log"
-		annotate warning "$name cold import crashed (retrying once)" "$name: godot --import died on signal $((rc - 128)) (exit $rc), attempt 1 of 2; retrying ONCE (issue #7). Full log: perf-native-reports artifact, import-logs/import-$name-1-crashed.log.
+		annotate warning "$name cold import crashed (retrying once)" "$name: godot --import died on signal $((rc - 128)) (exit $rc), attempt 1 of 2; retrying ONCE (issue #69). Full log: perf-native-reports artifact, import-logs/import-$name-1-crashed.log.
 $(excerpt "$logdir/import-$name-1-crashed.log")"
 	else
 		annotate error "$name cold import crashed twice" "$name: godot --import died on signal $((rc - 128)) (exit $rc) again on the retry.

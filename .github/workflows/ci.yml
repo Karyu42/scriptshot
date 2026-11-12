@@ -477,16 +477,20 @@ jobs:
           mkdir -p "$RUNNER_TEMP/perf-head/bin"
           cp -a bin/linux.x86_64 "$RUNNER_TEMP/perf-head/bin/"
           echo "PERF_HEAD_DIR=$RUNNER_TEMP/perf-head" >> "$GITHUB_ENV"
+      # A hung cold import would otherwise sit until the 40-minute job timeout.
+      # 2 minutes is just over 4x the slowest successful cold-import step in
+      # recent CI (19s), with room for one signal retry of head and base.
       - name: Cold import (head and base; ONE retry, only if Godot died on a signal)
+        timeout-minutes: 2
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -uo pipefail
-          # tools/ci/cold_import.sh: exit >= 128 (signal, e.g. 134 SIGABRT) on the first attempt -> ::warning:: with the
-          # crash excerpt, the full log kept in reports/import-logs/ (perf-native-reports artifact), one more attempt.
-          # Any other non-zero exit is a real import error and fails at once. This is the ONLY retry in this job:
-          # the benchmarks, the unit tests and check_perf.py run once. Background: PR #64 run 43199386255 (head cold
-          # import: "double free or corruption (!prev)", exit 134); issue #7.
+          # tools/ci/cold_import.sh: 128 < exit < 160 (signal, e.g. 134 SIGABRT) on the first attempt -> ::warning::
+          # with the crash excerpt, the full log kept in reports/import-logs/ (perf-native-reports artifact), one more
+          # attempt. Any other non-zero exit (including rc=255) is a real import error and fails at once. This is the
+          # ONLY retry in this job: the benchmarks, the unit tests and check_perf.py run once. Background: PR #64
+          # run 43199386255 (head cold import: "double free or corruption (!prev)", exit 134); issue #69.
           mkdir -p reports/import-logs
           bash "$PERF_HEAD_DIR/tools/ci/fetch_native_libs.sh" linux.x86_64
           tools/ci/cold_import.sh "$PERF_HEAD_DIR" head reports/import-logs || exit 1
