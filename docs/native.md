@@ -372,11 +372,11 @@ the pool.
 
 That table is one machine. Across the machines sampled so far the same native
 batch is about 1.5–2.3 ms at 5,000, and the GD pool path is about 21–25 ms at
-5,000 and about 41–47 ms at 10,000. Provisional; may change. A later run on
+5,000 and about 41–47 ms at 10,000. Provisional; may change. A later single run on
 this tree, after batch warnings became totals from `apply_batch` instead of a
 sim call per row, measured native on_batch work p95 **1.62 ms at 5,000** and
-**2.81 ms at 10,000** (the same machine before that change was 8.65 ms and
-17.01 ms). Gate it with
+**2.81 ms at 10,000** (single run; the same machine before that change was
+8.65 ms and 17.01 ms). Gate it with
 `./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000`
 (5k floor 16.6 ms). CI does not run that row yet.
 

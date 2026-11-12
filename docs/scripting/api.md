@@ -1088,6 +1088,7 @@ Save the file and the game reloads it, no restart needed.
   velocity, age, lifetime, radius, damage, acceleration, turn, params, pierce memory and `pierces_script_invuln` are
   kept, and both the batch callback and the new hook then see them (the same as a weapon that was already on the pool).
   The native id is retired; the pool bullet has a new id and a new seq (the native seq was retired with the id).
+  On native, per-bullet state a script keys on that bullet id does not carry over this migration, because the id changes. `pa` and `pb` do carry over.
   Row order in the next `on_batch` stays unspecified. If the pool has no physical room for one of those bullets, that
   bullet is dropped and `BulletManager.migrate` warns.
 - Shots **already in flight** keep running their old callbacks until they die (default),

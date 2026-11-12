@@ -831,8 +831,8 @@ func commit_batch(view: BatchView) -> void:
 	if view == null or view.discard or view.n == 0 and view.command_count() == 0:
 		return
 	if view.native_rows > 0 and native != null:
-		# One sim call for every row. The dictionary is counts (and the over-cap
-		# velocities); the warnings below are the same keys the pool prints.
+		# One sim call for every row. The dictionary carries totals and the
+		# offending rows in row order; the warnings below use that list.
 		_emit_native_batch_warnings(native.apply_batch(view._commit_id, view.vx, view.vy, view.pa, view.pb))
 	if view.n > view.native_rows:
 		_commit_pool_columns(view)
@@ -989,25 +989,32 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 	pool.teleport(slot, Vector2(x, y))
 
 
-## Turns apply_batch's totals into the same ScriptWarnings the pool raises per
-## bullet. One pass over the counts, not one sim call per row.
+## Emits apply_batch's offending rows in the order the pool would warn.
+## pa and pb share BulletPool.hook_write, so the first LIMIT prints and the
+## last message follow this list. One sim call per commit; this walk is only
+## the rows that warned.
 func _emit_native_batch_warnings(report: Dictionary) -> void:
-	var vel_nf: int = report["vel_nonfinite"]
-	var pa_nf: int = report["pa_nonfinite"]
-	var pb_nf: int = report["pb_nonfinite"]
 	@warning_ignore("unsafe_cast")
-	var clamp_vx := report["clamp_vx"] as PackedFloat32Array
+	var rows := report["warn_row"] as PackedInt32Array
 	@warning_ignore("unsafe_cast")
-	var clamp_vy := report["clamp_vy"] as PackedFloat32Array
-	for _i in vel_nf:
-		BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
-	var clamps := mini(clamp_vx.size(), clamp_vy.size())
-	for i in clamps:
-		BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[i], clamp_vy[i]))
-	for _i in pa_nf:
-		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
-	for _i in pb_nf:
-		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
+	var keys := report["warn_key"] as PackedStringArray
+	@warning_ignore("unsafe_cast")
+	var whats := report["warn_what"] as PackedStringArray
+	@warning_ignore("unsafe_cast")
+	var wvx := report["warn_vx"] as PackedFloat32Array
+	@warning_ignore("unsafe_cast")
+	var wvy := report["warn_vy"] as PackedFloat32Array
+	var n := rows.size()
+	n = mini(n, keys.size())
+	n = mini(n, whats.size())
+	n = mini(n, wvx.size())
+	n = mini(n, wvy.size())
+	for i in n:
+		var key := keys[i]
+		if key == "BulletPool.set_velocity.clamp.speed":
+			BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(wvx[i], wvy[i]))
+		else:
+			BulletPool.report_removed(key, whats[i])
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
