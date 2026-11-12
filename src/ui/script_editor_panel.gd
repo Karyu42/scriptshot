@@ -31,6 +31,8 @@ const OPEN_TIME_SCALE := 0.15
 ## How long the "E edits." prompt shows after the game starts, in seconds.
 const PROMPT_SEC := 8.0
 const NEW_FILE_ITEM := "+ new file"
+## How long a toast ("shots/foo.lua saved (not equipped)") stays up.
+const TOAST_SEC := 2.5
 
 const LUA_KEYWORDS: PackedStringArray = [
 	"and", "break", "do", "else", "elseif", "end", "false", "for", "function", "goto", "if", "in",
@@ -88,6 +90,8 @@ var _title: Label
 var _status: Label
 var _footer: Label
 var _prompt: Label
+var _toast: Label
+var _toast_until_msec := 0
 var _starters: OptionButton
 var _files: OptionButton
 var _list: ItemList
@@ -137,6 +141,7 @@ func bind(shot_scripts: ShotScripts) -> void:
 	shots.weapon_swapped.connect(_on_weapon_swapped)
 	shots.load_failed.connect(_on_load_failed)
 	shots.script_saved.connect(_on_script_saved)
+	shots.unequipped_file_saved.connect(_on_unequipped_file_saved)
 	file_name = shots.selected
 	_refresh_files()
 	_show_file(file_name)
@@ -393,6 +398,25 @@ func _process(_delta: float) -> void:
 		poll_now()
 	if _prompt.visible and Time.get_ticks_msec() >= _prompt_until_msec:
 		_prompt.hide()
+	if _toast.visible and Time.get_ticks_msec() >= _toast_until_msec:
+		_toast.hide()
+
+
+## Shows `text_value` bottom centre for TOAST_SEC, whether or not the editor
+## is open. A new toast replaces the current one.
+func show_toast(text_value: String) -> void:
+	_toast.text = text_value
+	_toast.show()
+	_toast_until_msec = Time.get_ticks_msec() + int(TOAST_SEC * 1000.0)
+
+
+## The toast on screen, "" when there is none.
+func toast_text() -> String:
+	return _toast.text if _toast.visible else ""
+
+
+func _on_unequipped_file_saved(changed: String) -> void:
+	show_toast(ShotScripts.unequipped_text(changed))
 
 
 func _refresh_footer() -> void:
@@ -640,6 +664,26 @@ func _build() -> void:
 	_prompt.offset_bottom = -40
 	_prompt.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_prompt)
+
+	_toast = _label("", 15, COLOR_PROMPT)
+	_toast.name = "Toast"
+	_toast.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	_toast.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_toast.offset_top = -100
+	_toast.offset_bottom = -76
+	_toast.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var toast_style := StyleBoxFlat.new()
+	toast_style.bg_color = Color(COLOR_PANEL, 0.9)
+	toast_style.set_corner_radius_all(4)
+	toast_style.content_margin_left = 10
+	toast_style.content_margin_right = 10
+	toast_style.content_margin_top = 4
+	toast_style.content_margin_bottom = 4
+	_toast.add_theme_stylebox_override("normal", toast_style)
+	_toast.hide()
+	add_child(_toast)
 	_refresh_starters()
 	_refresh_problems()
 

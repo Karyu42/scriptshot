@@ -108,7 +108,8 @@ callbacks are matched by name, so that is safe. TODO: once GE's
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and
 the `script_saved` / `weapon_swapped` / `load_failed` signals lesson checkers
-use), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
+use; a change on disk to a file that is not equipped only raises
+`unequipped_file_saved`, rate-limited per file, for the editor's toast), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
 error lines) and `SenseBook` (the Sense-unlock hook point). The panel is
 `src/ui/script_editor_panel.gd`. Player docs: `docs/scripting/editor.md`.
 

@@ -47,6 +47,10 @@ files in any text editor you like: when the equipped file changes on disk, the
 game reloads it, the same as saving in game. A save that does not load (for
 example a write that is only half done) keeps the last good weapon.
 
+Only the equipped file reloads. If you change another file in `shots/`, a
+small note says so (`shots/foo.lua saved (not equipped)`) instead of
+loading it. Open it in the editor and save to equip it.
+
 The file picker lists everything in `shots/`. *+ new file* saves the current
 text as a new `shot_N.lua`. Opening a file does not equip it; saving it does.
 
@@ -62,8 +66,8 @@ undoes it). Each has one number marked `<- tweak me`.
 | Straight | One shot along your aim. This is `default.lua` | `damage = 1` → `4` |
 | Spread | Five shots in a fan | `-2, 2` → `-3, 3` |
 | Spiral | Three arms that turn every shot | `0.22` → `0.5` |
-| Split | Shots burst into pieces flying back out when they hit | `pieces = 3` → `5` |
-| Homing | Shots steer toward the nearest enemy | *locked* |
+| Split | A shot that hits bursts into pieces right where it hit, flying back out | `pieces = 3` → `5` |
+| Homing | Shots curve toward the nearest enemy within 400 px, and fly straight when there is none | *locked* |
 
 Homing is greyed out (*needs nearest_enemy*) until you earn the
 `sense.nearest_enemy` Sense. Until then `sense.nearest_enemy` is `nil` in every

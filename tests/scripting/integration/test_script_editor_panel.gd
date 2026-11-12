@@ -158,3 +158,16 @@ func test_files_picker_and_new_file() -> void:
 	_panel.open_file("default.lua")
 	assert_eq(_panel.text(), ScriptLibrary.starter("straight").source)
 	assert_eq(_scripts.equipped, "shot_2.lua", "opening a file does not equip it until it is saved")
+
+
+func test_an_outside_change_to_another_file_shows_a_toast() -> void:
+	assert_eq(_panel.toast_text(), "")
+	var f := FileAccess.open(ScriptLibrary.path_of("foo.lua"), FileAccess.WRITE)
+	f.store_string("return { name = 'Foo' }")
+	f.close()
+	_scripts.poll_files()
+	assert_eq(_panel.toast_text(), "shots/foo.lua saved (not equipped)", "shown with the editor closed")
+	assert_false(_panel.is_open())
+	assert_eq(_scripts.weapon.title, "Straight")
+	assert_false(_panel.status_text().contains("Still running"), "no error line: %s" % _panel.status_text())
+	assert_eq(_panel.load_problems.size(), 0, "not shown as a failed reload")

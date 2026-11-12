@@ -178,3 +178,38 @@ func test_the_watcher_runs_on_its_own_in_real_time() -> void:
 	_write_outside("default.lua", ScriptLibrary.starter("spiral").source)
 	await wait_seconds(ShotScripts.WATCH_SEC * 2.5)
 	assert_eq(_scripts.weapon.title, "Spiral")
+
+
+func test_a_change_to_a_file_that_is_not_equipped_is_announced_not_loaded() -> void:
+	ScriptLibrary.write("other.lua", "return { name = 'Other' }")
+	_scripts.start()
+	var notices: Array[String] = []
+	_scripts.unequipped_file_saved.connect(func(f: String) -> void: notices.append(f))
+	assert_false(_scripts.poll_files(1000), "files already there at start are not news")
+	assert_eq(notices.size(), 0)
+	_write_outside("other.lua", "return { name = 'Other 2' }")
+	assert_false(_scripts.poll_files(2000), "only the equipped file reloads")
+	_scripts.flush_pending()
+	assert_eq(notices, ["other.lua"] as Array[String])
+	assert_eq(ShotScripts.unequipped_text("other.lua"), "shots/other.lua saved (not equipped)")
+	assert_eq(_scripts.weapon.title, "Straight", "the weapon is unchanged")
+	assert_eq(_failed.size(), 0, "and it is not a failed reload")
+	assert_true(_saved.has("other.lua:file"), "it still counts as a save on disk")
+	# Repeated writes inside the cooldown do not repeat the notice.
+	for i in 5:
+		_write_outside("other.lua", "return { name = 'Other %d' }" % (i + 3))
+		_scripts.poll_files(2500 + i * 100)
+	assert_eq(notices.size(), 1, "rate-limited per file")
+	_write_outside("other.lua", "return { name = 'Later' }")
+	_scripts.poll_files(2000 + ShotScripts.TOAST_COOLDOWN_MSEC + 1)
+	assert_eq(notices.size(), 2, "after the cooldown it is announced again")
+	# A new file dropped into shots/ is news too; another file has its own cooldown.
+	_write_outside("fresh.lua", "return {}")
+	_scripts.poll_files(2000 + ShotScripts.TOAST_COOLDOWN_MSEC + 2)
+	assert_eq(notices, ["other.lua", "other.lua", "fresh.lua"] as Array[String])
+	# A broken file that is not equipped is announced the same way and never loaded.
+	_write_outside("fresh.lua", "return {")
+	_scripts.poll_files(2000 + 2 * ShotScripts.TOAST_COOLDOWN_MSEC + 10)
+	_scripts.flush_pending()
+	assert_eq(notices.size(), 4)
+	assert_eq(_failed.size(), 0)

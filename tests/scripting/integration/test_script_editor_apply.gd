@@ -249,7 +249,7 @@ func test_every_starter_compiles_and_runs_a_few_ticks() -> void:
 			assert_eq(ScriptWarnings.keys().size(), 0, "%s on %s warned: %s" % [s.id, pref, ScriptWarnings.keys()])
 
 
-func test_spread_and_split_spawn_children() -> void:
+func test_spread_fires_five() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
 			continue
@@ -259,41 +259,101 @@ func test_spread_and_split_spawn_children() -> void:
 		_fire(manager, shot)
 		_steps(manager, 2)
 		assert_eq(manager.alive_count(), 5, "spread: five shots in a fan (%s)" % pref)
-		var manager2 := _mgr(pref)
-		var dummy := _target(manager2, Vector2(60, 0))
-		var split := _shot(manager2)
-		_apply(split, ScriptLibrary.starter("split_on_hit").source)
-		_fire(manager2, split)
-		for t in 20:
-			manager2.step(DT)
-		assert_eq(split.behavior().dispatches("on_hit"), 1, pref)
-		assert_eq(_hits[dummy], 1, "the pieces fly away from the target and do not hit it again (%s)" % pref)
-		assert_gte(manager2.spawned_total(), 4, "one shot plus three pieces (%s)" % pref)
 
 
-func test_homing_flies_straight_without_the_sense_and_steers_with_one() -> void:
+func test_split_pieces_spawn_at_the_hit_point_and_fly_back_out() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
 			continue
-		var homing := ScriptLibrary.starter("homing")
-		assert_eq(homing.needs, PackedStringArray(["sense.nearest_enemy"]))
-		assert_false(homing.unlocked())
 		var manager := _mgr(pref)
-		var shot := _shot(manager)
-		_apply(shot, homing.source)
-		_fire(manager, shot)
-		_steps(manager, 20)
-		assert_eq(shot.behavior().error_total, 0, "sense.nearest_enemy is nil: no error (%s)" % pref)
-		var vy := _only_velocity(manager).y
-		assert_almost_eq(vy, 0.0, 1e-3, "without the Sense the shot flies straight")
-		# A stand-in Sense defined by the chunk itself (the real one is not built yet).
-		var manager2 := _mgr(pref)
-		var shot2 := _shot(manager2)
-		_apply(shot2, "sense.nearest_enemy = function(pos, r) return { pos = { x = pos.x, y = pos.y + 100 } } end\n" + homing.source)
-		_fire(manager2, shot2)
-		_steps(manager2, 20)
-		assert_eq(shot2.behavior().error_total, 0, _first_error(shot2.behavior()))
-		assert_gt(_only_velocity(manager2).y, 50.0, "with the Sense the shot turns toward the enemy (%s)" % pref)
+		var dummy := _target(manager, Vector2(60, 0))
+		var hit_at: Array[Vector2] = []
+		dummy.hit.connect(func(_dmg: float, p: Vector2, _v: Vector2) -> void: hit_at.append(p))
+		var split := _shot(manager)
+		_apply(split, ScriptLibrary.starter("split_on_hit").source)
+		_fire(manager, split)
+		var ticks := 0
+		while hit_at.is_empty() and ticks < 30:
+			manager.step(DT)
+			ticks += 1
+		assert_eq(hit_at.size(), 1, "the shot hit (%s)" % pref)
+		if hit_at.is_empty():
+			continue
+		# The tick that hit: the parent is gone and the pieces are born, not yet moved.
+		var snap := manager.snapshot()
+		var pos: PackedVector2Array = snap["pos"]
+		var vel: PackedVector2Array = snap["vel"]
+		assert_eq(pos.size(), 3, "three pieces (the tweak number) (%s)" % pref)
+		for i in pos.size():
+			assert_almost_eq(pos[i].distance_to(hit_at[0]), 0.0, 0.01, "piece %d spawns at the hit point (%s)" % [i, pref])
+			assert_lt(vel[i].x, 0.0, "piece %d flies back the way the shot came (%s)" % [i, pref])
+		for t in 20:
+			manager.step(DT)
+		assert_eq(split.behavior().dispatches("on_hit"), 1, pref)
+		assert_eq(_hits[dummy], 1, "the pieces fly away and do not hit the target again (%s)" % pref)
+
+
+## A stand-in for sense.nearest_enemy (the real one comes with the Senses
+## PR): one enemy at `at`, returned only within the range the starter asks
+## for, which must be 400.
+static func _stub_sense(at: Vector2) -> String:
+	return (
+		"sense.nearest_enemy = function(pos, r)\n"
+		+ "  assert(type(pos) == 'table' and type(pos.x) == 'number' and type(pos.y) == 'number')\n"
+		+ "  assert(r == 400, 'homing asks for 400')\n"
+		+ "  local dx, dy = %s - pos.x, %s - pos.y\n" % [at.x, at.y]
+		+ "  if dx * dx + dy * dy > r * r then return nil end\n"
+		+ "  return { pos = { x = %s, y = %s } }\n" % [at.x, at.y]
+		+ "end\n"
+	)
+
+
+## Fires one homing shot along +x from the origin with `prefix` run first,
+## steps 20 ticks, and returns its velocity.
+func _homing_velocity(pref: String, prefix: String) -> Vector2:
+	var manager := _mgr(pref)
+	var shot := _shot(manager)
+	_apply(shot, prefix + ScriptLibrary.starter("homing").source)
+	_fire(manager, shot)
+	_steps(manager, 20)
+	assert_eq(shot.behavior().error_total, 0, "%s: %s" % [pref, _first_error(shot.behavior())])
+	return _only_velocity(manager)
+
+
+func test_homing_is_locked_until_nearest_enemy() -> void:
+	var homing := ScriptLibrary.starter("homing")
+	assert_eq(homing.needs, PackedStringArray(["sense.nearest_enemy"]))
+	assert_false(homing.unlocked())
+	assert_lte(homing.source.strip_edges().split("\n").size(), 22)
+
+
+func test_homing_flies_straight_while_the_sense_is_nil() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var vel := _homing_velocity(pref, "")
+		assert_almost_eq(vel.y, 0.0, 1e-3, "locked: sense.nearest_enemy is nil, the shot flies straight (%s)" % pref)
+		assert_almost_eq(vel.x, 280.0, 0.01, pref)
+
+
+func test_homing_flies_straight_when_the_sense_finds_nothing() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var none := _homing_velocity(pref, "sense.nearest_enemy = function(pos, r) return nil end\n")
+		assert_almost_eq(none.y, 0.0, 1e-3, "nearest_enemy returns nil: straight (%s)" % pref)
+		var far := _homing_velocity(pref, _stub_sense(Vector2(100, 2000)))
+		assert_almost_eq(far.y, 0.0, 1e-3, "an enemy out of range is not chased (%s)" % pref)
+
+
+func test_homing_curves_toward_an_enemy_in_range() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var down := _homing_velocity(pref, _stub_sense(Vector2(120, 150)))
+		assert_gt(down.y, 50.0, "turns toward an enemy below the line (%s)" % pref)
+		var up := _homing_velocity(pref, _stub_sense(Vector2(120, -150)))
+		assert_lt(up.y, -50.0, "and toward one above it (%s)" % pref)
 
 
 func _only_velocity(manager: BulletManager) -> Vector2:

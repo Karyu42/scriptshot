@@ -13,7 +13,9 @@ extends Node
 ## * PC: the equipped file is polled every WATCH_SEC (real time, so the
 ##   editor's slow motion does not slow it). A change emits `script_saved`
 ##   with origin &"file" and reloads. A write that does not load keeps the
-##   last good weapon, like a bad save in the editor.
+##   last good weapon, like a bad save in the editor. A change to another
+##   file in shots/ is not loaded; `unequipped_file_saved` lets the editor
+##   say so ("shots/foo.lua saved (not equipped)"), rate-limited per file.
 ##
 ## Lesson checkers listen to the two signals and never parse Lua.
 
@@ -23,11 +25,16 @@ signal script_saved(file_name: String, origin: StringName)
 signal weapon_swapped(file_name: String, origin: StringName)
 ## `file_name` did not load; the previous weapon keeps firing.
 signal load_failed(file_name: String, problem: ScriptProblem, origin: StringName)
+## A shots/ file that is not equipped was changed on disk (PC). It is not
+## loaded. At most once per TOAST_COOLDOWN_MSEC per file.
+signal unequipped_file_saved(file_name: String)
 
 const ORIGIN_START := &"start"
 const ORIGIN_EDITOR := &"editor"
 const ORIGIN_FILE := &"file"
 const WATCH_SEC := 0.5
+## Quiet time per file between two "saved (not equipped)" notices.
+const TOAST_COOLDOWN_MSEC := 3000
 
 var weapon: LuaShot
 var player: Player
@@ -41,6 +48,9 @@ var problem: ScriptProblem = null
 var watch_files := OS.has_feature("pc")
 
 var _known_hash: Dictionary[String, int] = {}
+var _toast_msec: Dictionary[String, int] = {}
+## False until the first scan: files already there at start are not news.
+var _baselined := false
 var _pending: Dictionary[String, StringName] = {}
 var _flush_queued := false
 var _next_watch_msec := 0
@@ -62,6 +72,7 @@ func start() -> bool:
 	ScriptLibrary.seed_default()
 	selected = ScriptLibrary.equipped_file()
 	var ok := load_now(selected, ORIGIN_START)
+	_baseline()
 	if not ok:
 		var shown := ScriptLibrary.display_path(selected)
 		var why := "%s is missing." % shown if not ScriptLibrary.exists(selected) else "%s: %s" % [shown, problem.text() if problem != null else "did not load."]
@@ -148,17 +159,54 @@ func _process(_delta: float) -> void:
 	poll_files()
 
 
-## Checks the selected file for an outside change now (the watcher calls this
-## every WATCH_SEC). True when it changed and a reload was queued.
-func poll_files() -> bool:
-	var f := selected
-	if not ScriptLibrary.exists(f):
-		return false
-	var text := ScriptLibrary.read(f)
-	var h := text.hash()
-	if _known_hash.get(f, 0) == h:
-		return false
-	_known_hash[f] = h
-	script_saved.emit(f, ORIGIN_FILE)
-	request_load(f, ORIGIN_FILE)
-	return true
+## Checks shots/ for outside changes now (the watcher calls this every
+## WATCH_SEC). The selected file reloads; a change to any other file only
+## raises `unequipped_file_saved` (rate-limited per file) so the player sees
+## it was saved and is not running. True when the selected file changed and a
+## reload was queued. `now_msec` is for tests.
+func poll_files(now_msec: int = -1) -> bool:
+	var now := now_msec if now_msec >= 0 else Time.get_ticks_msec()
+	var reloaded := false
+	var present: Dictionary[String, bool] = {}
+	for f in ScriptLibrary.list_files():
+		present[f] = true
+		var h := ScriptLibrary.read(f).hash()
+		if not _known_hash.has(f):
+			_known_hash[f] = h
+			if not _baselined:
+				continue
+		elif _known_hash[f] == h:
+			continue
+		_known_hash[f] = h
+		script_saved.emit(f, ORIGIN_FILE)
+		if f == selected:
+			request_load(f, ORIGIN_FILE)
+			reloaded = true
+		else:
+			_note_unequipped(f, now)
+	# Forget deleted files, so a file written again later is news.
+	for f: String in _known_hash.keys():
+		if not present.has(f):
+			_known_hash.erase(f)
+	_baselined = true
+	return reloaded
+
+
+## Remembers every file in shots/ as it is now, so only later changes count.
+func _baseline() -> void:
+	for f in ScriptLibrary.list_files():
+		_known_hash[f] = ScriptLibrary.read(f).hash()
+	_baselined = true
+
+
+## "shots/foo.lua saved (not equipped)".
+static func unequipped_text(file_name: String) -> String:
+	return "%s saved (not equipped)" % ScriptLibrary.display_path(file_name)
+
+
+func _note_unequipped(file_name: String, now: int) -> void:
+	var last: int = _toast_msec.get(file_name, -TOAST_COOLDOWN_MSEC)
+	if now - last < TOAST_COOLDOWN_MSEC:
+		return
+	_toast_msec[file_name] = now
+	unequipped_file_saved.emit(file_name)
