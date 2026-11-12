@@ -203,8 +203,15 @@ var _order_count := 0
 ## a drain that happens there is noticed. Usually empty.
 var _native_owner_watch: Dictionary[int, bool] = {}
 ## _emit_drained() nesting depth and the owners it still has to announce.
+## _drain_k is the outer loop's read index: entries before it were handled.
 var _drain_depth := 0
 var _drain_queue: Array[int] = []
+var _drain_k := 0
+## Guards against listeners that respawn and drain the same owner forever:
+## past these, the rest of the queue is deferred to the next _emit_drained()
+## (the next tick at the latest).
+const DRAIN_EMITS_PER_OWNER := 8
+const DRAIN_ITERATIONS := 4096
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -1332,7 +1339,7 @@ func step(delta: float) -> void:
 		_renderer.update_from(pool)
 	if _native_renderer != null:
 		_native_renderer.update_from(native)
-	if not pool.drained_ids.is_empty() or not _native_owner_watch.is_empty():
+	if not pool.drained_ids.is_empty() or not _native_owner_watch.is_empty() or not _drain_queue.is_empty():
 		_emit_drained()
 	var t5 := Time.get_ticks_usec()
 	last_phase_usec[Phase.TARGETS_AND_ADVANCE] = t1 - t0
@@ -1495,29 +1502,51 @@ func _adopt_native_plain(behavior_id: int) -> int:
 ## Announces owners whose live count is 0. Re-entrant safe: a listener that
 ## calls strip_hooks_for_owner(), release_behavior() or clear_bullets() runs this
 ## again from inside the emit loop. The nested call only queues what it finds
-## (watch entries are erased while collecting, so nothing is found twice) and
-## the outer loop emits it, each owner at most once per call.
+## and the outer loop emits it. Collecting is one-shot per transition (watch
+## entries are erased while collecting; drained_ids only gets an id on >0 -> 0),
+## so an owner found again after it was emitted has really drained again (a
+## listener respawned for it and it drained) and is announced again. Dedupe is
+## only against the part of the queue not yet handled, so each actual drain is
+## announced at most once. An owner a listener respawned for before its turn is
+## skipped; its next drain queues it again. Bounded by DRAIN_EMITS_PER_OWNER
+## and DRAIN_ITERATIONS: anything left over stays queued for the next call.
 func _emit_drained() -> void:
 	_collect_drained()
 	if _drain_depth > 0:
 		return
 	_drain_depth += 1
-	var done: Dictionary[int, bool] = {}
-	var k := 0
-	while k < _drain_queue.size():
-		var id := _drain_queue[k]
-		k += 1
+	var emits: Dictionary[int, int] = {}
+	var deferred: Array[int] = []
+	var iterations := 0
+	_drain_k = 0
+	while _drain_k < _drain_queue.size():
+		if iterations >= DRAIN_ITERATIONS:
+			break
+		iterations += 1
+		var id := _drain_queue[_drain_k]
+		_drain_k += 1
 		# A listener may have spawned for it again; then it has not drained.
-		if done.has(id) or hooked_count_for_owner(id) != 0:
+		if hooked_count_for_owner(id) != 0:
 			continue
-		done[id] = true
+		var n: int = emits.get(id, 0)
+		if n >= DRAIN_EMITS_PER_OWNER:
+			if not deferred.has(id):
+				deferred.append(id)
+			continue
+		emits[id] = n + 1
 		hooked_owner_drained.emit(id)
-	_drain_queue.clear()
+	for i in range(_drain_k, _drain_queue.size()):
+		var id := _drain_queue[i]
+		if not deferred.has(id):
+			deferred.append(id)
+	_drain_queue = deferred
+	_drain_k = 0
 	_drain_depth -= 1
 
 
 ## Appends to _drain_queue every owner from the pool's drained list and the
-## native watch whose total is 0 now, erasing its watch entry.
+## native watch whose total is 0 now, erasing its watch entry. Skips owners
+## already waiting in the unhandled part of the queue.
 func _collect_drained() -> void:
 	var check: Array[int] = []
 	for id in pool.take_drained():
@@ -1533,8 +1562,15 @@ func _collect_drained() -> void:
 				native_n = native.count_with_behavior(id)
 			if native_n == 0:
 				_native_owner_watch.erase(id)
-		if native_n == 0 and pool.live_with_behavior(id) == 0 and not _drain_queue.has(id):
+		if native_n == 0 and pool.live_with_behavior(id) == 0 and not _drain_pending(id):
 			_drain_queue.append(id)
+
+
+func _drain_pending(id: int) -> bool:
+	for i in range(_drain_k, _drain_queue.size()):
+		if _drain_queue[i] == id:
+			return true
+	return false
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).

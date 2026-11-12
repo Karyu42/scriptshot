@@ -346,6 +346,102 @@ func test_native_two_owners_drain_in_one_tick_and_the_listener_releases() -> voi
 	assert_eq(_drained, [c, d] as Array[int])
 
 
+# --- a second drain inside the same emit loop (SE re-review #76, blocker) ---------
+
+enum Drain { STRIP, RELEASE, CLEAR }
+
+
+## A drains; on that drain a listener spawns for A again, then (in the same
+## handler, or in a later listener) A drains again via `how`. Returns how often
+## A was announced. `sim_native` marks the respawn in the native watch the way
+## a native spawn of a batch-only owner does, so the GD run walks that path.
+func _drain_twice(m: BulletManager, batch: bool, how: Drain, same_handler: bool, sim_native: bool) -> int:
+	var behavior: BulletBehavior = Batch.new() if batch else Steer.new()
+	var a := m.register_behavior(behavior)
+	var seen: Array[int] = []
+	var state := {"respawned": false, "drained_again": false}
+	var drain_again := func(id: int) -> void:
+		if id != a or state["drained_again"] or not state["respawned"]:
+			return
+		state["drained_again"] = true
+		match how:
+			Drain.STRIP:
+				assert_eq(m.strip_hooks_for_owner(a), 1)
+			Drain.RELEASE:
+				m.release_behavior(a)
+			Drain.CLEAR:
+				m.clear_bullets()
+	m.hooked_owner_drained.connect(func(id: int) -> void:
+		if id != a:
+			return
+		seen.append(id)
+		if state["respawned"]:
+			return
+		state["respawned"] = true
+		m.spawn(_shot(a, Vector2(10, 0), 5.0))
+		if sim_native:
+			m._native_owner_watch[a] = true
+		assert_eq(m.hooked_count_for_owner(a), 1, "alive again after the respawn")
+		if same_handler:
+			drain_again.call(id)
+	)
+	if not same_handler:
+		m.hooked_owner_drained.connect(drain_again)
+	m.spawn(_shot(a, Vector2(10, 0), 0.5 * DT))
+	if sim_native:
+		m._native_owner_watch[a] = true
+	m.step(DT)
+	assert_eq(m.hooked_count_for_owner(a), 0, "A is really empty again")
+	m.step(DT)
+	m.step(DT)
+	return seen.size()
+
+
+func _drain_twice_matrix(make: Callable, sims: Array[bool]) -> void:
+	for batch: bool in [false, true]:
+		for how: Drain in [Drain.STRIP, Drain.RELEASE, Drain.CLEAR]:
+			for same: bool in [true, false]:
+				for sim: bool in sims:
+					var m: BulletManager = make.call()
+					var n := _drain_twice(m, batch, how, same, sim)
+					assert_eq(n, 2, "A announced again: batch=%s how=%s same_handler=%s sim_native=%s"
+						% [batch, Drain.keys()[how], same, sim])
+					m.queue_free()
+
+
+func test_a_listener_that_spawns_again_keeps_the_owner_alive_then_strips() -> void:
+	# The case SE asked for: respawn, then strip in the same handler.
+	var n := _drain_twice(manager, false, Drain.STRIP, true, false)
+	assert_eq(n, 2)
+
+
+func test_a_second_drain_in_the_same_loop_is_announced_gd() -> void:
+	_drain_twice_matrix(func() -> BulletManager: return _make_manager("gdscript"), [false, true] as Array[bool])
+
+
+func test_a_second_drain_in_the_same_loop_is_announced_native() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_drain_twice_matrix(func() -> BulletManager: return _make_manager("native"), [false] as Array[bool])
+
+
+func test_a_listener_that_respawns_and_drains_forever_is_bounded() -> void:
+	var a := manager.register_behavior(Steer.new())
+	var seen: Array[int] = []
+	manager.hooked_owner_drained.connect(func(id: int) -> void:
+		seen.append(id)
+		manager.spawn(_shot(id, Vector2(10, 0), 5.0))
+		manager.strip_hooks_for_owner(id)
+	)
+	_spawn(a, Vector2(10, 0), 0.5 * DT)
+	manager.step(DT)
+	assert_eq(seen.size(), BulletManager.DRAIN_EMITS_PER_OWNER, "capped within one call")
+	assert_eq(manager._drain_queue, [a] as Array[int], "the rest is deferred")
+	manager.step(DT)
+	assert_eq(seen.size(), 2 * BulletManager.DRAIN_EMITS_PER_OWNER, "picked up on the next tick")
+
+
 # --- native drains by hit and by wall -------------------------------------------------
 
 func _native_or_pending() -> BulletManager:
