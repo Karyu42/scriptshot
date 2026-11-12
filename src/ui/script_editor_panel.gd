@@ -417,6 +417,9 @@ func toast_text() -> String:
 
 func _on_unequipped_file_saved(changed: String) -> void:
 	show_toast(ShotScripts.unequipped_text(changed))
+	# The editor may have that file open without equipping it.
+	if changed == file_name and not is_dirty():
+		_show_file(changed)
 
 
 func _refresh_footer() -> void:

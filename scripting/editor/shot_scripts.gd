@@ -19,14 +19,20 @@ extends Node
 ##
 ## Lesson checkers listen to the two signals and never parse Lua.
 
-## A shots/ file was written: by the editor (&"editor") or on disk (&"file").
+## The equipped file was written: by the editor's save (&"editor") or on disk
+## (&"file", PC). Only ever the equipped file, the one the weapon loads from,
+## so a lesson checker can count it as "the player saved their weapon".
+## A save that does not load still fires this; `weapon_swapped` or
+## `load_failed` follows. Other shots/ files never fire it.
 signal script_saved(file_name: String, origin: StringName)
 ## The weapon now runs `file_name` (&"start", &"editor" or &"file").
 signal weapon_swapped(file_name: String, origin: StringName)
 ## `file_name` did not load; the previous weapon keeps firing.
 signal load_failed(file_name: String, problem: ScriptProblem, origin: StringName)
-## A shots/ file that is not equipped was changed on disk (PC). It is not
-## loaded. At most once per TOAST_COOLDOWN_MSEC per file.
+## A shots/ file that is NOT equipped was changed on disk (PC). It is not
+## loaded and `script_saved` does not fire. This is a UI notice for the
+## editor's toast, rate-limited to once per TOAST_COOLDOWN_MSEC per file;
+## lesson checkers should not use it.
 signal unequipped_file_saved(file_name: String)
 
 const ORIGIN_START := &"start"
@@ -178,8 +184,8 @@ func poll_files(now_msec: int = -1) -> bool:
 		elif _known_hash[f] == h:
 			continue
 		_known_hash[f] = h
-		script_saved.emit(f, ORIGIN_FILE)
 		if f == selected:
+			script_saved.emit(f, ORIGIN_FILE)
 			request_load(f, ORIGIN_FILE)
 			reloaded = true
 		else:

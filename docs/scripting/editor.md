@@ -104,3 +104,15 @@ has `aim`, `aim_dir`, `pos`, `time`, `n` (the shot count), `pressed`,
 
 Callbacks such as `on_hit(b, hit)` and `on_batch(v, dt)` in the same table run
 for every shot the weapon fires. The full list is in [api.md](api.md).
+
+## For lesson and mod authors
+
+`ShotScripts` (a child of `Main`) has the signals a checker needs. None of
+them parse Lua.
+
+| Signal | When |
+|---|---|
+| `script_saved(file_name, origin)` | The **equipped** file was saved: in the editor (`origin` `&"editor"`) or changed on disk (`&"file"`, PC). Fires even when the save does not load. Other `shots/` files never fire it |
+| `weapon_swapped(file_name, origin)` | The weapon now runs `file_name` (`&"start"`, `&"editor"` or `&"file"`) |
+| `load_failed(file_name, problem, origin)` | `file_name` did not load; the previous weapon keeps firing |
+| `unequipped_file_saved(file_name)` | A file that is not equipped changed on disk. A UI notice for the toast, rate-limited; not for checkers |

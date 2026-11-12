@@ -194,7 +194,7 @@ func test_a_change_to_a_file_that_is_not_equipped_is_announced_not_loaded() -> v
 	assert_eq(ShotScripts.unequipped_text("other.lua"), "shots/other.lua saved (not equipped)")
 	assert_eq(_scripts.weapon.title, "Straight", "the weapon is unchanged")
 	assert_eq(_failed.size(), 0, "and it is not a failed reload")
-	assert_true(_saved.has("other.lua:file"), "it still counts as a save on disk")
+	assert_eq(_saved.size(), 0, "script_saved is only for the equipped file")
 	# Repeated writes inside the cooldown do not repeat the notice.
 	for i in 5:
 		_write_outside("other.lua", "return { name = 'Other %d' }" % (i + 3))
@@ -213,3 +213,32 @@ func test_a_change_to_a_file_that_is_not_equipped_is_announced_not_loaded() -> v
 	_scripts.flush_pending()
 	assert_eq(notices.size(), 4)
 	assert_eq(_failed.size(), 0)
+
+
+func test_script_saved_is_only_for_the_equipped_file() -> void:
+	ScriptLibrary.write("other.lua", "return { name = 'Other' }")
+	_scripts.start()
+	# Not equipped: written on disk, nothing for checkers.
+	_write_outside("other.lua", "return { name = 'Fast', speed = 900 }")
+	_scripts.poll_files(1000)
+	_scripts.flush_pending()
+	assert_eq(_saved.size(), 0)
+	# Equipped: written on disk and saved in the editor both fire it.
+	_write_outside("default.lua", ScriptLibrary.starter("spread").source)
+	_scripts.poll_files(2000)
+	_scripts.flush_pending()
+	assert_eq(_saved, ["default.lua:file"] as Array[String])
+	_scripts.save("default.lua", ScriptLibrary.starter("straight").source)
+	_scripts.flush_pending()
+	assert_eq(_saved, ["default.lua:file", "default.lua:editor"] as Array[String])
+	# Saving another file in the editor equips it, so it fires for that file.
+	_scripts.save("other.lua", "return { name = 'Other' }")
+	_scripts.flush_pending()
+	assert_eq(_saved[-1], "other.lua:editor")
+	assert_eq(_scripts.equipped, "other.lua")
+	# And now default.lua is the one that is not equipped.
+	_write_outside("default.lua", ScriptLibrary.starter("spiral").source)
+	_scripts.poll_files(9000)
+	_scripts.flush_pending()
+	assert_eq(_saved.size(), 3, "a change to the old file does not count")
+	assert_eq(_scripts.weapon.title, "Other")
