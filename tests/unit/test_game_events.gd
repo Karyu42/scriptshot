@@ -151,6 +151,14 @@ func test_a_dummy_emits_dummy_kills_and_only_its_first_is_a_first_death() -> voi
 	assert_eq(_firsts[3], true)
 
 
+func test_sandbox_turrets_and_mirrors_emit_no_kills() -> void:
+	for path: String in ["res://scenes/turret.tscn", "res://scenes/mirror.tscn"]:
+		var body := (load(path) as PackedScene).instantiate() as TrainingDummy
+		add_child_autofree(body)
+		(body.get_node("Hurtbox") as Hurtbox).receive_hit(body.max_health, Vector2.ZERO, Vector2.ZERO)
+	assert_eq(_kinds.size(), 0)
+
+
 func test_player_death_emits_player_died_each_death() -> void:
 	var player := (load("res://scenes/player.tscn") as PackedScene).instantiate() as Player
 	add_child_autofree(player)
