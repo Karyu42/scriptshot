@@ -12,7 +12,7 @@
 #            perf_parent_base input runs the push code path against HEAD^1.
 #   perf-native : "Bullet benchmark (native on_batch, p95 gate)", on every PR and push to main after Native libs (linux):
 #            the native on_batch tier (--backend=native --batch=1) gated by check_perf.py on its own bars (6.0 ms 5k
-#            hard, 12.0 ms 10k warn) with the same #42 rules, plus an informational --backend=auto row. See the job.
+#            hard, 10.0 ms 10k warn) with the same #42 rules, plus an informational --backend=auto row. See the job.
 #   web-smoke : on every PR and push to main, tools/ci/web_smoke.sh: exports the shipping "Web" preset and the
 #            "Web (smoke)" preset (release and debug, web_dlink_nothreads templates), checks the files (Lua side
 #            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
@@ -336,9 +336,9 @@ jobs:
   #   * on_batch tier: ./tools/run_benchmark.sh --backend=native --batch=1 --bullets=5000,10000 (one on_update_batch
   #     callback steers every bullet; native apply_batch). Gated by tools/ci/check_perf.py, not by the benchmark's own
   #     exit code. 5k HARD, 10k warning-only. Bars (check_perf.NATIVE_ON_BATCH_*; see the comment there):
-  #       mode=raw (default): head raw p95 <= 6.0 ms at 5k, 12.0 ms at 10k.
+  #       mode=raw (default): head raw p95 <= 6.0 ms at 5k, 10.0 ms at 10k.
   #       mode=slow-runner, ONLY when the same-run base's own raw p95 also misses that bar: bar x min(F, 1.5),
-  #       F = base on_batch 5k p95 / 3.0 ms (check_perf.REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS), clamped >= 1.0.
+  #       F = base on_batch 5k p95 / 2.0 ms (check_perf.REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS), clamped >= 1.0.
   #       relative, always: head p95 <= base p95 x 1.10, no absolute slack.
   #     The report must say backend "native" and batch 1 (a GDScript fallback fails, a GDScript base is unusable).
   #   * auto row: --backend=auto --bullets=5000,10000 (plain bullets). INFORMATIONAL: bars (16.6 ms) and the relative
@@ -500,13 +500,13 @@ jobs:
             args=(--out=reports --rounds=4 --base="$PERF_BASE_DIR" "$tiers" --onbatch-target-ms=6.0)
           fi
           ./tools/ci/perf_ab.sh "${args[@]}" 2>&1 | tee reports/bench-native.log
-      - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 12.0 ms at 10k warn; vs same-run base)
+      - name: Enforce the native on_batch budget (6.0 ms at 5k hard, 10.0 ms at 10k warn; vs same-run base)
         run: |
           args=(
             python3 tools/ci/check_perf.py reports/bench-onbatch.json
             --tier-name "native on_batch" --title "Native on_batch bullet benchmark (--backend=native --batch=1)"
-            --p95-ms 6.0 --p95-target-ms 12.0 --floor-bullets 5000 --target-bullets 10000
-            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 3.0
+            --p95-ms 6.0 --p95-target-ms 10.0 --floor-bullets 5000 --target-bullets 10000
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 2.0
             --expect-backend native --expect-batch 1
             --summary "$GITHUB_STEP_SUMMARY"
           )
@@ -527,7 +527,7 @@ jobs:
             python3 tools/ci/check_perf.py reports/bench-auto.json
             --tier-name auto --title "Auto backend bullet benchmark (--backend=auto, plain bullets; informational)"
             --p95-ms 16.6 --floor-bullets 5000 --target-bullets 10000
-            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 3.0
+            --rel-tolerance-pct 10 --slow-runner-cap 1.5 --reference-ms 2.0
             --expect-backend native --expect-batch 0 --informational
             --summary "$GITHUB_STEP_SUMMARY"
           )

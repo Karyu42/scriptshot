@@ -71,14 +71,18 @@ import sys
 REFERENCE_PLAIN_FLOOR_P95_MS = 7.5
 
 # Native on_batch tier ("Bullet benchmark (native on_batch, p95 gate)" job; .github/workflows/ci.yml passes these
-# numbers explicitly and tools/ci/test_check_perf.py checks that they match). PROVISIONAL until the first CI run of
-# the PR that adds the tier; see that PR's body for the observed runner numbers.
-#   * bars: hard at 5,000, warning at 10,000. Below 16.6 ms, and the 5k bar x the 1.5 slow-runner cap stays below
-#     10 ms, so a 5k on_batch p95 of 10 ms (the regressed PR #63 head 1322ebcc) fails in every mode.
-#   * reference: main's native on_batch 5k p95 on a fast ubuntu-24.04 runner (the role 7.5 ms plays for plain).
+# numbers explicitly and tools/ci/test_check_perf.py checks that they match). Calibrated in PR #64 from CI run
+# 43200042914 (ubuntu-24.04): main 119c0925 native on_batch work p95 at 5k 1.79-2.00 ms (4 rounds, merged 1.96),
+# at 10k 3.14-3.37 ms (merged 3.32). Locally 1.8-2.5 / 3.3-4.4 ms; the regressed #63 head 1322ebcc 11.0 / 19.2 ms.
+#   * bars: about 3x main's runner p95 (plain has 16.6 / 7.5 = 2.2x; hosts differ by about 2x): 6.0 ms at 5k (hard),
+#     10.0 ms at 10k (warning). Well below 16.6 ms, and 6.0 x the 1.5 slow-runner cap = 9.0 ms < 10 ms, so a 5k
+#     on_batch p95 of 10 ms (1322ebcc) fails in every mode.
+#   * reference: main's native on_batch 5k p95 on the runner, 2.0 ms (the role 7.5 ms plays for plain). Slow-runner
+#     mode needs the base itself over 6.0 ms (F >= 3), so F is then always capped at 1.5. One runner sample so far:
+#     revisit with more runs, or when main's native on_batch cost really moves.
 NATIVE_ON_BATCH_FLOOR_MS = 6.0
-NATIVE_ON_BATCH_TARGET_MS = 12.0
-REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS = 3.0
+NATIVE_ON_BATCH_TARGET_MS = 10.0
+REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS = 2.0
 
 # Wording per --base-kind. "pr" is the original text, byte for byte (PR runs must not change).
 BASE_NAMES = {
