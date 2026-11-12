@@ -1,4 +1,4 @@
-"""Fixture tests for cold_import.sh: one retry, only when Godot died on a signal (rc >= 128).
+"""Fixture tests for cold_import.sh: one retry, only when Godot died on a signal (128 < rc < 160).
 
 The fake godot is a shell script; its log lines are FABRICATED test data.
 """
@@ -12,7 +12,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(HERE, "cold_import.sh")
 
 # Behaviour per call, read from a counter file: "abort" = SIGABRT (exit 134), "segv" = SIGSEGV (139),
-# "fail" = plain exit 1, "ok" = exit 0.
+# "fail" = plain exit 1, "exit255" = plain exit 255 (C exit(-1)), "ok" = exit 0.
 FAKE = """#!/usr/bin/env bash
 n=$(cat "$FAKE_DIR/calls" 2>/dev/null || echo 0); n=$((n + 1)); echo "$n" > "$FAKE_DIR/calls"
 plan=($FAKE_PLAN); what="${plan[$((n - 1))]:-ok}"
@@ -22,6 +22,7 @@ case "$what" in
   abort) echo "double free or corruption (!prev)"; kill -ABRT $$ ;;
   segv) echo "handle_crash: Program crashed with signal 11"; echo "[1] godot() [0x1c7ae9f]"; kill -SEGV $$ ;;
   fail) echo "ERROR: Failed loading resource"; exit 1 ;;
+  exit255) echo "ERROR: Failed loading resource"; exit 255 ;;
   *) echo "[ DONE ] reimport"; exit 0 ;;
 esac
 """
@@ -78,6 +79,15 @@ class ColdImportTest(unittest.TestCase):
         self.assertEqual((code, calls), (1, 1))
         self.assertIn("::error title=head cold import failed::", out)
         self.assertIn("exited 1 (not a signal)", out)
+        self.assertNotIn("::warning", out)
+        self.assertNotIn("import-head-1-crashed.log", files)
+
+    def test_exit_255_is_not_a_signal_and_is_not_retried(self):
+        # exit 255 is a plain exit(-1), not 128+signal, so it must not retry.
+        code, out, calls, files, _ = run("exit255 ok")
+        self.assertEqual((code, calls), (1, 1))
+        self.assertIn("::error title=head cold import failed::", out)
+        self.assertIn("exited 255 (not a signal)", out)
         self.assertNotIn("::warning", out)
         self.assertNotIn("import-head-1-crashed.log", files)
 
