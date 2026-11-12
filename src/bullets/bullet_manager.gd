@@ -18,6 +18,18 @@ const BATCH_WARN_VELOCITY := 1
 const BATCH_WARN_SPEED := 2
 const BATCH_WARN_PA := 3
 const BATCH_WARN_PB := 4
+## Script owners (hot reload, see hooked_count_for_owner()). An *owner id* is
+## the behavior id register_behavior() returned: every bullet spawned with that
+## ShotRequest.behavior_id carries it, and its hooks (per-bullet and on_batch)
+## run on that BulletBehavior. A LuaBulletBehavior is one script generation, so
+## a fresh generation registers a new behavior and gets a new owner id.
+##
+## Emitted when the live bullets of `owner_id` (both stores) went from > 0 to 0:
+## they despawned, were cleared, or were stripped. Checked at the end of step(),
+## clear_bullets() and strip_hooks_for_owner(), so a bullet that despawns and a
+## new one spawned in the same tick do not fire it.
+signal hooked_owner_drained(owner_id: int)
+
 ## Managers currently in a tree. Reflector enter/exit notifies each of them.
 ## Node2D, not BulletManager: a static Array of this class cannot be parsed
 ## while the class is still being compiled.
@@ -187,6 +199,9 @@ var _ret_t := PackedFloat32Array()
 var _ret_count := 0
 ## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
 var _order_count := 0
+## Owner ids with live bullets in the native sim (batch-only behaviours), so
+## a drain that happens there is noticed. Usually empty.
+var _native_owner_watch: Dictionary[int, bool] = {}
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -399,7 +414,10 @@ func spawn(request: ShotRequest) -> int:
 	if _batch_depth > 0:
 		return _spawn_checked(request)
 	if _wants_native(request):
-		return _spawn_native(request)
+		var nid := _spawn_native(request)
+		if nid >= 0 and request.behavior_id > 0:
+			_native_owner_watch[request.behavior_id] = true
+		return nid
 	return _spawn_checked(request)
 
 
@@ -488,7 +506,7 @@ func _migrate_native_behavior(behavior_id: int) -> void:
 				"BulletManager.migrate: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
 			)
 			continue
-		pool.behavior[slot] = behavior_id
+		pool.set_behavior(slot, behavior_id)
 		if veto and pool.can_hit_veto[slot] == 0:
 			pool.can_hit_veto[slot] = 1
 			pool.veto_count += 1
@@ -714,7 +732,7 @@ func _spawn_checked(request: ShotRequest) -> int:
 		var b := _get_behavior(request.behavior_id)
 		if b == null:
 			push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % request.behavior_id)
-			pool.behavior[i] = 0
+			pool.set_behavior(i, 0, false)
 		else:
 			var outer := pool.hook_owner
 			var outer_slot := pool.hook_slot
@@ -1311,6 +1329,8 @@ func step(delta: float) -> void:
 		_renderer.update_from(pool)
 	if _native_renderer != null:
 		_native_renderer.update_from(native)
+	if not pool.drained_ids.is_empty() or not _native_owner_watch.is_empty():
+		_emit_drained()
 	var t5 := Time.get_ticks_usec()
 	last_phase_usec[Phase.TARGETS_AND_ADVANCE] = t1 - t0
 	last_phase_usec[Phase.HOOKS_AND_WALLS] = t2 - t1
@@ -1382,6 +1402,108 @@ func clear_bullets() -> void:
 		if _native_renderer != null:
 			_native_renderer.update_from(native)
 	_order_count = 0
+	_emit_drained()
+
+
+## Live bullets of script owner `owner_id` (see hooked_owner_drained): every
+## bullet still carrying that behavior id, in the pool (per-bullet hooks always
+## live there) and, for a batch-only behaviour, in the native sim. Includes a
+## bullet marked dead this tick and not yet removed. 0 for 0 or an unknown id.
+## The pool side is a counter; the native side asks the sim only while it holds
+## bullets of a batch-only behaviour.
+func hooked_count_for_owner(owner_id: int) -> int:
+	if owner_id <= 0:
+		return 0
+	var n := pool.live_with_behavior(owner_id)
+	if native != null and _native_owner_watch.has(owner_id):
+		n += native.count_with_behavior(owner_id)
+	return n
+
+
+## Turns every in-flight bullet of `owner_id` into a plain bullet that keeps
+## flying: its behavior id becomes 0, so no hook of that behaviour runs again
+## and the bullets hold no reference to it. Position, velocity and the shot's
+## declarative fields (acceleration, turn rate, damage, pierce, owner layer,
+## script-invulnerability flag) are kept; per-bullet script state (`user`) and
+## the can_hit veto are dropped. A batch-only behaviour's native bullets move to
+## the pool as plain bullets. Returns how many were stripped. Emits
+## hooked_owner_drained when any were. Call it between ticks (SE: deferred, at
+## a frame boundary), not from inside a bullet hook.
+func strip_hooks_for_owner(owner_id: int) -> int:
+	if owner_id <= 0:
+		return 0
+	var n := 0
+	if native != null and _native_owner_watch.has(owner_id) and native.count_with_behavior(owner_id) > 0:
+		n += _adopt_native_plain(owner_id)
+	n += pool.strip_behavior(owner_id)
+	_emit_drained()
+	return n
+
+
+## strip_hooks_for_owner(), then forgets the behaviour itself: its table entry
+## becomes an inert behaviour with no hooks, so the manager no longer holds the
+## BulletBehavior (for a LuaBulletBehavior, its ScriptHost and Lua chunk). The
+## id is never reused; a shot that still names it spawns a bullet whose hooks
+## do nothing. Returns how many bullets were stripped.
+func release_behavior(owner_id: int) -> int:
+	if owner_id <= 0 or owner_id >= _behaviors.size():
+		return 0
+	var n := strip_hooks_for_owner(owner_id)
+	var inert := BulletBehavior.new()
+	inert.hook_mask = 0
+	inert.hook_mask_exact = true
+	inert.update_mode = BulletBehavior.UpdateMode.PER_BULLET
+	inert.emitter = emitter
+	_behaviors[owner_id] = inert
+	_refresh_hooks(owner_id, inert)
+	_declared_checked[owner_id] = -2
+	_declared_scripts[owner_id] = null
+	return n
+
+
+## Moves the native bullets of `behavior_id` into the pool as plain bullets.
+func _adopt_native_plain(behavior_id: int) -> int:
+	var rows: Array = native.extract_behavior(behavior_id)
+	_sync_pool_external()
+	var n := 0
+	for i in rows.size():
+		var item: Variant = rows[i]
+		if not item is Dictionary:
+			continue
+		@warning_ignore("unsafe_cast")
+		var row := item as Dictionary
+		var slot := pool.adopt_native(row)
+		if slot < 0:
+			ScriptWarnings.warn(
+				"BulletManager.strip",
+				"BulletManager.strip_hooks_for_owner: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
+			)
+			continue
+		pool.set_behavior(slot, 0)
+		# extract_behavior already retired the native seq. This bullet needs its own.
+		pool.seq[slot] = _alloc_order()
+		n += 1
+	_sync_pool_external()
+	return n
+
+
+func _emit_drained() -> void:
+	var ids := pool.take_drained()
+	var check: Array[int] = []
+	for id in ids:
+		if not check.has(id):
+			check.append(id)
+	for id: int in _native_owner_watch.keys():
+		if not check.has(id):
+			check.append(id)
+	for id in check:
+		var native_n := 0
+		if native != null and _native_owner_watch.has(id):
+			native_n = native.count_with_behavior(id)
+			if native_n == 0:
+				_native_owner_watch.erase(id)
+		if native_n == 0 and pool.live_with_behavior(id) == 0:
+			hooked_owner_drained.emit(id)
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).
