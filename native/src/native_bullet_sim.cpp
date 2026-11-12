@@ -3,6 +3,7 @@
 #include <godot_cpp/classes/rendering_server.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/object.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -864,7 +865,26 @@ static bool speed_exceeds(float x, float y, float cap) {
 	return !(dx * dx + dy * dy <= cap2);
 }
 
-static Dictionary batch_report(int vel_nf, int pa_nf, int pb_nf, const PackedFloat32Array &clamp_vx, const PackedFloat32Array &clamp_vy) {
+// Same ScriptWarnings keys and removal text as BulletPool.set_velocity / sanitize.
+static const char *BATCH_KEY_VELOCITY = "BulletPool.set_velocity";
+static const char *BATCH_KEY_SPEED = "BulletPool.set_velocity.clamp.speed";
+static const char *BATCH_KEY_HOOK = "BulletPool.hook_write";
+static const char *BATCH_WHAT_VELOCITY = "a non-finite velocity";
+static const char *BATCH_WHAT_PA = "a non-finite value written to param_a";
+static const char *BATCH_WHAT_PB = "a non-finite value written to param_b";
+
+static void push_batch_warn(PackedInt32Array &rows, PackedStringArray &keys, PackedStringArray &whats,
+		PackedFloat32Array &wvx, PackedFloat32Array &wvy, int row, const char *key, const char *what, float vx, float vy) {
+	rows.push_back(row);
+	keys.push_back(String(key));
+	whats.push_back(String(what));
+	wvx.push_back(vx);
+	wvy.push_back(vy);
+}
+
+static Dictionary batch_report(int vel_nf, int pa_nf, int pb_nf, const PackedFloat32Array &clamp_vx, const PackedFloat32Array &clamp_vy,
+		const PackedInt32Array &warn_row, const PackedStringArray &warn_key, const PackedStringArray &warn_what,
+		const PackedFloat32Array &warn_vx, const PackedFloat32Array &warn_vy) {
 	Dictionary d;
 	d["killed"] = vel_nf + pa_nf + pb_nf;
 	d["vel_nonfinite"] = vel_nf;
@@ -872,6 +892,12 @@ static Dictionary batch_report(int vel_nf, int pa_nf, int pb_nf, const PackedFlo
 	d["pb_nonfinite"] = pb_nf;
 	d["clamp_vx"] = clamp_vx;
 	d["clamp_vy"] = clamp_vy;
+	// Offending rows in the order the pool would warn, alongside the totals.
+	d["warn_row"] = warn_row;
+	d["warn_key"] = warn_key;
+	d["warn_what"] = warn_what;
+	d["warn_vx"] = warn_vx;
+	d["warn_vy"] = warn_vy;
 	return d;
 }
 
@@ -884,8 +910,13 @@ Dictionary NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const Pac
 	n = std::min(n, (int)p_pb.size());
 	PackedFloat32Array clamp_vx;
 	PackedFloat32Array clamp_vy;
+	PackedInt32Array warn_row;
+	PackedStringArray warn_key;
+	PackedStringArray warn_what;
+	PackedFloat32Array warn_vx;
+	PackedFloat32Array warn_vy;
 	if (n <= 0) {
-		return batch_report(0, 0, 0, clamp_vx, clamp_vy);
+		return batch_report(0, 0, 0, clamp_vx, clamp_vy, warn_row, warn_key, warn_what, warn_vx, warn_vy);
 	}
 	const int64_t *ids = p_ids.ptr();
 	const float *wvx = p_vx.ptr();
@@ -915,21 +946,27 @@ Dictionary NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const Pac
 			mark_dead(s, REASON_INVALID);
 			invalid_total++;
 			vel_nf++;
+			// set_velocity kills and returns before pa/pb are written.
+			push_batch_warn(warn_row, warn_key, warn_what, warn_vx, warn_vy, i, BATCH_KEY_VELOCITY, BATCH_WHAT_VELOCITY, 0.0f, 0.0f);
 			continue;
 		}
 		if (vel_dirty && speed_exceeds(nvx, nvy, max_speed)) {
 			clamp_vx.push_back(nvx);
 			clamp_vy.push_back(nvy);
+			push_batch_warn(warn_row, warn_key, warn_what, warn_vx, warn_vy, i, BATCH_KEY_SPEED, "", nvx, nvy);
 		}
 		if ((pa_dirty && !std::isfinite(npa)) || (pb_dirty && !std::isfinite(npb))) {
 			vx[s] = 0.0f;
 			vy[s] = 0.0f;
 			mark_dead(s, REASON_INVALID);
 			invalid_total++;
+			// sanitize names the first non-finite field, so a bad pa hides pb.
 			if (pa_dirty && !std::isfinite(npa)) {
 				pa_nf++;
+				push_batch_warn(warn_row, warn_key, warn_what, warn_vx, warn_vy, i, BATCH_KEY_HOOK, BATCH_WHAT_PA, 0.0f, 0.0f);
 			} else {
 				pb_nf++;
+				push_batch_warn(warn_row, warn_key, warn_what, warn_vx, warn_vy, i, BATCH_KEY_HOOK, BATCH_WHAT_PB, 0.0f, 0.0f);
 			}
 			continue;
 		}
@@ -945,7 +982,7 @@ Dictionary NativeBulletSim::apply_batch(const PackedInt64Array &p_ids, const Pac
 			param_b[s] = npb;
 		}
 	}
-	return batch_report(vel_nf, pa_nf, pb_nf, clamp_vx, clamp_vy);
+	return batch_report(vel_nf, pa_nf, pb_nf, clamp_vx, clamp_vy, warn_row, warn_key, warn_what, warn_vx, warn_vy);
 }
 
 bool NativeBulletSim::teleport_id(int64_t p_id, float p_x, float p_y) {
