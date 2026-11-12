@@ -395,6 +395,7 @@ class Spawner:
 
 func test_children_spawned_after_a_nested_spawn_still_inherit_the_hook_owner() -> void:
 	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 256
 	manager.world_bounds = Rect2(-1000, -1000, 2000, 2000)
 	manager.render_enabled = false

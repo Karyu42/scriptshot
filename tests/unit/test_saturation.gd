@@ -8,6 +8,7 @@ var manager: BulletManager
 
 func before_each() -> void:
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 4
 	manager.enemy_reserve = 0  # the default 30% reserve would also refuse the player's shots here
 	manager.world_bounds = Rect2(-500, -500, 1000, 1000)

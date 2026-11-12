@@ -585,6 +585,7 @@ class Probe:
 
 func _run_spawn_order_scenario(manager_priority: int) -> Probe:
 	var live := BulletManager.new()
+	live.backend_preference = "gdscript"
 	live.capacity = 16
 	live.render_enabled = false
 	live.process_physics_priority = manager_priority

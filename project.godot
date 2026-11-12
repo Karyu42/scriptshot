@@ -136,7 +136,7 @@ common/physics_jitter_fix=0.0
 
 [scriptshot]
 
-bullets/backend="gdscript"
+bullets/backend="auto"
 
 [rendering]
 

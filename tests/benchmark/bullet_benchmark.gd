@@ -27,12 +27,13 @@ extends Node
 ##                          workload. This is separate from --hooked; the 22 ms gate stays
 ##                          on the per-bullet no-op. On the native backend these bullets
 ##                          live in the sim. On GDScript they stay in the pool.
-##   --backend=native       bullet backend: auto (default), gdscript or native.
-##                          auto is the native opt-in: --bullet-backend=, then
-##                          SCRIPTSHOT_BULLET_BACKEND, then project setting
-##                          scriptshot/bullets/backend. Unset stays on gdscript.
-##                          --backend=native forces the C++ pool for hook-free
-##                          bullets (hooked bullets stay on GDScript).
+##   --backend=gdscript     bullet backend. Omitted is gdscript, pinned so the
+##                          plain 16.6 ms and hooked 22.0 ms bars keep measuring
+##                          the GDScript pool (per-bullet hooks stay there either
+##                          way). auto follows the game default: native when
+##                          NativeBulletSim loads, otherwise GDScript. native
+##                          forces the C++ pool for hook-free bullets, including
+##                          on_batch. Hooked per-bullet bullets stay on GDScript.
 ##   --json=path            also write results as JSON (includes the hooked fraction and backend)
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
@@ -73,8 +74,10 @@ var json_path := ""
 var hooked_fraction := 0.0
 ## 1 when every bullet is driven by one batch hook (see --batch).
 var batch_mode := 0
-## "auto", "gdscript" or "native". auto follows SCRIPTSHOT_BULLET_BACKEND.
-var backend_preference := "auto"
+## "gdscript" (pinned default), "native", or "auto" (the game default).
+## Omitted --backend stays on gdscript so the existing bars do not follow the
+## game's native default. See docs/native.md.
+var backend_preference := "gdscript"
 ## Reflector zones added on top of the wall field. 0 leaves the original workload.
 ## Zones reflect both factions with the pool's reflection cap lifted, so plain
 ## bullets bounce for the whole run instead of once.
@@ -161,8 +164,8 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | pierce fraction %.2f (pierce %d)"
-		% [Engine.get_version_info().string, _manager.backend, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, PIERCE_FRACTION, PIERCE_EXTRA])
+	print("[bench] Godot %s | backend: %s | preference: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | pierce fraction %.2f (pierce %d)"
+		% [Engine.get_version_info().string, _manager.backend, backend_preference, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, PIERCE_FRACTION, PIERCE_EXTRA])
 	_next_count()
 
 

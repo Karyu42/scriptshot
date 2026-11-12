@@ -1,7 +1,8 @@
 extends GutTest
 ## Seeded parity: the same scenario through the GDScript and the native backend
-## must give the same bullets (positions, velocities, ages) tick by tick and the
-## same hits. Plain bullets only (hooked bullets are GDScript in both backends).
+## must give the same bullets (positions, velocities, ages, lifetimes) tick by
+## tick and the same hits. Plain bullets, and one on_batch script at a fixed
+## seed and fixed 1/60 steps. Per-bullet hooks stay on GDScript in both backends.
 ##
 ## Short paths use the same endpoint test as the pool (impact at the end
 ## position). Swept hits are the contact point on both sides. Survivor positions
@@ -27,9 +28,10 @@ class RunResult:
 	var states: Array[Dictionary] = []
 	var hits: Array[HitRecord] = []
 	var backend := ""
+	var max_pool := 0
 
 
-func _run(preference: String) -> RunResult:
+func _run(preference: String, batch: bool = false, seed_value: int = 424242, ticks: int = TICKS) -> RunResult:
 	var result := RunResult.new()
 	var root := Node2D.new()
 	add_child(root)
@@ -63,9 +65,13 @@ func _run(preference: String) -> RunResult:
 	mgr.add_wall(Rect2(-450, 20, 220, 24))
 
 	var rng := RandomNumberGenerator.new()
-	rng.seed = 424242
+	rng.seed = seed_value
+	var behavior_id := 0
+	if batch:
+		behavior_id = mgr.register_behavior(_BatchSteer.new())
 	var serial := 0
-	for tick in TICKS:
+	var max_pool := 0
+	for tick in ticks:
 		tick_ref[0] = tick
 		if tick < 100:
 			for _k in 6:
@@ -77,6 +83,7 @@ func _run(preference: String) -> RunResult:
 				req.radius = rng.randf_range(2.0, 5.0)
 				req.damage = rng.randf_range(1.0, 3.0)
 				req.hit_mask = Layers.ENEMY
+				req.behavior_id = behavior_id
 				req.collide_world = rng.randf() > 0.2
 				if rng.randf() < 0.3:
 					req.acceleration = rng.randf_range(-100.0, 200.0)
@@ -86,6 +93,7 @@ func _run(preference: String) -> RunResult:
 				serial += 1
 				mgr.spawn(req)
 		mgr.step(DT)
+		max_pool = maxi(max_pool, mgr.pool.count)
 		var snap := mgr.snapshot()
 		var pos: PackedVector2Array = snap["pos"]
 		var vel: PackedVector2Array = snap["vel"]
@@ -95,8 +103,9 @@ func _run(preference: String) -> RunResult:
 		var pierce: PackedInt32Array = snap["pierce"]
 		var state := {}
 		for i in pos.size():
-			state[life[i]] = [pos[i], vel[i], age[i], radius[i], pierce[i]]
+			state[life[i]] = [pos[i], vel[i], age[i], radius[i], pierce[i], life[i]]
 		result.states.append(state)
+	result.max_pool = max_pool
 	# Hurtboxes register in a static list: remove this run's before the next one.
 	remove_child(root)
 	root.free()
@@ -109,11 +118,27 @@ func test_native_matches_gdscript_tick_by_tick() -> void:
 		return
 	var gd := _run("gdscript")
 	var nat := _run("native")
+	_assert_same_run(gd, nat, 20)
+
+
+## on_batch over the same seeded scene, fixed 1/60 steps. Positions, velocities,
+## lifetimes and hits must match, and the native run keeps those bullets in the sim.
+func test_batch_hook_matches_gdscript_for_a_fixed_seed() -> void:
+	if not _available():
+		return
+	var gd := _run("gdscript", true, 340034, 90)
+	var nat := _run("native", true, 340034, 90)
+	assert_gt(gd.max_pool, 0, "the GDScript run keeps the batch bullets in the pool")
+	assert_eq(nat.max_pool, 0, "the native run keeps the batch bullets in the sim")
+	_assert_same_run(gd, nat, 1)
+
+
+func _assert_same_run(gd: RunResult, nat: RunResult, min_hits: int) -> void:
 	assert_eq(gd.backend, "gdscript")
 	assert_eq(nat.backend, "native")
 	var mismatched_ticks := 0
 	var first_bad := ""
-	for tick in TICKS:
+	for tick in gd.states.size():
 		var a: Dictionary = gd.states[tick]
 		var b: Dictionary = nat.states[tick]
 		var ok := a.size() == b.size()
@@ -130,9 +155,13 @@ func test_native_matches_gdscript_tick_by_tick() -> void:
 				var pb: Vector2 = sb[0]
 				var va: Vector2 = sa[1]
 				var vb: Vector2 = sb[1]
-				if pa.distance_to(pb) > POS_EPS or va.distance_to(vb) > 0.05:
+				var age_a: float = sa[2]
+				var age_b: float = sb[2]
+				var life_a: float = sa[5]
+				var life_b: float = sb[5]
+				if pa.distance_to(pb) > POS_EPS or va.distance_to(vb) > 0.05 or absf(age_a - age_b) > 0.0001 or absf(life_a - life_b) > 0.0001:
 					ok = false
-					detail = "tick %d: lifetime %f pos %s vs %s vel %s vs %s" % [tick, key, pa, pb, va, vb]
+					detail = "tick %d: lifetime %f vs %f pos %s vs %s vel %s vs %s age %f vs %f" % [tick, life_a, life_b, pa, pb, va, vb, age_a, age_b]
 					break
 		if not ok:
 			mismatched_ticks += 1
@@ -140,7 +169,7 @@ func test_native_matches_gdscript_tick_by_tick() -> void:
 				first_bad = detail
 	assert_eq(mismatched_ticks, 0, "first mismatch: %s" % first_bad)
 
-	assert_gt(gd.hits.size(), 20, "the scenario must produce hits")
+	assert_gt(gd.hits.size(), min_hits, "the scenario must produce hits")
 	assert_eq(nat.hits.size(), gd.hits.size(), "same number of hits")
 	var per_tick_gd := _hits_by_tick_and_target(gd.hits)
 	var per_tick_nat := _hits_by_tick_and_target(nat.hits)
@@ -497,3 +526,21 @@ func _damage_flags(preference: String) -> Array:
 	mgr.step(DT)
 	_close(mgr)
 	return seen
+
+
+## Batch steering used by the seeded parity run. Writes depend only on that
+## bullet's age and the tick, so row order cannot change the result.
+class _BatchSteer:
+	extends BulletBehavior
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+
+	func on_update_batch(batch: BatchView) -> void:
+		var vx := batch.vx
+		var vy := batch.vy
+		var age := batch.age
+		var dt := batch.dt
+		for i in batch.n:
+			vx[i] = vx[i] + cos(age[i] * 6.0) * 40.0 * dt
+			vy[i] = vy[i] + sin(age[i] * 3.0) * 20.0 * dt

@@ -32,6 +32,7 @@ class Writer:
 func before_each() -> void:
 	ScriptWarnings.reset()
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-100000, -100000, 200000, 200000)
 	manager.render_enabled = false

@@ -70,15 +70,18 @@ var emitter: ShotEmitter
 ## "native" when the C++ NativeBulletSim simulates hook-free bullets, otherwise
 ## "gdscript" (everything in `pool`). Chosen in _ready(); see backend_preference.
 var backend := "gdscript"
-## Which backend to use. "gdscript" (the default) keeps every bullet in the pool,
-## including when the project setting or SCRIPTSHOT_BULLET_BACKEND says native:
-## tests and a scene that did not opt in do not move because the library loaded.
-## "native" sends hook-free bullets to NativeBulletSim when the extension is
-## loaded, and falls back to GDScript (one warning) when it is not. "auto"
-## follows, in order, `--bullet-backend=`, SCRIPTSHOT_BULLET_BACKEND, then the
-## project setting `scriptshot/bullets/backend`. Unset stays on GDScript.
-## Set before _ready. The main scene and the benchmark use "auto".
-@export_enum("auto", "gdscript", "native") var backend_preference := "gdscript"
+## Which backend to use. "auto" (the default) follows `--bullet-backend=`, then
+## SCRIPTSHOT_BULLET_BACKEND, then `scriptshot/bullets/backend` when that setting
+## is `gdscript` or `native`. Otherwise native is used wherever the library
+## loads. Plain, declarative and batch-only bullets go there. A per-bullet hook
+## stays on the GDScript pool. Web stays on GDScript and does not try to load
+## the library (no warning: that is expected). Android has no separate path; a
+## missing library uses the same fallback as anywhere else. A missing library
+## or a sim that fails to instantiate falls back to GDScript with one warning
+## per run. "gdscript" and "native" force that backend and ignore the CLI, the
+## env var and the project setting. Set before _ready. The shipped scenes use
+## "auto".
+@export_enum("auto", "gdscript", "native") var backend_preference := "auto"
 var native: NativeBackend
 
 ## Duration of the last step() call in microseconds.
@@ -1273,6 +1276,15 @@ func _select_backend() -> void:
 	var wanted := backend_preference
 	if wanted == "auto":
 		wanted = NativeBackend.opted_backend()
+	# Web does not ship NativeBulletSim and does not construct it. The built-in
+	# default is silent there. An explicit native request still logs the one
+	# process-wide fallback warning. Android is not special-cased: a missing
+	# library takes the fallback below.
+	if NativeBackend.is_web():
+		if wanted == "native" and NativeBackend.explicit_native(backend_preference):
+			NativeBackend.warn_missing()
+		backend = "gdscript"
+		return
 	# Explicit "gdscript", or "auto" that resolved to it: the pool only.
 	if wanted != "native":
 		backend = "gdscript"
@@ -1282,6 +1294,11 @@ func _select_backend() -> void:
 		backend = "gdscript"
 		return
 	native = NativeBackend.new(capacity, world_bounds, cell_size)
+	if native.sim == null:
+		native = null
+		NativeBackend.warn_missing()
+		backend = "gdscript"
+		return
 	native.set_limits(pool.logical_cap, pool.enemy_reserve)
 	pool.alloc_order = _assign_pool_seq
 	pool.retire_order = _retire_pool_bullet

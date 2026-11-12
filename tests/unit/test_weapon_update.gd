@@ -64,6 +64,8 @@ func before_each() -> void:
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(_SAVE))
 	var opened := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
 	opened.save_path = _SAVE
+	# These tests read BulletPool slots. The scene default is auto (native when the library loads).
+	(opened.get_node("BulletManager") as BulletManager).backend_preference = "gdscript"
 	main = opened
 	add_child_autofree(main)
 	var turrets := main.get_node_or_null("Turrets")

@@ -8,6 +8,7 @@ var m: BulletManager
 func before_each() -> void:
 	ScriptWarnings.reset()
 	m = BulletManager.new()
+	m.backend_preference = "gdscript"
 	m.capacity = 64
 	m.world_bounds = Rect2(-2000, -2000, 4000, 4000)
 	m.render_enabled = false

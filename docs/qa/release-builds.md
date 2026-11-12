@@ -96,7 +96,7 @@ Notarization (no warning at all) needs a paid Apple developer account and is out
   `.godot/extension_list.cfg` drops it, so the engine never tries to load it (no "No GDExtension library found" errors). This works
   with or without web keys in `scriptshot_native.gdextension`: main has had `web.*.wasm32` keys and the `bin/web.wasm32/`
   layout since #35, and the exclusion was also checked on the tree before #35, which had none. Web therefore runs on the
-  GDScript bullet pool; selecting native (`--bullet-backend=native`) logs the usual single fallback warning.
+  GDScript bullet pool and does not warn for that default (the library is not shipped, and the game does not try to load it). Selecting native (`--bullet-backend=native`) stays on GDScript, does not instantiate the sim, and logs the usual single fallback warning. Android has no separate bullet path: a missing library uses the same one-warning GDScript fallback as desktop.
 * Size: the dlink no-threads release export is about **49.2 MiB** on disk (`index.side.wasm` 44.1 MB, `index.wasm` 1.5 MB,
   Lua side module 2.65 MB, `index.js` 2.9 MB, `index.pck` 0.4 MB), versus 42.07 MiB for the old no-dlink export that did not boot.
   Gzipped, the three wasm files are about 11.7 MB. On a local server in headless Chromium (SwiftShader) the engine starts about
@@ -131,8 +131,9 @@ every project.binary, pointing at a file that is not exported; without the featu
   `ScriptHost` (`LuaBulletBehavior.load_file`). It spawns 8 shots on the main scene's `BulletManager`, and each one
   splits off a child from Lua. It needs exactly one `SMOKE_DONE ok`, `SMOKE_LUA_OK bullets=<n> backend=gdscript`, and
   `SMOKE_BACKEND backend=gdscript ... fallback_warnings=0`. Marker fields are compared exactly, not as substrings.
+  The default on web is GDScript with no warning.
 * **`native`** (smoke export, `GODOT_CONFIG.args = ["--", "--bullet-backend=native"]`): exactly one fallback warning and
-  `fallback_warnings=1`, with bullets still on `gdscript`.
+  `fallback_warnings=1`, with bullets still on `gdscript`. Web does not instantiate `NativeBulletSim`.
 
 Every scenario fails on a page error, a console error that is not allowlisted, or a request for any `scriptshot_native` wasm.
 The allowlist (`ALLOWLIST` in `web_smoke.py`) holds one entry: lua-gdextension's
@@ -163,6 +164,7 @@ export logs. The job caches the dlink templates (key `...-web-dlink-nothreads`) 
   (signature mismatch): uninstall first.
 * Sideload: copy the APK to the phone, open it and allow "Install unknown apps" for the app you opened it from, or
   `adb install -r Scriptshot-debug.apk` (`adb uninstall io.github.karyu42.scriptshot` first if the signature differs).
+* **Bullet backend.** Android does not have its own native-bullet path. When `libscriptshot_native` is not in the APK, `BulletManager` stays on the GDScript pool and logs one warning for the run, the same fallback as a desktop build whose library failed to load.
 * **Release signing is not set up.** A Play Store or stable-update build needs a release keystore, supplied as repository
   secrets and mapped to `GODOT_ANDROID_KEYSTORE_RELEASE_PATH`, `_USER` and `_PASSWORD` (plus a step that writes the keystore file
   from a base64 secret and an `--export-release` run). Creating and keeping that keystore is Karyu's decision: if it is lost, the app can never be updated.

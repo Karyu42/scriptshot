@@ -1,31 +1,39 @@
 class_name NativeBackend
 extends RefCounted
 ## Typed GDScript facade over the optional C++ `NativeBulletSim` (GDExtension,
-## see docs/native.md). When native is opted in, hook-free bullets spawned
-## outside a hook come here. Bullets with a per-bullet hook, and anything
-## spawned from inside a hook, stay in the GDScript BulletPool. The game default
-## is GDScript even if this library is loaded.
+## see docs/native.md). Hook-free bullets spawned outside a hook come here when
+## native is selected. That is the default wherever this library loads. Bullets
+## with a per-bullet hook, and anything spawned from inside a hook, stay in the
+## GDScript BulletPool. Web does not construct this sim.
 ##
 ## All access to the native object goes through this class so the dynamic calls
 ## (and the matching `unsafe_*` warning exemptions) live in one place.
 
 const CLASS_NAME := &"NativeBulletSim"
 ## Environment variable consulted when BulletManager's preference is "auto".
-## `gdscript` or `native`. Unset stays on the project setting (itself defaulting
-## to GDScript). A CLI `--bullet-backend=` wins over this variable.
+## `gdscript` or `native`. Unset leaves the project setting, then the built-in
+## default (native). A CLI `--bullet-backend=` wins over this variable.
 const ENV_VAR := "SCRIPTSHOT_BULLET_BACKEND"
 ## Project setting consulted by "auto" when the CLI flag and the env var are
-## unset. `gdscript` (default) or `native`.
+## unset. `gdscript` or `native` forces that backend. `auto` (the committed
+## value), or anything else, is not an override: the built-in default is native.
 const SETTING := "scriptshot/bullets/backend"
 const CLI_PREFIX := "--bullet-backend="
 ## One process-wide warning when native was asked for and the extension is not
 ## loaded. Tests reset the latch to observe it.
 static var missing_warned := false
 static var missing_warnings := 0
-## Tests set this to simulate a library that failed to load, including a web
-## build whose wasm side module did not register the class. The game leaves it
-## false. While it is true, is_available() is false even if ClassDB has the class.
+## Tests set this to simulate a library that failed to load, so the class is not
+## registered. The game leaves it false. While it is true, is_available() is
+## false even if ClassDB has the class. Web does not use this: is_web() never
+## constructs the sim, and the built-in default does not warn there.
 static var force_unavailable := false
+## Tests set this to simulate the `web` feature tag. The game leaves it false.
+## While it is true, BulletManager does not construct NativeBulletSim.
+static var force_web := false
+## Tests set this so the class is registered but constructing the sim fails.
+## The game leaves it false. is_available() stays true; sim stays null.
+static var force_instantiate_failure := false
 ## Bit 62 of a native bullet id, so it is not a BulletPool slot or pool id.
 ## Pool generations would have to reuse one handle 2^30 times before a pool id
 ## could set this bit.
@@ -42,6 +50,11 @@ static func is_available() -> bool:
 	if force_unavailable:
 		return false
 	return ClassDB.class_exists(CLASS_NAME)
+
+
+## True on an exported web build, and when a test sets force_web.
+static func is_web() -> bool:
+	return force_web or OS.has_feature("web")
 
 
 ## Backend named by the environment only: "gdscript", "native", or "auto" when
@@ -64,13 +77,15 @@ static func cli_backend(args: PackedStringArray) -> String:
 	return ""
 
 
+## "gdscript" or "native" when the project setting names one of those.
+## "" when it is unset, `auto`, or unrecognised: that is not an override.
 static func project_backend() -> String:
-	var value := str(ProjectSettings.get_setting(SETTING, "gdscript")).strip_edges().to_lower()
-	return value if value in ["gdscript", "native"] else "gdscript"
+	var value := str(ProjectSettings.get_setting(SETTING, "")).strip_edges().to_lower()
+	return value if value in ["gdscript", "native"] else ""
 
 
-## What "auto" selects. CLI flag, then the environment variable, then the
-## project setting, then GDScript. Off unless one of those says native.
+## What "auto" selects, before the web and library checks. CLI flag, then
+## SCRIPTSHOT_BULLET_BACKEND, then an explicit project setting, then native.
 static func opted_backend() -> String:
 	var cli := cli_backend(OS.get_cmdline_user_args())
 	if cli != "":
@@ -78,7 +93,28 @@ static func opted_backend() -> String:
 	var env := OS.get_environment(ENV_VAR).strip_edges().to_lower()
 	if env in ["gdscript", "native"]:
 		return env
-	return project_backend()
+	var setting := project_backend()
+	if setting != "":
+		return setting
+	return "native"
+
+
+## True when `preference` names native, or "auto" resolved to native because the
+## CLI, the env var, or the project setting said so. The built-in default is
+## false. Web uses this so the default stays silent, while an explicit native
+## request still logs the one fallback warning and does not construct the sim.
+static func explicit_native(preference: String) -> bool:
+	if preference == "native":
+		return true
+	if preference != "auto":
+		return false
+	var cli := cli_backend(OS.get_cmdline_user_args())
+	if cli != "":
+		return cli == "native"
+	var env := OS.get_environment(ENV_VAR).strip_edges().to_lower()
+	if env in ["gdscript", "native"]:
+		return env == "native"
+	return project_backend() == "native"
 
 
 ## Logs the fallback once per process. The extension missing is not a script
@@ -100,7 +136,12 @@ static func warn_missing() -> void:
 
 
 func _init(capacity: int, bounds: Rect2, cell_size: float) -> void:
+	if force_instantiate_failure or not ClassDB.class_exists(CLASS_NAME):
+		sim = null
+		return
 	sim = ClassDB.instantiate(CLASS_NAME)
+	if sim == null:
+		return
 	# The speed ceiling lives in BulletLimits. The sim clamps acceleration to it.
 	sim.configure(capacity, bounds, cell_size, BulletLimits.MAX_SPEED)
 

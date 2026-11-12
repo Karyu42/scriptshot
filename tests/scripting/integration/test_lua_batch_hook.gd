@@ -11,6 +11,7 @@ var _open: Array[LuaBulletBehavior] = []
 func before_each() -> void:
 	ScriptWarnings.reset()
 	manager = BulletManager.new()
+	manager.backend_preference = "gdscript"
 	manager.capacity = 64
 	manager.world_bounds = Rect2(-2000, -2000, 4000, 4000)
 	manager.render_enabled = false
@@ -351,6 +352,7 @@ func test_non_finite_lua_write_kills_as_invalid() -> void:
 
 func test_spawn_cap_keeps_the_first_calls_and_stays_fast() -> void:
 	var big := BulletManager.new()
+	big.backend_preference = "gdscript"
 	big.capacity = 20000
 	big.logical_cap = 20000
 	big.enemy_reserve = 0
@@ -392,6 +394,7 @@ func test_steering_loops_stay_inside_the_batch_budget() -> void:
 	var counts: Array[int] = [5000, 10000]
 	for count in counts:
 		var big := BulletManager.new()
+		big.backend_preference = "gdscript"
 		big.capacity = count + 10
 		big.logical_cap = count + 10
 		big.enemy_reserve = 0
@@ -572,6 +575,7 @@ func _run_budget_case(call: String, times: int) -> void:
 		assert_eq(manager.pool.vel[other], Vector2(30.0, 0.0))
 		manager.queue_free()
 		manager = BulletManager.new()
+		manager.backend_preference = "gdscript"
 		manager.capacity = 64
 		manager.world_bounds = Rect2(-2000, -2000, 4000, 4000)
 		manager.render_enabled = false
@@ -614,6 +618,7 @@ func test_sqrt_homing_loop_stays_inside_the_batch_budget() -> void:
 	var counts: Array[int] = [5000, 10000]
 	for count in counts:
 		var big := BulletManager.new()
+		big.backend_preference = "gdscript"
 		big.capacity = count + 8
 		big.logical_cap = count + 8
 		big.enemy_reserve = 0
