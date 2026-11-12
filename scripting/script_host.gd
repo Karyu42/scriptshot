@@ -240,7 +240,7 @@ return function(t)
 	end
 	for _, k in ipairs({
 		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
-		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired",
+		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired", "_spawns", "make_ctx",
 	}) do
 		rawset(t, k, nil)
 	end
@@ -332,6 +332,8 @@ var _retired: Array[RetiredState] = []
 var _value_threads: Array[LuaThread] = []
 var _source := ""
 var _chunk_name := "script.lua"
+## Chunk name of the load_string call in progress, for stop lines at load time.
+var _loading_chunk := ""
 var _closed := false
 var _stop_only := false
 ## True while resumev has not returned. shutdown() waits; freeing the state
@@ -342,10 +344,17 @@ var _host_calls := 0
 var _instr := 0
 var _killed := false
 var _kill_reason := ""
+## Where the watchdog stopped the script: the line in the player's chunk, or 0.
+var _kill_line := 0
 var _t0 := 0
 var _mem_peak := 0
 var _output := PackedStringArray()
 
+## Records from the last clean on_fire: one Dictionary per spawn{} call, with
+## only the fields the script set (angle, speed, damage, lifetime, radius,
+## spin, accel, x, y).
+var _pending_spawns: Array[Dictionary] = []
+var _spawns_dropped := 0
 var _pending_velocity_set := false
 var _pending_velocity := Vector2.ZERO
 var _pending_children: Array[ShotRequest] = []
@@ -371,6 +380,9 @@ class RunResult:
 	var value: Variant = null
 	var chunk_name := ""
 	var output := PackedStringArray()
+	## Line in the player's chunk where a watchdog stop landed, or 0 when the
+	## stop was outside it (inside a library wrapper) or there was no stop.
+	var stop_line := 0
 
 
 ## One Lua state that has already stopped three times, plus the tables and
@@ -764,6 +776,28 @@ func has_callback(name: String) -> bool:
 	return _callbacks.has(name)
 
 
+## A number field of the loaded weapon table, read with rawget (no
+## metamethods, no Lua code runs), or `fallback` when it is missing, not a
+## number or not finite.
+func weapon_number(key: String, fallback: float) -> float:
+	if _weapon == null or _closed:
+		return fallback
+	var v: Variant = _weapon.rawget(key)
+	if not _read_number(v) or not is_finite(_number):
+		return fallback
+	return _number
+
+
+## A string field of the loaded weapon table (rawget), or `fallback`.
+func weapon_string(key: String, fallback: String) -> String:
+	if _weapon == null or _closed:
+		return fallback
+	var v: Variant = _weapon.rawget(key)
+	if v is String:
+		return str(v)
+	return fallback
+
+
 func defined_names() -> PackedStringArray:
 	return _names.duplicate()
 
@@ -787,7 +821,9 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		return _fail(_lua_error_message(loaded), chunk_name)
 	if not loaded is LuaFunction:
 		return _fail("load did not return a function", chunk_name)
+	_loading_chunk = chunk_name
 	var result := _run_script(_as_function(loaded), [], true)
+	_loading_chunk = ""
 	result.chunk_name = chunk_name
 	if not result.ok:
 		return result
@@ -812,15 +848,18 @@ func load_file(path: String) -> RunResult:
 
 
 ## Calls a weapon function under the budget. `arg` is the second Lua argument
-## (a hit table, a despawn reason) when `pass_arg` is true. On failure the
-## pending velocity and child spawns are dropped.
+## (a hit table, a despawn reason) when `pass_arg` is true. `vx`, `vy` are the
+## bullet's velocity snapshot (`b.vx`, `b.vy`). On failure the pending velocity
+## and child spawns are dropped.
 func call_hook(
 	name: String,
 	id: int,
 	x: float,
 	y: float,
 	arg: Variant = null,
-	pass_arg: bool = false
+	pass_arg: bool = false,
+	vx: float = 0.0,
+	vy: float = 0.0
 ) -> RunResult:
 	if _closed:
 		return _fail("script host shut down", name)
@@ -836,7 +875,7 @@ func call_hook(
 	var fn: Variant = _callbacks[name]
 	if not fn is LuaFunction:
 		return _fail("callback '%s' is not a function" % name, name)
-	var bullet_v: Variant = _make_bullet.invoke(id, x, y)
+	var bullet_v: Variant = _make_bullet.invoke(id, x, y, vx, vy)
 	if bullet_v is LuaError:
 		return _fail(_lua_error_message(bullet_v), name)
 	if not bullet_v is LuaTable:
@@ -916,6 +955,79 @@ func call_batch(batch: BatchView) -> RunResult:
 	if not result.ok:
 		batch.discard = true
 	return result
+
+
+## Most spawn{} calls one on_fire keeps; the rest return false and are counted.
+const FIRE_SPAWN_CAP := 256
+const _SPAWN_KEYS: PackedStringArray = ["angle", "speed", "damage", "lifetime", "radius", "spin", "accel", "x", "y"]
+
+
+## Calls `on_fire(ctx)` under the budget with a snapshot of `context`. On a
+## clean return the spawn{} records are on take_pending_spawns(); on an error
+## or a stop nothing is spawned.
+func call_fire(context: ShotContext, dt: float = 1.0 / 60.0) -> RunResult:
+	if _closed:
+		return _fail("script host shut down", "on_fire")
+	_rotate_state_if_needed()
+	_clear_pending()
+	if not _ready:
+		return _fail(_init_error, "on_fire")
+	if not _callbacks.has("on_fire"):
+		var missing := RunResult.new()
+		missing.ok = true
+		missing.chunk_name = "on_fire"
+		return missing
+	var fn: Variant = _callbacks["on_fire"]
+	var maker: Variant = _host.get("make_ctx")
+	if not fn is LuaFunction or not maker is LuaFunction:
+		return _fail("on_fire is not a function", "on_fire")
+	var p := context.muzzle_position
+	var ctx_v: Variant = _as_function(maker).invoke(
+		p.x, p.y, context.aim_angle, context.time, context.shot_index,
+		context.trigger_pressed, context.trigger_just_pressed, context.trigger_just_released,
+		context.trigger_held_time, dt, FIRE_SPAWN_CAP
+	)
+	if not ctx_v is LuaTable:
+		return _fail(_lua_error_message(ctx_v) if ctx_v is LuaError else "make_ctx did not return a table", "on_fire")
+	var result := _run(_call, [fn, ctx_v])
+	ctx_v = null
+	result.chunk_name = "on_fire"
+	var spawns_v: Variant = _host.get("_spawns")
+	if spawns_v is LuaTable:
+		_as_table(spawns_v).set("open", false)
+		if result.ok:
+			_take_spawns(_as_table(spawns_v))
+	if not result.ok:
+		_clear_pending()
+	result.value = null
+	return result
+
+
+func take_pending_spawns() -> Array[Dictionary]:
+	var out: Array[Dictionary] = []
+	out.assign(_pending_spawns)
+	_pending_spawns.clear()
+	return out
+
+
+## spawn{} calls the last on_fire made past FIRE_SPAWN_CAP.
+func spawns_dropped() -> int:
+	return _spawns_dropped
+
+
+func _take_spawns(spawns: LuaTable) -> void:
+	_spawns_dropped = _nonneg_int(spawns.get("dropped", 0))
+	var n := mini(_nonneg_int(spawns.get("n", 0)), FIRE_SPAWN_CAP)
+	for i in n:
+		var rec_v: Variant = spawns.get(i + 1, null)
+		if not rec_v is LuaTable:
+			continue
+		var rec := _as_table(rec_v)
+		var out: Dictionary = {}
+		for k in _SPAWN_KEYS:
+			if _read_number(rec.get(k, null)):
+				out[k] = _number
+		_pending_spawns.append(out)
 
 
 func _end_batch() -> void:
@@ -1041,6 +1153,7 @@ func _run(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
 	result.output = _output.duplicate()
 	if _killed:
 		result.stopped = _kill_reason
+		result.stop_line = _kill_line
 		result.error = "script timeout (%s)" % _kill_reason
 	elif yielded:
 		result.error = "script yielded (wait() is not in this slice)"
@@ -1059,6 +1172,7 @@ func _reset_watchdog() -> void:
 	_instr = 0
 	_killed = false
 	_kill_reason = ""
+	_kill_line = 0
 	_t0 = Time.get_ticks_msec()
 	_threads.clear()
 	_output = PackedStringArray()
@@ -1086,11 +1200,24 @@ func _hook(_debug: Variant) -> int:
 	if _kill_reason != "":
 		if not _killed:
 			_killed = true
+			_kill_line = _stop_line_of(_debug)
 			for i in _threads.size():
 				var th: LuaThread = _threads[i]
 				th.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, 1)
 		return int(LuaThread.HOOK_YIELD)
 	return int(LuaThread.HOOK_OK)
+
+
+## Line of the hooked frame when it belongs to the loaded player chunk. Read
+## once, on the stop verdict, never on the normal stride path.
+func _stop_line_of(debug: Variant) -> int:
+	if not debug is LuaDebug:
+		return 0
+	@warning_ignore("unsafe_cast")
+	var info := debug as LuaDebug
+	if info.source != "@" + _chunk_name and info.source != "@" + _loading_chunk:
+		return 0
+	return maxi(info.current_line, 0)
 
 
 func _instance_id(v: Variant) -> int:
@@ -1101,6 +1228,7 @@ func _instance_id(v: Variant) -> int:
 
 
 func _clear_pending() -> void:
+	_pending_spawns.clear()
 	_pending_velocity_set = false
 	_pending_velocity = Vector2.ZERO
 	_pending_children.clear()
