@@ -307,6 +307,8 @@ var _strip_fn: LuaFunction
 var _env: LuaTable
 var _host: LuaTable
 var _make_bullet: LuaFunction
+## Sandbox entry point for script code (sandbox.lua host.call). See _run_script.
+var _call: LuaFunction
 var _names_of: LuaFunction
 var _ready := false
 var _init_error := ""
@@ -440,6 +442,11 @@ func _open_state() -> void:
 		_init_error = "sandbox did not install make_bullet"
 		return
 	_make_bullet = _as_function(maker)
+	var call_v: Variant = _host.get("call")
+	if not call_v is LuaFunction:
+		_init_error = "sandbox did not install call"
+		return
+	_call = _as_function(call_v)
 	var names_src: Variant = _state.do_string(_NAMES_OF, "@scripting/names.lua")
 	if not names_src is LuaFunction:
 		_init_error = _lua_error_message(names_src) if names_src is LuaError else "names extractor failed"
@@ -501,6 +508,7 @@ func _rotate_state_if_needed() -> void:
 	_host = null
 	_env = null
 	_make_bullet = null
+	_call = null
 	_names_of = null
 	var source := _source
 	var chunk := _chunk_name
@@ -635,9 +643,11 @@ func _release_current() -> void:
 	for i in names.size():
 		_retain(_callbacks[names[i]])
 	_retain(_make_bullet)
+	_retain(_call)
 	_retain(_names_of)
 	_callbacks.clear()
 	_make_bullet = null
+	_call = null
 	_names_of = null
 	_host = null
 	_env = null
@@ -812,7 +822,7 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 	if not loaded is LuaFunction:
 		return _fail("load did not return a function", chunk_name)
 	_loading_chunk = chunk_name
-	var result := _run(_as_function(loaded), [], true)
+	var result := _run_script(_as_function(loaded), [], true)
 	_loading_chunk = ""
 	result.chunk_name = chunk_name
 	if not result.ok:
@@ -870,10 +880,10 @@ func call_hook(
 		return _fail(_lua_error_message(bullet_v), name)
 	if not bullet_v is LuaTable:
 		return _fail("make_bullet did not return a table", name)
-	var args: Array = [bullet_v]
+	var args: Array = [fn, bullet_v]
 	if pass_arg:
 		args.append(arg)
-	var result := _run(_as_function(fn), args)
+	var result := _run(_call, args)
 	result.chunk_name = name
 	if result.ok:
 		var pending_err := _take_lua_bullet_pending()
@@ -931,7 +941,7 @@ func call_batch(batch: BatchView) -> RunResult:
 	if batch_budget > BATCH_BUDGET_CEILING:
 		batch_budget = BATCH_BUDGET_CEILING
 	instruction_budget = batch_budget
-	var result := _run(_as_function(fn), [view_v, batch.dt])
+	var result := _run(_call, [fn, view_v, batch.dt])
 	batch_instructions = _instr
 	instruction_budget = saved_budget
 	result.chunk_name = "on_batch"
@@ -979,7 +989,7 @@ func call_fire(context: ShotContext, dt: float = 1.0 / 60.0) -> RunResult:
 	)
 	if not ctx_v is LuaTable:
 		return _fail(_lua_error_message(ctx_v) if ctx_v is LuaError else "make_ctx did not return a table", "on_fire")
-	var result := _run(_as_function(fn), [ctx_v])
+	var result := _run(_call, [fn, ctx_v])
 	ctx_v = null
 	result.chunk_name = "on_fire"
 	var spawns_v: Variant = _host.get("_spawns")
@@ -1090,8 +1100,19 @@ func _strings_from(value: Variant) -> PackedStringArray:
 	return names
 
 
+## Runs script code through the sandbox entry point (host.call), which hands
+## back at most one plain value. Unexpected return values are ignored there and
+## never reach the binding. Callbacks build their argument array with `fn`
+## first and call _run(_call, ...) directly.
+func _run_script(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
+	var full: Array = [fn]
+	full.append_array(args)
+	return _run(_call, full, keep_value)
+
+
 ## `keep_value` is true only for runs whose returned table the host keeps (the
 ## weapon and the names list). Other runs drop a returned table or function.
+## Script code runs through _call (see _run_script); _names_of is host code.
 func _run(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
 	if _closed:
 		return _fail("script host shut down", "")

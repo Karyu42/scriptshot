@@ -15,7 +15,13 @@ local real = {
 	os = os,
 	load = load,
 	collectgarbage = collectgarbage,
+	dump = string.dump,
 }
+
+-- Host-side helpers keep their own references. Scripts share the math table
+-- and may replace its entries; that must not change code the host runs.
+local math_type, math_tointeger = math.type, math.tointeger
+local math_cos, math_sin = math.cos, math.sin
 
 local MAX_STR = 1024 * 1024
 local MAX_PAT_SUBJECT = 1024
@@ -41,6 +47,57 @@ return function(host)
 	end
 	env._G = env
 	env._VERSION = _VERSION
+
+	-- The host reports a table or userdata error value by its type name. The
+	-- value travels inside a private box, and every sandbox catch point (pcall,
+	-- xpcall, coroutine.resume, coroutine.close) hands the script its own value back.
+	local boxed = real_setmetatable({}, { __mode = "k" })
+	local box_mt = {
+		table = { __name = "error value (table)", __metatable = false },
+		userdata = { __name = "error value (userdata)", __metatable = false },
+	}
+	local function raise_boxed(v)
+		local b = real_setmetatable({}, box_mt[type(v)])
+		boxed[b] = v
+		error(b, 0)
+	end
+	local function unbox(e)
+		local v = boxed[e]
+		if v ~= nil then
+			return v
+		end
+		return e
+	end
+	env.error = function(v, level)
+		local t = type(v)
+		if t == "table" or t == "userdata" then
+			raise_boxed(v)
+		end
+		-- Level 1 is still the caller of error(), not this wrapper.
+		if level == nil then
+			level = 2
+		elseif math_type(level) ~= nil and level > 0 then
+			level = level + 1
+		end
+		error(v, level)
+	end
+	env.assert = function(...)
+		local v, msg = ...
+		if v then
+			return ...
+		end
+		if select("#", ...) == 0 then
+			error("bad argument #1 to 'assert' (value expected)", 2)
+		end
+		local t = type(msg)
+		if t == "table" or t == "userdata" then
+			raise_boxed(msg)
+		end
+		if msg == nil then
+			msg = "assertion failed!"
+		end
+		error(msg, 2)
+	end
 
 	-- Buffered in a Lua table. The host drains it after the callback returns,
 	-- so a budget stop never lands inside a host call.
@@ -140,8 +197,12 @@ return function(host)
 
 	-- A hook on the main thread does not cover coroutines a script creates.
 	local rc = real.coroutine
+	-- Coroutines created by scripts. A yield from any other coroutine is a
+	-- yield from a host call; its values are not passed to the host.
+	local user_threads = real_setmetatable({}, { __mode = "k" })
 	local function reg(co)
 		host.reg_thread(co)
+		user_threads[co] = true
 		return co
 	end
 	env.coroutine = {
@@ -167,13 +228,27 @@ return function(host)
 			if host.dead() then
 				while true do end
 			end
+			if r[1] == false then
+				r[2] = unbox(r[2])
+			end
 			return table.unpack(r, 1, r.n)
 		end,
-		yield = rc.yield,
+		yield = function(...)
+			if user_threads[rc.running()] then
+				return rc.yield(...)
+			end
+			rc.yield()
+		end,
 		status = rc.status,
 		isyieldable = rc.isyieldable,
 		running = rc.running,
-		close = rc.close,
+		close = function(co)
+			local ok, err = rc.close(co)
+			if ok then
+				return ok
+			end
+			return false, unbox(err)
+		end,
 	}
 	local rpack, runpack = table.pack, table.unpack
 	env.pcall = function(f, ...)
@@ -186,7 +261,7 @@ return function(host)
 			while true do end
 		end
 		if not r[1] then
-			return false, r[2]
+			return false, unbox(r[2])
 		end
 		return true, runpack(r, 2, r.n)
 	end
@@ -231,6 +306,23 @@ return function(host)
 	end
 	host.make_bullet = make_bullet
 
+	-- Every host call into script code goes through this. It passes on the
+	-- first return value only, and nothing the host cannot use, so the
+	-- callbacks' documented results (can_hit's boolean, the chunk's weapon
+	-- table) are unchanged and anything else is ignored. Loaded without line
+	-- info, so error(msg, 2) from a callback still carries no position.
+	local call_src = [[
+		return function(fn, ...)
+			local r = fn(...)
+			if r ~= nil and type(r) == "thread" then
+				return nil
+			end
+			return r
+		end
+	]]
+	local call_chunk = real.load(real.dump(real.load(call_src, "=host", "t", { type = type }), true), "=host", "b", { type = type })
+	host.call = call_chunk()
+
 	-- on_fire(ctx) and spawn{...}. Records sit in a Lua table the host reads
 	-- after on_fire returns cleanly; an error or a stop spawns nothing.
 	local SPAWN_NUMBERS = { "angle", "speed", "damage", "lifetime", "radius", "spin", "accel" }
@@ -268,6 +360,8 @@ return function(host)
 		return true
 	end
 
+	-- Host code, called from GDScript outside the watchdog: it must not reach
+	-- anything a script can replace (see math_cos / math_sin above).
 	local function make_ctx(x, y, aim, time, n, pressed, just_pressed, just_released, held, dt, cap)
 		host._spawns = { n = 0, dropped = 0, cap = cap, open = true }
 		return {
@@ -275,7 +369,7 @@ return function(host)
 			x = x,
 			y = y,
 			aim = aim,
-			aim_dir = { x = math.cos(aim), y = math.sin(aim) },
+			aim_dir = { x = math_cos(aim), y = math_sin(aim) },
 			time = time,
 			n = n,
 			shot_count = n,
@@ -294,9 +388,9 @@ return function(host)
 	-- return. A plain Lua table is the expired flag. The host sets its first
 	-- field after the callback. Closures never call the host on this path.
 	local function make_batch(token, n, id, px, py, vx, vy, age, pa, pb, owner, dt, cmd_cap, spawn_cap)
-		n = math.tointeger(n) or 0
-		cmd_cap = math.tointeger(cmd_cap) or 4096
-		spawn_cap = math.tointeger(spawn_cap) or 256
+		n = math_tointeger(n) or 0
+		cmd_cap = math_tointeger(cmd_cap) or 4096
+		spawn_cap = math_tointeger(spawn_cap) or 256
 		local OP_KILL, OP_TELEPORT, OP_SPAWN = 0, 1, 2
 		-- One array, sized once here. The callback writes packed[n] in order.
 		-- A fresh table per command corrupts the state if the watchdog stops the call.
@@ -322,7 +416,7 @@ return function(host)
 					end
 					-- A string key is a method lookup. There are no methods;
 					-- returning nil keeps them unreachable without a raw value.
-					if math.type(i) ~= "integer" then
+					if math_type(i) ~= "integer" then
 						if type(i) ~= "number" then
 							return nil
 						end
@@ -337,7 +431,7 @@ return function(host)
 					if not live() then
 						error("view expired", 2)
 					end
-					if math.type(i) ~= "integer" or i < 0 or i >= n then
+					if math_type(i) ~= "integer" or i < 0 or i >= n then
 						error("column '" .. name .. "': row must be an integer in 0.." .. tostring(n - 1), 2)
 					end
 					if not writable then
@@ -364,7 +458,7 @@ return function(host)
 			owner = column(owner, "owner", false),
 		}
 		local function row_ok(i)
-			return live() and math.type(i) == "integer" and i >= 0 and i < n
+			return live() and math_type(i) == "integer" and i >= 0 and i < n
 		end
 		local function row_error(cmd)
 			if not live() then
