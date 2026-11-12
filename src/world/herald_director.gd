@@ -15,6 +15,10 @@ extends Node
 ##
 ## The Herald is not a chunk encounter. Its death does not set a chunk bit.
 ## Only `herald_done` and, on that body's death, `shards` are persisted.
+##
+## Placement: WorldGen.herald_point, 1,200 px along the heading unless an
+## encounter anchor is within 800 px; then the first clear turned or re-ranged
+## candidate (issue #81). Packs are never moved, hidden or held asleep.
 
 signal herald_spawned(body: EliteEnemy)
 signal herald_cancelled(reason: StringName)
@@ -152,7 +156,8 @@ func _spawn() -> void:
 		return
 	_ensure_holder()
 	var heading := _heading_of(player)
-	var point := WorldGen.clamp_herald_point(player.global_position, heading)
+	# No pack or natural-elite anchor within 800 px (WorldGen.herald_point).
+	var point := WorldGen.herald_point(seed, player.global_position, heading, RegularEnemy.DRIFTER_RADIUS)
 	var centre := RegularEnemy.push_centre_outside(point, RegularEnemy.DRIFTER_RADIUS)
 	var affix := WorldGen.herald_affix(seed)
 	var packed := load("res://scenes/elite_enemy.tscn") as PackedScene
