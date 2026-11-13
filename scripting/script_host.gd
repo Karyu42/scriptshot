@@ -241,6 +241,7 @@ return function(t)
 	for _, k in ipairs({
 		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
 		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired", "_spawns", "make_ctx",
+		"sense_set", "sense_sync", "_sense_notes",
 	}) do
 		rawset(t, k, nil)
 	end
@@ -368,6 +369,15 @@ var _row_value := -1
 ## Watchdog samples (steps of HOOK_STRIDE) from the most recent on_batch call.
 var batch_instructions := 0
 var _cmd_nums := PackedFloat32Array()
+## Senses mirror (sandbox.lua host.sense_set / host.sense_sync): the
+## SenseBook.revision() and WorldQuery.revision() this state last saw.
+var _sense_book_rev := -1
+var _sense_world_rev := -1
+var _senses_on := false
+var _sense_set: LuaFunction
+var _sense_sync: LuaFunction
+var _sense_notes: LuaTable
+var _sense_notes_seen := 0
 
 
 class RunResult:
@@ -452,6 +462,19 @@ func _open_state() -> void:
 		_init_error = _lua_error_message(names_src) if names_src is LuaError else "names extractor failed"
 		return
 	_names_of = _as_function(names_src)
+	var set_v: Variant = _host.get("sense_set")
+	var sync_v: Variant = _host.get("sense_sync")
+	var notes_v: Variant = _host.get("_sense_notes")
+	if not set_v is LuaFunction or not sync_v is LuaFunction or not notes_v is LuaTable:
+		_init_error = "sandbox did not install the Senses"
+		return
+	_sense_set = _as_function(set_v)
+	_sense_sync = _as_function(sync_v)
+	_sense_notes = _as_table(notes_v)
+	_sense_book_rev = -1
+	_sense_world_rev = -1
+	_senses_on = false
+	_sense_notes_seen = 0
 	_ready = true
 
 
@@ -510,6 +533,9 @@ func _rotate_state_if_needed() -> void:
 	_make_bullet = null
 	_call = null
 	_names_of = null
+	_sense_set = null
+	_sense_sync = null
+	_sense_notes = null
 	var source := _source
 	var chunk := _chunk_name
 	_open_state()
@@ -645,10 +671,16 @@ func _release_current() -> void:
 	_retain(_make_bullet)
 	_retain(_call)
 	_retain(_names_of)
+	_retain(_sense_set)
+	_retain(_sense_sync)
+	_retain(_sense_notes)
 	_callbacks.clear()
 	_make_bullet = null
 	_call = null
 	_names_of = null
+	_sense_set = null
+	_sense_sync = null
+	_sense_notes = null
 	_host = null
 	_env = null
 	_weapon = null
@@ -816,6 +848,7 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		return _fail("script host shut down", chunk_name)
 	if not _ready:
 		return _fail(_init_error, chunk_name)
+	_sync_senses()
 	var loaded: Variant = _state.load_string(code, "@" + chunk_name, _env)
 	if loaded is LuaError:
 		return _fail(_lua_error_message(loaded), chunk_name)
@@ -875,6 +908,7 @@ func call_hook(
 	var fn: Variant = _callbacks[name]
 	if not fn is LuaFunction:
 		return _fail("callback '%s' is not a function" % name, name)
+	_sync_senses()
 	var bullet_v: Variant = _make_bullet.invoke(id, x, y, vx, vy)
 	if bullet_v is LuaError:
 		return _fail(_lua_error_message(bullet_v), name)
@@ -884,6 +918,7 @@ func call_hook(
 	if pass_arg:
 		args.append(arg)
 	var result := _run(_call, args)
+	_note_sense_notes()
 	result.chunk_name = name
 	if result.ok:
 		var pending_err := _take_lua_bullet_pending()
@@ -921,6 +956,7 @@ func call_batch(batch: BatchView) -> RunResult:
 	if not maker is LuaFunction:
 		batch.discard = true
 		return _fail("sandbox did not install make_batch", "on_batch")
+	_sync_senses()
 	_batch_serial += 1
 	_batch_token = _batch_serial
 	_batch = batch
@@ -942,6 +978,7 @@ func call_batch(batch: BatchView) -> RunResult:
 		batch_budget = BATCH_BUDGET_CEILING
 	instruction_budget = batch_budget
 	var result := _run(_call, [fn, view_v, batch.dt])
+	_note_sense_notes()
 	batch_instructions = _instr
 	instruction_budget = saved_budget
 	result.chunk_name = "on_batch"
@@ -981,6 +1018,7 @@ func call_fire(context: ShotContext, dt: float = 1.0 / 60.0) -> RunResult:
 	var maker: Variant = _host.get("make_ctx")
 	if not fn is LuaFunction or not maker is LuaFunction:
 		return _fail("on_fire is not a function", "on_fire")
+	_sync_senses()
 	var p := context.muzzle_position
 	var ctx_v: Variant = _as_function(maker).invoke(
 		p.x, p.y, context.aim_angle, context.time, context.shot_index,
@@ -990,6 +1028,7 @@ func call_fire(context: ShotContext, dt: float = 1.0 / 60.0) -> RunResult:
 	if not ctx_v is LuaTable:
 		return _fail(_lua_error_message(ctx_v) if ctx_v is LuaError else "make_ctx did not return a table", "on_fire")
 	var result := _run(_call, [fn, ctx_v])
+	_note_sense_notes()
 	ctx_v = null
 	result.chunk_name = "on_fire"
 	var spawns_v: Variant = _host.get("_spawns")
@@ -1028,6 +1067,51 @@ func _take_spawns(spawns: LuaTable) -> void:
 			if _read_number(rec.get(k, null)):
 				out[k] = _number
 		_pending_spawns.append(out)
+
+
+## Brings this state's `sense` table up to date: the fields from SenseBook
+## (an unearned Sense is nil) and, while any Sense is on, the enemy rows from
+## WorldQuery. Host code only, between script calls; each part is skipped
+## while its revision has not moved, so a quiet tick costs two int reads.
+func _sync_senses() -> void:
+	if _sense_set == null or _closed:
+		return
+	var book_rev := SenseBook.revision()
+	if book_rev != _sense_book_rev:
+		_sense_book_rev = book_rev
+		_senses_on = false
+		for id in SenseBook.LUA_SENSES:
+			var lvl := SenseBook.level(id)
+			_sense_set.invoke(String(id), lvl)
+			if lvl > 0:
+				_senses_on = true
+		_sense_world_rev = -1
+	if not _senses_on:
+		return
+	if not is_instance_valid(WorldQuery):
+		return
+	var world_rev := WorldQuery.revision()
+	if world_rev == _sense_world_rev:
+		return
+	_sense_world_rev = world_rev
+	var rows := WorldQuery.live_rows()
+	var ids: PackedInt64Array = rows["ids"]
+	# Read-only use: host.sense_sync copies the columns into its own Lua
+	# tables and never writes back into them.
+	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], rows["radius"], rows["kind"], rows["rarity"])
+
+
+## One editor note per enemies_in list the script had cut at 256 (§6.2).
+func _note_sense_notes() -> void:
+	if not _senses_on or _sense_notes == null:
+		return
+	var v: Variant = _sense_notes.rawget(1)
+	if not v is int:
+		return
+	var total: int = v
+	if total > _sense_notes_seen:
+		_sense_notes_seen = total
+		ScriptWarnings.warn("ScriptHost.sense_list_truncated", "sense list truncated")
 
 
 func _end_batch() -> void:
