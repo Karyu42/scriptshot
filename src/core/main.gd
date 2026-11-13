@@ -33,6 +33,7 @@ var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
+var _room_d: SliceRoomD
 
 
 func _ready() -> void:
@@ -57,6 +58,7 @@ func _ready() -> void:
 	_bind_open_world()
 	_bind_slice_progress()
 	_bind_slice_hud()
+	_bind_slice_room_d()
 	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
@@ -133,6 +135,15 @@ func _bind_slice_hud() -> void:
 	if _slice_hud == null:
 		return
 	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+
+
+func _bind_slice_room_d() -> void:
+	_room_d = get_node_or_null("SliceRoomD") as SliceRoomD
+	# Authored slice placement: skip it when the ribbon is off so the
+	# pre-slice open-world tests (natural elites, Herald) stay unchanged.
+	if _room_d == null or _slice == null:
+		return
+	_room_d.bind(_player, _progress, _save, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:

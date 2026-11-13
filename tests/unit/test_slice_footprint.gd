@@ -147,9 +147,17 @@ func test_main_has_the_ribbon_and_keeps_the_cold_start() -> void:
 		assert_eq(SliceLayout.room_at(dummy.global_position), &"S")
 	var chunks := main.get_node("ChunkStream") as ChunkStream
 	assert_eq(chunks.footprint, SliceLayout.FOOTPRINT)
+	var room_d := main.get_node("SliceRoomD") as SliceRoomD
+	assert_not_null(room_d)
+	assert_true(room_d.elite_alive())
+	assert_true(room_d.escort_alive())
 	for node: Node in main.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
 		var body := node as RegularEnemy
 		assert_gte(body.global_position.length() - body.body_radius, WorldGen.SAFE_RADIUS - 0.05, "no hostile in the disk")
+		if body.is_in_group(SliceRoomD.GROUP):
+			assert_true(SliceLayout.in_footprint(body.anchor), "scripted room D sits in D (%s)" % body.anchor)
+			assert_eq(SliceLayout.room_at(body.anchor), SliceLayout.ROOM_D)
+			continue
 		assert_false(SliceLayout.in_footprint(body.anchor), "no streamed anchor inside the footprint (%s)" % body.anchor)
 	var bullets := main.get_node("BulletManager") as BulletManager
 	assert_eq(bullets.walls.wall_count, SliceLayout.wall_rects().size() + SliceLayout.GATE_IDS.size(),

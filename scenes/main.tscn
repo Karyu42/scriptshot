@@ -18,6 +18,7 @@
 [ext_resource type="Script" path="res://src/ui/script_editor_panel.gd" id="15_editor"]
 [ext_resource type="Script" path="res://src/world/slice_progress.gd" id="16_progress"]
 [ext_resource type="Script" path="res://src/ui/slice_hud.gd" id="17_hud"]
+[ext_resource type="Script" path="res://src/world/slice_room_d.gd" id="18_roomd"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -35,6 +36,9 @@ script = ExtResource("16_progress")
 
 [node name="SliceHud" type="Node" parent="."]
 script = ExtResource("17_hud")
+
+[node name="SliceRoomD" type="Node2D" parent="."]
+script = ExtResource("18_roomd")
 
 [node name="Dummies" type="Node2D" parent="."]
 
