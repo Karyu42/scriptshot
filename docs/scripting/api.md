@@ -417,9 +417,9 @@ Each shot owns a private table `b.state`, initialised from the `state` spawn fie
 spawn { state = { hits = 0 }, on_hit = function(b, hit) b.state.hits = b.state.hits + 1 end }
 ```
 
-Closures work too, but `state` is cheaper and survives hot reload (see below).
-Weapon-level persistent state: the table `weapon.state` (shared across all fires).
-Run-wide and weapon-level state are the same persistent table, `state` (PR #1: always available, survives respawn, saved in the save file). **[OI-7] answered.**
+Closures work too, but `state` is cheaper and survives a save (below).
+
+**Game Designer call (SE, `state` follow-up to #95).** `state` is a per-weapon sandbox global that starts as `{}`. On every save, idle or with shots in flight, the new version gets a copy of the plain data in `state` (numbers, strings, booleans, nested tables). Within one copy, a table referenced twice stays shared. A cycle is cut at the back-reference with a warning. Functions and userdata are dropped with a warning in the editor's problems list. `state` is filled in before the new file runs. If the file's top level reassigns `state` (for example `state = {}`), that wins, and that is how a player resets it. Idiom: `state.n = state.n or 0`. A failed save leaves the running version's `state` untouched. Shots still in flight from older versions keep their own `state`. `state` survives death and respawn. It is not written to the save file in the slice. Cross-session persistence is open (pillars **Q28**). Until SE's follow-up lands, only idle in-place reloads keep `state` and globals (what #95 shipped).
 
 ## Timers and sequences
 
@@ -1138,7 +1138,7 @@ Save the file and the game reloads it, no restart needed.
   at the top of the weapon table to make in-flight shots switch to the new callbacks,
   matched by callback name, keeping `state`.
 - Timers and coroutines of old shots finish with the old code.
-- Weapon-level `state` is preserved if the new table declares the same keys.
+- **Game Designer call (SE, `state` follow-up to #95).** Every save, idle or with shots in flight, copies the plain data in `state` into the new version before the new file runs. The copy rules, the `state.n = state.n or 0` idiom, and what a failed save keeps are in *Per-shot state*. A failed save leaves the running version's `state` untouched. Shots still in flight from older versions keep their own `state`. Until SE's follow-up lands, only idle in-place reloads keep `state` and globals (what #95 shipped).
 - **Game Designer call (SE PR #95):** every save starts the new script version with fresh top-level globals, whether or not shots are in flight. Nothing at file scope carries over. Data meant to survive a save goes in `state`.
 - Reload errors never discard the working version (see above).
 - **Grants are re-checked before the swap.** The new code is loaded into a fresh environment built from the grants that
@@ -1153,7 +1153,7 @@ Refreshed against PR #1 (f0fe292) and `main` (1f3be32, which includes PR #2 and 
 **Answered**
 
 - **[OI-1]** Coordinates: y down, radians, 0 = +x, clockwise, `NAN` angle faces velocity, 60 Hz.
-- **[OI-7]** Persistence: `state` is persistent, always available, survives respawn, saved (PR #1).
+- **[OI-7]** Persistence: `state` is persistent, always available, and survives respawn (PR #1). The slice does not write it to the save file (Game Designer call, SE follow-up to #95, *Per-shot state*). Cross-session persistence is pillars Q28.
 - **[OI-11]** Sandbox policy (PR #1 f0fe292): full Lua for every script, capabilities via `needs` behind a **capability prompt for any script that requests `os`/`io`/`debug`/`package`/`native`, with per-content-hash grants** (see *The capability prompt*, *Grants*); only the in-game **import flow and its stronger warning are deferred** (sharing is out of scope for now); limited mode later (PR #1 Q2).
 - **[OI-12]** Fixed 60 Hz; the native motion subset is `acceleration`, `turn_rate`, `pierce`, `collide_world`, `param_a/b`
   (see the mapping table for what is missing).
