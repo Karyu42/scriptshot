@@ -41,6 +41,9 @@ signal healed(amount: float, hp: float)
 ## Emitted when a damage attempt was refused because of invulnerability
 ## (`result` is BLOCKED_ENGINE or BLOCKED_SCRIPT).
 signal damage_blocked(amount: float, result: DamageResult)
+## Current hp and max_hp after any applied change (damage, heal, set_hp,
+## set_max_hp, reset). SliceHud.bind_boss listens for this.
+signal hp_changed(hp: float, max_hp: float)
 
 ## What try_damage() did.
 enum DamageResult {
@@ -182,6 +185,7 @@ func try_damage(amount: float, source_flags: int = 0) -> DamageResult:
 	_regen_clock = 0.0
 	_regen_active = false
 	damaged.emit(amount, hp)
+	hp_changed.emit(hp, max_hp)
 	if hp <= 0.0:
 		died.emit()
 	elif invulnerability_time > 0.0:
@@ -214,10 +218,12 @@ func set_hp(value: float) -> float:
 		return hp
 	var before := hp
 	hp = clampf(value, 0.0, max_hp)
-	if hp > before:
-		healed.emit(hp - before, hp)
-	elif hp <= 0.0:
-		died.emit()
+	if hp != before:
+		if hp > before:
+			healed.emit(hp - before, hp)
+		hp_changed.emit(hp, max_hp)
+		if hp <= 0.0:
+			died.emit()
 	return hp
 
 
@@ -228,9 +234,13 @@ func set_max_hp(value: float) -> float:
 	if is_nan(value):
 		ScriptWarnings.warn("Health.set_max_hp", "Health.set_max_hp(): NaN ignored")
 		return max_hp
+	var before_max := max_hp
+	var before_hp := hp
 	max_hp = clampf(roundf(value), 1.0, MAX_HP_LIMIT)
 	if hp > max_hp:
 		hp = max_hp
+	if max_hp != before_max or hp != before_hp:
+		hp_changed.emit(hp, max_hp)
 	return max_hp
 
 
@@ -290,6 +300,7 @@ func reset() -> void:
 	_regen_clock = 0.0
 	_regen_active = false
 	clear_engine_invulnerability()
+	hp_changed.emit(hp, max_hp)
 
 
 func _count_down(left: float, delta: float) -> float:
@@ -316,3 +327,4 @@ func _gain(amount: float) -> void:
 	hp = minf(hp + amount, max_hp)
 	if hp > before:
 		healed.emit(hp - before, hp)
+		hp_changed.emit(hp, max_hp)
