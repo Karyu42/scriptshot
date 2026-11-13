@@ -240,7 +240,7 @@ All optional. Unspecified fields take engine defaults.
 | `on_hit(b, hit)` | on collision with a valid target |
 | `on_wall(b, wall)` | see *Hits* (today this is `on_death` with `why == "wall"`; no normal yet) |
 | `on_expire(b)` | sugar for `on_death` with `why == "lifetime"` |
-| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (`DespawnReason.INVALID`, value 6, added by PR #8, on `main`; the bullet was killed because a hook wrote a NaN or inf)** |
+| `on_death(b, why)` | once, just before the shot is removed (`BulletBehavior.on_despawn`). `why` is the engine's `BulletPool.DespawnReason` in lower case: `"lifetime"`, `"bounds"`, `"hit"`, `"manual"` (`b:kill()`), `"cleared"` (arena wipe), `"wall"`, and **`"invalid"` (`DespawnReason.INVALID`, value 6, added by PR #8, on `main`; the bullet was killed because a hook wrote a NaN or inf)**, and `"absorbed"` (`DespawnReason.ABSORBED`, value 7: the shot hit an `ABSORB` hurtbox inside its arc, so it dealt 0 and stopped, even with pierce left; no `on_hit` runs) |
 | `on_tick(b, dt)` | per-bullet tick (hook option A). **Metered, opt-in**; combine with `tick_every = n` (the engine skips natively, so skipped ticks cost ~0). Prefer `on_batch` at scale; see *Per-frame logic: tick vs batch* |
 | `on_batch(v, dt)` | once per behaviour per tick, with every live bullet of that script; see *Per-frame logic: tick vs batch* |
 | `on_near(b, other)` | enemy or shot entered `near_radius` (set `near_radius`) **[OI-6]** |
