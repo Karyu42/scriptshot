@@ -80,6 +80,45 @@ func test_pcall_cannot_swallow_the_instruction_budget() -> void:
 	assert_true(again.ok, again.error)
 
 
+func test_faster_pcall_thread_registration() -> void:
+	# Each pcall runs in a thread the host registers once. Registration is a
+	# set lookup, so thousands of pcalls in one call stay cheap, and every
+	# registered thread is still stopped with the rest.
+	var host := _host()
+	host.instruction_budget = 2_000_000
+	host.wall_msec = 10_000
+	var started := Time.get_ticks_msec()
+	var result := host.load_string(
+		"local f = function() end\nfor i = 1, 10000 do pcall(f) end\nreturn 1",
+		"many_pcalls.lua"
+	)
+	var elapsed := Time.get_ticks_msec() - started
+	assert_true(result.ok, result.error)
+	assert_eq(host._threads.size(), host._thread_set.size())
+	assert_gt(host._threads.size(), 10000)
+	assert_true(elapsed < 1500, "10000 pcalls in %d ms" % elapsed)
+	var stopped := host.load_string("local f = function() end\nwhile true do pcall(f) end", "spin_pcalls.lua")
+	assert_false(stopped.ok)
+	assert_eq(stopped.stopped, "instruction budget")
+	assert_eq(host._threads.size(), host._thread_set.size())
+	var again := host.load_string("return 2", "after.lua")
+	assert_true(again.ok, again.error)
+
+
+func test_a_registered_thread_is_registered_once() -> void:
+	var host := _host()
+	var result := host.load_string(
+		"local co = coroutine.create(function() coroutine.yield() end)\n"
+		+ "for i = 1, 5 do coroutine.resume(co) end\nreturn 1",
+		"once.lua"
+	)
+	assert_true(result.ok, result.error)
+	var before := host._threads.size()
+	host._lua_reg_thread(host._threads[before - 1])
+	assert_eq(host._threads.size(), before, "a second registration is a no-op")
+	assert_eq(host._thread_set.size(), before)
+
+
 func test_a_child_coroutine_inherits_the_budget() -> void:
 	var host := _host()
 	var started := Time.get_ticks_msec()

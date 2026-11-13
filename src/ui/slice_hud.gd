@@ -86,11 +86,14 @@ var _editor_open := false
 var _gamepad := false
 var _overflow_text := ""
 var _overflow_width := 0.0
+## Cached in _ready so _draw and overheal layout do not query ThemeDB.
+var _font: Font
 
 
 func _ready() -> void:
 	_build()
 	set_process(true)
+	_font = ThemeDB.fallback_font
 	if not SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.connect(_on_sense_granted)
 	var vp := get_viewport()
@@ -103,6 +106,9 @@ func _exit_tree() -> void:
 	_unbind()
 	if SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.disconnect(_on_sense_granted)
+	var vp := get_viewport()
+	if vp != null and vp.size_changed.is_connected(_on_viewport_resized):
+		vp.size_changed.disconnect(_on_viewport_resized)
 
 
 ## Wires the player ring, SliceProgress signals, the editor (so prompts stay
@@ -221,6 +227,28 @@ func boss_fraction() -> float:
 	return 0.0 if boss == null else boss.fraction()
 
 
+## Radius, stroke, start and end of the gapless boss bar (QA on #94).
+## End is start + TAU * fraction, from 12 o'clock clockwise. The 70°
+## weak-point gap is not this arc.
+class BossArcGeometry:
+	var radius := 0.0
+	var stroke := 0.0
+	var start := 0.0
+	var end := 0.0
+	var gap := 0.0
+
+
+func boss_arc_geometry() -> BossArcGeometry:
+	var geo := BossArcGeometry.new()
+	var frac := boss_fraction()
+	geo.radius = BOSS_ARC_RADIUS
+	geo.stroke = BOSS_STROKE
+	geo.start = BOSS_START
+	geo.end = BOSS_START + TAU * frac
+	geo.gap = 0.0
+	return geo
+
+
 func pip_filled(index: int) -> bool:
 	# 0-based pips inside max_hp. Filled when hp covers that pip.
 	return _hp + 0.0001 >= float(index + 1)
@@ -239,13 +267,19 @@ func overheal_overflow_text() -> String:
 	return _overflow_text
 
 
+func _fallback_font() -> Font:
+	if _font == null:
+		_font = ThemeDB.fallback_font
+	return _font
+
+
 func _sync_overheal() -> void:
 	var n := overheal_overflow()
 	_overflow_text = "+%d" % n if n > 0 else ""
 	_overflow_width = 0.0
 	if _overflow_text.is_empty():
 		return
-	var font := ThemeDB.fallback_font
+	var font := _fallback_font()
 	if font == null:
 		return
 	_overflow_width = font.get_string_size(_overflow_text, HORIZONTAL_ALIGNMENT_LEFT, -1, OVERHEAL_LABEL_SIZE).x
@@ -581,7 +615,7 @@ class _PlayerRing:
 			draw_circle(at2, SliceHud.PIP_RADIUS, SliceHud.COLOR_OVERHEAL)
 		if hud._overflow_text.is_empty():
 			return
-		var font := ThemeDB.fallback_font
+		var font := hud._fallback_font()
 		if font == null:
 			return
 		var fs := SliceHud.OVERHEAL_LABEL_SIZE
