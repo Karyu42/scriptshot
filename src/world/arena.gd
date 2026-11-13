@@ -5,13 +5,20 @@ extends Node2D
 ## children of the StaticBody2D nodes in the `world_walls` group; the same
 ## rectangles are what bullets collide with (BulletManager.collect_walls()).
 
+## The palette, shared with SliceLayout (vertical-slice §9).
+const FLOOR_COLOR := Color("171a21")
+const GRID_COLOR := Color("1f232c")
+const BORDER_COLOR := Color("3a4152")
+const WALL_COLOR := Color("2b3140")
+const WALL_EDGE_COLOR := Color("4a536a")
+
 @export var rect := Rect2(-1280, -720, 2560, 1440)
 @export var grid_step := 80.0
-@export var floor_color := Color("171a21")
-@export var grid_color := Color("1f232c")
-@export var border_color := Color("3a4152")
-@export var wall_color := Color("2b3140")
-@export var wall_edge_color := Color("4a536a")
+@export var floor_color := FLOOR_COLOR
+@export var grid_color := GRID_COLOR
+@export var border_color := BORDER_COLOR
+@export var wall_color := WALL_COLOR
+@export var wall_edge_color := WALL_EDGE_COLOR
 @export var walls_group := &"world_walls"
 
 

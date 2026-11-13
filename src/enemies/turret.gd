@@ -35,3 +35,8 @@ func _physics_process(delta: float) -> void:
 	_request.hit_mask = Layers.hostile_to(Layers.ENEMY)
 	_request.color = Layers.bullet_color(Layers.ENEMY)
 	emitter.request_shot(_request)
+
+
+## Sandbox body, not a slice enemy: no WorldQuery entry, no enemy_killed.
+func reports_as_enemy() -> bool:
+	return false

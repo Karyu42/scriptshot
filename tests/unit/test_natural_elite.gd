@@ -573,6 +573,10 @@ func _naturals(tree: SceneTree) -> Array[EliteEnemy]:
 func _open_main(path: String, at: Vector2) -> Main:
 	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
 	main.save_path = path
+	# These seeds pin natural elites in the origin's ring, which the
+	# vertical-slice footprint now drops and walls off. Natural-elite rules
+	# are footprint-independent; test_slice_footprint covers the drop.
+	(main.get_node("SliceLayout") as SliceLayout).enabled = false
 	var player := main.get_node("Player") as Player
 	player.position = at
 	_mains.append(main)
