@@ -50,6 +50,11 @@ var body_radius := DRIFTER_RADIUS
 var _hurtbox: Hurtbox
 var _fill := DRIFTER_FILL
 var _heading := Vector2.RIGHT
+## Position delta from the previous physics tick. Zero when the body has not
+## moved (or has not ticked yet). SliceLayout eject uses this, not `_heading`,
+## because `_heading` stays a unit vector while the enemy is idle.
+var last_displacement := Vector2.ZERO
+var _prev_position := Vector2.ZERO
 var _erratic_left := 0.0
 var _erratic_step := 0
 var _alive := true
@@ -113,6 +118,8 @@ func configure(
 	if _ready_done:
 		_apply_stats()
 		_heading = _idle_heading()
+		_prev_position = global_position
+		last_displacement = Vector2.ZERO
 
 
 func is_alive() -> bool:
@@ -140,6 +147,8 @@ func _ready() -> void:
 	_hurtbox = get_node("Hurtbox") as Hurtbox
 	_apply_stats()
 	_heading = _idle_heading()
+	_prev_position = global_position
+	last_displacement = Vector2.ZERO
 	_hurtbox.hit.connect(_on_hit)
 	health.died.connect(_on_died)
 	add_to_group(GROUP)
@@ -164,20 +173,21 @@ func _register_world() -> void:
 
 
 func _physics_process(delta: float) -> void:
-	if not _alive or player == null:
-		return
-	var to_player := player.global_position - global_position
-	var dist := to_player.length()
-	if not woken and dist <= WorldGen.WAKE_RADIUS:
-		woken = true
-		_erratic_left = 0.0
-	if woken:
-		_chase(delta, to_player)
-	else:
-		_idle(delta)
-	_contact(player.global_position.distance_to(global_position))
-	_flash = maxf(_flash - delta * 8.0, 0.0)
-	queue_redraw()
+	if _alive and player != null:
+		var to_player := player.global_position - global_position
+		var dist := to_player.length()
+		if not woken and dist <= WorldGen.WAKE_RADIUS:
+			woken = true
+			_erratic_left = 0.0
+		if woken:
+			_chase(delta, to_player)
+		else:
+			_idle(delta)
+		_contact(player.global_position.distance_to(global_position))
+		_flash = maxf(_flash - delta * 8.0, 0.0)
+		queue_redraw()
+	last_displacement = global_position - _prev_position
+	_prev_position = global_position
 
 
 ## Drifter 90, Swarmer 140. Elites override this (halves run at 117).
