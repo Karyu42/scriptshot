@@ -21,7 +21,10 @@ extends Node2D
 ## walls (bind_bullets()). Opening a gate takes its body off the layer and out
 ## of the group and re-collects the bullet walls on the next idle frame, so a
 ## gate opened from inside a bullet hook (an elite dying in step()) never edits
-## the wall grid mid-sweep.
+## the wall grid mid-sweep. Closing a gate flushes the bullet walls in the
+## same call, so a shot on this frame already meets the shut gate. A body
+## standing in the doorway is pushed to the side it came from, or the
+## nearest open side, so it is not trapped in the new wall.
 ##
 ## Hooks for later rows (SliceProgress, Herald redirect, Warden): gate state
 ## by id (set_gate_open / open_gate / close_gate / is_gate_open + signals),
@@ -103,7 +106,8 @@ const HERALD_REDIRECT := Vector2(4700, 180)
 @export var draw_grid := true
 ## Off: the node builds no walls and Main applies no footprint, so the scene
 ## is the pre-slice open world (tests and QA rigs that need the origin chunks
-## as they were). Set before the node enters the tree.
+## as they were). Set before the node enters the tree and do not toggle it
+## later: EliteEnemy snapshots collide_walls from this flag in `_ready`.
 @export var enabled := true
 
 var _flags: Dictionary[StringName, bool] = {}
@@ -124,6 +128,9 @@ func _ready() -> void:
 	if not enabled:
 		visible = false
 		return
+	# Elites look this group up so they skip the world-layer query when the
+	# ribbon is off (no walls to stay out of).
+	add_to_group(&"slice_layouts")
 	if OS.is_debug_build() and OS.get_cmdline_user_args().has(CMDLINE_GATES_OPEN):
 		force_gates_open = true
 	_build()
@@ -252,6 +259,13 @@ func open_gate(id: StringName) -> void:
 	set_gate_open(id, true)
 
 
+## Closes a gate and, if a BulletManager is bound, flushes bullet walls in
+## this same call so a shot this tick already meets the shut gate.
+##
+## Lesson gates (row 5) only open; SliceProgress never calls this, and nothing
+## in the slice closes a gate from inside `walls.sweep_bullets`. If a future
+## closer ever runs mid-sweep, defer the flush to the end of
+## `BulletManager.step()` in the same frame instead of calling it here.
 func close_gate(id: StringName) -> void:
 	set_gate_open(id, false)
 
@@ -334,7 +348,10 @@ func bind_bullets(manager: BulletManager) -> void:
 
 
 ## Rebuilds the bound manager's walls from the `world_walls` group right away.
-## Gate changes call it deferred; tests may call it to skip the frame.
+## A close calls it in the same frame; an open defers it so a hook mid-step
+## never edits the grid during the sweep. Tests may call it to skip the frame.
+## Safe here because lesson / debug closes happen outside `walls.sweep_bullets`.
+## A close issued mid-sweep must instead flush at the end of `BulletManager.step()`.
 func flush_bullet_walls() -> void:
 	_bullet_walls_queued = false
 	if _bullets == null or not is_instance_valid(_bullets) or not _bullets.is_inside_tree():
@@ -392,17 +409,25 @@ func _effective_states() -> Dictionary[StringName, bool]:
 
 func _apply_changes(before: Dictionary[StringName, bool]) -> void:
 	var changed: Array[StringName] = []
+	var any_closed := false
 	for id in GATE_IDS:
 		var now := is_gate_open(id)
 		if now != before[id]:
 			changed.append(id)
 			_apply_gate(id, now)
+			if not now:
+				any_closed = true
+				_eject_from_gate(id)
 	if changed.is_empty():
 		return
 	queue_redraw()
-	if _bullets != null and not _bullet_walls_queued:
-		_bullet_walls_queued = true
-		flush_bullet_walls.call_deferred()
+	if _bullets != null:
+		if any_closed:
+			# Same frame: a shot this tick must already meet the shut gate.
+			flush_bullet_walls()
+		elif not _bullet_walls_queued:
+			_bullet_walls_queued = true
+			flush_bullet_walls.call_deferred()
 	for id in changed:
 		var now := is_gate_open(id)
 		gate_changed.emit(id, now)
@@ -425,12 +450,130 @@ func _apply_gate(id: StringName, open: bool) -> void:
 		body.add_to_group(&"world_walls")
 
 
+## Pushes a player or enemy overlapping shut gate `id` out of it: the side
+## they were moving from, or the nearest clear side when they were at rest
+## (QA #84: force_gates_open, stand at (896, 0), then set it false).
+func _eject_from_gate(id: StringName) -> void:
+	var gate := gate_rect(id)
+	if not gate.has_area():
+		return
+	var parent := get_parent()
+	if parent != null:
+		for child: Node in parent.get_children():
+			var player := child as Player
+			if player != null:
+				_eject_node(player, _player_radius(player), player.velocity, gate)
+	if not is_inside_tree():
+		return
+	for node: Node in get_tree().get_nodes_in_group(RegularEnemy.GROUP):
+		var body := node as RegularEnemy
+		if body == null or not is_instance_valid(body) or not body.is_alive():
+			continue
+		_eject_node(body, body.body_radius, body.last_displacement, gate)
+
+
+func _player_radius(player: Player) -> float:
+	var node := player.get_node_or_null("CollisionShape2D") as CollisionShape2D
+	if node != null and node.shape is CircleShape2D:
+		return (node.shape as CircleShape2D).radius
+	return 13.0
+
+
+func _eject_node(node: Node2D, radius: float, motion: Vector2, gate: Rect2) -> void:
+	var pos := node.global_position
+	if not _circle_hits(pos, radius, gate):
+		return
+	node.global_position = _eject_point(pos, radius, motion, gate)
+
+
+## Just clear of `gate` along its through-axis (X for G1–G5, Y for G0).
+## Prefers the side the body came from, or the nearest side when motion is
+## ~zero. If that landing overlaps a solid, tries the other side; if both
+## are blocked, leaves `pos` unchanged. Never pushes a body into a solid.
+func _eject_point(pos: Vector2, radius: float, motion: Vector2, gate: Rect2) -> Vector2:
+	var along_x := gate.size.y >= gate.size.x
+	var lo := gate.position.x if along_x else gate.position.y
+	var hi := gate.end.x if along_x else gate.end.y
+	var at := pos.x if along_x else pos.y
+	var move := motion.x if along_x else motion.y
+	var clear_lo := lo - radius - 0.01
+	var clear_hi := hi + radius + 0.01
+	var pick_lo: bool
+	if absf(move) > 0.001:
+		# Moving toward + came from the low side; send them back.
+		pick_lo = move > 0.0
+	else:
+		pick_lo = absf(at - clear_lo) <= absf(at - clear_hi)
+	var cand_lo := pos
+	var cand_hi := pos
+	if along_x:
+		cand_lo.x = clear_lo
+		cand_hi.x = clear_hi
+	else:
+		cand_lo.y = clear_lo
+		cand_hi.y = clear_hi
+	var preferred := cand_lo if pick_lo else cand_hi
+	var other := cand_hi if pick_lo else cand_lo
+	if not _eject_blocked(preferred, radius, gate):
+		return preferred
+	if not _eject_blocked(other, radius, gate):
+		return other
+	return pos
+
+
+## True when a circle at `pos` overlaps a ribbon wall, another shut gate, or
+## an extra `world_walls` body. The closing `skip_gate` itself is ignored
+## (the body is already in it and we are trying to leave).
+func _eject_blocked(pos: Vector2, radius: float, skip_gate: Rect2) -> bool:
+	for r in _solid_rects_for_eject(skip_gate):
+		if _circle_hits(pos, radius, r):
+			return true
+	return false
+
+
+func _solid_rects_for_eject(skip_gate: Rect2) -> Array[Rect2]:
+	var out: Array[Rect2] = []
+	for r in _wall_cache():
+		out.append(r)
+	for id: StringName in GATE_IDS:
+		if is_gate_open(id):
+			continue
+		var g := gate_rect(id)
+		if _same_rect(g, skip_gate):
+			continue
+		out.append(g)
+	if not is_inside_tree():
+		return out
+	for node: Node in get_tree().get_nodes_in_group(&"world_walls"):
+		if node == _walls_body or _is_own_gate_body(node):
+			continue
+		for child: Node in node.get_children():
+			var cs := child as CollisionShape2D
+			if cs == null or cs.disabled or not (cs.shape is RectangleShape2D):
+				continue
+			var size := (cs.shape as RectangleShape2D).size
+			var centre := cs.global_position
+			out.append(Rect2(centre - size * 0.5, size))
+	return out
+
+
+func _is_own_gate_body(node: Node) -> bool:
+	for id: StringName in GATE_IDS:
+		if _gate_bodies.get(id) == node:
+			return true
+	return false
+
+
+static func _same_rect(a: Rect2, b: Rect2) -> bool:
+	return a.position.is_equal_approx(b.position) and a.size.is_equal_approx(b.size)
+
+
 func _draw() -> void:
 	for id in ROOM_IDS:
 		_draw_floor(ROOMS[id])
 	for id: StringName in CORRIDORS:
 		_draw_floor(CORRIDORS[id])
-	for r in wall_rects():
+	for r in _wall_cache():
 		draw_rect(r, Arena.WALL_COLOR)
 		draw_rect(r, Arena.WALL_EDGE_COLOR, false, 2.0)
 	for id in GATE_IDS:

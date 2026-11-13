@@ -188,3 +188,57 @@ func test_a_disabled_ribbon_is_the_pre_slice_open_world() -> void:
 func _discard_save(path: String) -> void:
 	if FileAccess.file_exists(path):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
+
+
+func test_walking_out_of_g0_still_finds_a_natural_elite() -> void:
+	# Seed 18, chunk (3, -1) encounter 0: a splitting elite at about
+	# (6529.85, -1396.14), just north of the footprint. Walking out of G0
+	# to (5328, -1400) loads that chunk (RING_RADIUS 1).
+	const SEED := 18
+	const CX := 3
+	const CY := -1
+	var spec := WorldGen.chunk_encounters(SEED, CX, CY)[0]
+	assert_true(spec.is_elite)
+	assert_false(SliceLayout.in_footprint(spec.anchor), "the pin sits in the open world")
+	var main := _open_main()
+	# _open_main discards the slot; write the pinned seed after that, before ready.
+	var save := SaveGame.new()
+	save.path = _SAVE
+	save.world_seed = SEED
+	save.herald_done = true
+	save.save()
+	var player := main.get_node("Player") as Player
+	player.position = Vector2(5328, 0)
+	player.set_physics_process(false)
+	add_child_autofree(main)
+	await wait_physics_frames(2)
+	var slice := main.get_node("SliceLayout") as SliceLayout
+	assert_true(slice.enabled)
+	slice.open_gate(&"G0")
+	# Straight walk north through the open G0, same step the layout walk uses.
+	var to := Vector2(5328, -1400)
+	var guard := 0
+	while player.global_position.distance_to(to) > 0.5 and guard < 10000:
+		guard += 1
+		var left := to - player.global_position
+		var col := player.move_and_collide(left.limit_length(6.0))
+		if col != null:
+			break
+	assert_lt(player.global_position.distance_to(to), 0.5, "G0 open: out of the footprint (stopped at %s)" % player.global_position)
+	assert_false(SliceLayout.in_footprint(player.global_position))
+	var chunks := main.get_node("ChunkStream") as ChunkStream
+	chunks.update_streaming()
+	await wait_physics_frames(1)
+	var found: EliteEnemy = null
+	for node: Node in main.get_tree().get_nodes_in_group(EliteEnemy.GROUP_ELITE):
+		var elite := node as EliteEnemy
+		if elite == null or elite.is_herald or elite.is_half or not elite.is_alive():
+			continue
+		if elite.chunk == Vector2i(CX, CY) and elite.encounter_index == spec.index:
+			found = elite
+			break
+	assert_not_null(found, "a natural elite is streamed in the open world past G0")
+	if found == null:
+		return
+	assert_false(SliceLayout.in_footprint(found.anchor))
+	assert_eq(found.affix, &"splitting")
