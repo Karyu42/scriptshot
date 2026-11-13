@@ -469,14 +469,14 @@ func test_gap_tick_edges_and_tracking() -> void:
 	var tick := warden.gap_point()
 	# A contact on the tick's rim is still ×1.
 	var before := warden.health.hp
-	warden.apply_debug_hit(tick + Vector2(0, Warden.GAP_HURT_RADIUS), 10.0, 0, 101)
+	warden.apply_debug_hit(tick + Vector2(0, Warden.GAP_HURT_RADIUS), 10.0, 0, Vector2.ZERO, 101)
 	assert_almost_eq(warden.health.hp, before - 10.0, 0.001)
 	# Just outside the tick, on the body and still in the 70° opening, is ×0.1.
 	var rim := tick + Vector2(0, Warden.GAP_HURT_RADIUS + 1.0)
 	assert_true(warden._in_body(rim))
 	assert_false(warden._in_gap_tick(rim))
 	before = warden.health.hp
-	warden.apply_debug_hit(rim, 10.0, 0, 102)
+	warden.apply_debug_hit(rim, 10.0, 0, Vector2.ZERO, 102)
 	assert_almost_eq(warden.health.hp, before - 1.0, 0.001)
 
 
@@ -485,11 +485,11 @@ func test_a_piercing_shot_through_the_gap_tick_deals_x1_once() -> void:
 	warden.debug_force_aggro()
 	var before := warden.health.hp
 	# Same bullet id: gap tick, then a body contact inside the tick.
-	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, 7)
-	warden.apply_debug_hit(warden.global_position + Vector2(40, 0), 1.0, 0, 7)
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, Vector2.ZERO, 7)
+	warden.apply_debug_hit(warden.global_position + Vector2(40, 0), 1.0, 0, Vector2.ZERO, 7)
 	assert_almost_eq(warden.health.hp, before - 1.0, 0.001)
 	# A different bullet still applies.
-	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, 8)
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, Vector2.ZERO, 8)
 	assert_almost_eq(warden.health.hp, before - 2.0, 0.001)
 
 	# Live piercing bullet through the tick on the GDScript backend.
