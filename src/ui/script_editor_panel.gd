@@ -5,9 +5,10 @@ extends CanvasLayer
 ## line for problems, and the shard count in the footer.
 ##
 ## E (action `script_editor`; gamepad X) opens it. Esc or the Close button
-## closes it; E types an "e" while it is open. While open, time runs at
-## OPEN_TIME_SCALE (the world keeps moving) and the player reads no input; it
-## is 1 again when the editor shuts. Ctrl+S or Ctrl+Enter saves: the file is
+## closes it; E types an "e" while it is open, but the opening press (and its
+## repeats) is consumed and does not type into the buffer. While open, time
+## runs at OPEN_TIME_SCALE (the world keeps moving) and the player reads no
+## input; it is 1 again when the editor shuts. Ctrl+S or Ctrl+Enter saves: the file is
 ## written to shots/ and the weapon reloads at the next frame boundary through
 ## ShotScripts. A file that does not load leaves the last good weapon firing,
 ## and the line says so ("line 4: expected ')'. Still running the last good
@@ -57,6 +58,10 @@ const API_MEMBERS: PackedStringArray = [
 const POLL_SEC := 0.25
 ## Errors and warnings shown at once; the rest are summarised in one row.
 const MAX_ROWS := 8
+## Left edge of the editor panel, as a fraction of the viewport. The toast
+## sits to the left of this while the editor is open so it does not cover
+## the details or the footer.
+const EDITOR_ANCHOR_LEFT := 0.42
 
 const COLOR_BG := Color(0.0784314, 0.0862745, 0.109804, 0.94)
 const COLOR_PANEL := Color(0.105, 0.115, 0.145, 0.98)
@@ -85,6 +90,8 @@ var runtime_problems: Array[ScriptProblem] = []
 var show_details := false
 
 var _root: Control
+var _frame: Control
+var _details_pad: MarginContainer
 var _code: CodeEdit
 var _title: Label
 var _status: Label
@@ -103,6 +110,10 @@ var _marker_icon: Texture2D
 var _marker_gutter := -1
 var _marked_lines: PackedInt32Array = []
 var _open := false
+## True after the editor is opened by the action key, until that key is
+## released: swallow the press and its repeats so they do not type, and
+## delay CodeEdit focus until keyup.
+var _swallow_open_key := false
 var _time_scale_before := 1.0
 var _next_poll_msec := 0
 var _prompt_until_msec := 0
@@ -203,7 +214,9 @@ func open() -> void:
 	_refresh_starters()
 	_refresh_files()
 	poll_now()
+	_swallow_open_key = false
 	_code.grab_focus()
+	_place_toast()
 	opened.emit()
 
 
@@ -215,6 +228,8 @@ func close() -> void:
 	Engine.time_scale = _time_scale_before if _time_scale_before != OPEN_TIME_SCALE else 1.0
 	_set_player_blocked(false)
 	_set_ui_cursor(false)
+	_swallow_open_key = false
+	_place_toast()
 	closed.emit()
 
 
@@ -307,7 +322,11 @@ func load_starter(id: String) -> bool:
 	if s == null or not s.unlocked():
 		return false
 	set_text(s.source)
+	# The buffer is new unsaved text; a load error from the last save would
+	# point at the wrong lines and linger in the Problems list.
+	load_problems.clear()
 	_status_text("Inserted %s. Save (Ctrl+S) to fire it." % s.title, COLOR_DIM)
+	_refresh_problems()
 	return true
 
 
@@ -406,6 +425,7 @@ func _process(_delta: float) -> void:
 ## is open. A new toast replaces the current one.
 func show_toast(text_value: String) -> void:
 	_toast.text = text_value
+	_place_toast()
 	_toast.show()
 	_toast_until_msec = Time.get_ticks_msec() + int(TOAST_SEC * 1000.0)
 
@@ -420,6 +440,28 @@ func _on_unequipped_file_saved(changed: String) -> void:
 	# The editor may have that file open without equipping it.
 	if changed == file_name and not is_dirty():
 		_show_file(changed)
+
+
+## Moves the toast so it stays in the playfield while the editor is open
+## (the panel covers the right side, including the details and footer).
+func _place_toast() -> void:
+	if _toast == null:
+		return
+	_toast.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_toast.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	_toast.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	_toast.offset_top = -100
+	_toast.offset_bottom = -76
+	if _open:
+		_toast.anchor_left = 0.0
+		_toast.anchor_right = EDITOR_ANCHOR_LEFT
+		_toast.offset_left = 12
+		_toast.offset_right = -12
+	else:
+		_toast.anchor_left = 0.0
+		_toast.anchor_right = 1.0
+		_toast.offset_left = 12
+		_toast.offset_right = -12
 
 
 func _refresh_footer() -> void:
@@ -462,6 +504,12 @@ func _reset_warning_base() -> void:
 func _input(event: InputEvent) -> void:
 	if not _open:
 		return
+	if _swallow_open_key and event.is_action("script_editor"):
+		get_viewport().set_input_as_handled()
+		if event.is_released():
+			_swallow_open_key = false
+			_code.grab_focus()
+		return
 	var key := event as InputEventKey
 	if key != null and key.pressed and not key.echo:
 		if key.keycode == KEY_ESCAPE and _code.get_code_completion_selected_index() < 0:
@@ -483,6 +531,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if event.is_action_pressed("script_editor"):
 		open()
+		# open() focuses the code view; take that back until the opening
+		# key (and its repeats) is released, or it types into the buffer.
+		_swallow_open_key = true
+		_code.release_focus()
 		get_viewport().set_input_as_handled()
 
 
@@ -514,7 +566,8 @@ func _build() -> void:
 
 	var panel := PanelContainer.new()
 	panel.name = "Panel"
-	panel.anchor_left = 0.42
+	_frame = panel
+	panel.anchor_left = EDITOR_ANCHOR_LEFT
 	panel.anchor_right = 1.0
 	panel.anchor_top = 0.0
 	panel.anchor_bottom = 1.0
@@ -643,11 +696,26 @@ func _build() -> void:
 
 	_details = _label("", 12, COLOR_DIM)
 	_details.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_details.add_theme_constant_override("line_spacing", 2)
 	_details.hide()
-	col.add_child(_details)
+	_details_pad = MarginContainer.new()
+	_details_pad.add_theme_constant_override("margin_top", 6)
+	_details_pad.add_theme_constant_override("margin_bottom", 8)
+	_details_pad.add_child(_details)
+	_details_pad.visible = false
+	col.add_child(_details_pad)
 
+	var foot_wrap := VBoxContainer.new()
+	foot_wrap.add_theme_constant_override("separation", 8)
+	var rule := ColorRect.new()
+	rule.color = Color(1, 1, 1, 0.08)
+	rule.custom_minimum_size = Vector2(0, 1)
+	rule.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	rule.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	foot_wrap.add_child(rule)
 	var foot := HBoxContainer.new()
-	col.add_child(foot)
+	foot_wrap.add_child(foot)
+	col.add_child(foot_wrap)
 	var hint := _label("Esc close · Ctrl+S save · time at 15% while open", 12, COLOR_DIM)
 	hint.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	hint.clip_text = true
@@ -687,6 +755,7 @@ func _build() -> void:
 	_toast.add_theme_stylebox_override("normal", toast_style)
 	_toast.hide()
 	add_child(_toast)
+	_place_toast()
 	_refresh_starters()
 	_refresh_problems()
 
@@ -844,6 +913,8 @@ func _refresh_problems() -> void:
 		_list.set_item_custom_fg_color(0, COLOR_DIM)
 	_details.text = "\n".join(details)
 	_details.visible = show_details and not details.is_empty()
+	if _details_pad != null:
+		_details_pad.visible = _details.visible
 	_mark_lines(all)
 
 

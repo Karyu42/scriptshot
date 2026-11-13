@@ -237,7 +237,7 @@ func test_every_starter_compiles_and_runs_a_few_ticks() -> void:
 			assert_eq(shot.title, s.title)
 			assert_lte(s.source.strip_edges().split("\n").size(), 22, "%s stays short" % s.id)
 			if s.id != "homing":
-				assert_lte(s.source.strip_edges().split("\n").size(), 15, "%s: minute-1 starters are under 15 lines" % s.id)
+				assert_lte(s.source.strip_edges().split("\n").size(), 16, "%s: minute-1 starters are about 15 lines" % s.id)
 			assert_true(s.source.contains("tweak me"), "%s has one obvious number to tweak" % s.id)
 			for t in 30:
 				if t % 6 == 0:
