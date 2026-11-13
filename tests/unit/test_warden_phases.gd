@@ -72,7 +72,7 @@ func test_fan_stops_and_ring_starts_on_phase_3() -> void:
 	assert_almost_eq(warden.last_ring[0].velocity.length(), Warden.RING_SPEED, 0.001)
 	var gap_hits := 0
 	for req in warden.last_ring:
-		var ang := (req.position - ARENA).angle()
+		var ang := (req.position - warden.global_position).angle()
 		if absf(angle_difference(ang, warden._ring_gap)) <= Warden.RING_GAP * 0.5:
 			gap_hits += 1
 		assert_eq(req.damage, 1.0)
@@ -343,14 +343,92 @@ func test_kill_order_holds_across_phase_transitions_and_mid_transition() -> void
 	assert_false(warden2.is_alive())
 
 
+func test_fan_and_ring_clear_on_player_death_and_warden_death() -> void:
+	var warden := _ready_fight()
+	var manager: BulletManager = warden._bullets
+	warden.health.set_hp(Warden.PHASE_2_HP)
+	warden.call("_fire_fan")
+	assert_gt(warden.last_fan.size(), 0)
+	assert_gt(manager.owner_count_all(Layers.ENEMY), 0)
+	warden.on_player_died()
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 0)
+	warden.debug_force_aggro()
+	warden.health.set_hp(Warden.PHASE_3_HP)
+	warden.call("_fire_ring")
+	assert_gt(warden.last_ring.size(), 0)
+	assert_gt(manager.owner_count_all(Layers.ENEMY), 0)
+	warden.health.set_hp(0.0)
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 0)
+
+
+func test_last_fan_and_ring_are_recorded_only_when_spawn_succeeds() -> void:
+	var warden := _ready_fight()
+	var manager: BulletManager = warden._bullets
+	warden.health.set_hp(Warden.PHASE_2_HP)
+	manager.set_bullet_limits(1, 0)
+	# One slot: the first fan bullet may record, the rest must not, and a
+	# follow-up fire with a full pool records nothing new.
+	warden.call("_fire_fan")
+	assert_lte(warden.last_fan.size(), 1)
+	warden.last_fan.clear()
+	warden.call("_fire_fan")
+	assert_eq(warden.last_fan.size(), 0)
+	manager.set_bullet_limits(64, 0)
+	manager.clear_bullets()
+	warden.health.set_hp(Warden.PHASE_3_HP)
+	manager.set_bullet_limits(1, 0)
+	warden.call("_fire_ring")
+	assert_lte(warden.last_ring.size(), 1)
+	warden.last_ring.clear()
+	warden.call("_fire_ring")
+	assert_eq(warden.last_ring.size(), 0)
+
+
+func test_ring_centres_on_the_warden_not_the_arena() -> void:
+	var at := ARENA + Vector2(0, 800)
+	var warden := _ready_fight(at)
+	warden.health.set_hp(Warden.PHASE_3_HP)
+	warden._ring_gap = 0.0
+	warden.call("_fire_ring")
+	assert_gt(warden.last_ring.size(), 0)
+	for req in warden.last_ring:
+		var d := req.position.distance_to(warden.global_position)
+		assert_almost_eq(d, Warden.RING_RADIUS, 0.05)
+		assert_gt(req.position.distance_to(ARENA), Warden.RING_RADIUS * 0.5)
+
+
+func test_swallowed_armor_hits_are_not_habituation_samples() -> void:
+	var warden := _ready_fight()
+	warden.boss_habituation = true
+	warden.habituation.reset()
+	warden.habituation.enabled = true
+	warden.absorb_body_hits = true
+	var before := warden.habituation.hit_count()
+	var hp := warden.health.hp
+	warden._hit_body(warden.global_position, 10.0, 0, Vector2(400, 0), 99)
+	assert_eq(warden.habituation.hit_count(), before, "swallowed hits are not samples")
+	assert_eq(warden.health.hp, hp, "swallowed hits deal no damage")
+	# A gap tick still counts and still deals ×1.
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, Vector2(0, 400), 100)
+	assert_eq(warden.habituation.hit_count(), before + 1)
+	assert_almost_eq(warden.health.hp, hp - 1.0, 0.001)
+
+
 func _ready_fight(at: Vector2 = ARENA) -> Warden:
 	var player := (preload("res://scenes/player.tscn") as PackedScene).instantiate() as Player
 	player.position = at + Vector2(-400, 0)
 	add_child_autofree(player)
+	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
+	manager.capacity = 128
+	manager.world_bounds = Rect2(0, -2000, 20000, 4000)
+	manager.render_enabled = false
+	manager.auto_step = false
+	add_child_autofree(manager)
 	var warden := Warden.new()
 	warden.position = at
 	add_child_autofree(warden)
-	warden.bind(player, null)
+	warden.bind(player, manager)
 	warden.debug_force_aggro()
 	return warden
 

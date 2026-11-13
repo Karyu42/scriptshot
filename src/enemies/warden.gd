@@ -26,6 +26,8 @@ const BODY_DAMAGE_SCALE := 0.1
 ## When true, shots into the body (outside the gap tick) deal 0 instead of
 ## ×0.1. Flip this if #85 lands and design wants armor to swallow hits.
 const ARMOR_ABSORBS := false
+## Runtime switch; defaults to ARMOR_ABSORBS. Tests may flip it.
+var absorb_body_hits := ARMOR_ABSORBS
 const PHASE_2_HP := 630.0
 const PHASE_3_HP := 360.0
 const PHASE_COUNT := 3
@@ -112,7 +114,8 @@ var _feeds_recorded := false
 var _warp_id := 0
 var _death_emitted := false
 var _bound := false
-## Last Lance request, for tests. Null until the first shot.
+## Last Lance request, for tests. Null until the first shot. Only set when
+## spawn() returns a live id (>= 0).
 var last_lance: ShotRequest
 var last_fan: Array[ShotRequest] = []
 var last_ring: Array[ShotRequest] = []
@@ -131,6 +134,16 @@ var _ring_winding := false
 var _ring_gap := 0.0
 var _ring_locked := false
 var _pulse_t := 0.0
+## Per-slot: this husk body has died at least once this fight (respawns emit
+## first_death=false). Cleared on reset_fight.
+var _husk_had_death: Array[bool] = []
+## Bullet ids that already applied core damage this frame (one ×1 per bullet).
+var _core_hit_ids: PackedInt64Array = PackedInt64Array()
+var _drawn_gap_q := INF
+var _drawn_hp := -1.0
+var _drawn_phase := -1
+var _drawn_lance := false
+var _drawn_ring_q := INF
 
 
 func _ready() -> void:
@@ -231,9 +244,10 @@ func reset_fight() -> void:
 	_tithe_left = 0.0
 	_husk_lock_slot = -1
 	_flash_left = 0.0
-	if health != null and health.is_dead():
-		health.reset()
-	elif health != null:
+	_husk_had_death.clear()
+	_core_hit_ids = PackedInt64Array()
+	_clear_own_shots()
+	if health != null:
 		health.reset()
 	_set_hurtboxes_active(false)
 	_add_warp()
@@ -295,20 +309,22 @@ func apply_debug_hit(
 	world_pos: Vector2,
 	damage: float = 1.0,
 	flags: int = 0,
-	velocity: Vector2 = Vector2.ZERO
+	velocity: Vector2 = Vector2.ZERO,
+	bullet_id: int = 0
 ) -> void:
 	if not _alive or not _aggro:
 		return
 	if _in_gap_tick(world_pos):
-		_apply_core_damage(damage, flags, velocity)
+		_apply_core_damage(damage, flags, velocity, bullet_id)
 		return
 	if _in_body(world_pos):
-		_hit_body(world_pos, damage, flags, velocity)
+		_hit_body(world_pos, damage, flags, velocity, bullet_id)
 
 
 func _physics_process(delta: float) -> void:
 	if not _alive:
 		return
+	_core_hit_ids = PackedInt64Array()
 	if _flash_left > 0.0:
 		_flash_left = maxf(_flash_left - delta, 0.0)
 		queue_redraw()
@@ -340,11 +356,16 @@ func _physics_process(delta: float) -> void:
 	else:
 		_cancel_ring()
 	_push_and_contact()
-	queue_redraw()
+	_redraw_if_pose_changed()
 
 
 func _try_aggro() -> void:
 	if player == null or not is_instance_valid(player):
+		return
+	# A corpse past AGGRO_X must not re-aggro after reset_fight (QA #96).
+	if player.is_dead():
+		return
+	if player.health != null and player.health.is_dead():
 		return
 	if player.global_position.x >= AGGRO_X:
 		_enter_aggro()
@@ -400,7 +421,10 @@ func _spawn_husks() -> void:
 
 func _spawn_husk_at(slot: int, angle: float) -> void:
 	var husk := WardenHusk.new()
-	husk.setup(self, slot)
+	var first_death := true
+	if slot >= 0 and slot < _husk_had_death.size() and _husk_had_death[slot]:
+		first_death = false
+	husk.setup(self, slot, first_death)
 	husk.orbit_angle = angle
 	husk.position = Vector2.from_angle(angle) * HUSK_ORBIT
 	add_child(husk)
@@ -419,6 +443,7 @@ func _despawn_husks() -> void:
 	_husks.clear()
 	_respawn_left = PackedFloat32Array()
 	_husk_lock_slot = -1
+	_husk_had_death.clear()
 
 
 func _step_husks(delta: float) -> void:
@@ -490,14 +515,21 @@ func _apply_husk_positions() -> void:
 
 
 func _step_husk_respawns(delta: float) -> void:
+	var cap := husk_cap()
 	for i in _husks.size():
 		var husk := _husks[i]
 		if husk != null and is_instance_valid(husk) and husk.is_alive():
 			continue
 		if _respawn_left.size() <= i or _respawn_left[i] <= 0.0:
 			continue
+		if _living_husk_count() >= cap:
+			_respawn_left[i] = 0.0
+			continue
 		_respawn_left[i] = maxf(_respawn_left[i] - delta, 0.0)
 		if _respawn_left[i] <= 0.0:
+			if _living_husk_count() >= cap:
+				_respawn_left[i] = 0.0
+				continue
 			# Far side of the circle (opposite the player). Takes the lock
 			# only if it is the only living husk (handled in _spawn_husk_at).
 			var far := _player_bearing()
@@ -568,6 +600,9 @@ func _reassign_lock() -> void:
 func notify_husk_died(slot: int, at: Vector2) -> void:
 	if slot < 0 or slot >= _husks.size():
 		return
+	if _husk_had_death.size() <= slot:
+		_husk_had_death.resize(slot + 1)
+	_husk_had_death[slot] = true
 	_husks[slot] = null
 	if _respawn_left.size() == _husks.size():
 		_respawn_left[slot] = HUSK_RESPAWN
@@ -797,9 +832,10 @@ func _fire_fan() -> void:
 		req.pierces_script_invuln = false
 		req.collide_world = true
 		req.behavior_id = 0
-		last_fan.append(req)
 		if _bullets != null and is_instance_valid(_bullets):
-			_bullets.spawn(req)
+			var id := _bullets.spawn(req)
+			if id >= 0:
+				last_fan.append(req)
 
 
 func _step_ring(delta: float) -> void:
@@ -831,7 +867,8 @@ func _begin_ring_windup() -> void:
 
 
 func _steer_ring_gap() -> void:
-	var from := SliceLayout.ARENA_CENTRE
+	# The ring is centred on the Warden, not a fixed arena point (QA #97).
+	var from := global_position
 	if player != null and is_instance_valid(player):
 		var to: Vector2 = player.global_position - from
 		if to.length_squared() > 0.0001:
@@ -853,7 +890,7 @@ func _ring_dot_in_gap(angle: float) -> bool:
 
 func _fire_ring() -> void:
 	last_ring.clear()
-	var centre := SliceLayout.ARENA_CENTRE
+	var centre := global_position
 	for i in RING_DOTS:
 		var ang := TAU * float(i) / float(RING_DOTS)
 		if _ring_dot_in_gap(ang):
@@ -869,9 +906,10 @@ func _fire_ring() -> void:
 		req.pierces_script_invuln = false
 		req.collide_world = true
 		req.behavior_id = 0
-		last_ring.append(req)
 		if _bullets != null and is_instance_valid(_bullets):
-			_bullets.spawn(req)
+			var id := _bullets.spawn(req)
+			if id >= 0:
+				last_ring.append(req)
 
 
 func _step_lance(delta: float) -> void:
@@ -913,14 +951,15 @@ func _fire_lance() -> void:
 	req.color = LANCE_COLOR
 	req.pierces_script_invuln = false
 	req.collide_world = true
-	last_lance = req
-	_bullets.spawn(req)
+	var id := _bullets.spawn(req)
+	if id >= 0:
+		last_lance = req
 
 
 func _push_and_contact() -> void:
 	if player == null or not is_instance_valid(player):
 		return
-	var dashing := player._dash.active
+	var dashing := player.is_dashing()
 	_push_circle(global_position, BODY_RADIUS, dashing)
 	for husk in _husks:
 		if husk != null and is_instance_valid(husk) and husk.is_alive():
@@ -956,34 +995,54 @@ func _try_contact(centre: Vector2, radius: float) -> void:
 
 
 func _on_body_hit(damage: float, hit_position: Vector2, vel: Vector2) -> void:
-	_hit_body(hit_position, damage, _body_hurt.last_hit_flags if _body_hurt != null else 0, vel)
+	var bid := _body_hurt.last_hit_bullet_id if _body_hurt != null else 0
+	_hit_body(hit_position, damage, _body_hurt.last_hit_flags if _body_hurt != null else 0, vel, bid)
 
 
 func _on_gap_hit(damage: float, _hit_position: Vector2, vel: Vector2) -> void:
 	if not _alive or not _aggro:
 		return
 	var flags := _gap_hurt.last_hit_flags if _gap_hurt != null else 0
-	_apply_core_damage(damage, flags, vel)
+	var bid := _gap_hurt.last_hit_bullet_id if _gap_hurt != null else 0
+	_apply_core_damage(damage, flags, vel, bid)
 
 
-func _hit_body(hit_position: Vector2, damage: float, flags: int, velocity: Vector2 = Vector2.ZERO) -> void:
+func _hit_body(
+	hit_position: Vector2,
+	damage: float,
+	flags: int,
+	velocity: Vector2 = Vector2.ZERO,
+	bullet_id: int = 0
+) -> void:
 	if not _alive or not _aggro:
 		return
 	# Gap tick has priority if a sweep somehow delivered the body first while
 	# the point is inside the tick circle (should be rare; far-side shots hit
 	# the tick first because its outer edge is at 56 vs the body's 48).
 	if _in_gap_tick(hit_position):
-		_apply_core_damage(damage, flags, velocity)
+		_apply_core_damage(damage, flags, velocity, bullet_id)
 		return
-	if ARMOR_ABSORBS:
-		habituation.record_hit(velocity)
+	if absorb_body_hits:
+		# Swallowed body hits are not habituation samples (QA #97).
 		return
-	_apply_core_damage(damage * BODY_DAMAGE_SCALE, flags, velocity)
+	_apply_core_damage(damage * BODY_DAMAGE_SCALE, flags, velocity, bullet_id)
 
 
-func _apply_core_damage(amount: float, flags: int, velocity: Vector2 = Vector2.ZERO) -> void:
+func _apply_core_damage(
+	amount: float,
+	flags: int,
+	velocity: Vector2 = Vector2.ZERO,
+	bullet_id: int = 0
+) -> void:
 	if health == null or not _alive:
 		return
+	# One bullet deals core damage at most once (a piercing shot through the
+	# gap tick must not also apply a second ×1 on the body).
+	if bullet_id != 0:
+		for id in _core_hit_ids:
+			if id == bullet_id:
+				return
+		_core_hit_ids.append(bullet_id)
 	habituation.record_hit(velocity)
 	var scaled := habituation.scale(amount)
 	if health.try_damage(scaled, flags) == Health.DamageResult.APPLIED:
@@ -1049,6 +1108,7 @@ func _on_core_died() -> void:
 	_cancel_ring()
 	_set_hurtboxes_active(false)
 	_despawn_husks()
+	_clear_own_shots()
 	_remove_warp()
 	WorldQuery.unregister_enemy(self)
 	var pos := global_position
@@ -1130,6 +1190,31 @@ func _remove_warp() -> void:
 		_warp_id = 0
 
 
+func _clear_own_shots() -> void:
+	if _bullets != null and is_instance_valid(_bullets):
+		_bullets.despawn_owned(Layers.ENEMY)
+
+
+func _redraw_if_pose_changed() -> void:
+	var q := snappedf(_gap_angle, deg_to_rad(1.0))
+	var ring_q := snappedf(_ring_gap, deg_to_rad(1.0))
+	var hp := health.hp if health != null else 0.0
+	if (
+		q == _drawn_gap_q
+		and hp == _drawn_hp
+		and _phase == _drawn_phase
+		and _lance_winding == _drawn_lance
+		and ring_q == _drawn_ring_q
+	):
+		return
+	_drawn_gap_q = q
+	_drawn_hp = hp
+	_drawn_phase = _phase
+	_drawn_lance = _lance_winding
+	_drawn_ring_q = ring_q
+	queue_redraw()
+
+
 func _in_gap_tick(world_pos: Vector2) -> bool:
 	return world_pos.distance_to(gap_point()) <= GAP_HURT_RADIUS
 
@@ -1170,7 +1255,7 @@ func _draw() -> void:
 				true
 			)
 	if _ring_winding:
-		var centre := to_local(SliceLayout.ARENA_CENTRE)
+		var centre := Vector2.ZERO
 		for i in RING_DOTS:
 			var ang := TAU * float(i) / float(RING_DOTS)
 			if _ring_dot_in_gap(ang):
