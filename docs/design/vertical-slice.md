@@ -40,9 +40,9 @@ Cold start at the origin in room S, `shots/default.lua` already firing (§7). Ti
 
 Walking the ribbon with no fights is about **32 s** at 300 px/s (arena centre is 9,664 px east of the origin). The minute targets include fighting and editing. The stopwatch is a playtest target, not a CI fail.
 
-Death anywhere before the Warden dies: wait 1.5 s, respawn at the origin (`RespawnPoints` has no arena yet), HP back to max, dash and engine i-frames cleared, **everything else kept** (script, `state`, lesson flags, open gates, shards, sense unlocks, cleared packs). A living Warden resets to 900 HP, phase 1, husks gone, aggro off. Gates that already opened stay open.
+Death: wait 1.5 s, then respawn. The respawn point is chosen **when the respawn happens** (Game Designer call, §2). If no arena has been cleared by then, that point is the origin. If the Warden is already dead by then, it is `(9664, 0)`, even when the death itself came before the kill. HP back to max, dash and engine i-frames cleared, **everything else kept** (script, `state`, lesson flags, open gates, shards, sense unlocks, cleared packs). A living Warden resets to 900 HP, phase 1, husks gone, aggro off. Gates that already opened stay open. There is no quick-restart key. Death plus the 1.5 s respawn is the loop.
 
-The Warden's death is the slice victory (§5.6). The next death respawns at the arena centre, `Vector2(9664, 0)`.
+The Warden's death is the slice victory (§5.6).
 
 ## 2. Layout
 
@@ -77,6 +77,8 @@ Arena centre `(9664, 0)` is chunk `(4, 0)` (`WorldGen.chunk_of`). That chunk's c
 **Footprint** (procedural anchors whose point lies inside are dropped): `Rect2(-768, -1024, 11392, 2688)`. Chunks that only overlap the rect still spawn encounters whose anchors fall outside it. `WorldGen.chunk_encounters` is otherwise unchanged, including tier ≥ 1 returning nothing.
 
 **Safe disk.** Euclidean 512 px, no hostile spawns, same as today. Room S's walls sit outside that disk. The three `TrainingDummy` nodes stay at `(300, 0)`, `(-150, 260)`, `(-150, -260)`, 40 HP, radius 22, non-hostile, respawn. They stay **plain**. The absorb dummy is in room A, which replaces the first-playable L4 note that would have swapped an origin dummy.
+
+**Respawn and the field packs (Game Designer calls).** `field_drifters`, `field_swarmers`, `field_shield`, and `field_sniper` are the absent-since times of room C's four packs. A missing key defaults to **0**, so the pack is present. There are no per-lesson timestamps. The respawn point is read when the 1.5 s respawn fires, not when HP hits 0: if the Warden is dead by then, the player returns at `(9664, 0)` even though the death came first. There is no quick-restart key. Death and that respawn, keeping everything, are the loop.
 
 **Walls and gates.** A room rect is the room's outer edge. Its walls are **16 px** thick and sit inside that rect. A corridor rect is the clear **128 px** passage; its side walls sit just outside it. Each shut gate G1–G5 is a **4 px** wall at the corridor's midpoint, colour `#3a4152` (G1 is `Rect2(894, -64, 4, 128)`). An open gate leaves the passage clear. **G0** has no corridor: it is a **16 px** segment of room C's north wall, x **5200–5456**. No key, no lock icon.
 
@@ -179,7 +181,7 @@ The core does not chase. It and the husks are solid to walking. Dash still passe
 
 Husks are the decoys. `kind = "husk"`. The core is the only `kind = "warden"`.
 
-While any husk is alive, one husk is locked to the player's bearing at **orbit radius 150**, turn rate **90°/s**, and the others sit on that same circle at equal spacing. A player who walks into the husk (they are solid) stays outside it, so the husk centre is closer than the core centre and `sense.nearest_enemy` returns that husk. A dash can cross the ring. Inside about 75 px of the core the core's centre is nearer; steering at that centre still hits armor at ×0.1, because the gap is on the far side. The query stays honest: nearest centre, no special case that hides the Warden. The starter homing snippet (§6.3) adds velocity toward whatever centre `sense.nearest_enemy` returned.
+While any husk is alive, one husk is locked to the player's bearing at **orbit radius 150**, turn rate **90°/s**, and the others sit on that same circle at equal spacing. A player who walks into the husk (they are solid) stays outside it, so the husk centre is closer than the core centre and `sense.nearest_enemy` returns that husk. A dash can cross the ring. Inside about 75 px of the core the core's centre is nearer; steering at that centre still hits armor at ×0.1, because the gap is on the far side. The query stays honest: nearest centre, no special case that hides the Warden. The starter homing snippet (§6.3) turns toward whatever centre `sense.nearest_enemy` returned and keeps its speed.
 
 The gap is on the far side of the core, so a shot aimed at the core's centre hits armor (×0.1) or the near husk. Manual aim at the white tick still kills the boss: the Sense is not required. `sense.enemies_in` is what lets a script **choose** the warden and aim at `pos + away * (radius + 10)`.
 
@@ -254,13 +256,13 @@ Queries read `HurtboxGrid`. `query_circle` only walks the cell under the point; 
 
 **Call budget.** None beyond the script time budget. Calling the query from `on_fire`, or from `on_tick` on a handful of bullets, is the supported path. Calling it from every bullet of a large fan is how a script hits the 3 ms budget; the budget already reports that. Do not add a sense-call quota.
 
-**Entity, Level I** (both senses): `e.id` (int, stable for the life of that body), `e.pos` (`vec2`), `e.radius` (px), `e.kind` (string), `e:alive()` (bool). `e.vel`, `e.hp`, and `e.hp_max` are `nil`. Players cannot write these fields.
+**Entity, Level I** (both senses): `e.id` (int, stable for the life of that body), `e.pos` (`vec2`), `e.radius` (px), `e.kind` (string), `e.rarity` (string), `e:alive()` (bool). `e.rarity` is `""` for regulars, husks, and dummies, and otherwise `"common"`, `"rare"`, or `"legendary"`. `e.vel`, `e.hp`, and `e.hp_max` are `nil`. Speed is not a Level I field. Players cannot write these fields.
 
 `kind` in this slice: `drifter`, `swarmer`, `shieldbearer`, `sniper`, `husk`, `warden`, `dummy`. Halves are `drifter`. Hydra summons are `drifter`. Summoner adds are `swarmer`.
 
 `opts.exclude`: a table keyed by `e.id` **or** by an entity table returned this tick. `opts.filter(e)` is a Lua function; a filter error skips that candidate and prints one plain error line (§7.5).
 
-`nearest_enemy`: the living candidate with the smallest distance from `pos` to the **centre**. `range` omitted means **600**. Returns the entity or `nil`. Its Level II column in api.md is "same": this function does not grow later.
+`nearest_enemy`: the living candidate with the smallest distance from `pos` to the **centre**. Level I clamps `range` to **600** and defaults a missing range to **600**, the same rule as `enemies_in`. A larger request does not error. Returns the entity or `nil`. Level II lifts that clamp the same way `enemies_in` does. It still does not add `vel`, `hp`, or speed.
 
 `enemies_in`, Level I:
 
@@ -268,7 +270,7 @@ Queries read `HurtboxGrid`. `query_circle` only walks the cell under the point; 
 - Returns an array, nearest first, length ≤ **256** (api.md limits). Past 256, keep the nearest and show one editor note, `sense list truncated`.
 - Each element is the Level I entity above. Positions are the point of the Sense; `kind` is how a script tells a husk from the Warden.
 
-Level II, not shipped, for the Codex footnote only: `enemies_in` would add `vel`, `hp`, `hp_max` and would stop clamping `r` to 600.
+Level II, not shipped, for the Codex footnote only: `enemies_in` would add `vel`, `hp`, `hp_max` and would stop clamping `r` to 600. `nearest_enemy` Level II stops clamping `range` to 600 and does not add those fields.
 
 ### 6.3 How an unlock feels
 
@@ -278,7 +280,7 @@ One-time, the first transition of that flag from off to on. Reloading a save whe
 2. **Autocomplete:** the name was grey. It draws in the editor's normal token colour and stays at the top of the sense list for the rest of the session. `nearest_enemy` greys as `3 kills` until then. `enemies_in` greys as `found at: ???` until the Warden dies. The other four senses stay grey `found at: ???`.
 3. **Toast**, 2.5 s, bottom centre, `#F2F2F2`: `sense.nearest_enemy` or `sense.enemies_in`. No button.
 
-`nearest_enemy` page. The palette inserts `scripting/starters/homing.lua`. The call takes `{x, y}` (the editor has no `vec2` yet) and reads `e.pos.x` / `e.pos.y`. Turning is a write to `v.vx` / `v.vy` inside `on_batch`. `b:steer_toward` is a later helper, not this slice.
+`nearest_enemy` page. The palette inserts `scripting/starters/homing.lua` as it is on PR #92 at `e850a08`. The call takes `{x, y}` and reads `e.pos.x` / `e.pos.y`. `on_batch` steers the direction and then restores the shot's original speed. `pull = 1800` is the one `-- <- tweak me` number. 1800 is the lowest value that still hits at speed 400, because the turning radius grows with speed squared. `b:steer_toward` is a later helper, not this slice.
 
 ```lua
 -- Homing: shots steer toward the nearest enemy.
@@ -286,26 +288,28 @@ One-time, the first transition of that flag from off to on. Reloading a save whe
 return {
   name = "Homing",
   cooldown = 0.45,
-  on_fire = function(ctx)
-    spawn { angle = ctx.aim, speed = 280, damage = 4, lifetime = 2.5 }
-  end,
+  on_fire = function(ctx) spawn { angle = ctx.aim, speed = 280, damage = 4, lifetime = 2.5 } end,
   on_batch = function(v, dt)
     local nearest = sense.nearest_enemy  -- nil until you earn it
     if not nearest then return end
-    local pull = 900  -- <- tweak me: how hard shots turn
+    local pull = 1800  -- <- tweak me: how hard shots turn
     for i = 0, v.n - 1 do
       local e = nearest({ x = v.px[i], y = v.py[i] }, 400)
       if e then
         local dx, dy = e.pos.x - v.px[i], e.pos.y - v.py[i]
-        local d = math.sqrt(dx * dx + dy * dy) + 1
-        v.vx[i], v.vy[i] = v.vx[i] + dx / d * pull * dt, v.vy[i] + dy / d * pull * dt
+        local f = pull * dt / (math.sqrt(dx * dx + dy * dy) + 1)
+        local vx, vy = v.vx[i] + dx * f, v.vy[i] + dy * f
+        local k = math.sqrt((v.vx[i] ^ 2 + v.vy[i] ^ 2) / (vx * vx + vy * vy + 1e-9))  -- keep the speed
+        v.vx[i], v.vy[i] = vx * k, vy * k
       end
     end
   end,
 }
 ```
 
-`enemies_in` page. Same call shape and the same velocity write. No `steer_toward`.
+SE acceptance for that file, against a stationary dummy at **220 px**, fire rate **0.25 s**: at least **90%** of shots hit, and no shot orbits for more than **1 s**. While strafing, at least **70%** hit. SE measured **100% / 0.27 s / 100%**.
+
+`enemies_in` page. Same `{x, y}` call shape. No `steer_toward`.
 
 ```lua
 -- The Warden is the body that is not closest. Push past its centre.
@@ -536,12 +540,12 @@ Ordered. Each row is done when its acceptance passes. Dependencies are other row
 2. **Packs in C.** Drifter, Swarmer (existing scenes), plus `scenes/shieldbearer.tscn` and `scenes/sniper.tscn` with the numbers in §3. Acceptance: Shieldbearer arc absorbs a straight shot and takes damage from the side; Sniper waits 0.8 s, then the bullet follows the locked line at 600 px/s for 1 pip; contact from a Drifter is 1 pip and 0 during the 0.75 s i-frames. Each hostile death emits `GameEvents.enemy_killed` (§6.1). **Known gap until this row:** regular enemies and Summoner adds pass through walls. Elites, halves, and the Herald already collide with them. Depends: row 1, and row 3 for the arc.
 3. **Absorb arc.** Per-hurtbox response `ABSORB` with facing and arc, `DespawnReason.ABSORBED`, as first-playable L4. Acceptance: the L4 Bulwark test, and the room-A dummy. Include `REFLECT` in the enum; do not ship Mirrored. Depends: `Hurtbox`.
 4. **Room A dummy and room B pad/plate.** Numbers in §7. Acceptance: straight shots deal 0 to the shielded dummy; a shot with `spin` 2.2 kills it; the pad deals 1 pip after 0.6 s and only when HP is 5; the plate reports the overlapping bullet's speed. Every dummy death, including the three in S, emits `GameEvents.enemy_killed` with `kind` `"dummy"`; a respawned dummy's later death has `first_death` false. Depends: rows 1 and 3.
-5. **Lesson flags and gates.** `SliceProgress` saved on `SaveGame` (`slice_lesson` bits, gate bits, field absent timestamps). Death does not clear them. Acceptance: the §7 checkers, then G1–G4 open in order; dying in C respawns at the origin with G1–G3 still open. Depends: rows 1–4, `RespawnPoints`, `Main.respawn_delay`.
+5. **Lesson flags and gates (Game Designer calls, §2).** `SliceProgress` saved on `SaveGame`: `slice_lesson` bits, gate bits, and the absent-since times of room C's four packs (`field_drifters`, `field_swarmers`, `field_shield`, `field_sniper`). A missing key is 0, so that pack is present. No per-lesson timestamps. Death does not clear the flags. The respawn point is chosen when the 1.5 s respawn happens. Acceptance: the §7 checkers, then G1–G4 open in order; a death while the Warden is still alive respawns at the origin with G1–G3 still open; a death whose 1.5 s ends after the Warden is dead respawns at `(9664, 0)`. There is no quick-restart key. Depends: rows 1–4, `RespawnPoints`, `Main.respawn_delay`.
 6. **Herald redirect.** Acceptance: while G0 is shut, a Herald point that is not in open C becomes `(4700, 180)`; after G0 opens, a point outside the footprint keeps its place; `herald_done` still blocks a second. The slice half of the #81 times is measured in `scenes/main.tscn` once this row has landed. Depends: `HeraldDirector`, row 1.
 7. **Room D rare elite.** 120 HP Drifter, Bulwark rare + Summoner rare, escort, cue tier rare, `slice_rare_dead`, shards +3, G5. Acceptance: arc is 150° and turns at 45°/s; summons cap at 8; killing a summon does not open G5; reload does not respawn the body. Depends: rows 3 and 5, `EliteEnemy`, `RarityCue` rare tier.
 8. **Warden phase 1.** 900 HP, gap, 3 husks, Lance, aggro line at `x = 8736`, tithe 50, solid bodies. Acceptance: before aggro, shots deal 0; with the player pressed against the near husk from outside, the nearest centre is that husk; a shot into the core centre deals ×0.1 and a shot into the gap tick deals full damage; a husk death adds 50 HP unless the core hit 0; Lance telegraph is 0.6 s, the bullet has `pierces_script_invuln` false, it deals 1 pip, and it deals 0 during a dash. Depends: rows 1 and 5.
 9. **Phases 2–3 and Habituation flag.** Fan, phasing husks, broken ring, turn caps, `boss_habituation` default true. Acceptance: phase 2 starts the first tick HP ≤ 630; phasing husks take damage only inside the 0.4 s window; the ring has a 50° gap and its bullets deal 1 pip; with the flag on, a single signature loses damage as §5.2; with the flag off, a single signature does not. Depends: row 8.
-10. **Victory and the open world.** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: after the kill, respawn position is `(9664, 0)`; G0 is open; a fresh `chunk_encounters` outside the footprint is unchanged; `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
+10. **Victory and the open world.** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: after the kill, a respawn that happens then is `(9664, 0)`, including a death that started before the kill and whose 1.5 s ends after it (Game Designer call, §2); G0 is open; a fresh `chunk_encounters` outside the footprint is unchanged; `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
 11. **HUD.** Pips, dash arc, sense marks, boss arc (§14). Acceptance: 5 pips track `Health`; the dash arc matches `DashState.cooldown_left`; sense marks fill only when the book says so; the boss arc fraction matches HP and is absent when the Warden is dead. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
 12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test, summon spacing.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6, 2 every 6 s; a wave's summons are spread along their flank and do not share one point; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
 13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
@@ -554,7 +558,7 @@ The editor's shot API is `spawn`, `on_fire`, a weapon-level `on_hit`, `b:spawn_c
 2. **Editor shell.** Toggle on E, time scale 0.15 while open, text area, save, palette of the five §7.1 rows. Acceptance: saving a `damage` change affects the next shot without leaving the scene; time scale is 1 when the editor is shut; homing's row does not insert while `sense_nearest` is false. Depends: row 1. Q5 stays the open question for the 0.15 value.
 3. **Errors and hot reload.** §7.5 and §7.3. Acceptance: a syntax error leaves the last good weapon firing and the line contains `line` plus `Still running the last good script.`; a PC write to the equipped file reloads; a broken write does not; a PC write to a different `shots/` file shows `shots/<f>.lua saved (not equipped)` and leaves the weapon alone. Time scale is 0.15 while the editor is open. Depends: row 1.
 4. **Lesson hooks.** Lesson 5 passes only on `script_saved(file_name, origin)` for the equipped file (`origin` `editor` or `file`). `unequipped_file_saved(file_name)` is the toast and never passes a lesson. `weapon_swapped(file_name, origin)` is unchanged (`start`, `editor`, or `file`). Do not parse student source for gates. Acceptance: GE row 5 can be driven by `script_saved` from this editor. Depends: rows 2–3, GE row 5.
-5. **`sense.nearest_enemy`.** `SenseBook` owns the count. It subscribes to `GameEvents.enemy_killed` (§6.1), increments only when `first_death` is true (dummy deaths count; a respawned dummy does not), and grants at 3. SE makes the field non-nil and fires the toast, Codex page, and autocomplete highlight. GE does not count and does not call `grant` for this Sense. Acceptance: before 3 `first_death` events the field is `nil` and the homing row is grey; the third origin-dummy first death grants it and the snippet in §6.3 tracks a live dummy; a second death of that same dummy does not increment; reload keeps the field; `e.hp` is `nil`. Depends: GE `query_radius`, GE rows 2 and 4, SE rows 2–3.
+5. **`sense.nearest_enemy`.** `SenseBook` owns the count. It subscribes to `GameEvents.enemy_killed` (§6.1), increments only when `first_death` is true (dummy deaths count; a respawned dummy does not), and grants at 3. Level I clamps and defaults `range` to 600. SE makes the field non-nil and fires the toast, Codex page, and autocomplete highlight. GE does not count and does not call `grant` for this Sense. Acceptance: before 3 `first_death` events the field is `nil` and the homing row is grey; the third origin-dummy first death grants it; `e.hp` is `nil` and `e.rarity` is `""` on a dummy; reload keeps the field. Homing file from §6.3, stationary dummy at 220 px, fire every 0.25 s: at least 90% of shots hit and no shot orbits longer than 1 s; while strafing, at least 70% hit (measured 100% / 0.27 s / 100%). Depends: GE `query_radius`, GE rows 2 and 4, SE rows 2–3.
 6. **`sense.enemies_in` Level I.** Grant only from the Warden. Clamp `r` to 600, cap 256, `kind` set, no vel/hp. Codex snippet §6.3, toast, autocomplete. Acceptance: the field is `nil` through the whole ribbon until the core dies; after the grant, a script that filters `kind == "warden"` steers at the core while a husk is nearer the player; a rare-tier flag is never set. Depends: row 5, GE row 10.
 7. **Footer.** The save's `shards` integer, one number, no spend control. Acceptance: room D's death shows +3. Depends: GE rows 7 and 10.
 
@@ -598,7 +602,7 @@ Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12. **Not 
 ### GE
 
 **1. How does the run start and progress, what starts the boss, what ends it?**
-Start at `(0, 0)` in room S, straight script firing, no hostile inside 512 px. Progress is the lesson gates, then the four packs in C, then the rare elite, then the arena (§1, §2). Lesson 2 requires the three origin dummies to have died once. Those are three `first_death` events. SE's `SenseBook` counts them and grants `nearest_enemy`. GE only emits `GameEvents.enemy_killed`. The boss aggros when the player crosses `x = 8736` after G5 is open. **Boss kill = the victory card in §5.6, then G0.** **Death = 1.5 s, respawn at the last checkpoint, keep everything.** The checkpoint is the origin until that kill, then `(9664, 0)`. A living boss resets to 900 HP.
+Start at `(0, 0)` in room S, straight script firing, no hostile inside 512 px. Progress is the lesson gates, then the four packs in C, then the rare elite, then the arena (§1, §2). Lesson 2 requires the three origin dummies to have died once. Those are three `first_death` events. SE's `SenseBook` counts them and grants `nearest_enemy`. GE only emits `GameEvents.enemy_killed`. The boss aggros when the player crosses `x = 8736` after G5 is open. **Boss kill = the victory card in §5.6, then G0.** **Death = 1.5 s, respawn, keep everything.** The point is chosen when the respawn happens: the origin if the Warden is still alive, `(9664, 0)` if the Warden is already dead, even when the death came first. There is no quick-restart key. A living boss resets to 900 HP.
 
 **2. Look, HP, phases, arena.**
 Common Warden, hue `#3D7EFF`, radius 48, outline 3 px, glow disc from `RarityCue` (no bloom). **900 HP.** Phase 1 from 900, phase 2 at 630, phase 3 at 360. Arena rect `(8704, -704, 1920, 1408)`, centre `(9664, 0)`. Attacks, husks, and the tithe are §5.
