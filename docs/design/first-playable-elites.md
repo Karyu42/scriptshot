@@ -40,7 +40,7 @@ Each layer is playable on its own. Do not start a layer before the previous laye
 Two cuts forced by `main` (no absorb arc on `Hurtbox`; Lua gameplay is not in `src/` yet):
 
 - L0 targets are plain `TrainingDummy` nodes. The shielded dummy is L4, placed in room A of the vertical slice (the origin three stay plain).
-- "Default/example script" means `BasicShot` (`src/player/basic_shot.gd`: 1 damage, interval 0.11 s) until `shots/default.lua` is wired. Both Herald affixes are solvable by that single bullet (sustained damage; Summoner caps at 6 adds). Do not retune `BasicShot` or `Health`.
+- "Default/example script" means `BasicShot` (`src/player/basic_shot.gd`: 1 damage, interval 0.11 s) until `shots/default.lua` is wired. Both Herald affixes are solvable by that single bullet. Summoner columns: **common** 2 alive, 1 HP, every 6 s; **rare** 4 s, 2 per wave, max 8; **legendary** (Hydra) 6 s, 2 per wave, max 6, 105 HP Drifters. Do not retune `BasicShot` or `Health`. Herald HP stays 75.
 
 Combat already on `main`, do not retune: 5 HP, regen +1 / 3 s after 5 s quiet, 0.75 s hit i-frames, dash 160 px / 0.2 s i-frames / 1.5 s cooldown, reflected bullets are enemy-owned and deal 1, respawn keeps everything (`Main.respawn_delay` 1.5 s, `RespawnPoints`).
 
@@ -94,7 +94,7 @@ Spawn:
 | Stats | T0 common: HP `30 × 1.0 × 2.5 = 75`, speed `90 × 1.0`, wake 700 px, contact damage 1 |
 | Affix roll | `hash_u(seed, "herald", "eaff")` over the two-affix set, uniform (§5 tags) |
 | Splitting | On death, **2 halves**: 40% HP each (30), speed ×1.3 (117 px/s), no further splits, no Shard, no elite bit. Already awake |
-| Summoner | Every **6 s**, **2 Swarmers**, max **6** alive, they drop nothing |
+| Summoner | Every **6 s**, **2** summons, max **2** alive, **1 HP** each. They spawn at **±90°**, spread along that flank so a wave does not stack, and drift to hold about **20 px** off the player's flank, out of the firing lane. They drop nothing |
 | Cue | Common elite: thin ring at **1.35×** body radius, outline **3 px**, ring `#F2F2F2`, body keeps Drifter hue, one orbiting **circle** glyph (Spawn). On wake: rising-fifth triangle sting, **0.4 s**, plus a **0.3 s** ring brighten (the visual equivalent) |
 | Once | One per save. Killing the Herald does not clear the flag (it is already set). Killing any other elite first also sets it (step 2) |
 
@@ -184,7 +184,7 @@ One `.tres` per affix, including the three L4 affixes, so balancing stays data. 
 | id | group | min_tier | Common parameters |
 |---|---|---|---|
 | `splitting` | Spawn | 0 | halves = 2, hp_fraction = 0.40, speed_mul = 1.3, resplit = false |
-| `summoner` | Spawn | 0 | interval = 6, count = 2, max_alive = 6, drop = false |
+| `summoner` | Spawn | 0 | interval = 6, count = 2, max_alive = 2, summon_hp = 1, drop = false. Rare column: 4 s, 2 per wave, max 8 |
 | `bulwark` | Defensive | 1 | arc_deg = 120, response = ABSORB, turn_deg_per_s = 0 |
 | `phasing` | Defensive | 1 | period = 2.5, open = 0.4, response = ABSORB outside the pulse |
 | `null_shot` | Offensive | 2 | interval = 5, bullets = 1, warning = 0.8, damage = 1, `pierces_script_invuln` = true |
@@ -227,7 +227,7 @@ Playable checks. Headless scene tests are enough for the rows marked *test*; the
 - [ ] With natural elite rolls forced off, **every seed**: leave the safe zone before the tutorial-clear clock, Herald **spawns** in `[58, 78)` s (`u` is in `[0, 1)`). Walking toward it wakes it about 500 px later (~1.7 s at 300 px/s), still inside 80 s of the arm. *test*
 - [ ] With rolls on: if a natural elite wakes or dies first, `herald_done` is set and no Herald appears; otherwise the Herald still spawns by 78 s. *test*
 - [ ] The Herald is a 75 HP Drifter with Splitting or Summoner, outside the safe zone and inside T0, including when the player is near the T0 edge. *test*
-- [ ] Both affixes die to `BasicShot` (or `default.lua` if it is wired) without editing: Splitting produces exactly two non-splitting halves; Summoner never exceeds 6 summoned Swarmers.
+- [ ] Both affixes die to `BasicShot` (or `default.lua` if it is wired) without editing: Splitting produces exactly two non-splitting halves; Summoner never exceeds 2 summons, and one hit kills each.
 - [ ] Reload after the Herald spawns or is cancelled: it does not spawn again. A reload **during** the countdown may restart the countdown (`herald_done` was still false).
 - [ ] Ring, circle glyph, and 3 px outline read in grayscale. The 0.3 s brighten plays even if the sting is inaudible.
 
