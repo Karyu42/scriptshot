@@ -1191,6 +1191,9 @@ func _remove_warp() -> void:
 
 
 func _clear_own_shots() -> void:
+	# Layer-wide: ShotRequest has no per-source id, and adding one would need
+	# a new column on the pool and the native sim. In this slice the only
+	# in-flight enemy shots during the fight are the Warden's.
 	if _bullets != null and is_instance_valid(_bullets):
 		_bullets.despawn_owned(Layers.ENEMY)
 
