@@ -38,12 +38,13 @@ signal engine_invulnerability_changed(active: bool)
 signal script_invulnerability_changed(active: bool)
 ## Emitted whenever hp gained anything (regeneration, heal(), set_hp() upward).
 signal healed(amount: float, hp: float)
+## Emitted whenever hp actually changes (damage, heal, set_hp, set_max_hp,
+## reset, max clamp). The HUD can bind to this, or to SliceProgress.hp_changed;
+## SliceHud.bind_boss also listens for it.
+signal hp_changed(hp: float, max_hp: float)
 ## Emitted when a damage attempt was refused because of invulnerability
 ## (`result` is BLOCKED_ENGINE or BLOCKED_SCRIPT).
 signal damage_blocked(amount: float, result: DamageResult)
-## Current hp and max_hp after any applied change (damage, heal, set_hp,
-## set_max_hp, reset). SliceHud.bind_boss listens for this.
-signal hp_changed(hp: float, max_hp: float)
 
 ## What try_damage() did.
 enum DamageResult {
