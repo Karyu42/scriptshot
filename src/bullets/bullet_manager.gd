@@ -20,10 +20,13 @@ const BATCH_WARN_PA := 3
 const BATCH_WARN_PB := 4
 ## Owner ids are (generation << OWNER_SLOT_BITS) | slot. Generation 0 is the
 ## first life of a slot, so the first ids are 1, 2, 3, ... until that slot is
-## reused. The sign bit is kept clear so ids stay non-negative.
+## reused. Generation is 15 bits so the packed id always fits in a signed
+## 32-bit int (the pool and NativeBulletSim store `behavior` as int32). After
+## 32,767 reuses the generation wraps; release strips all stale shots, so the
+## wrapped id cannot collide with a live one. The sign bit stays clear.
 const OWNER_SLOT_BITS := 16
 const OWNER_SLOT_MASK := (1 << OWNER_SLOT_BITS) - 1
-const OWNER_GEN_MASK := 0x7fffffff
+const OWNER_GEN_MASK := 0x7fff
 ## Script owners (hot reload, see hooked_count_for_owner()). An *owner id* is
 ## the packed value register_behavior() returned: (generation << OWNER_SLOT_BITS)
 ## | slot. Every bullet spawned with that ShotRequest.behavior_id carries it, and
@@ -315,6 +318,12 @@ func register_behavior(behavior: BulletBehavior) -> int:
 	var slot: int
 	if _owner_free.is_empty():
 		slot = _behaviors.size()
+		# Slot 0 is unused; 1..65535 are the packed 16-bit slot field, so a
+		# packed id can never be 0 (0 means a plain bullet).
+		if slot > OWNER_SLOT_MASK:
+			push_error("BulletManager: owner slot table is at the 65,536-slot limit")
+			return 0
+		assert(slot > 0)
 		_behaviors.append(behavior)
 		_hook_cache.append(0)
 		_hook_scripts.append(null)
@@ -324,14 +333,19 @@ func register_behavior(behavior: BulletBehavior) -> int:
 		_owner_gen.append(0)
 	else:
 		slot = _owner_free.pop_back()
+		assert(slot > 0, "owner slots start at 1 so a packed id cannot be 0")
 		_behaviors[slot] = behavior
 		_hook_cache[slot] = 0
 		_hook_scripts[slot] = null
 		_declared_checked[slot] = -2
 		_declared_scripts[slot] = null
 		_update_override[slot] = 0
+	# Bind the live packed id before routing so set_batch_only can reject a stale one.
+	var packed := _pack_owner(slot)
+	if pool != null:
+		pool.bind_owner_id(slot, packed)
 	_refresh_hooks(slot, behavior)
-	return _pack_owner(slot)
+	return packed
 
 
 ## Works out again which hooks behaviour `id` implements. Needed only after something
@@ -1545,14 +1559,22 @@ func release_behavior(owner_id: int) -> int:
 	if slot <= 0:
 		return 0
 	var n := strip_hooks_for_owner(owner_id)
+	# A drain listener may have called release_behavior(owner_id) during the
+	# strip (it emits hooked_owner_drained). That inner release already
+	# bumped the generation and queued the slot; a second free would put
+	# the same slot on `_owner_free` twice.
+	if _owner_slot(owner_id) != slot:
+		return n
+	# Clear the batch flag while the live id is still bound, then unbind.
+	if pool != null:
+		pool.set_batch_only(owner_id, false)
+		pool.bind_owner_id(slot, 0)
 	_behaviors[slot] = null
 	_hook_cache[slot] = 0
 	_hook_scripts[slot] = null
 	_declared_checked[slot] = -2
 	_declared_scripts[slot] = null
 	_update_override[slot] = 0
-	if pool != null:
-		pool.set_batch_only(owner_id, false)
 	_native_owner_watch.erase(owner_id)
 	var g := (_owner_gen[slot] + 1) & OWNER_GEN_MASK
 	if g == 0:
@@ -2258,4 +2280,7 @@ func _owner_slot(id: int) -> int:
 
 
 func _pack_owner(slot: int) -> int:
-	return (_owner_gen[slot] << OWNER_SLOT_BITS) | slot
+	assert(slot > 0, "owner slots start at 1 so a packed id cannot be 0")
+	var id := (_owner_gen[slot] << OWNER_SLOT_BITS) | slot
+	assert(id > 0, "a packed owner id of 0 would look like a plain bullet")
+	return id

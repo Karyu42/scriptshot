@@ -49,8 +49,7 @@ const OWNER_ENEMY := 2
 const OWNER_SLOTS := 3
 ## Same packing BulletManager uses for script owner ids: (generation << bits) | slot.
 ## batch_only is indexed by slot so a packed id cannot grow this table.
-const OWNER_SLOT_BITS := 16
-const OWNER_SLOT_MASK := (1 << OWNER_SLOT_BITS) - 1
+## The bit widths live on BulletManager (one definition).
 
 # Local copies of the BulletLimits bounds (the hot paths below compare against them).
 const MAX_SPEED_SQ := BulletLimits.MAX_SPEED_SQ
@@ -256,16 +255,43 @@ var behavior_live: Dictionary[int, int] = {}
 var drained_ids := PackedInt64Array()
 
 
+## Packed owner id currently bound to each batch_only slot, 0 if empty.
+## set_batch_only() no-ops unless `id` is this live occupant, so a stale
+## packed id cannot flip the current occupant's flag.
+var _batch_owner_id := PackedInt32Array()
+
+
+## Records the live packed owner id for `slot` (0 = empty). Call this when a
+## behavior is registered or released, before or after set_batch_only().
+func bind_owner_id(slot: int, id: int) -> void:
+	if slot <= 0:
+		return
+	if _batch_owner_id.size() <= slot:
+		_batch_owner_id.resize(slot + 1)
+	_batch_owner_id[slot] = id
+	if id == 0 and slot < batch_only.size():
+		batch_only[slot] = 0
+		_refresh_any_batch_only()
+
+
 ## Marks behavior `id` as batch-only (its bullets are not listed for on_update).
+## A stale packed id (same slot, older generation) is a no-op.
 func set_batch_only(id: int, on: bool) -> void:
 	if id <= 0:
 		return
-	var slot := id & OWNER_SLOT_MASK
+	var slot := id & BulletManager.OWNER_SLOT_MASK
 	if slot <= 0:
+		return
+	# Stale packed ids (same slot, older generation) are a no-op.
+	if slot >= _batch_owner_id.size() or _batch_owner_id[slot] != id:
 		return
 	if batch_only.size() <= slot:
 		batch_only.resize(slot + 1)
 	batch_only[slot] = 1 if on else 0
+	_refresh_any_batch_only()
+
+
+func _refresh_any_batch_only() -> void:
 	any_batch_only = false
 	for flag in batch_only:
 		if flag != 0:
@@ -535,7 +561,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 		# the rest of the condition is not evaluated, so this is not a new cost
 		# on the hooked or plain per-bullet path. Slot mask is used only when a
 		# batch-only behaviour is live, so packed owner ids cannot index the table.
-		if bid != 0 and (not any_batch_only or (bid & OWNER_SLOT_MASK) >= batch_only.size() or batch_only[bid & OWNER_SLOT_MASK] == 0):
+		if bid != 0 and (not any_batch_only or (bid & BulletManager.OWNER_SLOT_MASK) >= batch_only.size() or batch_only[bid & BulletManager.OWNER_SLOT_MASK] == 0):
 			hooked[hooked_count] = i
 			hooked_count += 1
 
