@@ -451,14 +451,18 @@ func test_respawned_husk_emits_first_death_false() -> void:
 
 
 func test_gap_tick_edges_and_tracking() -> void:
-	var player := _player(ARENA + Vector2(200, 0))
+	# A few degrees north of due east so the far-side target is not exactly π.
+	# angle_difference(0, PI) is a ±π tie and flips sign on macOS vs Linux.
+	var player := _player(ARENA + Vector2(200, 40))
 	var warden := _warden()
 	warden.bind(player, null)
 	warden.debug_force_aggro()
 	warden._gap_angle = 0.0
-	# Far-side bearing is due west; the gap turns at 120°/s in phases 1–2.
+	# Far-side bearing is just south of west; the gap turns at 120°/s in phases 1–2.
 	warden._physics_process(0.5)
-	var expected := clampf(angle_difference(0.0, PI), -Warden.GAP_TURN_12 * 0.5, Warden.GAP_TURN_12 * 0.5)
+	var desired := (warden.global_position - player.global_position).angle()
+	var expected := clampf(angle_difference(0.0, desired), -Warden.GAP_TURN_12 * 0.5, Warden.GAP_TURN_12 * 0.5)
+	assert_lt(expected, 0.0, "the short turn from a north-of-east player is clockwise")
 	assert_almost_eq(warden.gap_angle(), expected, 0.02)
 	# Reset the gap to due east to pin the tick's edge angles.
 	warden._gap_angle = 0.0
