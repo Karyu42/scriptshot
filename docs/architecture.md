@@ -406,6 +406,29 @@ target does not hide the next one behind it; a fifth consecutive veto would.
 Reflection clears the flag together with the rest of the script state
 (`keep_script` keeps it).
 
+## Absorb arc (`Hurtbox.response`)
+
+`Hurtbox.response` is `NORMAL` (default), `ABSORB` or `REFLECT` (reserved for the
+Mirrored affix; not implemented, behaves like `NORMAL`). An `ABSORB` hurtbox has a
+world-space `facing` (radians, not tied to the node's rotation) and an `arc_deg`
+centred on it, edges included. A contact whose direction from the hurtbox centre is
+inside the arc is **absorbed**: no damage, no `hit` signal, no `on_hit`, and the
+bullet stops at the contact point and despawns as `DespawnReason.ABSORBED`, even if
+it has pierce left. The hurtbox emits `absorbed(hit_position, bullet_velocity)` (the
+absorb cue) with `last_hit_bullet_id` / `last_hit_flags` set. A contact outside the
+arc is an ordinary hit. `turn_toward(angle, max_deg_per_s, delta)`, `face(point,
+...)` and the static `Hurtbox.turned()` turn the facing at a capped rate (0 = no
+cap).
+
+Order inside a hit: inactive targets and a `can_hit` veto are checked first (as
+before), then the arc. Script invulnerability is untouched: `pierces_script_invuln`
+still reaches `Health` on a hit outside the arc, and it is not an absorb bypass.
+
+Both backends decide with the same call. `BulletManager._apply_hit` (GD pool) and
+`NativeBulletSim::commit_hit` (C++) read `response`, and only a non-`NORMAL`
+hurtbox is asked `Hurtbox.absorbs(contact)`. A `NORMAL` hurtbox costs one int read
+per *hit* and nothing per bullet per tick; the sweeps are unchanged.
+
 ## Speed ceiling and owner inheritance
 
 Two guards on everything scripts can write. Neither is a design limit.
