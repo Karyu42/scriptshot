@@ -80,6 +80,29 @@ if nearest then
 end
 ```
 
+## Senses and the Codex
+
+Senses let a script see enemies. You earn them by playing:
+
+| Sense | How you earn it |
+|---|---|
+| `sense.nearest_enemy` | Three kills. The three practice dummies at the start count; the same dummy again does not |
+| `sense.enemies_in` | Beat the Warden |
+
+When you earn one, its name pops up at the bottom of the screen for a moment
+(`sense.nearest_enemy`), the Homing starter unlocks, and the next time the
+editor is open it shows that Sense's **Codex** page: a short explanation and a
+weapon that uses it. *Insert snippet* puts it in the editor; save to fire it.
+*Codex* in the top bar brings the pages back later.
+
+In autocomplete a new Sense is listed first in yellow until you save a script
+that uses it. Senses you have not earned yet are listed grey with how you get
+them (`nearest_enemy  (3 kills)`, `enemies_in  (found at: ???)`).
+
+Earned Senses are saved with your game. What they return is described in
+[api.md](api.md#senses-in-this-build-vertical-slice): positions, size and kind
+of each enemy, never its health or speed.
+
 ## Writing your own
 
 A weapon file returns a table. The fields are defaults for every shot

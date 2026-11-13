@@ -17,9 +17,14 @@ extends CanvasLayer
 ## Runtime errors and script warnings from play are polled a few times a
 ## second (never per error), merged by kind and line, and shown with a count.
 ##
-## Hook points for the Sense-unlock UX (not built here): SenseBook.events
-## `granted` refreshes the palette (the homing row unlocks); mark_fresh_names()
-## highlights the names a new Sense brought, for autocomplete and the Codex.
+## Sense unlocks (vertical-slice §6.3), on SenseBook.events `granted` at
+## level 1: a one-time toast (`sense.nearest_enemy`), the palette refresh (the
+## homing row unlocks), the name highlighted in autocomplete until a saved
+## script uses it (mark_fresh_names), and the Sense's Codex page: one screen in
+## this panel with an annotated, runnable snippet (Insert puts it in the
+## editor). The page opens once, the next time the editor is open; the Codex
+## button lists every earned page after that. No modal. A save that restores a
+## Sense quietly (SenseBook.bind_save) does none of this.
 
 signal opened
 signal closed
@@ -53,7 +58,15 @@ const API_MEMBERS: PackedStringArray = [
 	"on_tick", "aim", "aim_dir", "time", "shot_count", "pressed", "just_pressed", "just_released", "held_time",
 	"id", "x", "y", "vx", "vy", "set_velocity", "spawn_child",
 	"n", "dt", "px", "py", "age", "pa", "pb", "owner", "kill", "teleport", "nearest_enemy", "enemies_in",
+	"kind", "alive",
 ]
+## Senses in api.md order, for autocomplete. Locked ones are listed grey with
+## how they are found.
+const SENSE_NAMES: PackedStringArray = ["nearest_enemy", "enemies_in", "enemy_bullets", "terrain", "boss", "world"]
+const SENSE_LOCK_HINTS := {"nearest_enemy": "3 kills"}
+const SENSE_LOCK_HINT_DEFAULT := "found at: ???"
+## Codex pages, one per Sense with a page: res://scripting/codex/<id>.lua.
+const CODEX_DIR := "res://scripting/codex"
 const POLL_SEC := 0.25
 ## Errors and warnings shown at once; the rest are summarised in one row.
 const MAX_ROWS := 8
@@ -112,6 +125,14 @@ var _warn_base: Dictionary[String, int] = {}
 var _starter_ids: PackedStringArray = []
 var _file_names: PackedStringArray = []
 var _fresh_names: PackedStringArray = []
+var _codex_button: Button
+var _codex_box: VBoxContainer
+var _codex_title: Label
+var _codex_view: CodeEdit
+## Sense id of the page on screen, "" when the code is showing.
+var _codex_page := ""
+## Pages earned this session that have not been shown yet (oldest first).
+var _codex_unread: PackedStringArray = []
 ## Text of file_name as last loaded or saved, to tell unsaved edits apart.
 var _clean_text := ""
 
@@ -202,8 +223,11 @@ func open() -> void:
 	_set_ui_cursor(true)
 	_refresh_starters()
 	_refresh_files()
+	_refresh_codex_button()
 	poll_now()
 	_code.grab_focus()
+	if not _codex_unread.is_empty():
+		show_codex(_codex_unread[0])
 	opened.emit()
 
 
@@ -227,6 +251,7 @@ func request_save() -> bool:
 		_status_text("Could not write %s." % ScriptLibrary.display_path(file_name), COLOR_ERROR)
 		return false
 	_clean_text = _code.text
+	_note_used_names(_code.text)
 	_status_text("Saving…", COLOR_DIM)
 	return true
 
@@ -343,8 +368,8 @@ func _show_file(name_value: String) -> void:
 	_clean_text = t if ScriptLibrary.exists(name_value) else ""
 
 
-## Hook point for the Sense-unlock UX: names highlighted until the player uses
-## them (autocomplete, Codex snippets). Not driven by anything yet.
+## Names highlighted (autocomplete first, in COLOR_FRESH; the code
+## highlighter too) until a saved script uses them. A new Sense marks its name.
 func mark_fresh_names(names: PackedStringArray) -> void:
 	for n in names:
 		if not _fresh_names.has(n):
@@ -354,6 +379,156 @@ func mark_fresh_names(names: PackedStringArray) -> void:
 
 func fresh_names() -> PackedStringArray:
 	return _fresh_names.duplicate()
+
+
+## A save whose text uses a fresh name ends its highlight ("first use").
+func _note_used_names(source: String) -> void:
+	var kept := PackedStringArray()
+	for n in _fresh_names:
+		if not _uses_name(source, n):
+			kept.append(n)
+	if kept.size() == _fresh_names.size():
+		return
+	_fresh_names = kept
+	_rebuild_highlighter()
+
+
+static func _uses_name(source: String, name_value: String) -> bool:
+	return RegEx.create_from_string("\\b%s\\b" % name_value).search(source) != null
+
+
+## Autocomplete rows as [display, insert, color], in the order offered:
+## earned Senses first (fresh ones in COLOR_FRESH), then the API, the globals,
+## the keywords, and the Senses not earned yet (grey, with how they are found).
+func completion_entries() -> Array:
+	var out: Array = []
+	var locked: Array = []
+	var fresh: Array = []
+	var earned: Array = []
+	for n in SENSE_NAMES:
+		if SenseBook.unlocked(StringName(n)):
+			if _fresh_names.has(n):
+				fresh.append([n, n, COLOR_FRESH])
+			else:
+				earned.append([n, n, COLOR_API])
+		else:
+			var hint: String = SENSE_LOCK_HINTS.get(n, SENSE_LOCK_HINT_DEFAULT)
+			locked.append(["%s  (%s)" % [n, hint], n, COLOR_DIM])
+	out.append_array(fresh)
+	out.append_array(earned)
+	for m in API_MEMBERS:
+		if SENSE_NAMES.has(m):
+			continue
+		out.append([m, m, COLOR_FRESH if _fresh_names.has(m) else COLOR_API])
+	for g in API_GLOBALS:
+		out.append([g, g, COLOR_API])
+	for k in LUA_KEYWORDS:
+		out.append([k, k, COLOR_KEYWORD])
+	out.append_array(locked)
+	return out
+
+
+# --- Codex ---------------------------------------------------------------------
+
+## Sense ids with a Codex page the player has earned, in SENSE_NAMES order.
+func codex_pages() -> PackedStringArray:
+	var out := PackedStringArray()
+	for n in SENSE_NAMES:
+		if SenseBook.unlocked(StringName(n)) and FileAccess.file_exists(_codex_path(n)):
+			out.append(n)
+	return out
+
+
+## The page source (an annotated Lua file that runs as a weapon), or "".
+static func codex_source(id: String) -> String:
+	var path := _codex_path(id)
+	if not FileAccess.file_exists(path):
+		return ""
+	return FileAccess.get_file_as_string(path)
+
+
+static func _codex_path(id: String) -> String:
+	return CODEX_DIR.path_join(id + ".lua")
+
+
+## Shows the Codex page of Sense `id` in place of the code. False when the
+## Sense is not earned or has no page.
+func show_codex(id: String) -> bool:
+	if not SenseBook.unlocked(StringName(id)):
+		return false
+	var src := codex_source(id)
+	if src == "":
+		return false
+	_codex_page = id
+	var i := _codex_unread.find(id)
+	if i >= 0:
+		_codex_unread.remove_at(i)
+	_codex_title.text = "Codex · sense.%s" % id
+	_codex_view.text = src
+	_codex_view.clear_undo_history()
+	_code.hide()
+	_codex_box.show()
+	_refresh_codex_button()
+	return true
+
+
+func close_codex() -> void:
+	_codex_page = ""
+	_codex_box.hide()
+	_code.show()
+	_refresh_codex_button()
+
+
+func codex_visible() -> bool:
+	return _codex_box.visible
+
+
+func codex_page() -> String:
+	return _codex_page
+
+
+func codex_text() -> String:
+	return _codex_view.text if _codex_box.visible else ""
+
+
+## Pages earned this session and not yet shown.
+func codex_unread() -> PackedStringArray:
+	return _codex_unread.duplicate()
+
+
+## Puts the open page's snippet in the editor (one undo step; not saved).
+func insert_codex_snippet() -> bool:
+	if _codex_page == "":
+		return false
+	var src := codex_source(_codex_page)
+	if src == "":
+		return false
+	close_codex()
+	set_text(src)
+	_status_text("Inserted the Codex snippet. Save (Ctrl+S) to fire it.", COLOR_DIM)
+	return true
+
+
+func _on_codex_pressed() -> void:
+	if _codex_box.visible:
+		close_codex()
+		return
+	var pages := codex_pages()
+	if pages.is_empty():
+		_status_text("The Codex fills as you earn Senses.", COLOR_DIM)
+		return
+	var next := pages[0]
+	if not _codex_unread.is_empty():
+		next = _codex_unread[0]
+	show_codex(next)
+
+
+func _refresh_codex_button() -> void:
+	if _codex_button == null:
+		return
+	var n := codex_pages().size()
+	_codex_button.text = "Codex" if _codex_unread.is_empty() else "Codex •"
+	_codex_button.tooltip_text = "Sense pages you have earned (%d)" % n if n > 0 else "The Codex fills as you earn Senses"
 
 
 func set_show_details(on: bool) -> void:
@@ -555,6 +730,11 @@ func _build() -> void:
 	_starters.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	_starters.clip_text = true
 	top.add_child(_starters)
+	_codex_button = Button.new()
+	_codex_button.name = "CodexButton"
+	_codex_button.text = "Codex"
+	_codex_button.pressed.connect(_on_codex_pressed)
+	top.add_child(_codex_button)
 	_save_button = Button.new()
 	_save_button.text = "Save"
 	_save_button.tooltip_text = "Save to shots/ and reload (Ctrl+S)"
@@ -611,6 +791,44 @@ func _build() -> void:
 	_code.code_completion_requested.connect(_on_completion_requested)
 	_code.gui_input.connect(_on_code_gui_input)
 	col.add_child(_code)
+
+	_codex_box = VBoxContainer.new()
+	_codex_box.name = "Codex"
+	_codex_box.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_codex_box.add_theme_constant_override("separation", 6)
+	var codex_head := HBoxContainer.new()
+	_codex_box.add_child(codex_head)
+	_codex_title = _label("Codex", 14, COLOR_FRESH)
+	_codex_title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	codex_head.add_child(_codex_title)
+	var insert := Button.new()
+	insert.name = "InsertSnippet"
+	insert.text = "Insert snippet"
+	insert.tooltip_text = "Put this snippet in the editor (Ctrl+Z undoes it)"
+	insert.pressed.connect(func() -> void: insert_codex_snippet())
+	codex_head.add_child(insert)
+	var back := Button.new()
+	back.text = "Back to script"
+	back.pressed.connect(close_codex)
+	codex_head.add_child(back)
+	_codex_view = CodeEdit.new()
+	_codex_view.name = "CodexText"
+	_codex_view.editable = false
+	_codex_view.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	_codex_view.gutters_draw_line_numbers = true
+	_codex_view.minimap_draw = false
+	_codex_view.add_theme_font_size_override("font_size", 15)
+	_codex_view.add_theme_color_override("background_color", COLOR_BG)
+	_codex_view.add_theme_color_override("font_color", COLOR_TEXT)
+	_codex_view.add_theme_color_override("font_readonly_color", COLOR_TEXT)
+	_codex_view.add_theme_color_override("line_number_color", COLOR_DIM)
+	_codex_view.add_theme_stylebox_override("normal", code_style)
+	_codex_view.add_theme_stylebox_override("read_only", code_style)
+	_codex_view.add_theme_stylebox_override("focus", code_style)
+	_codex_view.syntax_highlighter = _make_highlighter()
+	_codex_box.add_child(_codex_view)
+	_codex_box.hide()
+	col.add_child(_codex_box)
 
 	_status = _label("", 13, COLOR_DIM)
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -720,6 +938,13 @@ func _apply_highlight_colors() -> void:
 	_code.syntax_highlighter = _highlighter
 
 
+## A name left _fresh_names: CodeHighlighter keeps old keyword colours, so
+## build it again.
+func _rebuild_highlighter() -> void:
+	_highlighter = _make_highlighter()
+	_code.syntax_highlighter = _highlighter
+
+
 func _apply_highlight_colors_to(h: CodeHighlighter) -> void:
 	for k in LUA_KEYWORDS:
 		h.add_keyword_color(k, COLOR_KEYWORD)
@@ -816,8 +1041,18 @@ func _on_starter_selected(index: int) -> void:
 	_starters.select(0)
 
 
-func _on_sense_granted(_id: StringName, _level: int) -> void:
+func _on_sense_granted(id: StringName, level_value: int) -> void:
 	_refresh_starters()
+	if level_value != 1:
+		return
+	var n := String(id)
+	show_toast("sense.%s" % n)
+	mark_fresh_names(PackedStringArray([n]))
+	if FileAccess.file_exists(_codex_path(n)) and not _codex_unread.has(n):
+		_codex_unread.append(n)
+	_refresh_codex_button()
+	if _open and not _codex_box.visible:
+		show_codex(n)
 
 
 func _refresh_problems() -> void:
@@ -869,12 +1104,12 @@ func _on_problem_clicked(index: int, _at: Vector2, _button: int) -> void:
 
 
 func _on_completion_requested() -> void:
-	for n in API_MEMBERS:
-		_code.add_code_completion_option(CodeEdit.KIND_MEMBER, n, n, COLOR_FRESH if _fresh_names.has(n) else COLOR_API)
-	for g in API_GLOBALS:
-		_code.add_code_completion_option(CodeEdit.KIND_VARIABLE, g, g, COLOR_API)
-	for k in LUA_KEYWORDS:
-		_code.add_code_completion_option(CodeEdit.KIND_PLAIN_TEXT, k, k, COLOR_KEYWORD)
+	for row: Array in completion_entries():
+		var display: String = row[0]
+		var insert: String = row[1]
+		var color: Color = row[2]
+		var kind := CodeEdit.KIND_PLAIN_TEXT if color == COLOR_KEYWORD else CodeEdit.KIND_MEMBER
+		_code.add_code_completion_option(kind, display, insert, color)
 	_code.update_code_completion_options(false)
 
 

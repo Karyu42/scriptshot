@@ -5,6 +5,8 @@ extends RefCounted
 ## shards when that body dies. L3 adds 1 shard per natural elite body and sets
 ## a bit in elite_kills for that chunk encounter. Halves, summons, and escorts
 ## do not. The countdown remainder and the Herald's position are not stored.
+## SenseBook writes the earned Senses (vertical-slice §6.1): `sense_nearest`
+## and `sense_enemies_in` (the level, 1 in this slice), section [senses].
 
 const DEFAULT_PATH := "user://save.cfg"
 ## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.
@@ -18,6 +20,9 @@ var herald_done := false
 var elite_kills: Array = []
 var regular_absent: Array = []
 var shards := 0
+## Senses earned in this slot (SenseBook.bind_save). Permanent for the slot.
+var sense_nearest := false
+var sense_enemies_in := 0
 var existed := false
 
 
@@ -50,6 +55,8 @@ func save() -> void:
 	cfg.set_value("world", "elite_kills", elite_kills)
 	cfg.set_value("world", "regular_absent", regular_absent)
 	cfg.set_value("world", "shards", shards)
+	cfg.set_value("senses", "sense_nearest", sense_nearest)
+	cfg.set_value("senses", "sense_enemies_in", sense_enemies_in)
 	cfg.save(path)
 
 
@@ -63,6 +70,8 @@ func _read(cfg: ConfigFile) -> void:
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
+	sense_nearest = bool(cfg.get_value("senses", "sense_nearest", false))
+	sense_enemies_in = maxi(int(cfg.get_value("senses", "sense_enemies_in", 0)), 0)
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 

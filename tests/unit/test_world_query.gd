@@ -554,3 +554,46 @@ func test_raycast_hits_the_first_wall_with_its_normal() -> void:
 	assert_false(wq.raycast_terrain(Vector2.ZERO, Vector2(500, 0)).is_empty(), "only the bound manager unbinds")
 	wq.unbind_bullets(manager)
 	assert_eq(wq.raycast_terrain(Vector2.ZERO, Vector2(500, 0)), {})
+
+
+# --- revision / live_rows (the Lua Senses mirror) --------------------------------
+
+func test_revision_moves_on_refresh_unregister_and_reset_only() -> void:
+	var a := _add(Vector2(10, 0))
+	var r0 := wq.revision()
+	wq.refresh(DT)
+	var r1 := wq.revision()
+	assert_gt(r1, r0)
+	wq.nearest_enemy(Vector2.ZERO, 600.0)
+	wq.enemies_in_radius(Vector2.ZERO, 600.0, 8)
+	assert_eq(wq.revision(), r1, "queries do not move it")
+	wq.unregister_enemy(a)
+	var r2 := wq.revision()
+	assert_gt(r2, r1, "a death after the snapshot moves it")
+	wq.reset()
+	assert_gt(wq.revision(), r2)
+
+
+func test_live_rows_are_the_rows_queries_can_return() -> void:
+	var a := _add(Vector2(10, 20), EnemyKinds.HUSK)
+	var b := _add(Vector2(-30, 5), EnemyKinds.WARDEN)
+	wq.refresh(DT)
+	var rows := wq.live_rows()
+	var ids: PackedInt64Array = rows["ids"]
+	var kinds: PackedStringArray = rows["kind"]
+	var xs: PackedFloat64Array = rows["x"]
+	var radii: PackedFloat64Array = rows["radius"]
+	assert_eq(ids.size(), 2)
+	var ia := ids.find(a.get_instance_id())
+	assert_gte(ia, 0)
+	assert_eq(kinds[ia], "husk")
+	assert_eq(xs[ia], 10.0)
+	assert_eq(radii[ia], 16.0)
+	assert_same(wq.live_rows(), rows, "cached until the revision moves")
+	a.position = Vector2(500, 500)
+	wq.unregister_enemy(a)
+	var after := wq.live_rows()
+	var after_ids: PackedInt64Array = after["ids"]
+	assert_eq(after_ids, PackedInt64Array([b.get_instance_id()]), "the dead body is gone, the snapshot is not rebuilt")
+	var bx: PackedFloat64Array = after["x"]
+	assert_eq(bx[0], -30.0)

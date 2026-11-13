@@ -33,6 +33,10 @@ var _slice: SliceLayout
 
 
 func _ready() -> void:
+	# Senses (vertical-slice §6.1): a fresh book per game scene, counting
+	# GameEvents kills; _bind_open_world restores the slot's Senses quietly.
+	SenseBook.reset()
+	SenseBook.listen()
 	_player.emitter = _bullets.emitter
 	_bind_script_weapon()
 	_stress.emitter = _bullets.emitter
@@ -88,6 +92,7 @@ func _bind_open_world() -> void:
 	if _chunks == null:
 		return
 	_save = SaveGame.load_from(_slot_path())
+	SenseBook.bind_save(_save)
 	_chunks.seed = _save.world_seed
 	_chunks.load_absent(_save.regular_absent)
 	_chunks.load_elite_kills(_save.elite_kills)
@@ -146,6 +151,8 @@ func _on_natural_shard() -> void:
 
 func _exit_tree() -> void:
 	WorldQuery.unbind_bullets(_bullets)
+	SenseBook.unlisten()
+	SenseBook.bind_save(null)
 	_on_absent_changed()
 
 

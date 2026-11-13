@@ -191,9 +191,21 @@ return function(host)
 		end
 		return deg * math.pi / 180
 	end
-	-- Senses are filled in by the host when earned. An unearned Sense is nil,
-	-- so `sense.nearest_enemy and sense.nearest_enemy(...)` is always safe.
-	env.sense = {}
+	-- Senses are filled in by the host when earned (see the Senses block
+	-- below). An unearned Sense is nil, so
+	-- `sense.nearest_enemy and sense.nearest_enemy(...)` is always safe.
+	local sense_fields = {}
+	local real_next = next
+	env.sense = real_setmetatable({}, {
+		__index = sense_fields,
+		__newindex = function()
+			error("sense is read-only", 2)
+		end,
+		__pairs = function()
+			return real_next, sense_fields, nil
+		end,
+		__metatable = false,
+	})
 
 	-- A hook on the main thread does not cover coroutines a script creates.
 	local rc = real.coroutine
@@ -272,6 +284,295 @@ return function(host)
 		end
 		local handled = rpack(env.pcall(h, r[2]))
 		return false, handled[2]
+	end
+
+	-- Senses (docs/design/vertical-slice.md §6). The host mirrors the
+	-- WorldQuery snapshot into the tables below at most once per snapshot
+	-- (host.sense_sync), outside any script call. A query is plain Lua over
+	-- those tables: it never calls the host, so the watchdog covers all of it
+	-- and a stop can never land inside an engine call. Same answers as
+	-- WorldQuery.nearest_enemy / enemies_in_radius: centre distance, range
+	-- inclusive, ties to the lower id, nearest first.
+	--
+	-- Results are read-only entity tables, one per body per snapshot (asking
+	-- twice in a tick hands back the same table, so a hot loop allocates
+	-- nothing). Level I fields: id, pos {x, y}, radius, kind, alive().
+	local SENSE_RANGE = 600       -- nearest_enemy range when omitted
+	local ENEMIES_IN_R_MAX = 600  -- enemies_in Level I clamp
+	local SENSE_LIST_CAP = 256    -- WorldQuery.MAX_RESULTS
+	local sense_pcall = env.pcall
+	local sense_print = env.print
+	local tostr = tostring
+	local sense_levels = { nearest_enemy = 0, enemies_in = 0 }
+	local S_n = 0
+	local S_id, S_x, S_y, S_r, S_kind = {}, {}, {}, {}, {}
+	local S_ent, S_live = {}, {}
+	-- [1] = enemies_in lists cut at SENSE_LIST_CAP since the state opened.
+	local sense_notes = { 0 }
+	host._sense_notes = sense_notes
+	local function ro_write()
+		error("sense results are read-only", 2)
+	end
+	local function read_only(data)
+		return real_setmetatable({}, {
+			__index = data,
+			__newindex = ro_write,
+			__pairs = function()
+				return real_next, data, nil
+			end,
+			__metatable = false,
+		})
+	end
+	local function ent_alive(self)
+		if type(self) ~= "table" then
+			error("alive: call it as e:alive()", 2)
+		end
+		local id = self.id
+		return id ~= nil and S_live[id] == true
+	end
+	local function entity(row)
+		local e = S_ent[row]
+		if e == nil then
+			e = read_only({
+				id = S_id[row],
+				pos = read_only({ x = S_x[row], y = S_y[row] }),
+				radius = S_r[row],
+				kind = S_kind[row],
+				alive = ent_alive,
+			})
+			S_ent[row] = e
+		end
+		return e
+	end
+	local INF = 1 / 0
+	-- x, y of a {x, y} table, or nil when they are not finite.
+	local function sense_pos(name, pos)
+		if type(pos) ~= "table" then
+			error(name .. ": pos must be a table with x and y numbers, like { x = 0, y = 0 }", 3)
+		end
+		local x, y = pos.x, pos.y
+		if type(x) ~= "number" or type(y) ~= "number" then
+			error(name .. ": pos must be a table with x and y numbers, like { x = 0, y = 0 }", 3)
+		end
+		if x ~= x or y ~= y or x == INF or x == -INF or y == INF or y == -INF then
+			return nil
+		end
+		return x, y
+	end
+	local function sense_range(name, r)
+		if r == nil then
+			return SENSE_RANGE
+		end
+		if type(r) ~= "number" then
+			error(name .. ": range must be a number", 3)
+		end
+		return r
+	end
+	local function sense_opts(name, opts)
+		if opts == nil then
+			return nil, nil
+		end
+		if type(opts) ~= "table" then
+			error(name .. ": opts must be a table, like { exclude = { [e.id] = true } }", 3)
+		end
+		local ex, filter = opts.exclude, opts.filter
+		if ex ~= nil and type(ex) ~= "table" then
+			error(name .. ": opts.exclude must be a table keyed by e.id or by e", 3)
+		end
+		if filter ~= nil and type(filter) ~= "function" then
+			error(name .. ": opts.filter must be a function(e)", 3)
+		end
+		return ex, filter
+	end
+	-- opts.exclude is keyed by e.id or by an entity table from this snapshot.
+	local function excluded(ex, row)
+		local hit = ex[S_id[row]]
+		if hit ~= nil and hit ~= false then
+			return true
+		end
+		local e = S_ent[row]
+		if e == nil then
+			return false
+		end
+		hit = ex[e]
+		return hit ~= nil and hit ~= false
+	end
+	-- Rows within sqrt(limit) of (x, y), not excluded, nearest first (ties:
+	-- lower id first). Bottom-up merge sort in plain Lua, so the watchdog can
+	-- stop it anywhere.
+	local function sense_rows(x, y, limit, ex)
+		local rows, ds, n = {}, {}, 0
+		local xs, ys = S_x, S_y
+		for row = 1, S_n do
+			local dx = xs[row] - x
+			local dy = ys[row] - y
+			local d = dx * dx + dy * dy
+			if d <= limit and (ex == nil or not excluded(ex, row)) then
+				n = n + 1
+				rows[n] = row
+				ds[row] = d
+			end
+		end
+		if n < 2 then
+			return rows, n
+		end
+		local src, dst = rows, {}
+		local width = 1
+		while width < n do
+			local lo = 1
+			while lo <= n do
+				local mid = lo + width
+				local hi = mid + width
+				if mid > n + 1 then
+					mid = n + 1
+				end
+				if hi > n + 1 then
+					hi = n + 1
+				end
+				local i, j, k = lo, mid, lo
+				while k < hi do
+					local take_left
+					if i >= mid then
+						take_left = false
+					elseif j >= hi then
+						take_left = true
+					else
+						local a, b = src[i], src[j]
+						local da, db = ds[a], ds[b]
+						take_left = da < db or (da == db and S_id[a] <= S_id[b])
+					end
+					if take_left then
+						dst[k] = src[i]
+						i = i + 1
+					else
+						dst[k] = src[j]
+						j = j + 1
+					end
+					k = k + 1
+				end
+				lo = hi
+			end
+			src, dst = dst, src
+			width = width * 2
+		end
+		return src, n
+	end
+	-- opts.filter(e): true keeps the candidate. An error skips it and prints
+	-- one plain line per query.
+	local function sense_keep(name, filter, row, state)
+		local ok, res = sense_pcall(filter, entity(row))
+		if not ok then
+			if not state.printed then
+				state.printed = true
+				sense_print(name .. ": filter error: " .. tostr(res) .. " (that enemy was skipped)")
+			end
+			return false
+		end
+		return res ~= nil and res ~= false
+	end
+
+	local function nearest_enemy(pos, range, opts)
+		local name = "sense.nearest_enemy"
+		local x, y = sense_pos(name, pos)
+		range = sense_range(name, range)
+		local ex, filter = sense_opts(name, opts)
+		if x == nil or range ~= range or range < 0 then
+			return nil
+		end
+		local limit = range * range
+		if filter == nil then
+			-- The hot path (homing calls this per bullet): locals only, and the
+			-- range test doubles as the "closer than the best so far" test.
+			local xs, ys, ids = S_x, S_y, S_id
+			local best, best_d = nil, limit
+			for row = 1, S_n do
+				local dx = xs[row] - x
+				local dy = ys[row] - y
+				local d = dx * dx + dy * dy
+				if d <= best_d and (best == nil or d < best_d or ids[row] < ids[best])
+					and (ex == nil or not excluded(ex, row)) then
+					best, best_d = row, d
+				end
+			end
+			if best == nil then
+				return nil
+			end
+			return entity(best)
+		end
+		local rows, n = sense_rows(x, y, limit, ex)
+		local state = {}
+		for i = 1, n do
+			if sense_keep(name, filter, rows[i], state) then
+				return entity(rows[i])
+			end
+		end
+		return nil
+	end
+
+	local function enemies_in(pos, r, opts)
+		local name = "sense.enemies_in"
+		local x, y = sense_pos(name, pos)
+		r = sense_range(name, r)
+		local ex, filter = sense_opts(name, opts)
+		local out = {}
+		if x == nil or r ~= r or r < 0 then
+			return out
+		end
+		-- Level I clamps the radius; Level II (not in this build) would not.
+		if sense_levels.enemies_in < 2 and r > ENEMIES_IN_R_MAX then
+			r = ENEMIES_IN_R_MAX
+		end
+		local rows, n = sense_rows(x, y, r * r, ex)
+		local k = 0
+		local state = filter ~= nil and {} or nil
+		for i = 1, n do
+			local row = rows[i]
+			if filter == nil or sense_keep(name, filter, row, state) then
+				if k >= SENSE_LIST_CAP then
+					sense_notes[1] = sense_notes[1] + 1
+					break
+				end
+				k = k + 1
+				out[k] = entity(row)
+			end
+		end
+		return out
+	end
+
+	local SENSE_FNS = { nearest_enemy = nearest_enemy, enemies_in = enemies_in }
+	-- Host only: sets the level of one Sense. 0 makes the field nil again.
+	host.sense_set = function(id, level)
+		local fn = SENSE_FNS[id]
+		if fn == nil then
+			return false
+		end
+		level = math_tointeger(level) or 0
+		sense_levels[id] = level
+		if level > 0 then
+			sense_fields[id] = fn
+		else
+			sense_fields[id] = nil
+		end
+		return true
+	end
+	-- Host only: copies one WorldQuery snapshot (packed columns, 0-based).
+	-- Entity tables from the previous snapshot keep their values; their
+	-- alive() reads the new snapshot.
+	host.sense_sync = function(n, ids, xs, ys, rs, kinds)
+		n = math_tointeger(n) or 0
+		local nid, nx, ny, nr, nk, live = {}, {}, {}, {}, {}, {}
+		for row = 1, n do
+			local id = ids[row - 1]
+			nid[row] = id
+			nx[row] = xs[row - 1]
+			ny[row] = ys[row - 1]
+			nr[row] = rs[row - 1]
+			nk[row] = tostr(kinds[row - 1])
+			live[id] = true
+		end
+		S_n = n
+		S_id, S_x, S_y, S_r, S_kind = nid, nx, ny, nr, nk
+		S_ent, S_live = {}, live
 	end
 
 	-- Bullet handle for one callback. Numbers are a snapshot. Writes sit in Lua
