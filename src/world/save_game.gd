@@ -23,6 +23,9 @@ var shards := 0
 ## Senses earned in this slot (SenseBook.bind_save). Permanent for the slot.
 var sense_nearest := false
 var sense_enemies_in := 0
+## Once-per-save flag for the Warden tithe line "It feeds." Missing or a
+## non-bool value means false (old slots, type-guarded).
+var seen_it_feeds := false
 ## Vertical-slice lesson bits (bit 0 = lesson 1) and gate bits (bit 0 = G0).
 ## Absent keys in an older slot default to 0.
 var slice_lessons := 0
@@ -77,6 +80,7 @@ func save() -> void:
 	cfg.set_value("world", "shards", shards)
 	cfg.set_value("senses", "sense_nearest", sense_nearest)
 	cfg.set_value("senses", "sense_enemies_in", sense_enemies_in)
+	cfg.set_value("world", "seen_it_feeds", seen_it_feeds)
 	cfg.set_value("world", "slice_lessons", slice_lessons)
 	cfg.set_value("world", "slice_gates", slice_gates)
 	cfg.set_value("world", "slice_packs", slice_packs)
@@ -99,6 +103,9 @@ func _read(cfg: ConfigFile) -> void:
 	regular_absent = absent if absent is Array else []
 	sense_nearest = bool(cfg.get_value("senses", "sense_nearest", false))
 	sense_enemies_in = maxi(int(cfg.get_value("senses", "sense_enemies_in", 0)), 0)
+	# Missing or a non-bool (e.g. an int) stays false.
+	var feeds: Variant = cfg.get_value("world", "seen_it_feeds", false)
+	seen_it_feeds = feeds is bool and bool(feeds)
 	slice_lessons = int(cfg.get_value("world", "slice_lessons", 0))
 	slice_gates = int(cfg.get_value("world", "slice_gates", 0))
 	slice_packs = int(cfg.get_value("world", "slice_packs", 0))
