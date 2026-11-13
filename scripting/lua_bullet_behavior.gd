@@ -18,6 +18,22 @@ const REASON_NAMES: PackedStringArray = ["lifetime", "bounds", "hit", "manual", 
 var host: ScriptHost
 var last_result: ScriptHost.RunResult
 var _dispatches: Dictionary = {}
+## Callback failures since the last successful load, for the in-game editor.
+## Per callback name: how many failed, and the most recent result. Printing
+## stays with ScriptWarnings (rate-limited); this only counts.
+var error_total := 0
+var _error_counts: Dictionary[String, int] = {}
+var _error_last: Dictionary[String, ScriptHost.RunResult] = {}
+## When true (the player's LuaShot), a bullet callback that failed is skipped
+## until the next successful load (vertical-slice §7.5), and SUSPEND_AFTER_STOPS
+## guard stops suspend every callback. Off by default: the raw behaviour keeps
+## calling a callback after an error.
+var skip_failed_callbacks := false
+var _skipped: Dictionary[String, bool] = {}
+## Guard stops (timeouts, memory) since the last load. At SUSPEND_AFTER_STOPS
+## every callback is skipped until the next load (§7.5).
+var guard_stops := 0
+const SUSPEND_AFTER_STOPS := 3
 
 
 func _init() -> void:
@@ -33,6 +49,53 @@ func _init() -> void:
 
 func dispatches(name: String) -> int:
 	return _count_of(name)
+
+
+## Callback names that failed since the last successful load, sorted.
+func failed_callbacks() -> PackedStringArray:
+	var names := PackedStringArray(_error_counts.keys())
+	names.sort()
+	return names
+
+
+func error_count(callback: String) -> int:
+	return _error_counts.get(callback, 0)
+
+
+## The most recent failed result of `callback`, or null.
+func last_error(callback: String) -> ScriptHost.RunResult:
+	return _error_last.get(callback, null)
+
+
+func clear_errors() -> void:
+	error_total = 0
+	_error_counts.clear()
+	_error_last.clear()
+	_skipped.clear()
+	guard_stops = 0
+
+
+## True after SUSPEND_AFTER_STOPS guard stops: nothing of this script runs
+## until the next load.
+func suspended() -> bool:
+	return guard_stops >= SUSPEND_AFTER_STOPS
+
+
+## True when `callback` failed and is skipped until the next load.
+func is_skipped(callback: String) -> bool:
+	return _skipped.has(callback)
+
+
+## Records a failure. With skip_failed_callbacks, a bullet callback is skipped
+## until the next load; `skip` false (on_fire) keeps calling it.
+func _note_error(callback: String, result: ScriptHost.RunResult, skip: bool = true) -> void:
+	if skip_failed_callbacks and skip:
+		_skipped[callback] = true
+	if skip_failed_callbacks and result.stopped != "":
+		guard_stops += 1
+	error_total += 1
+	_error_counts[callback] = _error_counts.get(callback, 0) + 1
+	_error_last[callback] = result
 
 
 func _count_of(name: String) -> int:
@@ -78,13 +141,14 @@ func apply_to_request(request: ShotRequest, behavior_id: int) -> void:
 
 
 func on_update_batch(batch: BatchView) -> void:
-	if not host.has_callback("on_batch"):
+	if not host.has_callback("on_batch") or _skipped.has("on_batch") or guard_stops >= SUSPEND_AFTER_STOPS:
 		return
 	_dispatches["on_batch"] = _count_of("on_batch") + 1
 	var result := host.call_batch(batch)
 	last_result = result
 	if not result.ok:
 		batch.discard = true
+		_note_error("on_batch", result)
 		ScriptWarnings.warn(
 			"LuaBulletBehavior.error.on_batch",
 			"LuaBulletBehavior: %s: %s" % [result.chunk_name, result.error]
@@ -101,7 +165,7 @@ func on_hit(pool: BulletPool, index: int, _hurtbox: Hurtbox) -> void:
 
 
 func can_hit(pool: BulletPool, index: int, _hurtbox: Hurtbox) -> bool:
-	if not host.has_callback("can_hit"):
+	if not host.has_callback("can_hit") or _skipped.has("can_hit") or guard_stops >= SUSPEND_AFTER_STOPS:
 		return true
 	var p := pool.pos[index]
 	var result := _dispatch("can_hit", "can_hit", pool, index, host.make_hit(pool.damage[index], p.x, p.y), true)
@@ -129,6 +193,7 @@ func on_despawn(pool: BulletPool, index: int, reason: int) -> void:
 func _apply_mask(result: ScriptHost.RunResult, manager: BulletManager, behavior_id: int) -> void:
 	if not result.ok or not host.has_weapon():
 		return
+	clear_errors()
 	hook_mask = BulletBehavior.mask_from_names(host.defined_names())
 	hook_mask_exact = true
 	update_mode = UpdateMode.BATCH if host.has_callback("on_batch") else UpdateMode.PER_BULLET
@@ -145,15 +210,18 @@ func _dispatch(
 	pass_arg: bool
 ) -> ScriptHost.RunResult:
 	_dispatches[count_name] = _count_of(count_name) + 1
-	if lua_name == "" or not host.has_callback(lua_name):
+	if lua_name == "" or not host.has_callback(lua_name) or _skipped.has(lua_name) or guard_stops >= SUSPEND_AFTER_STOPS:
 		var skipped := ScriptHost.RunResult.new()
 		skipped.ok = true
 		skipped.chunk_name = count_name
 		last_result = skipped
 		return skipped
-	var result := host.call_hook(lua_name, pool.id_of(index), pool.pos[index].x, pool.pos[index].y, arg, pass_arg)
+	var p := pool.pos[index]
+	var v := pool.vel[index]
+	var result := host.call_hook(lua_name, pool.id_of(index), p.x, p.y, arg, pass_arg, v.x, v.y)
 	last_result = result
 	if not result.ok:
+		_note_error(lua_name, result)
 		ScriptWarnings.warn(
 			"LuaBulletBehavior.error.%s" % lua_name,
 			"LuaBulletBehavior: %s: %s" % [result.chunk_name, result.error]

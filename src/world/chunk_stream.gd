@@ -266,6 +266,7 @@ func _spawn_elite(root: Node2D, spec: EncounterSpec) -> void:
 		spec.chunk,
 		spec.index,
 	)
+	body.rarity = spec.rarity
 	root.add_child(body)
 	body.died.connect(_on_elite_died.bind(spec.chunk.x, spec.chunk.y, spec.index))
 	body.shard_dropped.connect(_on_elite_shard)
