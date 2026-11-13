@@ -376,6 +376,113 @@ func test_a_fourth_save_through_shot_scripts_fires_the_signals() -> void:
 		_clear_shots_dir()
 
 
+## A save that compiles but fails while loading strips nothing: with all three
+## versions busy, each keeps its shots hooked, its own code and its own
+## globals, the running version stays, and load_failed fires.
+func test_a_save_that_fails_to_load_with_every_slot_busy_strips_nothing() -> void:
+	var bad: Array[String] = [
+		"tag = 'X'\nprint = nil\nerror('boom at load')\nreturn { speed = 1 }",
+		"tag = 'X'\nreturn 5",
+		"tag = 'X'\nreturn { speed = 1, on_hit = function(b, h) end",
+	]
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		_clear_shots_dir()
+		var manager := _mgr(pref)
+		var scripts := ShotScripts.new()
+		scripts.watch_files = false
+		add_child_autofree(scripts)
+		scripts.setup(manager, null)
+		_shots.append(scripts.weapon)
+		var shot := scripts.weapon
+		var swapped: Array[String] = []
+		var failed: Array[String] = []
+		scripts.weapon_swapped.connect(func(f: String, _o: StringName) -> void: swapped.append(f))
+		scripts.load_failed.connect(func(f: String, _p: ScriptProblem, _o: StringName) -> void: failed.append(f))
+		var versions: Array[LuaBulletBehavior] = []
+		var ids: Array[int] = []
+		for v: String in ["A", "B", "C"]:
+			assert_true(scripts.save("default.lua", "tag = '%s'\nreturn { name = '%s', speed = 30, lifetime = 9, on_hit = function(b, h) end, on_despawn = function(b, why) print(tag) end }" % [v, v]))
+			scripts.flush_pending()
+			versions.append(shot.behavior())
+			ids.append(shot.behavior_id())
+			scripts.weapon.fire(_ctx(), manager.emitter)
+			scripts.weapon.fire(_ctx(), manager.emitter)
+			_steps(manager, 1)
+		assert_eq(swapped.size(), 3, pref)
+		assert_eq(shot.generation_count(), 3, pref)
+		for i in bad.size():
+			swapped.clear()
+			failed.clear()
+			assert_true(scripts.save("default.lua", bad[i]))
+			scripts.flush_pending()
+			assert_eq(failed, ["default.lua"] as Array[String], "%s: bad save %d: load_failed fires" % [pref, i])
+			assert_eq(swapped, [] as Array[String], "%s: bad save %d: no swap" % [pref, i])
+			assert_eq(shot.title, "C", "%s: bad save %d: the running version stays" % [pref, i])
+			assert_eq(shot.behavior_id(), ids[2])
+			assert_eq(shot.evicted_count, 0, "%s: bad save %d: nothing stripped" % [pref, i])
+			assert_eq(shot.released_count, 0)
+			assert_eq(shot.generation_count(), 3)
+			assert_lte(shot.host_count(), LuaShot.MAX_GENERATIONS)
+			for k in ids.size():
+				assert_eq(manager.hooked_count_for_owner(ids[k]), 2, "%s: bad save %d: version %d keeps its hooks" % [pref, i, k])
+		_drain_all(manager)
+		for k in versions.size():
+			assert_eq(versions[k].dispatches("on_despawn"), 2, "%s: version %d" % [pref, k])
+			assert_eq(versions[k].last_result.output, PackedStringArray([["A", "B", "C"][k]]), "%s: version %d runs its own code and globals" % [pref, k])
+		# A good save afterwards still goes through.
+		assert_true(scripts.save("default.lua", "return { name = 'D', speed = 30, lifetime = 9 }"))
+		scripts.flush_pending()
+		assert_eq(shot.title, "D", pref)
+		_clear_shots_dir()
+
+
+## The same through LuaShot.apply with shots in flight: a load error leaves the
+## oldest version's host weapon and globals as they were.
+func test_a_failed_busy_load_leaves_the_oldest_version_untouched() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		var ids: Array[int] = []
+		for v: String in ["A", "B", "C"]:
+			_apply(shot, "tag = '%s'\nreturn { speed = 30, lifetime = 9, on_despawn = function(b, why) print(tag) end }" % v)
+			ids.append(shot.behavior_id())
+			_fire(manager, shot)
+			_steps(manager, 1)
+		var oldest: LuaBulletBehavior = manager._behaviors[ids[0]]
+		var r := shot.apply("tag = 'X'\nleak = 1\nerror('nope')\nreturn {}")
+		assert_false(r.ok, pref)
+		assert_string_contains(r.error, "nope")
+		r = shot.apply("tag = 'X'\nreturn 'not a table'")
+		assert_false(r.ok, pref)
+		assert_eq(r.error, LuaShot.NO_TABLE_ERROR)
+		assert_eq(shot.evicted_count, 0, pref)
+		assert_true(manager._behaviors[ids[0]] == oldest, "%s: the manager still holds A" % pref)
+		assert_true(oldest.host.has_callback("on_despawn"))
+		_drain_all(manager)
+		assert_eq(oldest.last_result.output, PackedStringArray(["A"]), "%s: A sees its own tag" % pref)
+
+
+## A version loaded over a busy slot gets its own env: load() defaults to it,
+## xpcall works in it, and the stripped version's globals are not there.
+func test_a_version_over_a_busy_slot_gets_its_own_env() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		for v: String in ["A", "B", "C"]:
+			_apply(shot, "tag = '%s'\nreturn { speed = 30, lifetime = 9, on_hit = function(b, h) end }" % v)
+			_fire(manager, shot)
+			_steps(manager, 1)
+		_apply(shot, "load('lg = 5')()\nlocal ok, v = xpcall(function() return lg end, function(e) return e end)\nlocal bad, e = xpcall(function() error('x', 0) end, function(m) return 'h:' .. m end)\nreturn { name = tostring(v) .. ',' .. tostring(rawget(_G, 'lg')) .. ',' .. tostring(tag) .. ',' .. tostring(e), speed = 30, lifetime = 9 }")
+		assert_eq(shot.evicted_count, 1, pref)
+		assert_eq(shot.title, "5,5,nil,h:x", pref)
+
+
 static func _clear_shots_dir() -> void:
 	var dir := DirAccess.open(ScriptLibrary.root_dir())
 	if dir == null:

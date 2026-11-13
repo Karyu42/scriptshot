@@ -116,9 +116,10 @@ func load_source(
 	code: String,
 	chunk_name: String = "weapon.lua",
 	manager: BulletManager = null,
-	behavior_id: int = -1
+	behavior_id: int = -1,
+	fresh_env: bool = false
 ) -> ScriptHost.RunResult:
-	var result := host.load_string(code, chunk_name)
+	var result := host.load_string(code, chunk_name, fresh_env)
 	_apply_mask(result, manager, behavior_id)
 	return result
 

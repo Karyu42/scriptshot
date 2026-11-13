@@ -164,19 +164,21 @@ func _apply(code: String) -> ScriptHost.RunResult:
 		if slot < 0:
 			# Only with MAX_GENERATIONS < 2: nothing old to strip.
 			return _load_into(_current, code)
-		# A save that does not compile changes nothing, so nothing is stripped.
-		var compiled := _hosts[slot].compile_check(code, chunk_name)
-		if not compiled.ok:
-			return compiled
-		_release_slot(slot)
-		evicted_count += 1
+		# The new version runs in a fresh env on that slot's host; the oldest
+		# generation is stripped only once it loaded (see _load_into).
+		return _load_into(slot, code, true)
 	return _load_into(slot, code)
 
 
 ## Loads `code` into `slot`: in place when it holds the current generation,
-## otherwise as a new generation that becomes current on success.
-func _load_into(slot: int, code: String) -> ScriptHost.RunResult:
-	var in_place := _gens[slot] != null
+## otherwise as a new generation that becomes current on success. With
+## `replacing`, `slot` holds an old generation with shots in flight: the code
+## loads into a fresh env on its host, and only when that load gives a weapon
+## is the old generation stripped and released. A load that fails (compile,
+## top-level error, budget stop, no table) leaves its weapon, callbacks and
+## globals as they were, so its shots keep running their own code.
+func _load_into(slot: int, code: String, replacing: bool = false) -> ScriptHost.RunResult:
+	var in_place := _gens[slot] != null and not replacing
 	var behavior_ref := _gens[slot]
 	if not in_place:
 		behavior_ref = LuaBulletBehavior.new(_hosts[slot])
@@ -185,7 +187,7 @@ func _load_into(slot: int, code: String) -> ScriptHost.RunResult:
 	if in_place:
 		result = behavior_ref.load_source(code, chunk_name, manager, _gen_ids[slot])
 	else:
-		result = behavior_ref.load_source(code, chunk_name)
+		result = behavior_ref.load_source(code, chunk_name, null, -1, true)
 	var adopted := result.ok and result.value is LuaTable and behavior_ref.host.has_weapon()
 	# Do not keep Lua wrappers on a result the editor may hold.
 	result.value = null
@@ -194,6 +196,9 @@ func _load_into(slot: int, code: String) -> ScriptHost.RunResult:
 		result.error = NO_TABLE_ERROR
 	if not result.ok:
 		return result
+	if replacing:
+		_release_slot(slot, false)
+		evicted_count += 1
 	if not in_place:
 		_gens[slot] = behavior_ref
 		_gen_ids[slot] = manager.register_behavior(behavior_ref)
@@ -273,8 +278,9 @@ func _release_idle_old() -> void:
 ## Frees slot `slot` for a later generation: strips any shots still in flight
 ## (they fly on as plain bullets), then releases the behaviour. The slot is
 ## cleared before the manager is told, so the drains strip / release emit find
-## nothing to release again.
-func _release_slot(slot: int) -> void:
+## nothing to release again. `drop_weapon` false keeps the host's weapon (the
+## new version has just loaded there).
+func _release_slot(slot: int, drop_weapon: bool = true) -> void:
 	var id := _gen_ids[slot]
 	_gens[slot] = null
 	_gen_ids[slot] = 0
@@ -284,7 +290,8 @@ func _release_slot(slot: int) -> void:
 	if id > 0 and _has_manager():
 		manager.strip_hooks_for_owner(id)
 		manager.release_behavior(id)
-	_hosts[slot].release_weapon()
+	if drop_weapon:
+		_hosts[slot].release_weapon()
 	released_count += 1
 
 
