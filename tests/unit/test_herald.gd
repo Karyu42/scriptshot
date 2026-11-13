@@ -531,6 +531,9 @@ func _swarmers(parent: Node) -> Array[RegularEnemy]:
 func _open_main(path: String) -> Main:
 	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
 	main.save_path = path
+	# Open-world Herald rules. The vertical-slice redirect into room C is
+	# test_slice_herald's (it replaces this file's main-scene placement).
+	(main.get_node("SliceLayout") as SliceLayout).enabled = false
 	_mains.append(main)
 	add_child(main)
 	return main

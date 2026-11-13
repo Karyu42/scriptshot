@@ -20,6 +20,9 @@ const LEVELS: Array[int] = [2000, 5000, 10000]
 @export var arms := 6
 @export var bullet_speed := 170.0
 @export var bullet_radius := 3.0
+## Off: the spiral ignores world walls (main.tscn, where room S's walls would
+## eat the spiral before it reaches the target count). On in the sandbox.
+@export var collide_world := true
 ## World-space centres of the spiral emitters.
 @export var origins: PackedVector2Array = [Vector2(-500, -280), Vector2(500, -280), Vector2(-500, 280), Vector2(500, 280)]
 
@@ -61,6 +64,7 @@ func _physics_process(delta: float) -> void:
 	_request.radius = bullet_radius
 	_request.hit_mask = Layers.ENEMY
 	_request.color = Color("7bdff2")
+	_request.collide_world = collide_world
 	for k in spawn_count:
 		var origin := origins[k % origins.size()]
 		var heading := _angle + TAU * float((k / origins.size()) % arms) / float(arms)
