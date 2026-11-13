@@ -140,6 +140,172 @@ func test_habituation_drops_same_signature_and_flag_off_does_not() -> void:
 	assert_almost_eq(plain.health.hp, before - 100.0, 0.001)
 
 
+func test_previous_phase_attack_never_fires_after_the_change() -> void:
+	var warden := _ready_fight()
+	warden._physics_process(Warden.LANCE_FIRST_WAIT)
+	assert_true(warden._lance_winding)
+	warden.last_lance = null
+	warden.health.set_hp(Warden.PHASE_2_HP)
+	# Mid-telegraph windup is cancelled with no bullets.
+	assert_false(warden._lance_winding)
+	# A near-full first wait must not start the Fan; the first windup is at 1.0 s.
+	warden._physics_process(0.99)
+	assert_false(warden._fan_winding)
+	assert_null(warden.last_lance)
+	warden._physics_process(0.02)
+	assert_true(warden._fan_winding)
+	# Phase 3 cancels that mid-telegraph Fan with no bullets; neither prior
+	# attack fires again even after a full cadence of each.
+	warden.last_fan.clear()
+	warden.health.set_hp(Warden.PHASE_3_HP)
+	assert_false(warden._fan_winding)
+	warden._physics_process(Warden.LANCE_PERIOD)
+	assert_null(warden.last_lance)
+	warden._physics_process(Warden.FAN_PERIOD)
+	assert_eq(warden.last_fan.size(), 0)
+	assert_false(warden._fan_winding)
+	# The 5.5 s already passed the 1.0 s first wait, so the ring may already
+	# have fired; start a fresh fight to pin the first-wait itself.
+	var ring := _ready_fight(ARENA + Vector2(0, 800))
+	ring.health.set_hp(Warden.PHASE_3_HP)
+	ring.last_ring.clear()
+	ring._physics_process(0.99)
+	assert_false(ring._ring_winding)
+	assert_eq(ring.last_ring.size(), 0)
+	ring._physics_process(0.02)
+	assert_true(ring._ring_winding)
+	assert_eq(ring.last_ring.size(), 0)
+
+
+func test_phasing_clock_starts_closed_and_respawn_joins_it() -> void:
+	var warden := _ready_fight()
+	warden.health.set_hp(Warden.PHASE_2_HP)
+	assert_almost_eq(warden._pulse_t, 0.0, 0.001)
+	assert_false(warden.is_phasing_pulse_open())
+	warden._physics_process(2.0)
+	assert_almost_eq(warden._pulse_t, 2.0, 0.001)
+	assert_false(warden.is_phasing_pulse_open())
+	# Kill a far-side (non-phasing) husk and force a same-tick respawn; the
+	# shared clock must not reset.
+	warden._step_phasing_husks(0.0)
+	var victim: WardenHusk = null
+	for husk in warden.husks():
+		if husk != null and husk.is_alive() and not husk.phasing:
+			victim = husk
+			break
+	assert_not_null(victim)
+	var slot := victim.slot()
+	victim.health.set_hp(0.0)
+	assert_almost_eq(warden._pulse_t, 2.0, 0.001)
+	warden._respawn_left[slot] = 0.01
+	warden._physics_process(0.01)
+	assert_almost_eq(warden._pulse_t, 2.01, 0.001)
+	assert_false(warden.is_phasing_pulse_open())
+	assert_not_null(warden.husks()[slot])
+	assert_true(warden.husks()[slot].is_alive())
+	# First open is still 2.1 s from the original phase-2 tick.
+	warden._physics_process(0.1)
+	assert_true(warden.is_phasing_pulse_open())
+	# The two player-side husks share that one clock.
+	warden._step_phasing_husks(0.0)
+	var open_sides := 0
+	for husk in warden.husks():
+		if husk != null and husk.is_alive() and husk.phasing:
+			assert_true(husk.phase_open)
+			open_sides += 1
+	assert_eq(open_sides, 2)
+	# Window closes at 2.5 s and stays closed until 4.6 s (next 2.1 of the period).
+	warden._physics_process(0.4)
+	assert_false(warden.is_phasing_pulse_open())
+
+
+func test_phase_3_keeps_lock_and_closest_to_bearing_and_fades_the_rest() -> void:
+	var warden := _ready_fight()
+	warden.health.set_hp(Warden.PHASE_2_HP)
+	assert_eq(warden._living_husk_count(), 4)
+	# Lock due east (away from the player); closest-to-bearing among the rest is west.
+	var lock := warden.lock_husk()
+	assert_not_null(lock)
+	lock.orbit_angle = 0.0
+	var west_slot := -1
+	var extras: Array[WardenHusk] = []
+	for husk in warden.husks():
+		if husk == null or not husk.is_alive() or husk == lock:
+			continue
+		if west_slot < 0:
+			husk.orbit_angle = PI
+			west_slot = husk.slot()
+		else:
+			husk.orbit_angle = PI * 0.5 if extras.is_empty() else -PI * 0.5
+			extras.append(husk)
+	assert_eq(west_slot >= 0, true)
+	assert_eq(extras.size(), 2)
+	var hp_before := warden.health.hp
+	warden.health.set_hp(Warden.PHASE_3_HP)
+	assert_eq(warden._living_husk_count(), 2)
+	assert_eq(warden.husk_cap(), 2)
+	assert_eq(warden.lock_husk(), lock)
+	assert_true(lock.is_alive())
+	assert_true(warden.husks()[west_slot].is_alive())
+	assert_false(lock.phasing)
+	assert_false(warden.husks()[west_slot].phasing)
+	# No tithe from the surplus despawn.
+	assert_eq(warden.health.hp, Warden.PHASE_3_HP)
+	assert_eq(warden.health.hp, hp_before if hp_before == Warden.PHASE_3_HP else Warden.PHASE_3_HP)
+	var fading: Array[WardenHusk] = []
+	for husk in extras:
+		assert_false(husk.is_alive())
+		assert_true(husk.is_fading())
+		assert_eq(husk._flash_left, 0.0)
+		assert_false(husk.phasing)
+		fading.append(husk)
+	assert_eq(fading.size(), 2)
+	for husk in fading:
+		husk._physics_process(0.15)
+		assert_true(husk.is_fading())
+		assert_gt(husk.modulate.a, 0.0)
+		assert_lt(husk.modulate.a, 1.0)
+	for husk in fading:
+		husk._physics_process(0.15)
+		assert_true(husk.is_queued_for_deletion())
+	# Respawn cap stays at 2 alive: no third body or pending slot after the cull.
+	assert_eq(warden._living_husk_count() + warden._pending_husk_count(), 2)
+
+
+func test_speed_band_edges_belong_to_the_upper_band() -> void:
+	assert_eq(WardenHabituation.speed_band(0.0), 0)
+	assert_eq(WardenHabituation.speed_band(399.0), 0)
+	assert_eq(WardenHabituation.speed_band(400.0), 1, "400 is band 2")
+	assert_eq(WardenHabituation.speed_band(699.0), 1)
+	assert_eq(WardenHabituation.speed_band(700.0), 2, "700 is band 3")
+	assert_eq(WardenHabituation.speed_band(999.0), 2)
+	assert_eq(WardenHabituation.speed_band(1000.0), 3, "1000 is band 4")
+	assert_eq(WardenHabituation.speed_band(2000.0), 3)
+
+
+func test_habituation_counts_core_hurtboxes_only_with_impact_velocity_angle() -> void:
+	var warden := _ready_fight()
+	warden.boss_habituation = true
+	warden.habituation.reset()
+	warden.habituation.enabled = true
+	# Body (×0.1) still counts; the signature uses the bullet's world velocity.
+	var body_vel := Vector2(400, 0)
+	warden.apply_debug_hit(warden.global_position, 1.0, 0, body_vel)
+	assert_eq(warden.habituation.hit_count(), 1)
+	assert_eq(warden.habituation.last_signature(), WardenHabituation.signature_id(body_vel))
+	# Gap (×1) also counts, and a different impact angle is a different signature.
+	var gap_vel := Vector2(0, 400)
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, gap_vel)
+	assert_eq(warden.habituation.hit_count(), 2)
+	assert_eq(warden.habituation.last_signature(), WardenHabituation.signature_id(gap_vel))
+	assert_ne(WardenHabituation.signature_id(body_vel), WardenHabituation.signature_id(gap_vel))
+	# A husk hit does not count.
+	var husk: WardenHusk = warden.lock_husk()
+	assert_not_null(husk)
+	husk._on_hit(1.0, husk.global_position, Vector2(400, 0))
+	assert_eq(warden.habituation.hit_count(), 2)
+
+
 func test_kill_order_holds_across_phase_transitions_and_mid_transition() -> void:
 	# Crossing both thresholds and dying in one write.
 	var warden := _ready_fight()

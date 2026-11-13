@@ -17,6 +17,8 @@ var _core: Warden
 var _slot := 0
 var _alive := true
 var _flash_left := 0.0
+var _fade_left := 0.0
+var _fade_total := 0.0
 ## Current angle on the orbit circle, driven by the core.
 var orbit_angle := 0.0
 ## Phase-2 Phasing affix: absorb hits unless the pulse is open.
@@ -58,6 +60,13 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	if _fade_left > 0.0:
+		_fade_left = maxf(_fade_left - delta, 0.0)
+		modulate.a = _fade_left / _fade_total if _fade_total > 0.0 else 0.0
+		queue_redraw()
+		if _fade_left <= 0.0:
+			queue_free()
+		return
 	if _flash_left > 0.0:
 		_flash_left = maxf(_flash_left - delta, 0.0)
 		queue_redraw()
@@ -77,6 +86,29 @@ func despawn() -> void:
 		_hurtbox.active = false
 	WorldQuery.unregister_enemy(self)
 	queue_free()
+
+
+## Phase-change despawn (GD #97): 0.3 s fade, no white flash, no tithe, no
+## heal line. Combat ends immediately; the node frees when the fade finishes.
+func fade_out(duration: float) -> void:
+	_alive = false
+	_flash_left = 0.0
+	set_phasing(false, false)
+	if _hurtbox != null:
+		_hurtbox.active = false
+	WorldQuery.unregister_enemy(self)
+	# Do not notify the core: no tithe, no "It feeds." line.
+	if duration <= 0.0:
+		queue_free()
+		return
+	_fade_total = duration
+	_fade_left = duration
+	modulate.a = 1.0
+	queue_redraw()
+
+
+func is_fading() -> bool:
+	return _fade_left > 0.0
 
 
 func set_phasing(active: bool, open: bool) -> void:

@@ -5,8 +5,8 @@ extends RefCounted
 ## 24 angle buckets of 15°, 4 speed bands. If one signature is more than 70% of
 ## hits in the last 10 s, the damage multiplier falls 0.1 per 5 s (floor ×0.4)
 ## and recovers 0.2 per 5 s when the signature changes or dominance is lost.
-## The 4 speed-band edges are not in the spec; they are chosen so the default
-## player shot (760 px/s) sits inside a band, not on a boundary.
+## Speed bands are 0–400 / 400–700 / 700–1000 / 1000+ px/s. Edges belong to
+## the upper band (400 is band 2, 700 is band 3, 1000 is band 4).
 
 const WINDOW := 10.0
 const DOMINANCE := 0.7
@@ -81,11 +81,22 @@ static func angle_bucket(angle: float) -> int:
 
 
 static func speed_band(speed: float) -> int:
+	# Edges belong to the upper band: 400 is band 2 (index 1), not band 1.
 	var s := maxf(speed, 0.0)
 	for i in SPEED_EDGES.size():
 		if s < SPEED_EDGES[i]:
 			return i
 	return SPEED_EDGES.size()
+
+
+func hit_count() -> int:
+	return _hit_sig.size()
+
+
+func last_signature() -> int:
+	if _hit_sig.is_empty():
+		return -1
+	return _hit_sig[_hit_sig.size() - 1]
 
 
 static func signature_id(velocity: Vector2) -> int:

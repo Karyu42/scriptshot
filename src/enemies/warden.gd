@@ -35,6 +35,8 @@ const AGGRO_X := 8736.0
 const HUSK_COUNT_PHASE: Array[int] = [0, 3, 4, 2]
 const PHASE_PULSE_PERIOD := 2.5
 const PHASE_PULSE_OPEN := 0.4
+## Phase-3 surplus husks fade out over this many seconds (no tithe).
+const PHASE_DESPAWN_FADE := 0.3
 const HUSK_ORBIT := 150.0
 const HUSK_TURN := deg_to_rad(90.0)
 const HUSK_RESPAWN := 8.0
@@ -613,18 +615,18 @@ func _sync_husk_count() -> void:
 			continue
 		if _respawn_left.size() > i:
 			_respawn_left[i] = 0.0
+	var keep := _husk_slots_to_keep(cap)
 	while _living_husk_count() > cap:
-		var drop := _pick_husk_to_drop()
+		var drop := _pick_husk_to_drop(keep)
 		if drop < 0:
 			break
 		var husk := _husks[drop]
 		_husks[drop] = null
 		if _respawn_left.size() > drop:
 			_respawn_left[drop] = 0.0
-		if drop == _husk_lock_slot:
-			_reassign_lock()
 		if husk != null and is_instance_valid(husk):
-			husk.despawn()
+			# No tithe, no flash, no heal line (GD #97).
+			husk.fade_out(PHASE_DESPAWN_FADE)
 	while _husks.size() < cap:
 		_husks.append(null)
 	if _respawn_left.size() < cap:
@@ -662,24 +664,42 @@ func _pending_husk_count() -> int:
 	return n
 
 
-func _pick_husk_to_drop() -> int:
-	var best := -1
-	var best_dot := INF
-	var toward := Vector2.ZERO
+## Keep the lock husk and, for the rest of the cap, the living husks closest
+## to the player's bearing (GD #97 phase-3 despawn).
+func _husk_slots_to_keep(cap: int) -> Array[int]:
+	var keep: Array[int] = []
+	if lock_husk() != null:
+		keep.append(_husk_lock_slot)
 	var bearing := _player_bearing()
-	if is_finite(bearing):
-		toward = Vector2.from_angle(bearing)
+	while keep.size() < cap:
+		var best := -1
+		var best_d := INF
+		for i in _husks.size():
+			if keep.has(i):
+				continue
+			var husk := _husks[i]
+			if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+				continue
+			var d := float(i)
+			if is_finite(bearing):
+				d = absf(angle_difference(husk.orbit_angle, bearing))
+			if d < best_d:
+				best_d = d
+				best = i
+		if best < 0:
+			break
+		keep.append(best)
+	return keep
+
+
+func _pick_husk_to_drop(keep: Array[int]) -> int:
 	for i in _husks.size():
-		if i == _husk_lock_slot:
+		if keep.has(i):
 			continue
 		var husk := _husks[i]
-		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
-			continue
-		var dot := husk.position.dot(toward) if toward != Vector2.ZERO else float(-i)
-		if dot < best_dot:
-			best_dot = dot
-			best = i
-	return best
+		if husk != null and is_instance_valid(husk) and husk.is_alive():
+			return i
+	return -1
 
 
 func _step_phasing_husks(delta: float) -> void:
@@ -995,13 +1015,22 @@ func _sync_phase() -> void:
 
 func _on_entered_phase(phase: int) -> void:
 	_sync_husk_count()
+	# Cancel the previous phase's attack immediately: a mid-telegraph windup
+	# must not fire, even before the next _physics_process.
+	_lance_winding = false
+	_lance_wait = 0.0
+	_lance_windup = 0.0
+	_cancel_fan()
+	_cancel_ring()
 	if phase == 2:
-		_cancel_fan()
 		_fan_wait = FAN_FIRST_WAIT
 		_pulse_t = 0.0
 	elif phase == 3:
-		_cancel_ring()
 		_ring_wait = RING_FIRST_WAIT
+		# Phasing is phase-2 only; turn it off on the survivors immediately.
+		for husk in _husks:
+			if husk != null and is_instance_valid(husk):
+				husk.set_phasing(false, false)
 
 
 func _shake() -> void:
