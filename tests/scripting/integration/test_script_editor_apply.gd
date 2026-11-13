@@ -14,6 +14,7 @@ var _shots: Array[LuaShot] = []
 func before_each() -> void:
 	ScriptWarnings.reset()
 	SenseBook.reset()
+	WorldQuery.reset()
 
 
 func after_each() -> void:
@@ -23,6 +24,7 @@ func after_each() -> void:
 	_mgrs.clear()
 	_shots.clear()
 	SenseBook.reset()
+	WorldQuery.reset()
 
 
 func _skip(preference: String) -> bool:
@@ -297,27 +299,25 @@ func test_split_pieces_spawn_at_the_hit_point_and_fly_back_out() -> void:
 		assert_eq(_hits[dummy], 1, "the pieces fly away and do not hit the target again (%s)" % pref)
 
 
-## A stand-in for sense.nearest_enemy (the real one comes with the Senses
-## PR): one enemy at `at`, returned only within the range the starter asks
-## for, which must be 400.
-static func _stub_sense(at: Vector2) -> String:
-	return (
-		"sense.nearest_enemy = function(pos, r)\n"
-		+ "  assert(type(pos) == 'table' and type(pos.x) == 'number' and type(pos.y) == 'number')\n"
-		+ "  assert(r == 400, 'homing asks for 400')\n"
-		+ "  local dx, dy = %s - pos.x, %s - pos.y\n" % [at.x, at.y]
-		+ "  if dx * dx + dy * dy > r * r then return nil end\n"
-		+ "  return { pos = { x = %s, y = %s } }\n" % [at.x, at.y]
-		+ "end\n"
-	)
+## The real sense.nearest_enemy, earned, with only the enemies at `at` in
+## the WorldQuery snapshot (none for an empty list).
+func _sense_enemies(at: Array[Vector2]) -> void:
+	WorldQuery.reset()
+	SenseBook.grant(&"nearest_enemy", 1, true)
+	for p in at:
+		var b := Node2D.new()
+		add_child_autofree(b)
+		b.global_position = p
+		WorldQuery.register_enemy(b, EnemyKinds.DUMMY, EnemyKinds.RARITY_NONE, 0, 22.0)
+	WorldQuery.refresh()
 
 
-## Fires one homing shot along +x from the origin with `prefix` run first,
-## steps 20 ticks, and returns its velocity.
-func _homing_velocity(pref: String, prefix: String) -> Vector2:
+## Fires one homing shot along +x from the origin, steps 20 ticks, and
+## returns its velocity.
+func _homing_velocity(pref: String) -> Vector2:
 	var manager := _mgr(pref)
 	var shot := _shot(manager)
-	_apply(shot, prefix + ScriptLibrary.starter("homing").source)
+	_apply(shot, ScriptLibrary.starter("homing").source)
 	_fire(manager, shot)
 	_steps(manager, 20)
 	assert_eq(shot.behavior().error_total, 0, "%s: %s" % [pref, _first_error(shot.behavior())])
@@ -335,7 +335,7 @@ func test_homing_flies_straight_while_the_sense_is_nil() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
 			continue
-		var vel := _homing_velocity(pref, "")
+		var vel := _homing_velocity(pref)
 		assert_almost_eq(vel.y, 0.0, 1e-3, "locked: sense.nearest_enemy is nil, the shot flies straight (%s)" % pref)
 		assert_almost_eq(vel.x, 280.0, 0.01, pref)
 
@@ -344,19 +344,23 @@ func test_homing_flies_straight_when_the_sense_finds_nothing() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
 			continue
-		var none := _homing_velocity(pref, "sense.nearest_enemy = function(pos, r) return nil end\n")
+		_sense_enemies([])
+		var none := _homing_velocity(pref)
 		assert_almost_eq(none.y, 0.0, 1e-3, "nearest_enemy returns nil: straight (%s)" % pref)
-		var far := _homing_velocity(pref, _stub_sense(Vector2(100, 2000)))
-		assert_almost_eq(far.y, 0.0, 1e-3, "an enemy out of range is not chased (%s)" % pref)
+		_sense_enemies([Vector2(100, 2000)])
+		var far := _homing_velocity(pref)
+		assert_almost_eq(far.y, 0.0, 1e-3, "an enemy past the starter's 400 px is not chased (%s)" % pref)
 
 
 func test_homing_curves_toward_an_enemy_in_range() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
 			continue
-		var down := _homing_velocity(pref, _stub_sense(Vector2(120, 150)))
+		_sense_enemies([Vector2(120, 150)])
+		var down := _homing_velocity(pref)
 		assert_gt(down.y, 50.0, "turns toward an enemy below the line (%s)" % pref)
-		var up := _homing_velocity(pref, _stub_sense(Vector2(120, -150)))
+		_sense_enemies([Vector2(120, -150)])
+		var up := _homing_velocity(pref)
 		assert_lt(up.y, -50.0, "and toward one above it (%s)" % pref)
 
 

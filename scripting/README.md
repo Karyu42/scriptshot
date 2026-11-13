@@ -88,8 +88,13 @@ and log one warning. `spin` maps to `turn_rate` and `accel` to
 (`spawn { on_hit = ... }`), are not in this version: weapon-level callbacks
 apply to every spawned shot. `ctx` has `aim`, `aim_dir`, `pos`/`x`/`y`,
 `time`, `n`/`shot_count`, `pressed`, `just_pressed`, `just_released`,
-`held_time` and `dt`. `TAU`, `PI` and `rad()` are globals, and `sense` is an
-empty table until a Sense is granted (`SenseBook`).
+`held_time` and `dt`. `TAU`, `PI` and `rad()` are globals. `sense` is a
+read-only table whose fields appear when `SenseBook` grants them (vertical-slice
+§6): `sandbox.lua` answers `nearest_enemy` / `enemies_in` in plain Lua over a
+copy of the `WorldQuery` snapshot that `ScriptHost._sync_senses()` refreshes
+between script calls (only when `SenseBook.revision()` or
+`WorldQuery.revision()` moved). A query never calls back into Godot, so the
+watchdog covers it end to end.
 
 For the player's weapon a bullet callback that errors is skipped until the
 next successful load, and three guard stops suspend the script (the weapon
@@ -117,7 +122,9 @@ folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and
 the `script_saved` / `weapon_swapped` / `load_failed` signals lesson checkers
 use; a change on disk to a file that is not equipped only raises
 `unequipped_file_saved`, rate-limited per file, for the editor's toast), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
-error lines) and `SenseBook` (the Sense-unlock hook point). The panel is
+error lines) and `SenseBook` (first-death kill counting, the Warden grant,
+grants deferred to the frame boundary, and the save fields). Codex pages are
+`scripting/codex/<sense>.lua`: annotated, runnable weapons. The panel is
 `src/ui/script_editor_panel.gd`. Player docs: `docs/scripting/editor.md`.
 
 ## Hook cost
