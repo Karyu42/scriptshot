@@ -574,6 +574,62 @@ func test_revision_moves_on_refresh_unregister_and_reset_only() -> void:
 	assert_gt(wq.revision(), r2)
 
 
+func test_a_refresh_where_nothing_changed_keeps_the_revision() -> void:
+	var a := _add(Vector2(10, 0))
+	var b := _body(Vector2(40, 0))
+	wq.register_enemy(b, EnemyKinds.DRIFTER, EnemyKinds.RARITY_NONE, 0, 16.0, _health(5.0, 10.0))
+	wq.refresh(DT)
+	wq.refresh(DT)
+	var r0 := wq.revision()
+	wq.refresh(DT)
+	assert_eq(wq.revision(), r0, "nothing moved, changed or left")
+	assert_eq(wq.snapshot_count(), 3, "the snapshot is still taken every tick")
+	a.position = Vector2(11, 0)
+	wq.refresh(DT)
+	var r1 := wq.revision()
+	assert_gt(r1, r0, "a body moved")
+	wq.refresh(DT)
+	assert_gt(wq.revision(), r1, "it stopped: its velocity changed")
+	var r2 := wq.revision()
+	wq.refresh(DT)
+	assert_eq(wq.revision(), r2)
+	var h: Health = wq._entries[b.get_instance_id()].health
+	h.hp = 4.0
+	wq.refresh(DT)
+	var r3 := wq.revision()
+	assert_gt(r3, r2, "hp_frac is part of an answer")
+	wq.register_enemy(a, EnemyKinds.DRIFTER, EnemyKinds.RARITY_RARE, 0, 16.0)
+	wq.refresh(DT)
+	var r4 := wq.revision()
+	assert_gt(r4, r3, "a re-registered rarity")
+	var c := _add(Vector2(70, 0))
+	wq.refresh(DT)
+	var r5 := wq.revision()
+	assert_gt(r5, r4, "a new body")
+	remove_child(c)
+	wq.refresh(DT)
+	assert_gt(wq.revision(), r5, "a body left the tree")
+	add_child(c)
+
+
+func test_a_body_freed_without_unregistering_does_not_linger_in_live_rows() -> void:
+	var a := _add(Vector2(10, 0))
+	var b := _add(Vector2(20, 0))
+	wq.refresh(DT)
+	var rows := wq.live_rows()
+	var ids: PackedInt64Array = rows["ids"]
+	assert_eq(ids.size(), 2)
+	var r0 := wq.revision()
+	a.free()
+	var after := wq.live_rows()
+	var after_ids: PackedInt64Array = after["ids"]
+	assert_eq(after_ids, PackedInt64Array([b.get_instance_id()]), "the freed body is gone before the next refresh")
+	assert_gt(wq.revision(), r0, "mirrors are told to re-read")
+	var r1 := wq.revision()
+	wq.live_rows()
+	assert_eq(wq.revision(), r1, "once")
+
+
 func test_live_rows_are_the_rows_queries_can_return() -> void:
 	var a := _add(Vector2(10, 20), EnemyKinds.HUSK)
 	var b := _add(Vector2(-30, 5), EnemyKinds.WARDEN)

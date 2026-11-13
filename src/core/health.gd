@@ -38,8 +38,9 @@ signal engine_invulnerability_changed(active: bool)
 signal script_invulnerability_changed(active: bool)
 ## Emitted whenever hp gained anything (regeneration, heal(), set_hp() upward).
 signal healed(amount: float, hp: float)
-## Emitted whenever hp actually changes (damage, heal, set_hp, reset, max clamp).
-## The HUD (vertical-slice row 11) can bind to this, or to SliceProgress.hp_changed.
+## Emitted whenever hp actually changes (damage, heal, set_hp, set_max_hp,
+## reset, max clamp). The HUD can bind to this, or to SliceProgress.hp_changed;
+## SliceHud.bind_boss also listens for it.
 signal hp_changed(hp: float, max_hp: float)
 ## Emitted when a damage attempt was refused because of invulnerability
 ## (`result` is BLOCKED_ENGINE or BLOCKED_SCRIPT).
@@ -222,8 +223,8 @@ func set_hp(value: float) -> float:
 		if hp > before:
 			healed.emit(hp - before, hp)
 		hp_changed.emit(hp, max_hp)
-	if hp <= 0.0 and before > 0.0:
-		died.emit()
+		if hp <= 0.0:
+			died.emit()
 	return hp
 
 
@@ -234,9 +235,12 @@ func set_max_hp(value: float) -> float:
 	if is_nan(value):
 		ScriptWarnings.warn("Health.set_max_hp", "Health.set_max_hp(): NaN ignored")
 		return max_hp
+	var before_max := max_hp
+	var before_hp := hp
 	max_hp = clampf(roundf(value), 1.0, MAX_HP_LIMIT)
 	if hp > max_hp:
 		hp = max_hp
+	if max_hp != before_max or hp != before_hp:
 		hp_changed.emit(hp, max_hp)
 	return max_hp
 
@@ -292,14 +296,12 @@ func set_invulnerable(value: Variant) -> void:
 ## Full hp, no engine i-frames, regeneration timers cleared (respawn). Keeps
 ## max_hp and the script invulnerability layer (scripts own that one).
 func reset() -> void:
-	var before := hp
 	hp = max_hp
 	time_since_damage = 0.0
 	_regen_clock = 0.0
 	_regen_active = false
 	clear_engine_invulnerability()
-	if hp != before:
-		hp_changed.emit(hp, max_hp)
+	hp_changed.emit(hp, max_hp)
 
 
 func _count_down(left: float, delta: float) -> float:

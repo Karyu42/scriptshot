@@ -67,11 +67,14 @@ var _boss_row := -1
 ## Last snapshot position per id, for the velocity estimate.
 var _last_pos: Dictionary[int, Vector2] = {}
 var _snapshots := 0
-## Bumped by every refresh(), unregister_enemy() and reset(); see revision().
+## Bumped by a refresh() whose snapshot differs from the last one, by
+## unregister_enemy() and by reset(); see revision().
 var _revision := 0
 ## live_rows() for _live_rows_rev (several Lua states read one snapshot).
 var _live_rows: Dictionary = {}
 var _live_rows_rev := -1
+## The bodies behind _live_rows, in row order, for the freed-body check.
+var _live_rows_bodies: Array = []
 var _bullets: BulletManager
 
 
@@ -173,9 +176,29 @@ func unbind_bullets(manager: BulletManager) -> void:
 ## Rebuilds the snapshot from the registry. Called every physics tick; tests and
 ## tools may call it directly. `delta` is used for the velocity estimate.
 func refresh(delta: float = 1.0 / 60.0) -> void:
-	_clear_snapshot()
+	# The previous columns, to tell whether this snapshot changed anything a
+	# query can return. Packed arrays are shared by reference, so the new
+	# snapshot is built into fresh arrays instead of clearing these.
+	var prev_ids := _ids
+	var prev_pos := _pos
+	var prev_vel := _vel
+	var prev_hp := _hp
+	var prev_radius := _radius
+	var prev_kind := _kind
+	var prev_rarity := _rarity
+	var prev_tier := _tier
+	var prev_boss := _boss
+	_ids = PackedInt64Array()
+	_pos = PackedVector2Array()
+	_vel = PackedVector2Array()
+	_hp = PackedFloat32Array()
+	_radius = PackedFloat32Array()
+	_kind = []
+	_rarity = PackedInt32Array()
+	_tier = PackedInt32Array()
+	_boss = PackedByteArray()
+	_boss_row = -1
 	_snapshots += 1
-	_revision += 1
 	var gone: Array[int] = []
 	var seen: Dictionary[int, Vector2] = {}
 	var windowed := _bullets != null and is_instance_valid(_bullets)
@@ -206,6 +229,12 @@ func refresh(delta: float = 1.0 / 60.0) -> void:
 	for id in gone:
 		_entries.erase(id)
 	_last_pos = seen
+	# Native packed-array compares, O(rows). While nothing moves (dummies, a
+	# paused wave) the revision holds and Sense mirrors skip their re-sync.
+	if (_ids != prev_ids or _pos != prev_pos or _vel != prev_vel or _hp != prev_hp
+			or _radius != prev_radius or _kind != prev_kind or _rarity != prev_rarity
+			or _tier != prev_tier or _boss != prev_boss):
+		_revision += 1
 
 
 ## How many snapshots have been taken (tests).
@@ -219,8 +248,10 @@ func snapshot_size() -> int:
 
 
 ## Changes whenever an answer of nearest_enemy() / enemies_in_radius() can
-## change: a new snapshot, or a body leaving the registry after it (a death
-## mid-tick). Readers that mirror the snapshot (the Lua Senses, ScriptHost)
+## change: a snapshot that differs from the previous one, a body leaving the
+## registry after it (a death mid-tick), or live_rows() finding a body that
+## was freed without unregistering. A refresh() where nothing moved, changed
+## or left keeps it. Readers that mirror the snapshot (the Lua Senses, ScriptHost)
 ## re-read live_rows() only when this moved.
 func revision() -> int:
 	return _revision
@@ -238,16 +269,22 @@ func revision() -> int:
 ## is O(rows) per call; ScriptHost calls this only when revision() moved.
 func live_rows() -> Dictionary:
 	if _live_rows_rev == _revision:
-		return _live_rows.duplicate(true)
+		if _live_rows_valid():
+			return _live_rows.duplicate(true)
+		# A cached body was freed without unregister_enemy(): drop it, and
+		# move the revision so every mirror re-reads.
+		_revision += 1
 	var ids := PackedInt64Array()
 	var xs := PackedFloat64Array()
 	var ys := PackedFloat64Array()
 	var radii := PackedFloat64Array()
 	var kinds := PackedStringArray()
 	var rarities := PackedInt32Array()
+	_live_rows_bodies.clear()
 	for row in _ids.size():
 		if not _alive(row):
 			continue
+		_live_rows_bodies.append(_entries[_ids[row]].body)
 		ids.append(_ids[row])
 		xs.append(_pos[row].x)
 		ys.append(_pos[row].y)
@@ -257,6 +294,15 @@ func live_rows() -> Dictionary:
 	_live_rows = {"ids": ids, "x": xs, "y": ys, "radius": radii, "kind": kinds, "rarity": rarities}
 	_live_rows_rev = _revision
 	return _live_rows.duplicate(true)
+
+
+## False when a body in the cached live rows was freed. A body that left the
+## registry already moved the revision (unregister_enemy()).
+func _live_rows_valid() -> bool:
+	for body: Variant in _live_rows_bodies:
+		if not is_instance_valid(body):
+			return false
+	return true
 
 
 # --- queries -------------------------------------------------------------------

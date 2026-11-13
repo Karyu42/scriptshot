@@ -86,11 +86,14 @@ var _editor_open := false
 var _gamepad := false
 var _overflow_text := ""
 var _overflow_width := 0.0
+## Cached in _ready so _draw and overheal layout do not query ThemeDB.
+var _font: Font
 
 
 func _ready() -> void:
 	_build()
 	set_process(true)
+	_font = ThemeDB.fallback_font
 	if not SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.connect(_on_sense_granted)
 	var vp := get_viewport()
@@ -103,6 +106,9 @@ func _exit_tree() -> void:
 	_unbind()
 	if SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.disconnect(_on_sense_granted)
+	var vp := get_viewport()
+	if vp != null and vp.size_changed.is_connected(_on_viewport_resized):
+		vp.size_changed.disconnect(_on_viewport_resized)
 
 
 ## Wires the player ring, SliceProgress signals, the editor (so prompts stay
@@ -146,49 +152,101 @@ func bind(player: Player, progress: SliceProgress, editor: ScriptEditorPanel = n
 	_layout_labels()
 
 
+
+## The boss arc is reparented onto the Warden. If that host is freed, the
+## arc goes with it; callers must tolerate a missing node.
+func _living_boss() -> _BossArc:
+	if _boss != null and is_instance_valid(_boss):
+		return _boss
+	return null
+
+
+func _ensure_boss() -> _BossArc:
+	var boss := _living_boss()
+	if boss != null:
+		return boss
+	_boss = _BossArc.new()
+	add_child(_boss)
+	return _boss
+
+
 ## Attaches the radius-78 boss arc to `host`. `health` is used when given;
 ## otherwise a child or property named `health` is tried. Tests can also drive
 ## the bar with set_boss_health() without a living Warden.
 func bind_boss(host: Node, health: Health = null) -> void:
-	_boss.unbind_health()
-	if host != null and _boss.get_parent() != host:
-		if _boss.get_parent() != null:
-			_boss.get_parent().remove_child(_boss)
-		host.add_child(_boss)
-	if health == null and host != null:
+	var boss := _ensure_boss()
+	boss.unbind_health()
+	if host != null and is_instance_valid(host) and boss.get_parent() != host:
+		if boss.get_parent() != null:
+			boss.get_parent().remove_child(boss)
+		host.add_child(boss)
+	if health == null and host != null and is_instance_valid(host):
 		var node := host.get_node_or_null("Health")
 		if node is Health:
 			health = node
 		elif host is Player:
 			health = (host as Player).health
-	_boss.bind_health(health)
-	_boss.queue_redraw()
+	boss.bind_health(health)
+	boss.queue_redraw()
 
 
 func unbind_boss() -> void:
-	_boss.unbind_health()
-	_boss.clear()
-	if _boss.get_parent() != self:
-		if _boss.get_parent() != null:
-			_boss.get_parent().remove_child(_boss)
-		add_child(_boss)
-	_boss.queue_redraw()
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.unbind_health()
+	boss.clear()
+	if boss.get_parent() != self:
+		if boss.get_parent() != null:
+			boss.get_parent().remove_child(boss)
+		add_child(boss)
+	boss.queue_redraw()
 
 
 func set_boss_health(hp: float, max_hp: float) -> void:
-	_boss.set_health(hp, max_hp)
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.set_health(hp, max_hp)
 
 
 func notify_boss_phase_changed() -> void:
-	_boss.flash()
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.flash()
 
 
 func is_boss_bar_visible() -> bool:
-	return _boss.is_shown()
+	var boss := _living_boss()
+	return boss != null and boss.is_shown()
 
 
 func boss_fraction() -> float:
-	return _boss.fraction()
+	var boss := _living_boss()
+	return 0.0 if boss == null else boss.fraction()
+
+
+## Radius, stroke, start and end of the gapless boss bar (QA on #94).
+## End is start + TAU * fraction, from 12 o'clock clockwise. The 70°
+## weak-point gap is not this arc.
+class BossArcGeometry:
+	var radius := 0.0
+	var stroke := 0.0
+	var start := 0.0
+	var end := 0.0
+	var gap := 0.0
+
+
+func boss_arc_geometry() -> BossArcGeometry:
+	var geo := BossArcGeometry.new()
+	var frac := boss_fraction()
+	geo.radius = BOSS_ARC_RADIUS
+	geo.stroke = BOSS_STROKE
+	geo.start = BOSS_START
+	geo.end = BOSS_START + TAU * frac
+	geo.gap = 0.0
+	return geo
 
 
 func pip_filled(index: int) -> bool:
@@ -209,13 +267,19 @@ func overheal_overflow_text() -> String:
 	return _overflow_text
 
 
+func _fallback_font() -> Font:
+	if _font == null:
+		_font = ThemeDB.fallback_font
+	return _font
+
+
 func _sync_overheal() -> void:
 	var n := overheal_overflow()
 	_overflow_text = "+%d" % n if n > 0 else ""
 	_overflow_width = 0.0
 	if _overflow_text.is_empty():
 		return
-	var font := ThemeDB.fallback_font
+	var font := _fallback_font()
 	if font == null:
 		return
 	_overflow_width = font.get_string_size(_overflow_text, HORIZONTAL_ALIGNMENT_LEFT, -1, OVERHEAL_LABEL_SIZE).x
@@ -263,7 +327,9 @@ func _process(delta: float) -> void:
 	_tick_toast(delta)
 	_tick_hints(delta)
 	_tick_editor_layout()
-	_boss.tick(delta)
+	var boss := _living_boss()
+	if boss != null:
+		boss.tick(delta)
 
 
 func _tick_dash() -> void:
@@ -549,7 +615,7 @@ class _PlayerRing:
 			draw_circle(at2, SliceHud.PIP_RADIUS, SliceHud.COLOR_OVERHEAL)
 		if hud._overflow_text.is_empty():
 			return
-		var font := ThemeDB.fallback_font
+		var font := hud._fallback_font()
 		if font == null:
 			return
 		var fs := SliceHud.OVERHEAL_LABEL_SIZE

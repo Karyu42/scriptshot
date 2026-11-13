@@ -75,10 +75,30 @@ func test_the_grant_waits_for_the_frame_boundary() -> void:
 	assert_false(SenseBook.unlocked(&"nearest_enemy"), "not applied mid-step")
 	assert_eq(SenseBook.pending_count(), 1)
 	assert_eq(_granted.size(), 0)
-	await wait_process_frames(2)
+	# Exactly one frame: SenseBook connected to process_frame first, so it has
+	# run by the time this await resumes on the same emission.
+	await get_tree().process_frame
 	assert_true(SenseBook.unlocked(&"nearest_enemy"), "applied at the next frame")
 	assert_eq(SenseBook.pending_count(), 0)
 	assert_eq(_granted, [["nearest_enemy", 1]])
+
+
+func test_reset_drops_a_queued_grant_and_its_frame_callback() -> void:
+	for i in 3:
+		_kill(true)
+	assert_eq(SenseBook.pending_count(), 1)
+	assert_true(get_tree().process_frame.is_connected(SenseBook.events._on_frame))
+	SenseBook.reset()
+	assert_false(get_tree().process_frame.is_connected(SenseBook.events._on_frame), "reset disconnects it")
+	assert_eq(SenseBook.pending_count(), 0)
+	await get_tree().process_frame
+	assert_false(SenseBook.unlocked(&"nearest_enemy"))
+	assert_eq(_granted.size(), 0)
+	# The next queue connects again.
+	for i in 3:
+		_kill(true)
+	await get_tree().process_frame
+	assert_true(SenseBook.unlocked(&"nearest_enemy"))
 
 
 func test_the_warden_grants_enemies_in_level_one() -> void:
@@ -166,6 +186,21 @@ func test_a_reload_restores_quietly_and_does_not_grant_again() -> void:
 		_kill(true)
 	SenseBook.flush_pending()
 	assert_eq(_granted.size(), 0, "already held")
+
+
+func test_a_saved_level_is_clamped_to_what_this_build_grants() -> void:
+	var save := SaveGame.load_from(_SAVE)
+	save.sense_enemies_in = 99
+	save.save()
+	SenseBook.bind_save(SaveGame.load_from(_SAVE))
+	assert_eq(SenseBook.level(&"enemies_in"), SenseBook.MAX_LEVEL)
+	assert_eq(SaveGame.load_from(_SAVE).sense_enemies_in, SenseBook.MAX_LEVEL, "the slot is written back clamped")
+	SenseBook.reset()
+	var neg := SaveGame.load_from(_SAVE)
+	neg.sense_enemies_in = -3
+	SenseBook.bind_save(neg)
+	assert_eq(SenseBook.level(&"enemies_in"), 0)
+	assert_eq(_granted.size(), 0, "a restore is quiet")
 
 
 func test_a_save_without_the_fields_reads_as_nothing_earned() -> void:
