@@ -27,7 +27,10 @@ extends RefCounted
 ## INVALID: the bullet was killed because a script wrote a non-finite value (NaN or
 ## infinity) into its state; the Lua batch API uses it so such kills can be told
 ## apart from a deliberate MANUAL despawn.
-enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL, INVALID }
+##
+## ABSORBED: the bullet touched an ABSORB hurtbox inside its arc (Hurtbox.Response):
+## it stopped at the contact point without dealing damage, piercing or not.
+enum DespawnReason { LIFETIME, BOUNDS, HIT, MANUAL, CLEARED, WALL, INVALID, ABSORBED }
 
 ## Which limit refused a shot (see "Saturation model"). Used to index
 ## `dropped_by_limit`.
@@ -111,8 +114,8 @@ var dropped_by_owner := PackedInt32Array([0, 0, 0])
 var dropped_by_limit := PackedInt32Array([0, 0])
 ## Bullets removed, by DespawnReason. Not reset by clear() (statistics, like
 ## spawned_total). An immediate despawn() of a live slot has no reason and is
-## not counted. The native sim keeps the same array for reasons 0..5.
-var despawn_counts := PackedInt32Array([0, 0, 0, 0, 0, 0, 0])
+## not counted. The native sim keeps the same array (every reason, ABSORBED too).
+var despawn_counts := PackedInt32Array([0, 0, 0, 0, 0, 0, 0, 0])
 ## When set, advance() clears these and _remove_at appends each removal in
 ## flush order (reason, lifetime). Tests compare the two backends. Off in play
 ## so the hot path does not touch them.

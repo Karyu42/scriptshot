@@ -10,8 +10,9 @@ extends Node2D
 @onready var _reticle: AimReticle = $AimReticle
 @onready var _hud: Label = $Hud/Label
 ## Seconds between dying and respawning. The respawn keeps everything (enemies,
-## bullets, weapon) and only resets the player's hp to max. It happens at
-## RespawnPoints.get_respawn_position(): the last cleared boss arena, else the origin.
+## bullets, weapon) and only resets the player's hp to max. The point is chosen
+## when the timer fires: the arena centre if the Warden is already dead, else
+## RespawnPoints.get_respawn_position() (last cleared arena, or the origin).
 @export var respawn_delay := 1.5
 ## Save slot. Empty, or the player default, means SaveGame.resolved_path():
 ## the player slot in the game, and the GUT throwaway slot while tests run.
@@ -30,6 +31,8 @@ var _herald_director: HeraldDirector
 var _chunks: ChunkStream
 var _save: SaveGame
 var _slice: SliceLayout
+var _progress: SliceProgress
+var _slice_hud: SliceHud
 
 
 func _ready() -> void:
@@ -48,6 +51,8 @@ func _ready() -> void:
 		for mirror: Mirror in mirrors.get_children():
 			mirror.target = _player
 	_bind_open_world()
+	_bind_slice_progress()
+	_bind_slice_hud()
 	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
@@ -111,6 +116,20 @@ func _bind_open_world() -> void:
 	_bullets.bounds_center = _camera
 
 
+func _bind_slice_progress() -> void:
+	_progress = get_node_or_null("SliceProgress") as SliceProgress
+	if _progress == null:
+		return
+	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
+
+
+func _bind_slice_hud() -> void:
+	_slice_hud = get_node_or_null("SliceHud") as SliceHud
+	if _slice_hud == null:
+		return
+	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+
+
 func current_save_path() -> String:
 	if _save != null:
 		return _save.path
@@ -153,8 +172,15 @@ func _process(delta: float) -> void:
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
-			_player.respawn(RespawnPoints.get_respawn_position())
+			_player.respawn(respawn_position())
 	_update_hud()
+
+
+## Picked at respawn time so a trade kill during the delay still lands in E.
+func respawn_position() -> Vector2:
+	if _progress != null:
+		return _progress.respawn_position()
+	return RespawnPoints.get_respawn_position()
 
 
 func _update_hud() -> void:

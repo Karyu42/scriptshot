@@ -78,7 +78,7 @@ Arena centre `(9664, 0)` is chunk `(4, 0)` (`WorldGen.chunk_of`). That chunk's c
 
 **Safe disk.** Euclidean 512 px, no hostile spawns, same as today. Room S's walls sit outside that disk. The three `TrainingDummy` nodes stay at `(300, 0)`, `(-150, 260)`, `(-150, -260)`, 40 HP, radius 22, non-hostile, respawn. They stay **plain**. The absorb dummy is in room A, which replaces the first-playable L4 note that would have swapped an origin dummy.
 
-**Gates.** A shut gate is a 4 px wall in the corridor, colour `#3a4152`. An open gate deletes that wall (collision and bullets). No key, no lock icon.
+**Walls and gates.** A room rect is the room's outer edge. Its walls are **16 px** thick and sit inside that rect. A corridor rect is the clear **128 px** passage; its side walls sit just outside it. Each shut gate G1–G5 is a **4 px** wall at the corridor's midpoint, colour `#3a4152` (G1 is `Rect2(894, -64, 4, 128)`). An open gate leaves the passage clear. **G0** has no corridor: it is a **16 px** segment of room C's north wall, x **5200–5456**. No key, no lock icon.
 
 | Gate | Opens when | Stays open |
 |---|---|---|
@@ -92,7 +92,7 @@ Arena centre `(9664, 0)` is chunk `(4, 0)` (`WorldGen.chunk_of`). That chunk's c
 
 G0 is the join to the procedural world. Past it, `ChunkStream` runs the existing tier-0 rules (2 encounters, Drifter + Swarmer, 4% common elite, elites never respawn, 5-minute regular absence). This slice does **not** turn on tier-1 chunk spawns and does **not** implement the region boss pass. It does write `starter_consumed = true` on the Warden kill so that pass, when it lands, does not place a second starter. **Decided (CoS call, Karyu may override), Q25:** this common Warden counts as the save's starter boss.
 
-**Herald clamp, on top of the existing one.** `HeraldDirector` still uses `58 + 20·u` seconds, 1,200 px along heading, tier-0 and outside the safe disk. If that point lies in S, A, B, D, E, or the alcove, or inside a slice wall, place the Herald at `(4700, 180)` (room C, beside the Drifter pack). A point already in C, or outside the footprint, is kept. Still one Herald, still `herald_done`, still not a chunk bit.
+**Herald redirect (`SliceLayout.redirect_herald`).** `HeraldDirector` still uses `58 + 20·u` seconds and the 1,200 px heading step, then this redirect. While **G0 is shut**, a point already in open room C is kept. Any other point, including one outside the footprint, goes to **`(4700, 180)`** inside C. After G0 opens, a point in open C or outside the rooms (outside the footprint, or the open ground between them) keeps its place; a point in another room, a corridor, or touching a slice wall or shut gate still goes to `(4700, 180)`. That is the spawn the ribbon uses. `(4500, 880)` is not a spawn point. The 800 px gap (spawning §3.6) is the open-world readability rule for seeded candidates. It does not move this redirect, and it does not move, hide, or sleep a pack. A pack that wakes and joins the fight is intended pressure. Still one Herald, still `herald_done`, still not a chunk bit.
 
 ## 3. Regular enemies
 
@@ -136,14 +136,26 @@ Q23 affixes only: **Splitting, Summoner, Bulwark, Phasing, Null-shot**. Mirrored
 
 | Placement | Tier stamp | Rarity | Base | Affixes | HP / speed | Shards | Respawn |
 |---|---|---|---|---|---|---|---|
-| Herald (existing) | 0 | common | Drifter | Splitting **or** Summoner, the existing `herald` / `eaff` roll | 75 / 90 | 1 | never (`herald_done`) |
+| Herald (existing) | 0 | common | Drifter | Splitting **or** Summoner, the existing `herald` / `eaff` roll | **75** / 90. HP stays 75 | 1 | never (`herald_done`) |
 | Natural elites outside the footprint | 0 | common | Drifter | Splitting or Summoner | 75 / 90 | 1 | never (chunk bit) |
 | Room D | 0 (authored, not rolled) | rare | Drifter | **Bulwark + Summoner** (Defensive + Spawn; not an excluded pair) | 30 × 4 = **120** / 90 | 3 | never (`slice_rare_dead`) |
 | Alcove | 0 | legendary | Drifter | **Hydra**: Splitting + Summoner, the exclusion exception | 30 × 7 = **210** / 99 | 10 | never (`hydra_dead`). Skipping it is the 15–25 min path |
 
-Room D rare intensity (spawning §3.4): Bulwark arc **150°**, rotates toward the player at **45°/s**, absorb; Summoner every **4 s**, **2** Swarmers, max **8** alive, no drops. One escort Drifter 48 px from the elite (the first-playable escort). The escort, summons, and any split halves grant no shard and no gate. G5 watches the elite body only. Wake when the player crosses G4.
+**Summoner columns (PR #83 at `8caedde0`).** Common, including the Herald and a natural T0 Summoner elite: every **6 s**, max **2** alive, **1 HP** each (one BasicShot hit, and one Straight hit). They spawn at **±90°** from the line to the player and drift until they hold about **20 px** off that flank, out of the firing lane. Rare: every **4 s**, **2** per wave, max **8** alive, **1 HP** Swarmers. Legendary Hydra has its own column: **2** every **6 s**, max **6** alive, each a **105 HP** Drifter (§4). Herald HP stays **75**. A wave does not stack its summons on one point: they spread along their flank so each reads as its own body. GE does that in row 12.
 
-Hydra uses **common** affix numbers plus the signature (spawning §3.5 does not put legendary affixes on the rare-intensity column). Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every 6 s, 2 bodies, max 6 alive, and each summon is a **half-HP Drifter** (105 HP, 90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
+Seed 1 rolls Summoner (`hash_u(1, "herald", "eaff")` ≥ 0.5). Issue #81 has two checks. Both use these times. No standoff distance is required.
+
+| Weapon | Where | Time to kill |
+|---|---|---|
+| Straight starter, cooldown 0.25 s | about **220 px**, strafing | **≤ 25 s** |
+| Spread starter, or the split starter | same | **≤ 15 s** |
+
+1. **Isolated Summoner Herald.** The Herald alone, no other pack in the fight.
+2. **Slice.** The first Herald in walled room C, seed 1, in `scenes/main.tscn`. Measured once GE row 6 (the room C redirect) has landed.
+
+Room D rare intensity (spawning §3.4): Bulwark arc **150°**, rotates toward the player at **45°/s**, absorb; Summoner every **4 s**, **2** per wave, max **8** alive, each a **1 HP** Swarmer, no drops. One escort Drifter 48 px from the elite (the first-playable escort). The escort, summons, and any split halves grant no shard and no gate. G5 watches the elite body only. Wake when the player crosses G4.
+
+Hydra's Summoner is its own legendary column (PR #83 at `8caedde0`), not the common column and not the rare one. Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every **6 s**, **2** bodies, max **6** alive, and each summon is a **105 HP** Drifter (90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
 
 Phasing is on the first-run path: the Warden's phase-2 husks use it (§5). Null-shot is the one Q23 affix **not** on that path:
 
@@ -167,7 +179,7 @@ The core does not chase. It and the husks are solid to walking. Dash still passe
 
 Husks are the decoys. `kind = "husk"`. The core is the only `kind = "warden"`.
 
-While any husk is alive, one husk is locked to the player's bearing at **orbit radius 150**, turn rate **90°/s**, and the others sit on that same circle at equal spacing. A player who walks into the husk (they are solid) stays outside it, so the husk centre is closer than the core centre and `sense.nearest_enemy` returns that husk. A dash can cross the ring. Inside about 75 px of the core the core's centre is nearer; steering at that centre still hits armor at ×0.1, because the gap is on the far side. The query stays honest: nearest centre, no special case that hides the Warden. The starter homing snippet steers at whatever centre it got.
+While any husk is alive, one husk is locked to the player's bearing at **orbit radius 150**, turn rate **90°/s**, and the others sit on that same circle at equal spacing. A player who walks into the husk (they are solid) stays outside it, so the husk centre is closer than the core centre and `sense.nearest_enemy` returns that husk. A dash can cross the ring. Inside about 75 px of the core the core's centre is nearer; steering at that centre still hits armor at ×0.1, because the gap is on the far side. The query stays honest: nearest centre, no special case that hides the Warden. The starter homing snippet (§6.3) adds velocity toward whatever centre `sense.nearest_enemy` returned.
 
 The gap is on the far side of the core, so a shot aimed at the core's centre hits armor (×0.1) or the near husk. Manual aim at the white tick still kills the boss: the Sense is not required. `sense.enemies_in` is what lets a script **choose** the warden and aim at `pos + away * (radius + 10)`.
 
@@ -266,45 +278,58 @@ One-time, the first transition of that flag from off to on. Reloading a save whe
 2. **Autocomplete:** the name was grey. It draws in the editor's normal token colour and stays at the top of the sense list for the rest of the session. `nearest_enemy` greys as `3 kills` until then. `enemies_in` greys as `found at: ???` until the Warden dies. The other four senses stay grey `found at: ???`.
 3. **Toast**, 2.5 s, bottom centre, `#F2F2F2`: `sense.nearest_enemy` or `sense.enemies_in`. No button.
 
-`nearest_enemy` page, the snippet the palette inserts:
+`nearest_enemy` page. The palette inserts `scripting/starters/homing.lua`. The call takes `{x, y}` (the editor has no `vec2` yet) and reads `e.pos.x` / `e.pos.y`. Turning is a write to `v.vx` / `v.vy` inside `on_batch`. `b:steer_toward` is a later helper, not this slice.
 
 ```lua
--- shots/starters/homing.lua  (insert disabled until sense.nearest_enemy is set)
+-- Homing: shots steer toward the nearest enemy.
+-- needs: sense.nearest_enemy
 return {
   name = "Homing",
   cooldown = 0.45,
   on_fire = function(ctx)
-    spawn {
-      angle = ctx.aim, speed = 280, damage = 4, lifetime = 2.5,
-      on_tick = function(b, dt)
-        local t = sense.nearest_enemy and sense.nearest_enemy(b.pos, 400)
-        if t then b:steer_toward(t, 4) end
-      end,
-    }
+    spawn { angle = ctx.aim, speed = 280, damage = 4, lifetime = 2.5 }
+  end,
+  on_batch = function(v, dt)
+    local nearest = sense.nearest_enemy  -- nil until you earn it
+    if not nearest then return end
+    local pull = 900  -- <- tweak me: how hard shots turn
+    for i = 0, v.n - 1 do
+      local e = nearest({ x = v.px[i], y = v.py[i] }, 400)
+      if e then
+        local dx, dy = e.pos.x - v.px[i], e.pos.y - v.py[i]
+        local d = math.sqrt(dx * dx + dy * dy) + 1
+        v.vx[i], v.vy[i] = v.vx[i] + dx / d * pull * dt, v.vy[i] + dy / d * pull * dt
+      end
+    end
   end,
 }
 ```
 
-`enemies_in` page:
+`enemies_in` page. Same call shape and the same velocity write. No `steer_toward`.
 
 ```lua
--- The Warden is the body that is not closest. Aim past it, at the far side.
-local list = sense.enemies_in(b.pos, 600) or {}
-local core = nil
-for _, e in ipairs(list) do
-  if e.kind == "warden" then core = e end
-end
-if core then
-  local away = (core.pos - player.pos):norm()
-  b:steer_toward(core.pos + away * (core.radius + 10), 4)
+-- The Warden is the body that is not closest. Push past its centre.
+on_batch = function(v, dt)
+  local query = sense.enemies_in
+  if not query then return end
+  for i = 0, v.n - 1 do
+    local core = nil
+    for _, e in ipairs(query({ x = v.px[i], y = v.py[i] }, 600) or {}) do
+      if e.kind == "warden" then core = e end
+    end
+    if core then
+      local dx, dy = core.pos.x - v.px[i], core.pos.y - v.py[i]
+      v.vx[i], v.vy[i] = v.vx[i] + dx * dt, v.vy[i] + dy * dt
+    end
+  end
 end
 ```
 
-Native `homing = { target = "nearest" }` stays as api.md describes it: accepted and ignored until a radius query exists. The slice's teaching path is the snippet above, which needs the Sense. `docs/scripting/examples/homing.lua` stays the long native-homing draft, not the palette row.
+Native `homing = { target = "nearest" }` stays as api.md describes it: accepted and ignored until a radius query exists. The slice's teaching path is the `on_batch` file above. `docs/scripting/examples/homing.lua` stays the long native-homing draft, not the palette row. Per-bullet `on_hit`, `b:split`, `hit.normal`, and `b:steer_toward` are post-slice.
 
 ## 7. Onboarding
 
-Diegetic and short. The only standing prompt is `E edits.` for the first 8 s (controller: the edit face button already in pillars §2; touch: the edit button). Editor time scale **0.15** while it is open (Q5 option A, the recommendation). Q5 stays open; this slice does not re-ask it. The world keeps moving at that scale. PC also reloads when `shots/` changes on disk (`ScriptHost` already keeps the previous weapon when a load fails).
+Diegetic and short. The only standing prompt is `E edits.` for the first 8 s (controller: the edit face button already in pillars §2; touch: the edit button). Editor time scale **0.15** while it is open (Q5 option A, the recommendation). Q5 stays open; this slice does not re-ask it. The world keeps moving at that scale. PC hot reload watches **only the equipped file**. The editor's file picker is what equips a file. Saving some other file from outside the editor shows the toast `shots/<f>.lua saved (not equipped)` and does not reload the weapon.
 
 The editor is the same control in every room, owned by `Main`, not by room S. Lessons do not replace the equipped script when you walk through a door. A palette row inserts a starter if the player asks. The equipped file on minute 1 is `shots/default.lua` (the straight starter).
 
@@ -318,7 +343,7 @@ The editor is the same control in every room, owned by `Main`, not by room S. Le
 | 2 | S | Spread, §7.1 | One aim, several shots | In a 3 s window, north and south dummies each take damage, and `ctx.aim` stays within **0.4 rad** of its value at the start of the window. Passing also requires all three origin dummies to have died at least once (three `first_death` events; that is the `nearest_enemy` grant) | `One aim, more than one target.` | 25 s |
 | 3 | A | The function stub, §7.2, inserted only if they pick the row. Their script is left in place | The shielded dummy dies | Dummy at `(1800, 0)`, 40 HP, radius 22, non-hostile, **120° absorb arc facing west** (toward the door), static. Straight shots deal 0. Dies at least once | `Bend the shot. Put it in a function.` | 30 s |
 | 4 | B | Their script. The page shows the branch, §7.2 | Fire only while hurt | Pad `Rect2(2700, -80, 160, 160)`: on entry, if `hp == 5`, a 0.6 s ring on the player, then `try_damage` for 1 pip. Dummy at `(3200, 0)` has its hurtbox off while `hp > 4`. **Pass:** that dummy's killing blow happens while `player.hp <= 4` | `Read player.hp.` | 30 s |
-| 5 | B | Their script, speed 480 until they edit | Save, and the next shot is faster | Plate at `(3500, 0)`, 16×64 px. Pass when a **player bullet** overlaps it with speed ≥ **640**. In-game save and a PC file change both count | `Save the file.` | 20 s |
+| 5 | B | Their script, speed 480 until they edit | Save the equipped file, and the next shot is faster | Plate at `(3500, 0)`, 16×64 px. Pass when a **player bullet** overlaps it with speed ≥ **640** after `script_saved(file_name, origin)` for the equipped file (`origin` `editor` or `file`). `unequipped_file_saved` does not pass it | `Save the file.` | 20 s |
 
 G1 needs 1 and 2. G2 needs 3. G3 needs 4 and 5, in either order.
 
@@ -326,14 +351,18 @@ G1 needs 1 and 2. G2 needs 3. G3 needs 4 and 5, in either order.
 
 Five rows. The first four insert immediately. Homing is visible and grey, insert disabled, until `sense_nearest` (§6.3).
 
-Straight, equipped as `shots/default.lua`:
+The five files are `scripting/starters/`. Straight is copied once into the equipped `shots/default.lua`. Numbers match those files. Per-bullet `on_hit`, `b:split`, and `hit.normal` are not in this editor; split is a weapon-level `on_hit` plus `b:spawn_child`.
+
+Straight:
 
 ```lua
+-- Straight: one shot along your aim, every `cooldown` seconds.
+-- Save (Ctrl+S) and the next shot uses your numbers.
 return {
   name = "Straight",
   cooldown = 0.25,
   on_fire = function(ctx)
-    spawn { angle = ctx.aim, speed = 480, damage = 1 }
+    spawn { angle = ctx.aim, speed = 480, damage = 1 }  -- <- tweak me: damage
   end,
 }
 ```
@@ -341,26 +370,28 @@ return {
 Spread:
 
 ```lua
+-- Spread: five shots in a fan, one aim.
 return {
   name = "Spread",
   cooldown = 0.30,
   on_fire = function(ctx)
-    for i = -2, 2 do
+    for i = -2, 2 do  -- <- tweak me: -3, 3 for seven shots
       spawn { angle = ctx.aim + i * 0.16, speed = 460, damage = 2 }
     end
   end,
 }
 ```
 
-Spiral (short; `docs/scripting/examples/spiral.lua` stays the long form):
+Spiral (`docs/scripting/examples/spiral.lua` stays the long form):
 
 ```lua
+-- Spiral: three arms that turn a little more every shot.
 local t = 0
 return {
   name = "Spiral",
   cooldown = 0.08,
   on_fire = function(ctx)
-    t = t + 0.22
+    t = t + 0.22  -- <- tweak me: how far the arms turn per shot
     for arm = 0, 2 do
       spawn { angle = ctx.aim + t + arm * (TAU / 3), speed = 340, damage = 2 }
     end
@@ -368,25 +399,21 @@ return {
 }
 ```
 
-Split on hit (children born outside the hurtbox, as `docs/scripting/examples/split_on_hit.lua`):
+Split. The pieces appear at the hit and fly back the way the shot came. `hit.x` / `hit.y` are the hit point. `b:spawn_child(x, y, vx, vy, lifetime)` spawns one piece.
 
 ```lua
+-- Split: when a shot hits, it bursts into pieces right where it hit.
 return {
   name = "Split",
   cooldown = 0.40,
-  on_fire = function(ctx)
-    spawn {
-      angle = ctx.aim, speed = 420, damage = 3,
-      on_hit = function(b, hit)
-        local away = hit.normal
-        b:split(3, {
-          pos = hit.pos + away * (b.radius + 4),
-          center = away:angle(),
-          spread = rad(50),
-          speed = 280, damage = 2, lifetime = 1.2,
-        })
-      end,
-    }
+  on_fire = function(ctx) spawn { angle = ctx.aim, speed = 420, damage = 3 } end,
+  on_hit = function(b, hit)
+    local pieces = 3  -- <- tweak me: how many pieces
+    local back = math.atan(-b.vy, -b.vx)  -- fly back the way the shot came
+    for i = 1, pieces do
+      local a = back + (i - (pieces + 1) / 2) * 0.4
+      b:spawn_child(hit.x, hit.y, math.cos(a) * 280, math.sin(a) * 280, 1.2)
+    end
   end,
 }
 ```
@@ -423,9 +450,13 @@ Setting `player.hp = 5` in the script keeps the dummy's hurtbox off. That is the
 
 ### 7.3 Hot reload
 
-- In-game save writes `shots/default.lua` (or the open buffer's path) and `ScriptHost` reloads it before the next `on_fire`.
-- PC: watch `shots/`. A load that parses replaces the weapon. In-flight bullets keep the callbacks they spawned with (api.md hot reload).
-- A failed load keeps the last good weapon firing. The editor line is §7.5.
+Time scale stays **0.15** while the editor is open.
+
+- The file picker equips. An in-game save of the equipped file writes it, emits `script_saved(file_name, editor)`, and reloads at the next frame boundary, before the next `on_fire`.
+- PC watches **only that equipped file** (polled about every 0.5 s). A change emits `script_saved(file_name, file)`. A good write reloads. A broken write keeps the last good weapon and still emits `script_saved`. The editor line is §7.5.
+- Lesson 5 passes on `script_saved` for the equipped file only. Cold start does not emit it. `weapon_swapped(file_name, origin)` is the equip (`origin` `start`, `editor`, or `file`) and is not the lesson-5 pass.
+- A save of any other `shots/` file emits `unequipped_file_saved(file_name)` and does not reload. That signal drives only the toast `shots/<f>.lua saved (not equipped)`, at most once per file per 3 s, whether or not the editor is open. It never passes a lesson.
+- In-flight shots keep the callbacks they spawned with.
 
 ### 7.4 Out of this slice
 
@@ -502,27 +533,27 @@ Silence is fine. No music bed. No hum (deferred). No duck.
 Ordered. Each row is done when its acceptance passes. Dependencies are other rows or a named system already on `main`.
 
 1. **Ribbon.** `SliceLayout` under `Main` with the rects in §2, walls in `world_walls`, gates as removable wall segments. Acceptance: a headless walk from `(0,0)` to `(9664,0)` is blocked at each shut gate and clear when that gate's flag is forced. Footprint rect drops anchors inside it; an anchor just outside still spawns. Depends: `Arena` draw, `BulletManager` walls, `ChunkStream`.
-2. **Packs in C.** Drifter, Swarmer (existing scenes), plus `scenes/shieldbearer.tscn` and `scenes/sniper.tscn` with the numbers in §3. Acceptance: Shieldbearer arc absorbs a straight shot and takes damage from the side; Sniper waits 0.8 s, then the bullet follows the locked line at 600 px/s for 1 pip; contact from a Drifter is 1 pip and 0 during the 0.75 s i-frames. Each hostile death emits `GameEvents.enemy_killed` (§6.1). Depends: row 1, and row 3 for the arc.
+2. **Packs in C.** Drifter, Swarmer (existing scenes), plus `scenes/shieldbearer.tscn` and `scenes/sniper.tscn` with the numbers in §3. Acceptance: Shieldbearer arc absorbs a straight shot and takes damage from the side; Sniper waits 0.8 s, then the bullet follows the locked line at 600 px/s for 1 pip; contact from a Drifter is 1 pip and 0 during the 0.75 s i-frames. Each hostile death emits `GameEvents.enemy_killed` (§6.1). **Known gap until this row:** regular enemies and Summoner adds pass through walls. Elites, halves, and the Herald already collide with them. Depends: row 1, and row 3 for the arc.
 3. **Absorb arc.** Per-hurtbox response `ABSORB` with facing and arc, `DespawnReason.ABSORBED`, as first-playable L4. Acceptance: the L4 Bulwark test, and the room-A dummy. Include `REFLECT` in the enum; do not ship Mirrored. Depends: `Hurtbox`.
 4. **Room A dummy and room B pad/plate.** Numbers in §7. Acceptance: straight shots deal 0 to the shielded dummy; a shot with `spin` 2.2 kills it; the pad deals 1 pip after 0.6 s and only when HP is 5; the plate reports the overlapping bullet's speed. Every dummy death, including the three in S, emits `GameEvents.enemy_killed` with `kind` `"dummy"`; a respawned dummy's later death has `first_death` false. Depends: rows 1 and 3.
 5. **Lesson flags and gates.** `SliceProgress` saved on `SaveGame` (`slice_lesson` bits, gate bits, field absent timestamps). Death does not clear them. Acceptance: the §7 checkers, then G1–G4 open in order; dying in C respawns at the origin with G1–G3 still open. Depends: rows 1–4, `RespawnPoints`, `Main.respawn_delay`.
-6. **Herald redirect.** Acceptance: a heading that would land in S, A, B, D, or E spawns the Herald at `(4700, 180)`; a heading that lands in open C keeps the point; `herald_done` still blocks a second. Depends: `HeraldDirector`, row 1.
+6. **Herald redirect.** Acceptance: while G0 is shut, a Herald point that is not in open C becomes `(4700, 180)`; after G0 opens, a point outside the footprint keeps its place; `herald_done` still blocks a second. The slice half of the #81 times is measured in `scenes/main.tscn` once this row has landed. Depends: `HeraldDirector`, row 1.
 7. **Room D rare elite.** 120 HP Drifter, Bulwark rare + Summoner rare, escort, cue tier rare, `slice_rare_dead`, shards +3, G5. Acceptance: arc is 150° and turns at 45°/s; summons cap at 8; killing a summon does not open G5; reload does not respawn the body. Depends: rows 3 and 5, `EliteEnemy`, `RarityCue` rare tier.
 8. **Warden phase 1.** 900 HP, gap, 3 husks, Lance, aggro line at `x = 8736`, tithe 50, solid bodies. Acceptance: before aggro, shots deal 0; with the player pressed against the near husk from outside, the nearest centre is that husk; a shot into the core centre deals ×0.1 and a shot into the gap tick deals full damage; a husk death adds 50 HP unless the core hit 0; Lance telegraph is 0.6 s, the bullet has `pierces_script_invuln` false, it deals 1 pip, and it deals 0 during a dash. Depends: rows 1 and 5.
 9. **Phases 2–3 and Habituation flag.** Fan, phasing husks, broken ring, turn caps, `boss_habituation` default true. Acceptance: phase 2 starts the first tick HP ≤ 630; phasing husks take damage only inside the 0.4 s window; the ring has a 50° gap and its bullets deal 1 pip; with the flag on, a single signature loses damage as §5.2; with the flag off, a single signature does not. Depends: row 8.
 10. **Victory and the open world.** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: after the kill, respawn position is `(9664, 0)`; G0 is open; a fresh `chunk_encounters` outside the footprint is unchanged; `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
 11. **HUD.** Pips, dash arc, sense marks, boss arc (§14). Acceptance: 5 pips track `Health`; the dash arc matches `DashState.cooldown_left`; sense marks fill only when the book says so; the boss arc fraction matches HP and is absent when the Warden is dead. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
-12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
+12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test, summon spacing.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6, 2 every 6 s; a wave's summons are spread along their flank and do not share one point; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
 13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
 
 ## 11. SE build list
 
-Lua names are api.md (`spawn`, `on_fire`, `on_tick`, `b:split`, `b:steer_toward`, `sense.*`). Pillars' `shoot` / `on_die` spellings stay accepted aliases. `ScriptHost` is the loader (`scripting/script_host.gd`).
+The editor's shot API is `spawn`, `on_fire`, a weapon-level `on_hit`, `b:spawn_child`, and `on_batch` (§7.1, the files in `scripting/starters/`). Per-bullet `on_hit`, `b:split`, `hit.normal`, and `b:steer_toward` are post-slice. Pillars' `shoot` / `on_die` spellings stay accepted aliases where the binding already has them. `ScriptHost` is the loader (`scripting/script_host.gd`).
 
 1. **Equip a file.** `shots/default.lua` is the straight starter. `Main` runs it through `ScriptHost` instead of `BasicShot` when the file loads. Acceptance: a missing file falls back to `BasicShot` and prints one line; a good file fires a 480 px/s shot on the trigger. Depends: `ScriptHost`, `ShotPattern`.
 2. **Editor shell.** Toggle on E, time scale 0.15 while open, text area, save, palette of the five §7.1 rows. Acceptance: saving a `damage` change affects the next shot without leaving the scene; time scale is 1 when the editor is shut; homing's row does not insert while `sense_nearest` is false. Depends: row 1. Q5 stays the open question for the 0.15 value.
-3. **Errors and hot reload.** §7.5 and §7.3. Acceptance: a syntax error leaves the last good weapon firing and the line contains `line` plus `Still running the last good script.`; a PC write to `shots/default.lua` reloads; a broken write does not. Depends: row 1.
-4. **Lesson hooks.** Expose the events GE's checkers need (script saved, weapon swapped). Do not parse student source for gates. Acceptance: GE row 5 can be driven by saves from this editor. Depends: rows 2–3, GE row 5.
+3. **Errors and hot reload.** §7.5 and §7.3. Acceptance: a syntax error leaves the last good weapon firing and the line contains `line` plus `Still running the last good script.`; a PC write to the equipped file reloads; a broken write does not; a PC write to a different `shots/` file shows `shots/<f>.lua saved (not equipped)` and leaves the weapon alone. Time scale is 0.15 while the editor is open. Depends: row 1.
+4. **Lesson hooks.** Lesson 5 passes only on `script_saved(file_name, origin)` for the equipped file (`origin` `editor` or `file`). `unequipped_file_saved(file_name)` is the toast and never passes a lesson. `weapon_swapped(file_name, origin)` is unchanged (`start`, `editor`, or `file`). Do not parse student source for gates. Acceptance: GE row 5 can be driven by `script_saved` from this editor. Depends: rows 2–3, GE row 5.
 5. **`sense.nearest_enemy`.** `SenseBook` owns the count. It subscribes to `GameEvents.enemy_killed` (§6.1), increments only when `first_death` is true (dummy deaths count; a respawned dummy does not), and grants at 3. SE makes the field non-nil and fires the toast, Codex page, and autocomplete highlight. GE does not count and does not call `grant` for this Sense. Acceptance: before 3 `first_death` events the field is `nil` and the homing row is grey; the third origin-dummy first death grants it and the snippet in §6.3 tracks a live dummy; a second death of that same dummy does not increment; reload keeps the field; `e.hp` is `nil`. Depends: GE `query_radius`, GE rows 2 and 4, SE rows 2–3.
 6. **`sense.enemies_in` Level I.** Grant only from the Warden. Clamp `r` to 600, cap 256, `kind` set, no vel/hp. Codex snippet §6.3, toast, autocomplete. Acceptance: the field is `nil` through the whole ribbon until the core dies; after the grant, a script that filters `kind == "warden"` steers at the core while a husk is nearer the player; a rare-tier flag is never set. Depends: row 5, GE row 10.
 7. **Footer.** The save's `shards` integer, one number, no spend control. Acceptance: room D's death shows +3. Depends: GE rows 7 and 10.
@@ -544,7 +575,7 @@ The first playable combat run does not wait on Senses or on phase 3.
 
 ## 13. Product decisions
 
-Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12. **Not open:** which Sense the Warden grants. That is `sense.enemies_in`, Level I, in the api.md table. `nearest_enemy` stays the free Sense after 3 `first_death` kills. Q5, Q6, Q7, Q14, and Q15 stay as they are in pillars. Q17–Q24 stay decided.
+Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12. **Not open:** which Sense the Warden grants. That is `sense.enemies_in`, Level I, in the api.md table. `nearest_enemy` stays the free Sense after 3 `first_death` kills. Q5, Q6, Q7, Q14, Q15, and Q27 stay as they are in pillars. Q17–Q24 stay decided.
 
 ### Q25. Is the slice's first boss a guaranteed common Warden, or a seed roll?
 

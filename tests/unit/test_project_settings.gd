@@ -31,3 +31,10 @@ func test_vendored_addons_are_excluded_from_the_warning_rules() -> void:
 	var rules: Dictionary = ProjectSettings.get_setting(WARNING_PREFIX + "directory_rules", {})
 	var addons: int = rules.get("res://addons", -1)
 	assert_eq(addons, 0, "0 = exclude: vendored GUT is not held to the project rules")
+
+
+func test_cold_import_is_single_threaded() -> void:
+	# Godot 4.7 can abort with a glibc double free when fonts are imported in
+	# parallel (godotengine/godot#111039, fixed upstream by #123546). See #69.
+	var threaded: bool = ProjectSettings.get_setting("editor/import/use_multiple_threads", true)
+	assert_false(threaded, "cold import must stay single-threaded until the engine fix ships")
