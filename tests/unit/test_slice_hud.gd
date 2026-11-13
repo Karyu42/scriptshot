@@ -130,6 +130,18 @@ func test_lesson_1_hint_appears_after_25s_in_room_s() -> void:
 	assert_eq(hud.hint_text(), "One aim, more than one target.")
 
 
+func test_a_successful_save_rearms_the_lesson_hint() -> void:
+	player.global_position = Vector2.ZERO
+	_tick(25.1)
+	assert_eq(hud.hint_text(), "The damage number.")
+	hud._on_script_saved("straight.lua", &"editor")
+	assert_eq(hud.hint_text(), "", "the hint hides and waits again after a save")
+	_tick(24.9)
+	assert_eq(hud.hint_text(), "")
+	_tick(0.2)
+	assert_eq(hud.hint_text(), "The damage number.")
+
+
 func test_death_overlay_matches_the_respawn() -> void:
 	assert_false(hud.death_overlay_visible())
 	for _i in range(5):
