@@ -283,6 +283,84 @@ func test_summon_wave_jitter_differs_between_waves_and_is_seedable() -> void:
 	)
 
 
+func test_the_same_seed_gives_identical_summon_angles_across_two_runs() -> void:
+	# The jitter is WorldGen.hash_u(world_seed, chunk, encounter, serial),
+	# not the runtime RNG, so two independent runs with the same seed match.
+	var seed := 1
+	var chunk := Vector2i(3, -2)
+	var encounter := 4
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var first := _summon_angles_for_seed(seed, chunk, encounter, player)
+	var second := _summon_angles_for_seed(seed, chunk, encounter, player)
+	assert_eq(first.size(), 6)
+	assert_eq(second.size(), 6)
+	for i in first.size():
+		assert_almost_eq(first[i], second[i], 0.0000001, "serial %d angle" % i)
+
+
+func test_a_wall_on_the_flank_slides_the_summon_inward_without_rerolling_the_angle() -> void:
+	# Alcove east wall inner face is at x = 8128 - 16 = 8112. Stand 48 px
+	# west of that face so the unobstructed east spawn sits in the wall.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	var at := Vector2(8112.0 - EliteEnemy.SUMMON_OFFSET, 1152.0)
+	var player := _node_player(at + Vector2(0, 3000))
+	var hydra := _elite(at, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2(0, 3000)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_DRIFTER)
+	# Odd serial is the right/east flank, which hits the wall. Even stays clear.
+	var east_jitter := hydra.summon_flank_jitter(1)
+	var dir := hydra.summon_flank_dir(-1.0, east_jitter)
+	var unobstructed := hydra.global_position + dir * EliteEnemy.SUMMON_OFFSET
+	assert_true(
+		layout.touches_wall(unobstructed, add_radius),
+		"the 48 px flank point overlaps the wall"
+	)
+	var slid := hydra.summon_spawn_point(-1.0, east_jitter)
+	var off := slid - hydra.global_position
+	assert_almost_eq(off.angle(), dir.angle(), 0.0001, "the angle is not re-rolled")
+	assert_gt(unobstructed.distance_to(slid), 0.01, "the spawn slid inward")
+	assert_lt(off.length(), EliteEnemy.SUMMON_OFFSET - 0.01)
+	assert_gte(off.length(), hydra.body_radius - 0.01, "not closer than the elite edge")
+	assert_false(layout.touches_wall(slid, add_radius), "the slid point is clear")
+	var west := hydra.summon_spawn_point(1.0, hydra.summon_flank_jitter(0))
+	assert_almost_eq(
+		(west - hydra.global_position).length(),
+		EliteEnemy.SUMMON_OFFSET,
+		0.01,
+		"a clear flank stays at 48 px"
+	)
+	# A live spawn must land on the slid point (the alcove is far from the
+	# safe disk, so push_centre_outside does not move it). Spawn one add
+	# so the legendary batch of 2 does not also drop the clear flank.
+	hydra._summon_serial = 1
+	hydra._spawn_one_summon()
+	assert_eq(hydra.summon_alive(), 1)
+	var add: SummonAdd = hydra._summons[0]
+	assert_almost_eq(add.global_position.x, slid.x, 0.01)
+	assert_almost_eq(add.global_position.y, slid.y, 0.01)
+
+
+func _summon_angles_for_seed(
+	seed: int, chunk: Vector2i, encounter: int, player: Node2D
+) -> Array[float]:
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.world_seed = seed
+	hydra.chunk = chunk
+	hydra.encounter_index = encounter
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2.RIGHT * 3000.0
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	var out: Array[float] = []
+	var dir := Vector2.RIGHT
+	for add: SummonAdd in hydra._summons:
+		out.append(dir.angle_to(add.global_position - hydra.global_position))
+	return out
+
+
 func test_cooldown_is_at_least_four_seconds() -> void:
 	var def := AffixCatalog.get_affix(AffixCatalog.SUMMONER)
 	assert_gte(def.summon_interval(AffixDef.RARITY_COMMON), 4.0)

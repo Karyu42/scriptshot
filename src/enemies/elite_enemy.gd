@@ -108,14 +108,18 @@ func summon_alive() -> int:
 	return kept.size()
 
 
-func _ribbon_has_walls() -> bool:
+func _enabled_slice_layout() -> SliceLayout:
 	if not is_inside_tree():
-		return false
+		return null
 	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
 		var slice := node as SliceLayout
 		if slice != null and slice.enabled:
-			return true
-	return false
+			return slice
+	return null
+
+
+func _ribbon_has_walls() -> bool:
+	return _enabled_slice_layout() != null
 
 
 func _ready() -> void:
@@ -302,12 +306,11 @@ static func summon_flank_jitter_for(
 	return (u - 0.5) * SUMMON_FLANK_ARC
 
 
-## Where a summon on `side` (+1 left, -1 right of the elite-to-player line)
-## appears: SUMMON_OFFSET px out, at ±90° plus a flank-arc jitter, never
-## between the elite and the player. With no player the heading stands in
-## for the line. `flank_jitter` is radians along the arc (see
-## summon_flank_jitter).
-func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
+## Unit direction from this body to a summon on `side` (+1 left, -1 right
+## of the elite-to-player line), at ±90° plus `flank_jitter`. With no player
+## the heading stands in for the line. The angle is fixed: a wall never
+## re-rolls it (row 12).
+func summon_flank_dir(side: float, flank_jitter: float) -> Vector2:
 	var lane := _heading
 	if player != null:
 		var to_player := player.global_position - global_position
@@ -321,7 +324,39 @@ func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
 	var jitter := clampf(flank_jitter, -half, half)
 	if absf(jitter) > 0.000001:
 		normal = normal.rotated(jitter)
-	return global_position + normal * side * SUMMON_OFFSET
+	return normal * side
+
+
+## Where a summon on `side` appears: SUMMON_OFFSET px out along
+## summon_flank_dir. If that 48 px point sits in a ribbon wall, the spawn
+## slides inward along the same ray until the add's circle is clear, down
+## to 0 px from this body's edge. The angle is never re-rolled (row 12).
+func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
+	var dir := summon_flank_dir(side, flank_jitter)
+	return _slide_summon_inward(global_position + dir * SUMMON_OFFSET, dir)
+
+
+func _slide_summon_inward(pos: Vector2, dir: Vector2) -> Vector2:
+	var layout := _enabled_slice_layout()
+	if layout == null:
+		return pos
+	var radius := RegularEnemy.radius_of(_summon_kind)
+	if not layout.touches_wall(pos, radius):
+		return pos
+	# Farthest clear distance on this ray, not closer than the elite's edge.
+	var lo := body_radius
+	var inner := global_position + dir * lo
+	if layout.touches_wall(inner, radius):
+		return inner
+	var hi := SUMMON_OFFSET
+	for _i in 24:
+		var mid := (lo + hi) * 0.5
+		var p := global_position + dir * mid
+		if layout.touches_wall(p, radius):
+			hi = mid
+		else:
+			lo = mid
+	return global_position + dir * lo
 
 
 func _spawn_halves() -> void:
