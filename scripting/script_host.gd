@@ -287,6 +287,35 @@ return function(t)
 end
 """ % MAX_WEAPON_KEYS
 
+## Trusted. Snapshots the env's top-level keys; the returned function removes
+## keys added since and restores replaced values with rawset.
+const _SNAPSHOT_GLOBALS := """
+return function(env)
+	local next, rawget, rawset = next, rawget, rawset
+	local snap = {}
+	for k, v in next, env do
+		snap[k] = v
+	end
+	return function()
+		local extra = {}
+		for k in next, env do
+			if snap[k] == nil then
+				extra[#extra + 1] = k
+			end
+		end
+		for i = 1, #extra do
+			rawset(env, extra[i], nil)
+		end
+		for k, v in next, snap do
+			if rawget(env, k) ~= v then
+				rawset(env, k, v)
+			end
+		end
+		return true
+	end
+end
+"""
+
 ## Per-run tunable copies of the defaults. Tests tighten the budget; the game
 ## leaves them at the values above.
 var instruction_budget: int = INSTRUCTION_BUDGET
@@ -310,6 +339,9 @@ var _make_bullet: LuaFunction
 ## Sandbox entry point for script code (sandbox.lua host.call). See _run_script.
 var _call: LuaFunction
 var _names_of: LuaFunction
+## Puts the sandbox globals back (snapshot_globals), and the env it belongs to.
+var _reset_globals: LuaFunction
+var _reset_globals_env := 0
 var _ready := false
 var _init_error := ""
 
@@ -581,6 +613,9 @@ func shutdown() -> void:
 	_ready = false
 	_strip_ok = true
 	_expire_views()
+	# Kept like every other wrapper (see _release_state).
+	_retain(_reset_globals)
+	_reset_globals = null
 	for i in _retired.size():
 		_release_retired(_retired[i])
 	_release_current()
@@ -782,10 +817,45 @@ func lua_state_count() -> int:
 	return (1 if _state != null else 0) + _retired.size()
 
 
+## Compiles `code` without running it. ok is false with the compile error.
+func compile_check(code: String, chunk_name: String = "script.lua") -> RunResult:
+	if _closed:
+		return _fail("script host shut down", chunk_name)
+	if not _ready:
+		return _fail(_init_error, chunk_name)
+	var loaded: Variant = _state.load_string(code, "@" + chunk_name, _env)
+	if loaded is LuaError:
+		return _fail(_lua_error_message(loaded), chunk_name)
+	if not loaded is LuaFunction:
+		return _fail("load did not return a function", chunk_name)
+	var ok := RunResult.new()
+	ok.ok = true
+	ok.chunk_name = chunk_name
+	return ok
+
+
+## Remembers the sandbox globals as they are now, before any script ran, so
+## release_weapon() can put them back. LuaShot calls it on a new host. Only
+## the top level of the env is reset: a script that writes into a shared
+## library table (math.x = 1) keeps that. A state rotated after three guard
+## stops has a new env and is not reset (the snapshot belongs to the old one).
+func snapshot_globals() -> void:
+	if not is_ready():
+		return
+	var maker: Variant = _state.do_string(_SNAPSHOT_GLOBALS, "@snapshot-globals.lua")
+	if not maker is LuaFunction:
+		return
+	var reset_v: Variant = _as_function(maker).invoke(_env)
+	if reset_v is LuaFunction:
+		_reset_globals = _as_function(reset_v)
+		_reset_globals_env = _instance_id(_env)
+
+
 ## Drops the weapon table and its callbacks so the chunk that built them can
-## be collected, then runs a full collection. The state and its sandbox stay
-## (states are never freed, see shutdown()); a later load_string reuses them.
-## LuaShot calls this when a generation is released. No-op inside a call.
+## be collected, puts the sandbox globals back (see snapshot_globals), then
+## runs a full collection. The state and its sandbox stay (states are never
+## freed, see shutdown()); a later load_string reuses them. LuaShot calls this
+## when a generation is released. No-op inside a call.
 func release_weapon() -> void:
 	if _closed or _in_lua or _state == null:
 		return
@@ -793,6 +863,9 @@ func release_weapon() -> void:
 	_weapon = null
 	_names = PackedStringArray()
 	_source = ""
+	if _reset_globals != null and _reset_globals_env == _instance_id(_env):
+		# Under the watchdog like any other run; a stop only leaves it partial.
+		_run(_reset_globals, [])
 	# _value_threads and _parked stay: a wrapper elsewhere may still be tied
 	# to one of those coroutines (see _run).
 	_clear_pending()

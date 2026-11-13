@@ -102,8 +102,8 @@ hooked shots is kept as its own generation (own owner id), so shots in flight
 finish on the chunk they were fired with. On `hooked_owner_drained` an old
 generation is released (`release_behavior`) and its slot's ScriptHost is
 reused; Lua states are pinned, so a weapon holds at most `MAX_GENERATIONS` (3).
-When all three are busy the reload fails with a one-line error and the
-current version keeps running.
+When all three are busy, the oldest is stripped silently (its shots fly on
+as plain bullets) and its host takes the new version.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and

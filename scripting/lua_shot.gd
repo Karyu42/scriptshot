@@ -19,10 +19,14 @@ extends ShotPattern
 ##     shot is gone (BulletManager.hooked_owner_drained): release_behavior()
 ##     drops the behaviour, and its host drops the weapon table so the old
 ##     chunk is collected. The host goes back to its slot for a later generation;
-##   * with every slot busy (MAX_GENERATIONS versions with shots in flight),
-##     apply fails with SLOTS_BUSY_ERROR and the current version keeps running.
-##     Shots never switch to another version's callbacks and are never
-##     stripped; saving again once the oldest shots are gone works.
+##   * with every slot busy (MAX_GENERATIONS versions with shots in flight), a
+##     save is never refused: once the new code compiles, the oldest old
+##     generation is stripped (strip_hooks_for_owner, then release_behavior).
+##     Its shots fly on as plain bullets with the same speed, damage, lifetime
+##     and look, and run no hooks. Silent by design (slice spec, #93).
+## Shots never switch to another version's callbacks. A released slot's host
+## also gets its sandbox globals reset, so a new version does not inherit
+## globals an older one set.
 ## Lua states are never freed (lua-gdextension #240), so a weapon keeps at most
 ## MAX_GENERATIONS ScriptHosts (one per slot) for its whole life, however often
 ## it is reloaded. A failed apply never replaces the running version.
@@ -36,8 +40,8 @@ const DEFAULT_DAMAGE := 1.0
 const DEFAULT_RADIUS := 4.0
 ## RunResult.error of a load that ran but did not return a weapon table.
 const NO_TABLE_ERROR := "the script did not return a table"
-## RunResult.error of an apply refused because every slot still has shots in flight.
-const SLOTS_BUSY_ERROR := "Older versions of this script still have shots in flight. Save again in a moment."
+## RunResult.error of apply() called from a listener while apply() runs.
+const NESTED_APPLY_ERROR := "apply() called while a reload is running"
 
 var manager: BulletManager
 var chunk_name := "weapon.lua"
@@ -56,14 +60,19 @@ var generation_switches := 0
 ## Reloads that swapped code under shots in flight. Stays 0: a version with
 ## hooked shots in flight is never reloaded in place.
 var in_place_with_live_shots := 0
-## Old generations released after their last hooked shot was gone.
+## Old generations released after their last hooked shot was gone, and old
+## generations stripped early because every slot was busy.
 var released_count := 0
+var evicted_count := 0
 
 ## One entry per slot. A slot's host lives as long as the weapon; the
 ## generation on it (behaviour, owner id) is null / 0 while free.
 var _hosts: Array[ScriptHost] = []
 var _gens: Array[LuaBulletBehavior] = []
 var _gen_ids: Array[int] = []
+## Start order of each slot's generation (0 while free); the smallest is oldest.
+var _gen_serial: Array[int] = []
+var _serial := 0
 var _current := -1
 ## True inside apply(); drains that arrive meanwhile wait in _drained_later.
 var _applying := false
@@ -129,6 +138,13 @@ func apply(code: String) -> ScriptHost.RunResult:
 		var no_manager := ScriptHost.RunResult.new()
 		no_manager.error = "no bullet manager"
 		return no_manager
+	if _applying:
+		# Only a hooked_owner_drained listener can get here (apply strips a
+		# slot). ShotScripts always loads at a frame boundary instead.
+		var nested := ScriptHost.RunResult.new()
+		nested.chunk_name = chunk_name
+		nested.error = NESTED_APPLY_ERROR
+		return nested
 	_applying = true
 	_release_idle_old()
 	var result := _apply(code)
@@ -144,10 +160,16 @@ func _apply(code: String) -> ScriptHost.RunResult:
 	if slot < 0 and _hosts.size() < MAX_GENERATIONS:
 		slot = _add_slot()
 	if slot < 0:
-		var full := ScriptHost.RunResult.new()
-		full.chunk_name = chunk_name
-		full.error = SLOTS_BUSY_ERROR
-		return full
+		slot = _oldest_old()
+		if slot < 0:
+			# Only with MAX_GENERATIONS < 2: nothing old to strip.
+			return _load_into(_current, code)
+		# A save that does not compile changes nothing, so nothing is stripped.
+		var compiled := _hosts[slot].compile_check(code, chunk_name)
+		if not compiled.ok:
+			return compiled
+		_release_slot(slot)
+		evicted_count += 1
 	return _load_into(slot, code)
 
 
@@ -175,6 +197,8 @@ func _load_into(slot: int, code: String) -> ScriptHost.RunResult:
 	if not in_place:
 		_gens[slot] = behavior_ref
 		_gen_ids[slot] = manager.register_behavior(behavior_ref)
+		_serial += 1
+		_gen_serial[slot] = _serial
 		if _current >= 0:
 			generation_switches += 1
 	_current = slot
@@ -192,10 +216,24 @@ func _free_slot() -> int:
 
 
 func _add_slot() -> int:
-	_hosts.append(ScriptHost.new())
+	var host := ScriptHost.new()
+	host.snapshot_globals()
+	_hosts.append(host)
 	_gens.append(null)
 	_gen_ids.append(0)
+	_gen_serial.append(0)
 	return _hosts.size() - 1
+
+
+## The non-current generation started first, or -1.
+func _oldest_old() -> int:
+	var best := -1
+	for i in _gens.size():
+		if i == _current or _gens[i] == null:
+			continue
+		if best < 0 or _gen_serial[i] < _gen_serial[best]:
+			best = i
+	return best
 
 
 ## BulletManager.hooked_owner_drained. Emitted at the end of step(), from
@@ -232,15 +270,19 @@ func _release_idle_old() -> void:
 			_release_slot(i)
 
 
-## Frees slot `slot` for a later generation. The slot is cleared before the
-## manager is told, so the drain that release_behavior emits finds nothing.
+## Frees slot `slot` for a later generation: strips any shots still in flight
+## (they fly on as plain bullets), then releases the behaviour. The slot is
+## cleared before the manager is told, so the drains strip / release emit find
+## nothing to release again.
 func _release_slot(slot: int) -> void:
 	var id := _gen_ids[slot]
 	_gens[slot] = null
 	_gen_ids[slot] = 0
+	_gen_serial[slot] = 0
 	if slot == _current:
 		_current = -1
 	if id > 0 and _has_manager():
+		manager.strip_hooks_for_owner(id)
 		manager.release_behavior(id)
 	_hosts[slot].release_weapon()
 	released_count += 1
