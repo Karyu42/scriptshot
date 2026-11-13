@@ -414,6 +414,35 @@ func test_hud_signals_fire_for_hp_death_respawn_lessons_and_gates() -> void:
 	assert_signal_emitted(progress, "hp_changed")
 
 
+func test_row_5_never_toggles_the_ribbon_or_closes_a_gate() -> void:
+	# Elites snapshot collide_walls from SliceLayout.enabled in `_ready`.
+	layout.enabled = false
+	progress.complete_lesson(1)
+	progress.complete_lesson(2)
+	progress.complete_lesson(3)
+	progress.complete_lesson(4)
+	progress.complete_lesson(5)
+	progress.notify_pack_cleared(0)
+	progress.notify_pack_cleared(1)
+	progress.notify_pack_cleared(2)
+	progress.notify_pack_cleared(3)
+	progress.notify_room_d_elite_died()
+	progress.notify_warden_defeated()
+	assert_false(layout.enabled, "row 5 must not toggle SliceLayout.enabled")
+	# Death must not close gates either.
+	assert_true(progress.is_lesson_done(1))
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G1))
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0))
+	player.health.reset()
+	for _i in range(5):
+		player.health.clear_engine_invulnerability()
+		player.health.damage(1.0)
+	assert_true(player.health.is_dead())
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G1))
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0))
+	assert_false(layout.enabled)
+
+
 func test_main_scene_has_a_slice_progress_node() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	var state := packed.get_state()

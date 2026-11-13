@@ -16,6 +16,11 @@ extends Node
 ##   - notify_warden_defeated() opens G0 and sets the arena respawn (row 8 / 10).
 ##
 ## HUD row 11 can bind to the signals on this node.
+##
+## This row never closes a gate and never toggles `SliceLayout.enabled` at
+## runtime: elites snapshot `collide_walls` in `_ready`. Lesson gates only
+## open, and they open from `on_update` / hooks / debug, never from inside
+## `walls.sweep_bullets`.
 
 ## Lesson id (1–5) that just flipped from incomplete to complete.
 signal lesson_completed(id: int)
@@ -464,6 +469,8 @@ func _set_lesson(id: int) -> bool:
 	return true
 
 
+## Opens a lesson's gate once its checkers pass. Never closes a gate, and
+## never writes `SliceLayout.enabled`.
 func _try_open_gates() -> void:
 	if is_lesson_done(1) and is_lesson_done(2):
 		_unlock_gate(SliceLayout.GATE_G1)

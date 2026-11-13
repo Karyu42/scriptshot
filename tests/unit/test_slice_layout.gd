@@ -288,6 +288,75 @@ func test_closing_a_gate_pushes_an_elite_out_of_the_doorway() -> void:
 		"elite ejected (at %s)" % elite.global_position)
 
 
+func test_eject_leaves_the_body_when_both_sides_are_blocked() -> void:
+	# Solids cover both landings just outside G1. The body stays put rather
+	# than being shoved into either one.
+	var gate := SliceLayout.gate_rect(&"G1")
+	var radius := 13.0
+	var clear_lo := gate.position.x - radius - 0.01
+	var clear_hi := gate.end.x + radius + 0.01
+	_add_wall_blocker(Rect2(clear_lo - 10.0, -20.0, 20.0, 40.0))
+	_add_wall_blocker(Rect2(clear_hi - 10.0, -20.0, 20.0, 40.0))
+	var start := Vector2(896, 0)
+	var left := layout._eject_point(start, radius, Vector2.ZERO, gate)
+	assert_eq(left, start, "both sides blocked: leave the body in place")
+	# Preferred (west, at rest on the centre) blocked, east clear: take east.
+	# (Drop the east blocker by covering only the west landing in a fresh call
+	# would need the east body gone; the close_gate path is below.)
+	layout.force_gates_open = true
+	walker.global_position = start
+	layout.force_gates_open = false
+	assert_almost_eq(walker.global_position.x, start.x, 0.01)
+	assert_almost_eq(walker.global_position.y, start.y, 0.01)
+
+
+func test_eject_uses_the_other_side_when_the_preferred_side_is_blocked() -> void:
+	var gate := SliceLayout.gate_rect(&"G1")
+	var radius := 13.0
+	var clear_lo := gate.position.x - radius - 0.01
+	_add_wall_blocker(Rect2(clear_lo - 10.0, -20.0, 20.0, 40.0))
+	var start := Vector2(896, 0)
+	var out := layout._eject_point(start, radius, Vector2.ZERO, gate)
+	assert_gt(out.x, gate.end.x, "west blocked: eject east instead (at %s)" % out)
+	assert_false(layout._eject_blocked(out, radius, gate))
+
+
+func test_idle_elite_facing_east_ejects_to_the_nearest_side() -> void:
+	# At rest slightly east of G1's centre, heading still points east (the
+	# idle unit vector). Eject must use last displacement (~zero) and send
+	# the body to the nearer east side, not west as `_heading` would.
+	layout.force_gates_open = true
+	var elite := (load("res://scenes/elite_enemy.tscn") as PackedScene).instantiate() as EliteEnemy
+	elite.configure_elite(&"", Vector2(897, 0), Vector2(897, 0), 1, walker, false)
+	elite.set_physics_process(false)
+	add_child_autofree(elite)
+	elite.global_position = Vector2(897, 0)
+	elite._heading = Vector2.RIGHT
+	elite.last_displacement = Vector2.ZERO
+	var gate := SliceLayout.gate_rect(&"G1")
+	assert_true(layout._circle_hits(elite.global_position, elite.body_radius, gate),
+		"stand in the doorway")
+	layout.force_gates_open = false
+	assert_gt(elite.global_position.x, gate.end.x,
+		"nearest side is east (at %s); heading east must not send west" % elite.global_position)
+	assert_false(layout.touches_wall(elite.global_position, elite.body_radius),
+		"ejected clear of the shut gate (at %s)" % elite.global_position)
+
+
+func _add_wall_blocker(r: Rect2) -> void:
+	var body := StaticBody2D.new()
+	body.collision_layer = Layers.WORLD
+	body.collision_mask = 0
+	body.add_to_group(&"world_walls")
+	var shape := RectangleShape2D.new()
+	shape.size = r.size
+	var node := CollisionShape2D.new()
+	node.shape = shape
+	node.position = r.get_center()
+	body.add_child(node)
+	layout.add_child(body)
+
+
 func test_draw_reads_the_cached_walls() -> void:
 	# _draw may only run under NOTIFICATION_DRAW; queue a real redraw.
 	layout._walls_cached.clear()
