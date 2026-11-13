@@ -150,19 +150,21 @@ jobs:
           # Belt and braces: never leave this tag as a full release or Latest.
           gh release edit nightly --repo "${GITHUB_REPOSITORY}" --prerelease --latest=false
 
-  pages:
+  pages-build:
     name: GitHub Pages web build
     needs: collect
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
-      pages: write
-      id-token: write
+      contents: read
       actions: read
-    environment:
-      name: github-pages
-      url: ${{ steps.pages.outputs.page_url }}
+    outputs:
+      artifact: ${{ steps.name.outputs.artifact }}
     steps:
+      # One Pages artifact name per attempt, so a full re-run never leaves deploy-pages
+      # with two artifacts of the same name. "Re-run failed jobs" keeps this job's output.
+      - id: name
+        run: echo "artifact=github-pages-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: nightly-web-pages
@@ -174,6 +176,28 @@ jobs:
           test ! -e web-pages/libscriptshot_native.web.template_release.wasm32.nothreads.wasm
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
+          name: ${{ steps.name.outputs.artifact }}
           path: web-pages
+
+  # deploy-pages looks the github-pages artifact up through the run's artifact list. In the
+  # same job that just uploaded it, the list did not include it yet (run 43301919500 attempt 1:
+  # "No artifacts named github-pages"), and re-running the whole job then found two (one per
+  # attempt), hence the per-attempt name above. Deploying from a separate job, as GitHub's own Pages starter does, means the
+  # artifact is finalized before the lookup, and a "re-run failed jobs" only re-runs the deploy.
+  pages-deploy:
+    name: GitHub Pages deploy
+    needs: pages-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
       - id: pages
         uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          artifact_name: ${{ needs.pages-build.outputs.artifact }}
