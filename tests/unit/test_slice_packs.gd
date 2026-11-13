@@ -208,7 +208,12 @@ func test_clearing_all_four_packs_opens_g4_and_emits_enemy_killed() -> void:
 
 
 func test_a_pack_returns_after_300s_outside_c_and_g4_stays_open() -> void:
+	# G4 must already be open so the return can prove the gate bit stays set.
 	_kill_pack(SlicePacks.PACK_DRIFTERS)
+	_kill_pack(SlicePacks.PACK_SWARMERS)
+	_kill_pack(SlicePacks.PACK_SHIELD)
+	_kill_pack(SlicePacks.PACK_SNIPER)
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G4))
 	assert_eq(packs.pack_alive(SlicePacks.PACK_DRIFTERS), 0)
 	var t0 := 1_000_000.0
 	packs.pinned_time = t0
@@ -222,9 +227,8 @@ func test_a_pack_returns_after_300s_outside_c_and_g4_stays_open() -> void:
 	packs._physics_process(DT)
 	assert_eq(packs.pack_alive(SlicePacks.PACK_DRIFTERS), 3)
 	assert_eq(save.field_drifters, 0.0)
-	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G4) or progress.packs_mask() & 1 == 1)
-	# G4 only opens when all four are marked; this pack bit stays set.
-	assert_eq(progress.packs_mask() & 1, 1)
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G4), "G4 stays open when a pack returns")
+	assert_eq(progress.packs_mask() & 1, 1, "the pack-cleared bit stays set")
 
 
 func test_coming_back_into_c_early_restarts_the_out_streak() -> void:
@@ -257,6 +261,44 @@ func test_staying_in_c_does_not_return_the_pack_after_300s() -> void:
 	player.global_position = C_INSIDE
 	packs._physics_process(DT)
 	assert_eq(packs.pack_alive(SlicePacks.PACK_SNIPER), 0)
+
+
+func test_bind_clears_an_expired_stamp_so_a_later_load_in_c_keeps_the_pack() -> void:
+	_discard(_SAVE)
+	var t0 := 3_000_000.0
+	var slot := SaveGame.new()
+	slot.path = _SAVE
+	slot.world_seed = 1
+	slot.set_field_absent_since(SaveGame.FIELD_DRIFTERS, t0)
+	slot.save()
+	var fresh := SliceProgress.new()
+	add_child_autofree(fresh)
+	fresh.bind(player, null, layout, slot)
+	var first := SlicePacks.new()
+	add_child_autofree(first)
+	# Outside C, and the stamp is due: bind must spawn and clear the key.
+	player.global_position = C_OUTSIDE
+	first.pinned_time = t0 + SaveGame.FIELD_PACK_RETURN
+	first.bind(player, fresh, bullets, slot.world_seed)
+	_freeze_members(first)
+	await wait_physics_frames(1)
+	assert_eq(first.pack_alive(SlicePacks.PACK_DRIFTERS), 3)
+	assert_eq(slot.field_drifters, 0.0, "bind must clear the expired stamp")
+	# A save made in C, then a later bind in C, must still treat the pack as present.
+	player.global_position = C_INSIDE
+	slot.save()
+	var reloaded := SaveGame.load_from(_SAVE)
+	assert_eq(reloaded.field_drifters, 0.0)
+	var again_progress := SliceProgress.new()
+	add_child_autofree(again_progress)
+	again_progress.bind(player, null, layout, reloaded)
+	var again := SlicePacks.new()
+	add_child_autofree(again)
+	again.bind(player, again_progress, bullets, reloaded.world_seed)
+	_freeze_members(again)
+	await wait_physics_frames(1)
+	assert_eq(again.pack_alive(SlicePacks.PACK_DRIFTERS), 3, "a later bind in C must not treat the live pack as absent")
+	assert_eq(reloaded.field_drifters, 0.0)
 
 
 func test_a_saved_absent_pack_does_not_spawn_on_load() -> void:

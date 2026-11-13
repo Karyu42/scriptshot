@@ -70,6 +70,9 @@ func bind(p_player: Node2D, p_progress: SliceProgress, p_bullets: BulletManager 
 	_player_in_c = _in_room_c()
 	for i in PACK_COUNT:
 		if _is_due(i):
+			# Same as _try_return_packs: a due pack is present again, so a
+			# later bind() or a save made in C must not see the old stamp.
+			_clear_stamp(i)
 			_spawn_pack(i)
 	_bound = true
 

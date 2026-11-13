@@ -244,7 +244,7 @@ func _idle(delta: float) -> void:
 ## wall it overlaps (SliceLayout rooms), which also slides it along that wall.
 ## A step is at most a few px, well under the 4 px gate plus the body radius,
 ## so it cannot tunnel. `_ready` turns this on when an enabled ribbon is in
-## the tree; EliteEnemy sets it the same way before calling super.
+## the tree (elites and Summoner adds inherit this).
 var collide_walls := false
 var _wall_query: PhysicsShapeQueryParameters2D
 
