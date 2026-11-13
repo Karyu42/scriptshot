@@ -1,0 +1,19 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://src/enemies/summon_add.gd" id="1_summon"]
+[ext_resource type="Script" path="res://src/bullets/hurtbox.gd" id="2_hurtbox"]
+[ext_resource type="Script" path="res://src/core/health.gd" id="3_health"]
+
+[node name="SummonAdd" type="Node2D"]
+script = ExtResource("1_summon")
+
+[node name="Hurtbox" type="Node2D" parent="."]
+script = ExtResource("2_hurtbox")
+radius = 8.0
+layer = 2
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("3_health")
+max_hp = 1.0
+invulnerability_time = 0.0
+regen_enabled = false
