@@ -566,6 +566,8 @@ func _naturals(tree: SceneTree) -> Array[EliteEnemy]:
 		var elite := node as EliteEnemy
 		if elite == null or elite.is_herald or elite.is_half or not elite.is_alive():
 			continue
+		if elite.is_in_group(SliceRoomD.GROUP):
+			continue
 		out.append(elite)
 	return out
 

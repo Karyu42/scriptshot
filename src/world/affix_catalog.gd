@@ -6,6 +6,7 @@ extends RefCounted
 
 const SPLITTING := &"splitting"
 const SUMMONER := &"summoner"
+const BULWARK := &"bulwark"
 const HERALD_AFFIXES: Array[StringName] = [SPLITTING, SUMMONER]
 
 

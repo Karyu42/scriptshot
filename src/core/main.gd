@@ -36,6 +36,8 @@ var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
+var _packs: SlicePacks
+var _room_d: SliceRoomD
 var _warden: Warden
 
 
@@ -61,6 +63,8 @@ func _ready() -> void:
 	_bind_open_world()
 	_bind_slice_progress()
 	_bind_slice_hud()
+	_bind_slice_packs()
+	_bind_slice_room_d()
 	WorldQuery.bind_bullets(_bullets)
 	_bind_warden()
 	_player.died.connect(_on_player_died)
@@ -130,7 +134,7 @@ func _bind_slice_progress() -> void:
 	_progress = get_node_or_null("SliceProgress") as SliceProgress
 	if _progress == null:
 		return
-	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
+	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save, shot_scripts, _bullets)
 
 
 func _bind_slice_hud() -> void:
@@ -141,6 +145,22 @@ func _bind_slice_hud() -> void:
 	# Mid-card quit: toast and Codex fire on the next load if they were
 	# never shown (the Codex-once flag is still clear).
 	SliceHud.announce_pending_grant(_save)
+
+
+func _bind_slice_packs() -> void:
+	_packs = get_node_or_null("SlicePacks") as SlicePacks
+	if _packs == null:
+		return
+	_packs.bind(_player, _progress, _bullets, _save.world_seed if _save != null else 0)
+
+
+func _bind_slice_room_d() -> void:
+	_room_d = get_node_or_null("SliceRoomD") as SliceRoomD
+	# Authored slice placement: skip it when the ribbon is off so the
+	# pre-slice open-world tests (natural elites, Herald) stay unchanged.
+	if _room_d == null or _slice == null:
+		return
+	_room_d.bind(_player, _progress, _save, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:

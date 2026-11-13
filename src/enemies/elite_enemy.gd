@@ -1,7 +1,9 @@
 class_name EliteEnemy
 extends RegularEnemy
-## Common elite Drifter. The Herald (L2) and a natural T0 elite (L3) are this
-## body. 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
+## Elite Drifter. The Herald (L2) and a natural T0 elite (L3) are the common
+## body: 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
+## Room D (vertical-slice row 7) is the rare body: 120 HP, Bulwark + Summoner,
+## rare cue, wake also when the player crosses G4.
 ## Splitting and Summoner come from AffixDef. Halves are not elites: 40% HP,
 ## ×1.3 speed, radius 12, already awake, no cue, no shard, no further split.
 ## Summoner adds are SummonAdd bodies, spawned on the flanks of the
@@ -14,7 +16,15 @@ signal shard_dropped
 const GROUP_ELITE := &"elites"
 ## T0 common: 30 × 1.0 × 2.5.
 const ELITE_HP := RegularEnemy.DRIFTER_HP * 1.0 * 2.5
+## T0 rare: 30 × 1.0 × 4 (room D).
+const RARE_HP := RegularEnemy.DRIFTER_HP * 1.0 * 4.0
 const COMMON_SPEED_MUL := 1.0
+## Rare Bulwark (spawning §3.4 / vertical-slice §4). Common intensity is 120°
+## with no turn cap; this slice only places the rare intensity.
+const BULWARK_RARE_ARC := 150.0
+const BULWARK_RARE_TURN := 45.0
+const BULWARK_ARC_PAD := 8.0
+const BULWARK_ARC_ALPHA := 0.4
 const HALF_RADIUS := 12.0
 ## Centre gap so two radius-12 halves do not sit on top of each other.
 const HALF_SEPARATION := 32.0
@@ -23,6 +33,9 @@ const HALF_SEPARATION := 32.0
 const SUMMON_OFFSET := 48.0
 
 var affix := StringName()
+## Additional affixes after `affix` (room D is Bulwark + Summoner). Empty for
+## the Herald and a natural T0 elite. has_affix() sees both.
+var affixes: Array[StringName] = []
 ## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
 ## EncounterSpec for a natural elite (ChunkStream sets it before the body
 ## enters the tree); configure_elite can also pass it. The Herald is common.
@@ -32,6 +45,14 @@ var rarity := EnemyKinds.RARITY_COMMON
 var is_herald := false
 var is_half := false
 var grants_shard := false
+## When finite, also wake once the player's x is at or past this line.
+## Room D sets it to the G4 gate so the body wakes as the player crosses G4,
+## which is farther than WAKE_RADIUS from the room centre.
+var wake_x := INF
+## When true, the Summoner timer starts on wake and does not tick while
+## asleep. Room D sets this so the body does not summon from room S. The
+## Herald and natural elites keep the existing (timer-from-spawn) behaviour.
+var summon_after_wake := false
 var cue: EliteCue
 var sting: EliteSting
 
@@ -60,6 +81,7 @@ func configure_elite(
 	p_chunk: Vector2i = Vector2i.ZERO,
 	p_encounter: int = -1,
 	p_rarity: int = AffixDef.RARITY_COMMON,
+	p_extra_affixes: Array[StringName] = [],
 ) -> void:
 	rarity = p_rarity
 	is_herald = p_herald
@@ -67,12 +89,29 @@ func configure_elite(
 	# The Herald and a natural elite both drop one shard. A half does not.
 	# Encounter index -1 is the Herald (and halves): no chunk bit. L3 passes
 	# the real chunk and index so the kill mask can name the encounter.
+	# Room D sets grants_shard = false after configure: SliceRoomD adds 3,
+	# and must not also emit shard_dropped.
 	grants_shard = not p_half
 	# Halves keep the def (HP fraction, speed) but not the affix, so they cannot split.
-	affix = StringName() if p_half else p_affix
-	if p_affix != StringName():
-		_affix_def = AffixCatalog.get_affix(p_affix)
-	if _affix_def != null:
+	affixes = []
+	if not p_half:
+		if p_affix != StringName():
+			affixes.append(p_affix)
+		for extra in p_extra_affixes:
+			if extra != StringName() and not affixes.has(extra):
+				affixes.append(extra)
+	affix = affixes[0] if not affixes.is_empty() else StringName()
+	_affix_def = null
+	for id in affixes:
+		var def := _load_affix(id)
+		if def == null:
+			continue
+		# Prefer Summoner / Splitting for the column and half stats.
+		if _affix_def == null or id == AffixCatalog.SUMMONER or id == AffixCatalog.SPLITTING:
+			_affix_def = def
+	if has_affix(AffixCatalog.BULWARK):
+		_glyph = EliteCue.glyph_kind(AffixDef.GROUP_DEFENSIVE)
+	elif _affix_def != null:
 		_glyph = EliteCue.glyph_kind(_affix_def.group)
 	var chunk_pos := WorldGen.chunk_of(p_spawn)
 	if p_encounter >= 0:
@@ -89,8 +128,24 @@ func configure_elite(
 	)
 
 
+func has_affix(id: StringName) -> bool:
+	return affix == id or affixes.has(id)
+
+
 func enemy_rarity() -> int:
 	return EnemyKinds.RARITY_NONE if is_half else rarity
+
+
+func _load_affix(id: StringName) -> AffixDef:
+	if id == StringName() or id == AffixCatalog.BULWARK:
+		return null
+	return AffixCatalog.get_affix(id)
+
+
+func body_hp() -> float:
+	if rarity == EnemyKinds.RARITY_RARE:
+		return RARE_HP
+	return ELITE_HP
 
 
 func summon_alive() -> int:
@@ -102,26 +157,19 @@ func summon_alive() -> int:
 	return kept.size()
 
 
-func _ribbon_has_walls() -> bool:
-	if not is_inside_tree():
-		return false
-	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
-		var slice := node as SliceLayout
-		if slice != null and slice.enabled:
-			return true
-	return false
-
-
 func _ready() -> void:
-	# Stay out of SliceLayout walls when the ribbon is on. Off (or no
-	# layout in the tree): skip the world-layer query; there are no rooms.
-	collide_walls = _ribbon_has_walls()
+	# RegularEnemy._ready sets collide_walls from the shared helper when an
+	# enabled ribbon is in the tree.
 	super._ready()
 	if is_half:
 		woken = true
 		return
 	add_to_group(GROUP_ELITE)
 	cue = EliteCue.new()
+	if rarity == EnemyKinds.RARITY_RARE:
+		cue.setup(RarityCue.TIER_ELITE_RARE)
+	elif rarity == EnemyKinds.RARITY_LEGENDARY:
+		cue.setup(RarityCue.TIER_ELITE_LEGENDARY)
 	cue.glyph = _glyph
 	cue.try_acquire()
 	cue.attach(self)
@@ -139,6 +187,12 @@ func _exit_tree() -> void:
 
 func _physics_process(delta: float) -> void:
 	var was_woken := woken
+	if _alive and player != null and is_instance_valid(player) and not woken:
+		if is_finite(wake_x) and player.global_position.x >= wake_x:
+			woken = true
+	if _alive and player != null and is_instance_valid(player) and has_affix(AffixCatalog.BULWARK) and _hurtbox != null:
+		var turn := BULWARK_RARE_TURN if rarity == EnemyKinds.RARITY_RARE else 0.0
+		_hurtbox.face(player.global_position, turn, delta)
 	super._physics_process(delta)
 	if not _alive:
 		return
@@ -146,7 +200,8 @@ func _physics_process(delta: float) -> void:
 		cue.advance(delta)
 	if woken and not was_woken:
 		_on_woke()
-	if not is_half and affix == AffixCatalog.SUMMONER:
+	var can_summon := not is_half and has_affix(AffixCatalog.SUMMONER)
+	if can_summon and (woken or not summon_after_wake):
 		_tick_summon(delta)
 	queue_redraw()
 
@@ -175,20 +230,27 @@ func _apply_stats() -> void:
 		_hurtbox.active = true
 		return
 	_speed = RegularEnemy.DRIFTER_SPEED * COMMON_SPEED_MUL
-	health.max_hp = ELITE_HP
+	health.max_hp = body_hp()
 	health.hp = health.max_hp
 	health.invulnerability_time = 0.0
 	health.regen_enabled = false
 	_hurtbox.radius = body_radius
 	_hurtbox.layer = Layers.ENEMY
 	_hurtbox.active = true
-	if _affix_def != null and affix == AffixCatalog.SUMMONER:
-		_summon_interval = _affix_def.summon_interval(rarity)
-		_summon_batch = _affix_def.summon_count(rarity)
-		_summon_cap = _affix_def.summon_cap(rarity)
-		_summon_hp = _affix_def.summon_hp_for(rarity)
-		_summon_kind = _affix_def.summon_kind(rarity)
-		_summon_wait = _summon_interval
+	if has_affix(AffixCatalog.BULWARK):
+		_hurtbox.response = Hurtbox.Response.ABSORB
+		_hurtbox.arc_deg = BULWARK_RARE_ARC if rarity == EnemyKinds.RARITY_RARE else 120.0
+		# Face the room-D entrance (west) until the player arrives.
+		_hurtbox.facing = PI
+	if has_affix(AffixCatalog.SUMMONER):
+		var def := _affix_def if _affix_def != null else AffixCatalog.get_affix(AffixCatalog.SUMMONER)
+		if def != null:
+			_summon_interval = def.summon_interval(rarity)
+			_summon_batch = def.summon_count(rarity)
+			_summon_cap = def.summon_cap(rarity)
+			_summon_hp = def.summon_hp_for(rarity)
+			_summon_kind = def.summon_kind(rarity)
+			_summon_wait = _summon_interval
 
 
 ## Living summons this elite may have at once (its tier's column).
@@ -205,7 +267,7 @@ func _on_died() -> void:
 	if _death_handled:
 		return
 	_death_handled = true
-	if not is_half and affix == AffixCatalog.SPLITTING:
+	if not is_half and has_affix(AffixCatalog.SPLITTING):
 		_spawn_halves()
 	if grants_shard:
 		shard_dropped.emit()
@@ -215,6 +277,8 @@ func _on_died() -> void:
 func _on_woke() -> void:
 	if is_half:
 		return
+	if summon_after_wake and has_affix(AffixCatalog.SUMMONER):
+		_summon_wait = _summon_interval
 	if cue != null:
 		cue.start_brighten()
 	if sting != null:
@@ -235,6 +299,10 @@ func _draw() -> void:
 	draw_arc(Vector2.ZERO, body_radius, 0.0, TAU, ARC_POINTS, ocolor, outline_width(), true)
 	if cue != null:
 		cue.draw_on(self, body_radius)
+	if has_affix(AffixCatalog.BULWARK) and _hurtbox != null:
+		var half := deg_to_rad(_hurtbox.arc_deg * 0.5)
+		var col := Color(_fill, BULWARK_ARC_ALPHA)
+		draw_arc(Vector2.ZERO, body_radius + BULWARK_ARC_PAD, _hurtbox.facing - half, _hurtbox.facing + half, 32, col, 3.0, true)
 
 
 func _tick_summon(delta: float) -> void:
