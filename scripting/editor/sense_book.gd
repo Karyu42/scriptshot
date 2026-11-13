@@ -30,6 +30,8 @@ const NEAREST := &"nearest_enemy"
 const ENEMIES_IN := &"enemies_in"
 ## The Senses the Lua `sense` table can hold in this build (sandbox.lua).
 const LUA_SENSES: Array[StringName] = [NEAREST, ENEMIES_IN]
+## Highest level this build knows. A saved level is clamped to 0..MAX_LEVEL.
+const MAX_LEVEL := 1
 
 
 class Events:
@@ -194,10 +196,12 @@ static func bind_save(save: SaveGame) -> void:
 	_save = null
 	if save == null:
 		return
+	# The slot is player-editable: never trust a level this build cannot grant.
 	if save.sense_nearest:
 		grant(NEAREST, 1, true)
-	if save.sense_enemies_in > 0:
-		grant(ENEMIES_IN, save.sense_enemies_in, true)
+	var enemies_in := clampi(save.sense_enemies_in, 0, MAX_LEVEL)
+	if enemies_in > 0:
+		grant(ENEMIES_IN, enemies_in, true)
 	_save = save
 	# Senses earned before the bind (this session) are written to the slot.
 	_write_save()
@@ -220,6 +224,10 @@ static func _write_save() -> void:
 static func reset() -> void:
 	_levels.clear()
 	_pending.clear()
+	# The one-shot queue_grant() connected would otherwise still fire.
+	var tree := Engine.get_main_loop() as SceneTree
+	if tree != null and tree.process_frame.is_connected(events._on_frame):
+		tree.process_frame.disconnect(events._on_frame)
 	_kills = 0
 	_save = null
 	_revision += 1

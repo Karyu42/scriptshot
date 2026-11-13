@@ -91,29 +91,65 @@ func save() -> void:
 	cfg.save(path)
 
 
-## ConfigFile hands every value back as a Variant.
+## ConfigFile hands every value back as a Variant. Each key is type-guarded
+## on its own so a bad value cannot abort the rest of the load. Field-pack
+## timestamps that are INF, NaN, or negative read as 0 (pack present).
 func _read(cfg: ConfigFile) -> void:
-	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
-	world_seed = int(cfg.get_value("world", "world_seed", 0))
-	herald_done = bool(cfg.get_value("world", "herald_done", false))
-	shards = int(cfg.get_value("world", "shards", 0))
+	world_seed = _read_int(cfg, "world_seed", 0)
+	herald_done = _read_bool(cfg, "herald_done", false)
+	shards = _read_int(cfg, "shards", 0)
 	var kills: Variant = cfg.get_value("world", "elite_kills", [])
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
-	sense_nearest = bool(cfg.get_value("senses", "sense_nearest", false))
-	sense_enemies_in = maxi(int(cfg.get_value("senses", "sense_enemies_in", 0)), 0)
-	# Missing or a non-bool (e.g. an int) stays false.
-	var feeds: Variant = cfg.get_value("world", "seen_it_feeds", false)
-	seen_it_feeds = feeds is bool and bool(feeds)
-	slice_lessons = int(cfg.get_value("world", "slice_lessons", 0))
-	slice_gates = int(cfg.get_value("world", "slice_gates", 0))
-	slice_packs = int(cfg.get_value("world", "slice_packs", 0))
-	field_drifters = float(cfg.get_value("world", "field_drifters", 0))
-	field_swarmers = float(cfg.get_value("world", "field_swarmers", 0))
-	field_shield = float(cfg.get_value("world", "field_shield", 0))
-	field_sniper = float(cfg.get_value("world", "field_sniper", 0))
+	sense_nearest = _read_bool(cfg, "sense_nearest", false, "senses")
+	sense_enemies_in = maxi(_read_int(cfg, "sense_enemies_in", 0, "senses"), 0)
+	seen_it_feeds = _read_bool(cfg, "seen_it_feeds", false)
+	slice_lessons = _read_int(cfg, "slice_lessons", 0)
+	slice_gates = _read_int(cfg, "slice_gates", 0)
+	slice_packs = _read_int(cfg, "slice_packs", 0)
+	field_drifters = _read_field_time(cfg, "field_drifters")
+	field_swarmers = _read_field_time(cfg, "field_swarmers")
+	field_shield = _read_field_time(cfg, "field_shield")
+	field_sniper = _read_field_time(cfg, "field_sniper")
+
+
+func _read_int(cfg: ConfigFile, key: String, default: int, section: String = "world") -> int:
+	var v: Variant = cfg.get_value(section, key, default)
+	var result := default
+	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
+	if typeof(v) == TYPE_INT:
+		result = int(v)
+	elif typeof(v) == TYPE_FLOAT:
+		var f := float(v)
+		if is_finite(f):
+			result = int(f)
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+	return result
+
+
+func _read_bool(cfg: ConfigFile, key: String, default: bool, section: String = "world") -> bool:
+	var v: Variant = cfg.get_value(section, key, default)
+	if typeof(v) == TYPE_BOOL:
+		@warning_ignore_start("unsafe_cast")
+		var b: bool = v
+		@warning_ignore_restore("unsafe_cast")
+		return b
+	return default
+
+
+func _read_field_time(cfg: ConfigFile, key: String) -> float:
+	var v: Variant = cfg.get_value("world", key, 0.0)
+	var f := 0.0
+	var ok := false
+	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		f = float(v)
+		ok = true
+	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+	if not ok or not is_finite(f) or f < 0.0:
+		return 0.0
+	return f
 
 
 ## Unix "absent since" for a room-C pack key, or 0 if the pack is present /
