@@ -29,6 +29,7 @@ var _herald: HeraldArm
 var _herald_director: HeraldDirector
 var _chunks: ChunkStream
 var _save: SaveGame
+var _slice: SliceLayout
 
 
 func _ready() -> void:
@@ -76,6 +77,13 @@ func _bind_open_world() -> void:
 	var dummies := get_node_or_null("Dummies")
 	if _herald != null and dummies != null:
 		_herald.bind(_player, dummies)
+	# The vertical-slice ribbon: its walls stop bullets too, and procedural
+	# anchors inside its footprint are dropped.
+	_slice = get_node_or_null("SliceLayout") as SliceLayout
+	if _slice != null and not _slice.enabled:
+		_slice = null
+	if _slice != null:
+		_slice.bind_bullets(_bullets)
 	_chunks = get_node_or_null("ChunkStream") as ChunkStream
 	if _chunks == null:
 		return
@@ -84,6 +92,8 @@ func _bind_open_world() -> void:
 	_chunks.load_absent(_save.regular_absent)
 	_chunks.load_elite_kills(_save.elite_kills)
 	_chunks.player = _player
+	if _slice != null:
+		_chunks.footprint = SliceLayout.FOOTPRINT
 	if _chunks.enemy_scene == null:
 		_chunks.enemy_scene = preload("res://scenes/regular_enemy.tscn")
 	if _chunks.elite_scene == null:
@@ -95,6 +105,7 @@ func _bind_open_world() -> void:
 	_herald_director = get_node_or_null("HeraldDirector") as HeraldDirector
 	if _herald_director != null and _herald != null:
 		_herald_director.bind(_herald, _player, _save)
+		_herald_director.slice = _slice
 	# The bullet window follows the camera. The sandbox scene has no chunk
 	# stream and keeps the fixed rect its walls were built for.
 	_bullets.bounds_center = _camera
