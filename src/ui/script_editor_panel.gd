@@ -181,6 +181,8 @@ func bind(shot_scripts: ShotScripts) -> void:
 	if shots.problem != null:
 		load_problems.append(shots.problem)
 		_status_text(shots.problem.headline(shots.has_script()), COLOR_ERROR)
+	else:
+		load_problems.append_array(shots.warnings)
 	_reset_warning_base()
 	_refresh_title()
 	_refresh_problems()
@@ -282,6 +284,8 @@ func _on_weapon_swapped(swapped: String, origin: StringName) -> void:
 	if swapped != file_name and origin != ShotScripts.ORIGIN_START:
 		return
 	load_problems.clear()
+	# Non-fatal notes from this load (what the `state` copy dropped or cut).
+	load_problems.append_array(shots.warnings)
 	runtime_problems.clear()
 	_reset_warning_base()
 	var via := " (changed on disk)" if origin == ShotScripts.ORIGIN_FILE else ""
