@@ -18,6 +18,9 @@ extends Node2D
 ## the player slot in the game, and the GUT throwaway slot while tests run.
 ## Set a different path before the node enters the tree to use another file.
 @export var save_path := ""
+## Play-test: move the player just west of the Warden's aggro line (x=8736).
+## Same effect as the `warden-debug` command-line user arg.
+@export var debug_spawn_warden := false
 
 ## The player's scripted weapon (LuaShot), the shots/ files it comes from
 ## (lesson checkers listen to its script_saved / weapon_swapped signals), and
@@ -33,6 +36,8 @@ var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
+var _packs: SlicePacks
+var _warden: Warden
 
 
 func _ready() -> void:
@@ -57,8 +62,10 @@ func _ready() -> void:
 	_bind_open_world()
 	_bind_slice_progress()
 	_bind_slice_hud()
+	_bind_slice_packs()
 	WorldQuery.bind_bullets(_bullets)
-	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
+	_bind_warden()
+	_player.died.connect(_on_player_died)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
 	GameEvents.run_started.emit()
 
@@ -125,7 +132,7 @@ func _bind_slice_progress() -> void:
 	_progress = get_node_or_null("SliceProgress") as SliceProgress
 	if _progress == null:
 		return
-	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
+	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save, shot_scripts, _bullets)
 
 
 func _bind_slice_hud() -> void:
@@ -133,6 +140,13 @@ func _bind_slice_hud() -> void:
 	if _slice_hud == null:
 		return
 	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+
+
+func _bind_slice_packs() -> void:
+	_packs = get_node_or_null("SlicePacks") as SlicePacks
+	if _packs == null:
+		return
+	_packs.bind(_player, _progress, _bullets, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:
@@ -166,6 +180,30 @@ func _on_natural_shard() -> void:
 		return
 	_save.shards += 1
 	_save.save()
+
+
+func _bind_warden() -> void:
+	_warden = get_node_or_null("Warden") as Warden
+	if _warden == null:
+		return
+	_warden.bind(_player, _bullets, _camera, _save)
+	if _slice_hud != null:
+		_slice_hud.bind_boss(_warden, _warden.health)
+	if debug_spawn_warden or _has_user_arg("warden-debug"):
+		_player.global_position = Vector2(Warden.AGGRO_X - 200.0, 0.0)
+
+
+func _has_user_arg(flag: String) -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg == flag or arg == "--" + flag:
+			return true
+	return false
+
+
+func _on_player_died() -> void:
+	_respawn_timer = respawn_delay
+	if _warden != null and is_instance_valid(_warden):
+		_warden.on_player_died()
 
 
 func _exit_tree() -> void:
