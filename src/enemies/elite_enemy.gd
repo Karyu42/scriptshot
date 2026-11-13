@@ -23,16 +23,15 @@ const HALF_SEPARATION := 32.0
 const SUMMON_OFFSET := 48.0
 
 var affix := StringName()
-## AffixDef.RARITY_*. Picks the Summoner column (common or rare). Set before
-## the body enters the tree. The Herald and natural T0 elites are common.
-var rarity := AffixDef.RARITY_COMMON
+## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
+## EncounterSpec for a natural elite (ChunkStream sets it before the body
+## enters the tree); configure_elite can also pass it. The Herald is common.
+## Halves report RARITY_NONE: they are not elites. Summoner uses the same
+## value to pick its per-tier column.
+var rarity := EnemyKinds.RARITY_COMMON
 var is_herald := false
 var is_half := false
 var grants_shard := false
-## EnemyKinds.RARITY_*. From the EncounterSpec for a natural elite (ChunkStream
-## sets it before the body enters the tree); the Herald is common. Halves report
-## RARITY_NONE: they are not elites.
-var rarity := EnemyKinds.RARITY_COMMON
 var cue: EliteCue
 var sting: EliteSting
 
