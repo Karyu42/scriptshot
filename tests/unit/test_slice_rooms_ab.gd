@@ -207,6 +207,30 @@ func test_lesson_4_passes_only_when_the_killing_blow_lands_at_hp_4_or_less() -> 
 	assert_false(layout.gate_flag(SliceLayout.GATE_G3), "G3 also needs lesson 5")
 
 
+func test_lessons_3_and_4_pass_when_dummies_live_under_lesson_props() -> void:
+	# Shipping layout: the three origin targets stay under Dummies; the room
+	# A/B dummies, pad and plate sit under LessonProps, a sibling of Dummies.
+	var props := Node2D.new()
+	props.name = "LessonProps"
+	add_child_autofree(props)
+	for node: Node in [shield, hp_dummy, pad, plate]:
+		node.get_parent().remove_child(node)
+		props.add_child(node)
+	progress.bind(player, dummies, layout, save, null, bullets)
+	assert_eq(shield.get_parent().name, "LessonProps")
+	assert_eq(hp_dummy.get_parent().name, "LessonProps")
+	# Lesson 3: an open-side kill on the shield dummy must complete.
+	_spawn_player_bullet(shield.global_position + Vector2(30, 0), Vector2(-800, 0))
+	bullets.step(DT)
+	assert_eq(shield.deaths, 1)
+	assert_true(progress.is_lesson_done(3), "destroyed must be connected off LessonProps")
+	# Lesson 4: a killing blow at 4 HP or less.
+	player.health.set_hp(4.0)
+	progress.tick(DT)
+	hp_dummy._on_hit(40.0, hp_dummy.global_position, Vector2.RIGHT)
+	assert_true(progress.is_lesson_done(4))
+
+
 # --- lesson 5: plate --------------------------------------------------------
 
 func test_plate_reports_overlap_speed_and_passes_at_640_after_a_save() -> void:

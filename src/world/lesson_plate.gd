@@ -24,19 +24,39 @@ func world_rect() -> Rect2:
 ## the overlapping bullet's speed.
 func scan(manager: BulletManager = null) -> float:
 	var bm := manager if manager != null else bullets
-	if bm == null or not is_instance_valid(bm) or bm.pool == null:
+	if bm == null or not is_instance_valid(bm):
 		return -1.0
-	var pool := bm.pool
 	var rect := world_rect()
-	for i in pool.count:
-		if (pool.owner_layer[i] & Layers.PLAYER) == 0:
-			continue
-		var speed := _overlap_speed(rect, pool.pos[i], pool.radius[i], pool.vel[i])
-		if speed >= 0.0:
-			last_speed = speed
-			overlapped.emit(speed)
-			return speed
+	if bm.pool != null:
+		var pool := bm.pool
+		for i in pool.count:
+			if (pool.owner_layer[i] & Layers.PLAYER) == 0:
+				continue
+			var speed := _overlap_speed(rect, pool.pos[i], pool.radius[i], pool.vel[i])
+			if speed >= 0.0:
+				return _report(speed)
+	var native := bm.native
+	if native != null:
+		# snapshot() is the existing way to read radius; pos/vel/owner come
+		# from the per-slot accessors QA named.
+		var snap: Dictionary = native.snapshot()
+		var rads: PackedFloat32Array = snap.get("radius", PackedFloat32Array())
+		for s in native.count():
+			if not native.is_slot_alive(s):
+				continue
+			if (native.owner_at(s) & Layers.PLAYER) == 0:
+				continue
+			var radius := rads[s] if s < rads.size() else 0.0
+			var speed := _overlap_speed(rect, native.position_at(s), radius, native.velocity_at(s))
+			if speed >= 0.0:
+				return _report(speed)
 	return -1.0
+
+
+func _report(speed: float) -> float:
+	last_speed = speed
+	overlapped.emit(speed)
+	return speed
 
 
 func _overlap_speed(rect: Rect2, pos: Vector2, radius: float, vel: Vector2) -> float:

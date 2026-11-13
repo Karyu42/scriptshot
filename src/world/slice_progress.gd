@@ -328,21 +328,26 @@ func _disconnect_owned(sig: Signal) -> void:
 
 
 func _connect_dummies() -> void:
-	if _dummies == null:
-		return
-	for child in _dummies.get_children():
-		var dummy := child as TrainingDummy
-		if dummy == null:
-			continue
-		var role := _role_of(dummy)
-		var box := dummy.get_node_or_null("Hurtbox") as Hurtbox
-		if box != null and role != &"":
-			_disconnect_owned(box.hit)
-			box.hit.connect(_on_hurtbox_hit.bind(dummy))
-		_disconnect_owned(dummy.destroyed)
-		dummy.destroyed.connect(_on_dummy_destroyed.bind(dummy))
+	if _dummies != null:
+		for child in _dummies.get_children():
+			_connect_one_dummy(child as TrainingDummy)
+	# Room A/B dummies live under LessonProps in main.tscn, not Dummies.
+	_connect_one_dummy(_shield_dummy)
+	_connect_one_dummy(_pad_dummy)
 	if not GameEvents.enemy_killed.is_connected(_on_enemy_killed):
 		GameEvents.enemy_killed.connect(_on_enemy_killed)
+
+
+func _connect_one_dummy(dummy: TrainingDummy) -> void:
+	if dummy == null or not is_instance_valid(dummy):
+		return
+	var role := _role_of(dummy)
+	var box := dummy.get_node_or_null("Hurtbox") as Hurtbox
+	if box != null and role != &"":
+		_disconnect_owned(box.hit)
+		box.hit.connect(_on_hurtbox_hit.bind(dummy))
+	_disconnect_owned(dummy.destroyed)
+	dummy.destroyed.connect(_on_dummy_destroyed.bind(dummy))
 
 
 func _update_fire(delta: float) -> void:
