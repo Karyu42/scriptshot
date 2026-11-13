@@ -32,6 +32,7 @@ var _chunks: ChunkStream
 var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
+var _slice_hud: SliceHud
 
 
 func _ready() -> void:
@@ -51,6 +52,7 @@ func _ready() -> void:
 			mirror.target = _player
 	_bind_open_world()
 	_bind_slice_progress()
+	_bind_slice_hud()
 	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
@@ -119,6 +121,13 @@ func _bind_slice_progress() -> void:
 	if _progress == null:
 		return
 	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
+
+
+func _bind_slice_hud() -> void:
+	_slice_hud = get_node_or_null("SliceHud") as SliceHud
+	if _slice_hud == null:
+		return
+	_slice_hud.bind(_player, _progress, editor, shot_scripts)
 
 
 func current_save_path() -> String:
