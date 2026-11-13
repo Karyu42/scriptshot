@@ -110,12 +110,22 @@ reused; Lua states are pinned, so a weapon holds at most `MAX_GENERATIONS` (3).
 When all three are busy, the new version loads into a fresh env on the oldest
 one's host; only if that load gives a weapon is the oldest stripped silently
 (its shots fly on as plain bullets). A save that fails to load strips nothing.
-A new generation (a new or reused slot) always starts from fresh sandbox
-globals and its own copies of the library tables (`string`, `math`, `table`,
-...), so it neither sees nor changes what another version set. Method calls on
-strings (`s:sub(...)`) always use the sandbox's string functions. An in-place
-reload of an idle version (no hooked shots in flight) keeps that version's env:
-top-level globals it set stay visible to the new code.
+Every save (in place on an idle version, or a new generation on a new or
+reused slot) starts from fresh sandbox globals and its own copies of the
+library tables (`string`, `math`, `table`, ...), so it neither sees nor
+changes what another version set. Method calls on strings (`s:sub(...)`)
+always use the sandbox's string functions. Only the weapon's `state` global
+carries over: `ScriptHost.export_state()` encodes the running version's
+`state` (plain data, shared references kept, cycles cut, functions dropped,
+capped at `STATE_MAX_DEPTH` / `STATE_MAX_ENTRIES` / `STATE_MAX_BYTES`) with
+the trusted `scripting/state_codec.lua`, and `load_string(..., state_blob)`
+decodes it into the new env before the file runs. The blob is ASCII text, so
+it crosses Lua states through GDScript. A failed load leaves the running env
+and its `state` untouched. What a copy dropped or cut comes back on
+`RunResult.warnings`, `ShotScripts.warnings` (editor Problems list, as
+warnings) and `ScriptWarnings` (`LuaShot.state_copy`). Respawn keeps the
+weapon, so `state` survives death. A state rotated after three guard stops
+reloads with its `state` and, when the host had fresh envs, gets them again.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and
