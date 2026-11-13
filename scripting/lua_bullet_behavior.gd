@@ -36,7 +36,9 @@ var guard_stops := 0
 const SUSPEND_AFTER_STOPS := 3
 
 
-func _init() -> void:
+## `shared_host`: run on an existing ScriptHost (LuaShot reuses one per
+## generation slot). Default: a new one.
+func _init(shared_host: ScriptHost = null) -> void:
 	# HOOK_AUTO would see these four overrides and call all of them.
 	hook_mask = 0
 	hook_mask_exact = true
@@ -44,7 +46,7 @@ func _init() -> void:
 	# treat that override as a batch behavior for every Lua weapon. PER_BULLET
 	# until the script actually defines on_batch.
 	update_mode = UpdateMode.PER_BULLET
-	host = ScriptHost.new()
+	host = shared_host if shared_host != null else ScriptHost.new()
 
 
 func dispatches(name: String) -> int:

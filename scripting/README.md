@@ -98,12 +98,12 @@ counted and rate-limited but it keeps being called. Raw `LuaBulletBehavior`s
 keep the old behaviour (`skip_failed_callbacks` is off).
 
 Hot reload (`LuaShot.apply`) runs at a frame boundary. A version with live
-hooked shots is kept as its own generation (at most `MAX_GENERATIONS`, 3,
-since Lua states are pinned), so shots in flight finish on the chunk they were
-fired with. When all three are busy the current one reloads in place; the
-callbacks are matched by name, so that is safe. TODO: once GE's
-`hooked_count_for_owner` / `strip_hooks_for_owner` land, use them for the
-"all busy" case instead.
+hooked shots is kept as its own generation (own owner id), so shots in flight
+finish on the chunk they were fired with. On `hooked_owner_drained` an old
+generation is released (`release_behavior`) and its slot's ScriptHost is
+reused; Lua states are pinned, so a weapon holds at most `MAX_GENERATIONS` (3).
+When all three are busy the reload fails with a one-line error and the
+current version keeps running.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and

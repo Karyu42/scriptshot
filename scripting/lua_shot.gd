@@ -10,21 +10,24 @@ extends ShotPattern
 ## apply() is the hot reload. Call it at a frame boundary, outside the bullet
 ## step (the editor uses call_deferred). In-flight shots keep the version they
 ## were fired with:
-##   * when the current version has no live shots, the new code replaces it in
-##     place (nothing in flight can see the swap);
-##   * otherwise the new code goes into another generation (a second
-##     LuaBulletBehavior with its own ScriptHost) that has no live shots, or a
-##     new one while there are fewer than MAX_GENERATIONS; old shots finish on
-##     their own generation's chunk;
-##   * with every generation busy, the current one is reloaded in place: live
-##     shots of that version then call the new callbacks by name on their next
-##     dispatch (the documented `reload = "migrate"` behaviour).
-## TODO(hot-reload): when BulletManager grows hooked_count_for_owner /
-## strip_hooks_for_owner (Gameplay Engineer), replace the in-place fallback
-## with stripping the oldest generation's hooks so the cap is never exceeded.
-## A failed apply never replaces the running version.
+##   * when the current version has no hooked shots in flight, the new code
+##     replaces it in place (nothing in flight can see the swap);
+##   * otherwise the new code starts a new generation: a fresh
+##     LuaBulletBehavior registered under its own owner id, on a free slot's
+##     ScriptHost. Old shots finish on their own generation's chunk;
+##   * a generation that is no longer current is released when its last hooked
+##     shot is gone (BulletManager.hooked_owner_drained): release_behavior()
+##     drops the behaviour, and its host drops the weapon table so the old
+##     chunk is collected. The host goes back to its slot for a later generation;
+##   * with every slot busy (MAX_GENERATIONS versions with shots in flight),
+##     apply fails with SLOTS_BUSY_ERROR and the current version keeps running.
+##     Shots never switch to another version's callbacks and are never
+##     stripped; saving again once the oldest shots are gone works.
+## Lua states are never freed (lua-gdextension #240), so a weapon keeps at most
+## MAX_GENERATIONS ScriptHosts (one per slot) for its whole life, however often
+## it is reloaded. A failed apply never replaces the running version.
 
-## Lua states are never freed (lua-gdextension #240), so generations are capped.
+## Slots, and so Lua states, per weapon.
 const MAX_GENERATIONS := 3
 const DEFAULT_COOLDOWN := 0.11
 const DEFAULT_SPEED := 760.0
@@ -33,6 +36,8 @@ const DEFAULT_DAMAGE := 1.0
 const DEFAULT_RADIUS := 4.0
 ## RunResult.error of a load that ran but did not return a weapon table.
 const NO_TABLE_ERROR := "the script did not return a table"
+## RunResult.error of an apply refused because every slot still has shots in flight.
+const SLOTS_BUSY_ERROR := "Older versions of this script still have shots in flight. Save again in a moment."
 
 var manager: BulletManager
 var chunk_name := "weapon.lua"
@@ -48,17 +53,29 @@ var source := ""
 ## Clean applies so far, and how many of them went into another generation.
 var applied_count := 0
 var generation_switches := 0
+## Reloads that swapped code under shots in flight. Stays 0: a version with
+## hooked shots in flight is never reloaded in place.
 var in_place_with_live_shots := 0
+## Old generations released after their last hooked shot was gone.
+var released_count := 0
 
+## One entry per slot. A slot's host lives as long as the weapon; the
+## generation on it (behaviour, owner id) is null / 0 while free.
+var _hosts: Array[ScriptHost] = []
 var _gens: Array[LuaBulletBehavior] = []
 var _gen_ids: Array[int] = []
 var _current := -1
+## True inside apply(); drains that arrive meanwhile wait in _drained_later.
+var _applying := false
+var _drained_later: Array[int] = []
 var _request := ShotRequest.new()
 
 
 func _init(bullet_manager: BulletManager = null) -> void:
 	manager = bullet_manager
 	fire_interval = DEFAULT_COOLDOWN
+	if manager != null:
+		manager.hooked_owner_drained.connect(_on_owner_drained)
 
 
 ## The behaviour of the running version, or null before the first clean apply.
@@ -70,8 +87,34 @@ func behavior_id() -> int:
 	return _gen_ids[_current] if _current >= 0 else 0
 
 
+## Generations alive: the current one plus old ones with shots in flight.
 func generation_count() -> int:
-	return _gens.size()
+	var n := 0
+	for b in _gens:
+		if b != null:
+			n += 1
+	return n
+
+
+## ScriptHosts (slots) this weapon holds. Never more than MAX_GENERATIONS.
+func host_count() -> int:
+	return _hosts.size()
+
+
+## Lua states held by this weapon's hosts, retired ones included.
+func lua_state_count() -> int:
+	var n := 0
+	for h in _hosts:
+		n += h.lua_state_count()
+	return n
+
+
+## Lua heap of this weapon's hosts in bytes, retired states included.
+func lua_memory() -> int:
+	var n := 0
+	for h in _hosts:
+		n += h.lua_memory()
+	return n
 
 
 func has_script() -> bool:
@@ -82,68 +125,136 @@ func has_script() -> bool:
 ## it. On failure (compile error, error or stop while loading, or no table
 ## returned) the running version is kept and the result carries the error.
 func apply(code: String) -> ScriptHost.RunResult:
-	if manager == null:
+	if not _has_manager():
 		var no_manager := ScriptHost.RunResult.new()
 		no_manager.error = "no bullet manager"
 		return no_manager
-	var target := _pick_target()
-	if target < 0:
-		target = _add_generation()
-	var behavior_ref := _gens[target]
-	var result := behavior_ref.load_source(code, chunk_name, manager, _gen_ids[target])
+	_applying = true
+	_release_idle_old()
+	var result := _apply(code)
+	_applying = false
+	_flush_drained()
+	return result
+
+
+func _apply(code: String) -> ScriptHost.RunResult:
+	if _current >= 0 and _live_shots(_current) == 0:
+		return _load_into(_current, code)
+	var slot := _free_slot()
+	if slot < 0 and _hosts.size() < MAX_GENERATIONS:
+		slot = _add_slot()
+	if slot < 0:
+		var full := ScriptHost.RunResult.new()
+		full.chunk_name = chunk_name
+		full.error = SLOTS_BUSY_ERROR
+		return full
+	return _load_into(slot, code)
+
+
+## Loads `code` into `slot`: in place when it holds the current generation,
+## otherwise as a new generation that becomes current on success.
+func _load_into(slot: int, code: String) -> ScriptHost.RunResult:
+	var in_place := _gens[slot] != null
+	var behavior_ref := _gens[slot]
+	if not in_place:
+		behavior_ref = LuaBulletBehavior.new(_hosts[slot])
+		behavior_ref.skip_failed_callbacks = true
+	var result: ScriptHost.RunResult
+	if in_place:
+		result = behavior_ref.load_source(code, chunk_name, manager, _gen_ids[slot])
+	else:
+		result = behavior_ref.load_source(code, chunk_name)
 	var adopted := result.ok and result.value is LuaTable and behavior_ref.host.has_weapon()
 	# Do not keep Lua wrappers on a result the editor may hold.
 	result.value = null
 	if result.ok and not adopted:
 		result.ok = false
 		result.error = NO_TABLE_ERROR
-		return result
 	if not result.ok:
 		return result
-	if target != _current and _current >= 0:
-		generation_switches += 1
-	elif target == _current and _live_shots(_current) > 0:
-		in_place_with_live_shots += 1
-	_current = target
+	if not in_place:
+		_gens[slot] = behavior_ref
+		_gen_ids[slot] = manager.register_behavior(behavior_ref)
+		if _current >= 0:
+			generation_switches += 1
+	_current = slot
 	source = code
 	applied_count += 1
 	_read_settings(behavior_ref.host)
 	return result
 
 
-func _pick_target() -> int:
-	if _current >= 0 and _live_shots(_current) == 0:
-		return _current
+func _free_slot() -> int:
 	for i in _gens.size():
-		if i != _current and _live_shots(i) == 0:
+		if _gens[i] == null:
 			return i
-	if _gens.size() < MAX_GENERATIONS:
-		return -1
-	return _current
+	return -1
 
 
-func _add_generation() -> int:
-	var b := LuaBulletBehavior.new()
-	b.skip_failed_callbacks = true
-	_gens.append(b)
-	_gen_ids.append(manager.register_behavior(b))
-	return _gens.size() - 1
+func _add_slot() -> int:
+	_hosts.append(ScriptHost.new())
+	_gens.append(null)
+	_gen_ids.append(0)
+	return _hosts.size() - 1
 
 
-## Live shots of generation `index`, on the pool and in the native sim.
+## BulletManager.hooked_owner_drained. Emitted at the end of step(), from
+## clear_bullets() and from strip / release (also from inside our own
+## release_behavior call). Unknown, already released and current ids are
+## ignored; during apply() the id waits until apply() is done.
+func _on_owner_drained(owner_id: int) -> void:
+	if owner_id <= 0:
+		return
+	if _applying:
+		if not _drained_later.has(owner_id):
+			_drained_later.append(owner_id)
+		return
+	var slot := _gen_ids.find(owner_id)
+	if slot < 0 or slot == _current or _gens[slot] == null:
+		return
+	if _live_shots(slot) > 0:
+		return
+	_release_slot(slot)
+
+
+func _flush_drained() -> void:
+	var ids := _drained_later.duplicate()
+	_drained_later.clear()
+	for id: int in ids:
+		_on_owner_drained(id)
+
+
+## Old generations that have nothing in flight (a drain the weapon missed, or
+## one that never had a hooked shot).
+func _release_idle_old() -> void:
+	for i in _gens.size():
+		if i != _current and _gens[i] != null and _live_shots(i) == 0:
+			_release_slot(i)
+
+
+## Frees slot `slot` for a later generation. The slot is cleared before the
+## manager is told, so the drain that release_behavior emits finds nothing.
+func _release_slot(slot: int) -> void:
+	var id := _gen_ids[slot]
+	_gens[slot] = null
+	_gen_ids[slot] = 0
+	if slot == _current:
+		_current = -1
+	if id > 0 and _has_manager():
+		manager.release_behavior(id)
+	_hosts[slot].release_weapon()
+	released_count += 1
+
+
+func _has_manager() -> bool:
+	return manager != null and is_instance_valid(manager)
+
+
+## Hooked shots of slot `index` in flight, in the pool and in the native sim.
 func _live_shots(index: int) -> int:
-	if index < 0 or index >= _gens.size() or manager == null:
+	if index < 0 or index >= _gen_ids.size() or not _has_manager():
 		return 0
-	var id := _gen_ids[index]
-	var n := 0
-	var pool := manager.pool
-	if pool != null:
-		for i in pool.count:
-			if pool.behavior[i] == id and pool.dead_reason[i] == 0:
-				n += 1
-	if manager.native != null:
-		n += manager.native.count_with_behavior(id)
-	return n
+	return manager.hooked_count_for_owner(_gen_ids[index])
 
 
 func live_shots_of_current() -> int:

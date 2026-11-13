@@ -768,6 +768,37 @@ func memory_peak() -> int:
 	return _mem_peak
 
 
+## Lua heap in bytes: the current state plus the retired ones.
+func lua_memory() -> int:
+	var n := int(_state.get_memory_used()) if _state != null else 0
+	for r in _retired:
+		if r.state != null:
+			n += int(r.state.get_memory_used())
+	return n
+
+
+## Lua states this host holds: the current one plus the retired ones.
+func lua_state_count() -> int:
+	return (1 if _state != null else 0) + _retired.size()
+
+
+## Drops the weapon table and its callbacks so the chunk that built them can
+## be collected, then runs a full collection. The state and its sandbox stay
+## (states are never freed, see shutdown()); a later load_string reuses them.
+## LuaShot calls this when a generation is released. No-op inside a call.
+func release_weapon() -> void:
+	if _closed or _in_lua or _state == null:
+		return
+	_callbacks.clear()
+	_weapon = null
+	_names = PackedStringArray()
+	_source = ""
+	# _value_threads and _parked stay: a wrapper elsewhere may still be tied
+	# to one of those coroutines (see _run).
+	_clear_pending()
+	_state.collect_garbage()
+
+
 func has_weapon() -> bool:
 	return _weapon != null
 

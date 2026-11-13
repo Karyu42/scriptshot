@@ -155,12 +155,16 @@ func test_an_idle_version_is_reloaded_in_place_and_generations_are_capped() -> v
 	_apply(shot, "return { name = 'B' }")
 	assert_eq(shot.behavior_id(), first, "no live shots: reloaded in place")
 	assert_eq(shot.generation_count(), 1)
-	for i in 6:
+	for i in LuaShot.MAX_GENERATIONS:
 		_apply(shot, "return { name = 'G%d', lifetime = 9, speed = 1, on_hit = function() end }" % i)
 		_fire(manager, shot)
 		_steps(manager, 1)
-	assert_lte(shot.generation_count(), LuaShot.MAX_GENERATIONS, "Lua states are never freed: generations stay capped")
-	assert_gt(shot.in_place_with_live_shots, 0, "with every generation busy the current one is reloaded in place")
+	var full := shot.apply("return { name = 'Too soon' }")
+	assert_false(full.ok, "all three generations have shots in flight")
+	assert_eq(shot.title, "G2", "keep the last good script")
+	assert_lte(shot.generation_count(), LuaShot.MAX_GENERATIONS)
+	assert_lte(shot.host_count(), LuaShot.MAX_GENERATIONS)
+	assert_eq(shot.in_place_with_live_shots, 0, "shots in flight never switch to new code")
 
 
 func test_a_failing_bullet_callback_is_skipped_until_the_next_load() -> void:
