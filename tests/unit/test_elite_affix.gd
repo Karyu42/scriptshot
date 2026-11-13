@@ -34,8 +34,17 @@ func test_affix_resources_match_the_common_row() -> void:
 	assert_eq(summoner.group, AffixDef.GROUP_SPAWN)
 	assert_almost_eq(summoner.interval, 6.0, 0.0001)
 	assert_eq(summoner.count, 2)
-	assert_eq(summoner.max_alive, 6)
+	assert_eq(summoner.max_alive, 2)
+	assert_almost_eq(summoner.summon_hp, 1.0, 0.0001)
 	assert_false(summoner.drop)
+	assert_almost_eq(summoner.rare_interval, 4.0, 0.0001)
+	assert_eq(summoner.rare_count, 2)
+	assert_eq(summoner.rare_max_alive, 8)
+	assert_almost_eq(summoner.legendary_interval, 6.0, 0.0001)
+	assert_eq(summoner.legendary_count, 2)
+	assert_eq(summoner.legendary_max_alive, 6)
+	assert_almost_eq(summoner.legendary_summon_hp, 105.0, 0.0001)
+	assert_eq(summoner.legendary_summon_kind, &"drifter")
 	assert_false(AffixCatalog.allows_pair(AffixCatalog.SPLITTING, AffixCatalog.SUMMONER))
 	assert_false(AffixCatalog.allows_pair(AffixCatalog.SUMMONER, AffixCatalog.SPLITTING))
 	assert_true(AffixCatalog.allows_pair(AffixCatalog.SPLITTING, &"bulwark"))
@@ -80,7 +89,7 @@ func test_splitting_dies_to_basic_shot_and_leaves_two_halves() -> void:
 	assert_eq(_living_halves(elite.get_parent()).size(), 0)
 
 
-func test_summoner_never_exceeds_six_and_dies_to_basic_shot() -> void:
+func test_summoner_never_exceeds_two_and_dies_to_basic_shot() -> void:
 	var player := _node_player(FAR + Vector2(0, 4000))
 	var elite := _elite(AffixCatalog.SUMMONER, FAR, player)
 	assert_false(elite.woken)
@@ -91,29 +100,28 @@ func test_summoner_never_exceeds_six_and_dies_to_basic_shot() -> void:
 	assert_eq(elite.summon_alive(), 2, "the first wave is at 6 s")
 	for _wave in 6:
 		elite._physics_process(6.0)
-		assert_lte(elite.summon_alive(), 6)
+		assert_lte(elite.summon_alive(), 2)
 		for body: RegularEnemy in _children_of(elite.get_parent()):
 			if body == elite or not body.is_alive():
 				continue
+			assert_true(body is SummonAdd)
 			assert_eq(body.archetype, RegularEnemy.ARCH_SWARMER)
 			assert_false(body.is_in_group(EliteEnemy.GROUP_ELITE))
 			assert_gte(body.global_position.length() - body.body_radius, WorldGen.SAFE_RADIUS - 0.05)
-	assert_eq(elite.summon_alive(), 6)
+	assert_eq(elite.summon_alive(), 2)
 	var living := _swarmers(elite.get_parent())
-	assert_eq(living.size(), 6)
+	assert_eq(living.size(), 2)
 	living[0].health.damage(living[0].health.max_hp)
-	living[1].health.damage(living[1].health.max_hp)
-	assert_eq(elite.summon_alive(), 4)
+	assert_eq(elite.summon_alive(), 1)
 	elite._physics_process(6.0)
-	assert_eq(elite.summon_alive(), 6)
+	assert_eq(elite.summon_alive(), 2, "the next wave refills only up to the cap")
 	elite._physics_process(6.0)
-	assert_eq(elite.summon_alive(), 6)
+	assert_eq(elite.summon_alive(), 2)
 	var manager := _manager()
 	assert_eq(_shots_to_kill(manager, elite), 75)
 	assert_false(elite.is_alive())
-	# Summons are not cleared by the elite's death, and they still cap at 6
-	# because the elite is the only summoner.
-	assert_eq(_swarmers(elite.get_parent()).size(), 6)
+	# Summons are not cleared by the elite's death.
+	assert_eq(_swarmers(elite.get_parent()).size(), 2)
 
 
 func test_bodies_slide_on_the_safe_disk_and_do_not_hit_inside_it() -> void:
