@@ -19,11 +19,14 @@ var _alive := true
 var _flash_left := 0.0
 ## Current angle on the orbit circle, driven by the core.
 var orbit_angle := 0.0
+## True only for this body's first death this fight. Respawned husks stay false.
+var _first_death := true
 
 
-func setup(core: Warden, slot: int) -> void:
+func setup(core: Warden, slot: int, first_death: bool = true) -> void:
 	_core = core
 	_slot = slot
+	_first_death = first_death
 	z_index = 3
 
 
@@ -96,8 +99,9 @@ func _on_died() -> void:
 	WorldQuery.unregister_enemy(self)
 	var pos := global_position
 	GameEvents.enemy_killed.emit(
-		EnemyKinds.HUSK, EnemyKinds.RARITY_NONE, 0, pos, true
+		EnemyKinds.HUSK, EnemyKinds.RARITY_NONE, 0, pos, _first_death
 	)
+	_first_death = false
 	if _core != null and is_instance_valid(_core):
 		_core.notify_husk_died(_slot, pos)
 	queue_free()

@@ -356,12 +356,178 @@ func test_seen_it_feeds_missing_or_non_bool_reads_as_false() -> void:
 	assert_eq(SaveGame.load_from(ok.path).seen_it_feeds, true)
 
 
+func test_a_corpse_past_aggro_x_does_not_reaggro() -> void:
+	var player := _player(ARENA)
+	var warden := _warden()
+	warden.bind(player, null)
+	warden.debug_force_aggro()
+	assert_true(warden.is_aggroed())
+	assert_gt(player.global_position.x, Warden.AGGRO_X)
+	player.health.set_hp(0.0)
+	assert_true(player.is_dead())
+	assert_true(player.health.is_dead())
+	warden.on_player_died()
+	assert_false(warden.is_aggroed())
+	# The corpse stays past the line for the 1.5 s wait; the boss must not
+	# come back on, spawn husks, or start the Lance first-wait.
+	var waited := 0.0
+	while waited < 1.5:
+		warden._physics_process(DT)
+		waited += DT
+	assert_false(warden.is_aggroed())
+	assert_eq(warden._living_husk_count(), 0)
+	assert_false(warden._lance_winding)
+	# After the respawn at the origin, aggro stays off.
+	player.respawn(Vector2.ZERO)
+	assert_false(player.is_dead())
+	assert_lt(player.global_position.x, Warden.AGGRO_X)
+	warden._physics_process(DT)
+	assert_false(warden.is_aggroed())
+	assert_eq(warden._living_husk_count(), 0)
+
+
+func test_in_flight_lance_clears_on_player_death_and_warden_death() -> void:
+	var manager := _manager()
+	var player := _player(ARENA + Vector2(-200, 0))
+	var warden := _warden()
+	warden.bind(player, manager)
+	warden.debug_force_aggro()
+	warden.last_lance = null
+	warden.call("_fire_lance")
+	assert_not_null(warden.last_lance)
+	assert_gt(manager.owner_count_all(Layers.ENEMY), 0)
+	warden.on_player_died()
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 0)
+	# Re-aggro, fire, then the core dies: leftover Lance is also cleared.
+	warden.debug_force_aggro()
+	warden.call("_fire_lance")
+	assert_gt(manager.owner_count_all(Layers.ENEMY), 0)
+	warden.health.set_hp(0.0)
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 0)
+
+
+func test_last_lance_is_recorded_only_when_spawn_succeeds() -> void:
+	var manager := _manager()
+	manager.set_bullet_limits(1, 0)
+	var player := _player(ARENA + Vector2(-200, 0))
+	var warden := _warden()
+	warden.bind(player, manager)
+	warden.debug_force_aggro()
+	warden.call("_fire_lance")
+	assert_not_null(warden.last_lance)
+	warden.last_lance = null
+	warden.call("_fire_lance")
+	assert_null(warden.last_lance, "a refused spawn must not record last_lance")
+
+
+func test_respawned_husk_emits_first_death_false() -> void:
+	var warden := _warden()
+	var player := _player(ARENA + Vector2(-400, 0))
+	warden.bind(player, null)
+	warden.debug_force_aggro()
+	var firsts: Array[bool] = []
+	var kinds: Array[StringName] = []
+	var killed := func(
+		kind: StringName, _r: int, _t: int, _p: Vector2, first: bool
+	) -> void:
+		kinds.append(kind)
+		firsts.append(first)
+	GameEvents.enemy_killed.connect(killed)
+	var husk := warden.husks()[0]
+	var slot := husk.slot()
+	husk.health.set_hp(0.0)
+	assert_eq(kinds, [EnemyKinds.HUSK])
+	assert_eq(firsts, [true])
+	warden._respawn_left[slot] = 0.01
+	warden._physics_process(0.01)
+	var again := warden.husks()[slot]
+	assert_not_null(again)
+	assert_true(again.is_alive())
+	again.health.set_hp(0.0)
+	GameEvents.enemy_killed.disconnect(killed)
+	assert_eq(kinds.size(), 2)
+	assert_eq(kinds[1], EnemyKinds.HUSK)
+	assert_eq(firsts[1], false)
+
+
+func test_gap_tick_edges_and_tracking() -> void:
+	var player := _player(ARENA + Vector2(200, 0))
+	var warden := _warden()
+	warden.bind(player, null)
+	warden.debug_force_aggro()
+	warden._gap_angle = 0.0
+	# Far-side bearing is due west; the gap turns at 120°/s in phases 1–2.
+	warden._physics_process(0.5)
+	var expected := clampf(angle_difference(0.0, PI), -Warden.GAP_TURN_12 * 0.5, Warden.GAP_TURN_12 * 0.5)
+	assert_almost_eq(warden.gap_angle(), expected, 0.02)
+	# Reset the gap to due east to pin the tick's edge angles.
+	warden._gap_angle = 0.0
+	var tick := warden.gap_point()
+	# A contact on the tick's rim is still ×1.
+	var before := warden.health.hp
+	warden.apply_debug_hit(tick + Vector2(0, Warden.GAP_HURT_RADIUS), 10.0, 0, 101)
+	assert_almost_eq(warden.health.hp, before - 10.0, 0.001)
+	# Just outside the tick, on the body and still in the 70° opening, is ×0.1.
+	var rim := tick + Vector2(0, Warden.GAP_HURT_RADIUS + 1.0)
+	assert_true(warden._in_body(rim))
+	assert_false(warden._in_gap_tick(rim))
+	before = warden.health.hp
+	warden.apply_debug_hit(rim, 10.0, 0, 102)
+	assert_almost_eq(warden.health.hp, before - 1.0, 0.001)
+
+
+func test_a_piercing_shot_through_the_gap_tick_deals_x1_once() -> void:
+	var warden := _warden()
+	warden.debug_force_aggro()
+	var before := warden.health.hp
+	# Same bullet id: gap tick, then a body contact inside the tick.
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, 7)
+	warden.apply_debug_hit(warden.global_position + Vector2(40, 0), 1.0, 0, 7)
+	assert_almost_eq(warden.health.hp, before - 1.0, 0.001)
+	# A different bullet still applies.
+	warden.apply_debug_hit(warden.gap_point(), 1.0, 0, 8)
+	assert_almost_eq(warden.health.hp, before - 2.0, 0.001)
+
+	# Live piercing bullet through the tick on the GDScript backend.
+	var manager := _manager()
+	var player := _player(ARENA + Vector2(-200, 0))
+	var live := _warden(ARENA + Vector2(0, 800))
+	live.bind(player, manager)
+	live.debug_force_aggro()
+	live._gap_angle = 0.0
+	var hp := live.health.hp
+	var req := ShotRequest.with_velocity(
+		live.global_position + Vector2(80, 0), Vector2(-800, 0)
+	)
+	req.radius = 4.0
+	req.damage = 1.0
+	req.pierce = 4
+	req.lifetime = 2.0
+	req.hit_mask = Layers.ENEMY
+	req.owner_layer = Layers.PLAYER
+	manager.spawn(req)
+	for _i in 20:
+		manager.step(DT)
+	assert_almost_eq(live.health.hp, hp - 1.0, 0.001)
+
+
 class _StubProgress:
 	extends Node
 	var calls := 0
 
 	func notify_warden_defeated() -> void:
 		calls += 1
+
+
+func _manager() -> BulletManager:
+	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
+	manager.capacity = 64
+	manager.world_bounds = Rect2(8000, -2000, 4000, 4000)
+	manager.render_enabled = false
+	manager.auto_step = false
+	add_child_autofree(manager)
+	return manager
 
 
 func _warden(at: Vector2 = ARENA) -> Warden:
