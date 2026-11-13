@@ -1103,7 +1103,7 @@ Save the file and the game reloads it, no restart needed.
   Row order in the next `on_batch` stays unspecified. If the pool has no physical room for one of those bullets, that
   bullet is dropped and `BulletManager.migrate` warns.
 - Shots **already in flight** keep running their old callbacks until they die (default),
-  because mixing versions mid-flight would be surprising. Option: `reload = "migrate"`
+  because mixing versions mid-flight would be surprising. At most **3** script versions stay alive. **Game Designer call (vertical slice, SE PR #95):** a save is never refused. When a 4th version arrives while all 3 kept versions still have hooked shots in flight, the oldest version's in-flight shots drop their script hooks and fly on as plain bullets. They keep their speed, damage, lifetime, and look. They get no more steering, `on_hit`, or `on_batch`. The drop is silent, with no toast. `script_saved` still fires. Option: `reload = "migrate"`
   at the top of the weapon table to make in-flight shots switch to the new callbacks,
   matched by callback name, keeping `state`.
 - Timers and coroutines of old shots finish with the old code.
