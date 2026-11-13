@@ -143,6 +143,10 @@ func enemy_tier() -> int:
 
 
 func _ready() -> void:
+	# Row 2: regulars and Summoner adds stay out of SliceLayout walls when
+	# the ribbon is on, same rule as elites. Off (or no layout): skip the
+	# world-layer query.
+	collide_walls = _ribbon_has_walls()
 	health = get_node("Health") as Health
 	_hurtbox = get_node("Hurtbox") as Hurtbox
 	_apply_stats()
@@ -236,13 +240,23 @@ func _idle(delta: float) -> void:
 	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, global_position + _heading))
 
 
-## Off for regulars (row 2 decides their wall rule). EliteEnemy turns it on,
-## so elites, their halves and the Herald stay out of `world`-layer walls (the
-## SliceLayout rooms): after each step the body is pushed out of any wall it
-## overlaps, which also slides it along that wall. A step is at most a few px,
-## well under the 4 px gate plus the body radius, so it cannot tunnel.
+## When true, after each step the body is pushed out of any `world`-layer
+## wall it overlaps (SliceLayout rooms), which also slides it along that wall.
+## A step is at most a few px, well under the 4 px gate plus the body radius,
+## so it cannot tunnel. `_ready` turns this on when an enabled ribbon is in
+## the tree; EliteEnemy sets it the same way before calling super.
 var collide_walls := false
 var _wall_query: PhysicsShapeQueryParameters2D
+
+
+func _ribbon_has_walls() -> bool:
+	if not is_inside_tree():
+		return false
+	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
+		var slice := node as SliceLayout
+		if slice != null and slice.enabled:
+			return true
+	return false
 
 
 func _keep_off_walls(p: Vector2) -> Vector2:
