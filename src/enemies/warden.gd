@@ -1,15 +1,15 @@
 class_name Warden
 extends Node2D
-## Vertical-slice row 8: Warden phase 1 (docs/design/vertical-slice.md §5).
+## Vertical-slice rows 8–9: the Warden (docs/design/vertical-slice.md §5).
 ##
-## Phases 2–3 (Fan, Broken ring, habituation, fourth husk) are row 9 and are
-## stubbed here: the phase index still clamps forward at the HP thresholds so
-## the HUD and tests can bind, but the attack set stays at phase 1.
+## Phase 1 is the Lance and three husks. Phase 2 (HP ≤ 630) is the Fan, four
+## husks, and Phasing on the two closest to the player. Phase 3 (HP ≤ 360) is
+## the Broken ring and two husks. Habituation is on behind boss_habituation.
 ##
 ## #85's Hurtbox ABSORB is not on main. ARMOR_ABSORBS is an easy local switch:
-## false (default, per §5 / row 8 acceptance) applies ×0.1 to the body; true
-## makes body hits vanish. The 70° gap is the armor *ring* (tracks facing, never
-## shrinks with HP) and is independent of the HUD boss bar.
+## false (default, per §5 / GD #96) applies ×0.1 to the body; true makes body
+## hits vanish. The 70° gap is the armor *ring* (tracks facing, never shrinks
+## with HP) and is independent of the HUD boss bar.
 
 signal phase_changed(phase: int)
 signal defeated
@@ -32,7 +32,9 @@ const PHASE_COUNT := 3
 const GAP_TURN_12 := deg_to_rad(120.0)
 const GAP_TURN_3 := deg_to_rad(240.0)
 const AGGRO_X := 8736.0
-const HUSK_COUNT := 3
+const HUSK_COUNT_PHASE: Array[int] = [0, 3, 4, 2]
+const PHASE_PULSE_PERIOD := 2.5
+const PHASE_PULSE_OPEN := 0.4
 const HUSK_ORBIT := 150.0
 const HUSK_TURN := deg_to_rad(90.0)
 const HUSK_RESPAWN := 8.0
@@ -43,6 +45,24 @@ const LANCE_PERIOD := 2.4
 const LANCE_WINDUP := 0.6
 ## First Lance windup after aggro (GD #96): shorter than the steady period.
 const LANCE_FIRST_WAIT := 1.0
+const FAN_PERIOD := 3.2
+const FAN_WINDUP := 0.7
+const FAN_FIRST_WAIT := 1.0
+const FAN_COUNT := 5
+const FAN_ARC := deg_to_rad(70.0)
+const FAN_SPEED := 260.0
+const FAN_RADIUS := 5.0
+const FAN_LIFETIME := 3.0
+const RING_PERIOD := 5.5
+const RING_WINDUP := 0.9
+const RING_TRACK := 0.5
+const RING_FIRST_WAIT := 1.0
+const RING_DOTS := 24
+const RING_RADIUS := 420.0
+const RING_GAP := deg_to_rad(50.0)
+const RING_SPEED := 180.0
+const RING_BULLET_RADIUS := 5.0
+const RING_LIFETIME := 4.0
 const LANCE_SPEED := 320.0
 const LANCE_RADIUS := 6.0
 const LANCE_LIFETIME := 3.0
@@ -92,7 +112,23 @@ var _death_emitted := false
 var _bound := false
 ## Last Lance request, for tests. Null until the first shot.
 var last_lance: ShotRequest
+var last_fan: Array[ShotRequest] = []
+var last_ring: Array[ShotRequest] = []
 var save: SaveGame
+## Pillars Q6 / §5.2: default true. Off, the gap and the tithe still define
+## the fight and a single signature does not lose damage.
+@export var boss_habituation := true
+var habituation := WardenHabituation.new()
+var _fan_wait := 0.0
+var _fan_windup := 0.0
+var _fan_winding := false
+var _fan_aim := 0.0
+var _ring_wait := 0.0
+var _ring_windup := 0.0
+var _ring_winding := false
+var _ring_gap := 0.0
+var _ring_locked := false
+var _pulse_t := 0.0
 
 
 func _ready() -> void:
@@ -184,6 +220,11 @@ func reset_fight() -> void:
 	_lance_winding = false
 	_lance_wait = 0.0
 	_lance_windup = 0.0
+	_cancel_fan()
+	_cancel_ring()
+	_pulse_t = 0.0
+	habituation.reset()
+	habituation.enabled = boss_habituation
 	_feeds_left = 0.0
 	_tithe_left = 0.0
 	_husk_lock_slot = -1
@@ -248,14 +289,19 @@ func husks() -> Array[WardenHusk]:
 
 ## Routes a debug / unit-test shot the same way a bullet sweep would: the gap
 ## tick hurtbox has priority over the body.
-func apply_debug_hit(world_pos: Vector2, damage: float = 1.0, flags: int = 0) -> void:
+func apply_debug_hit(
+	world_pos: Vector2,
+	damage: float = 1.0,
+	flags: int = 0,
+	velocity: Vector2 = Vector2.ZERO
+) -> void:
 	if not _alive or not _aggro:
 		return
 	if _in_gap_tick(world_pos):
-		_apply_core_damage(damage, flags)
+		_apply_core_damage(damage, flags, velocity)
 		return
 	if _in_body(world_pos):
-		_hit_body(world_pos, damage, flags)
+		_hit_body(world_pos, damage, flags, velocity)
 
 
 func _physics_process(delta: float) -> void:
@@ -274,9 +320,23 @@ func _physics_process(delta: float) -> void:
 	if not _aggro:
 		_try_aggro()
 		return
+	habituation.enabled = boss_habituation
+	habituation.advance(delta)
 	_steer_gap(delta)
 	_step_husks(delta)
-	_step_lance(delta)
+	_step_phasing_husks(delta)
+	if _phase == 1:
+		_step_lance(delta)
+	else:
+		_lance_winding = false
+	if _phase == 2:
+		_step_fan(delta)
+	else:
+		_cancel_fan()
+	if _phase == 3:
+		_step_ring(delta)
+	else:
+		_cancel_ring()
 	_push_and_contact()
 	queue_redraw()
 
@@ -323,16 +383,17 @@ func _steer_gap(delta: float) -> void:
 
 func _spawn_husks() -> void:
 	_despawn_husks()
-	_husks.resize(HUSK_COUNT)
+	var cap := husk_cap()
+	_husks.resize(cap)
 	_respawn_left = PackedFloat32Array()
-	_respawn_left.resize(HUSK_COUNT)
+	_respawn_left.resize(cap)
 	var bearing := _player_bearing()
 	if is_finite(bearing):
 		_husk_lock_angle = bearing
-	for i in HUSK_COUNT:
-		_spawn_husk_at(i, _husk_lock_angle + TAU * float(i) / float(HUSK_COUNT))
+	for i in cap:
+		_spawn_husk_at(i, _husk_lock_angle + TAU * float(i) / float(cap))
 		_respawn_left[i] = 0.0
-	_husk_lock_slot = 0 if HUSK_COUNT > 0 else -1
+	_husk_lock_slot = 0 if cap > 0 else -1
 
 
 func _spawn_husk_at(slot: int, angle: float) -> void:
@@ -533,6 +594,266 @@ func _maybe_show_feeds() -> void:
 		save.save()
 
 
+func husk_cap() -> int:
+	if _phase >= 1 and _phase < HUSK_COUNT_PHASE.size():
+		return int(HUSK_COUNT_PHASE[_phase])
+	return 3
+
+
+func _sync_husk_count() -> void:
+	if not _aggro or not _alive:
+		return
+	var cap := husk_cap()
+	# Drop extra pending respawns first, then extra living bodies (never the
+	# lock, and never a tithe: this is a phase change, not a player kill).
+	for i in range(_husks.size() - 1, -1, -1):
+		if _living_husk_count() + _pending_husk_count() <= cap:
+			break
+		if _husks[i] != null and is_instance_valid(_husks[i]) and _husks[i].is_alive():
+			continue
+		if _respawn_left.size() > i:
+			_respawn_left[i] = 0.0
+	while _living_husk_count() > cap:
+		var drop := _pick_husk_to_drop()
+		if drop < 0:
+			break
+		var husk := _husks[drop]
+		_husks[drop] = null
+		if _respawn_left.size() > drop:
+			_respawn_left[drop] = 0.0
+		if drop == _husk_lock_slot:
+			_reassign_lock()
+		if husk != null and is_instance_valid(husk):
+			husk.despawn()
+	while _husks.size() < cap:
+		_husks.append(null)
+	if _respawn_left.size() < cap:
+		var grown := PackedFloat32Array()
+		grown.resize(cap)
+		for i in _respawn_left.size():
+			grown[i] = _respawn_left[i]
+		_respawn_left = grown
+	for i in cap:
+		var husk: WardenHusk = _husks[i]
+		if husk != null and is_instance_valid(husk) and husk.is_alive():
+			continue
+		if _respawn_left.size() > i and _respawn_left[i] > 0.0:
+			continue
+		if _living_husk_count() + _pending_husk_count() >= cap:
+			continue
+		var far := _player_bearing()
+		if is_finite(far):
+			far += PI
+		else:
+			far = _husk_lock_angle + PI
+		_spawn_husk_at(i, far)
+		if _respawn_left.size() > i:
+			_respawn_left[i] = 0.0
+
+
+func _pending_husk_count() -> int:
+	var n := 0
+	for i in _respawn_left.size():
+		if _respawn_left[i] <= 0.0:
+			continue
+		var husk: WardenHusk = _husks[i] if i < _husks.size() else null
+		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+			n += 1
+	return n
+
+
+func _pick_husk_to_drop() -> int:
+	var best := -1
+	var best_dot := INF
+	var toward := Vector2.ZERO
+	var bearing := _player_bearing()
+	if is_finite(bearing):
+		toward = Vector2.from_angle(bearing)
+	for i in _husks.size():
+		if i == _husk_lock_slot:
+			continue
+		var husk := _husks[i]
+		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+			continue
+		var dot := husk.position.dot(toward) if toward != Vector2.ZERO else float(-i)
+		if dot < best_dot:
+			best_dot = dot
+			best = i
+	return best
+
+
+func _step_phasing_husks(delta: float) -> void:
+	var in_phase2 := _phase == 2 and _aggro and _alive
+	if in_phase2:
+		_pulse_t += delta
+	var open := in_phase2 and _pulse_is_open()
+	var ranked: Array[WardenHusk] = []
+	if in_phase2:
+		ranked = _player_side_husks()
+	for husk in _husks:
+		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+			continue
+		if not in_phase2:
+			husk.set_phasing(false, false)
+			continue
+		var on_side := ranked.has(husk)
+		husk.set_phasing(on_side, open if on_side else false)
+
+
+func _pulse_is_open() -> bool:
+	# Closed first; a 0.4 s window at the end of every 2.5 s period.
+	var closed := PHASE_PULSE_PERIOD - PHASE_PULSE_OPEN
+	return fposmod(_pulse_t, PHASE_PULSE_PERIOD) >= closed
+
+
+func _player_side_husks() -> Array[WardenHusk]:
+	# The two living husks most toward the player (and actually on that side).
+	var bearing := _player_bearing()
+	var toward := Vector2.from_angle(bearing) if is_finite(bearing) else Vector2.LEFT
+	var scored: Array[Vector2] = []  # x = -dot (sort asc), y = index
+	for i in _husks.size():
+		var husk := _husks[i]
+		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+			continue
+		var dot := husk.position.dot(toward)
+		if dot <= 0.0:
+			continue
+		scored.append(Vector2(-dot, float(i)))
+	scored.sort_custom(func(a: Vector2, b: Vector2) -> bool: return a.x < b.x)
+	var out: Array[WardenHusk] = []
+	for i in mini(2, scored.size()):
+		out.append(_husks[int(scored[i].y)])
+	return out
+
+
+func is_phasing_pulse_open() -> bool:
+	return _phase == 2 and _pulse_is_open()
+
+
+func _step_fan(delta: float) -> void:
+	if _fan_winding:
+		_fan_windup -= delta
+		if _fan_windup <= 0.0:
+			_fan_winding = false
+			_fire_fan()
+			_fan_wait = maxf(FAN_PERIOD - FAN_WINDUP, 0.0)
+		queue_redraw()
+		return
+	_fan_wait -= delta
+	if _fan_wait <= 0.0:
+		_begin_fan_windup()
+
+
+func _begin_fan_windup() -> void:
+	_fan_winding = true
+	_fan_windup = FAN_WINDUP
+	var aim := _player_bearing()
+	_fan_aim = aim if is_finite(aim) else PI
+	queue_redraw()
+
+
+func _cancel_fan() -> void:
+	_fan_winding = false
+	_fan_wait = 0.0
+	_fan_windup = 0.0
+
+
+func _fire_fan() -> void:
+	last_fan.clear()
+	if _bullets == null or not is_instance_valid(_bullets):
+		# Still build the requests so tests can inspect angles without a manager.
+		pass
+	var start := _fan_aim - FAN_ARC * 0.5
+	var step := FAN_ARC / float(FAN_COUNT - 1) if FAN_COUNT > 1 else 0.0
+	for i in FAN_COUNT:
+		var heading := start + step * float(i)
+		var req := ShotRequest.polar(global_position, heading, FAN_SPEED)
+		req.radius = FAN_RADIUS
+		req.lifetime = FAN_LIFETIME
+		req.damage = 1.0
+		req.hit_mask = Layers.PLAYER
+		req.owner_layer = Layers.ENEMY
+		req.color = LANCE_COLOR
+		req.pierces_script_invuln = false
+		req.collide_world = true
+		req.behavior_id = 0
+		last_fan.append(req)
+		if _bullets != null and is_instance_valid(_bullets):
+			_bullets.spawn(req)
+
+
+func _step_ring(delta: float) -> void:
+	if _ring_winding:
+		_ring_windup -= delta
+		var elapsed := RING_WINDUP - _ring_windup
+		if not _ring_locked:
+			if elapsed < RING_TRACK:
+				_steer_ring_gap()
+			else:
+				_ring_locked = true
+		if _ring_windup <= 0.0:
+			_ring_winding = false
+			_fire_ring()
+			_ring_wait = maxf(RING_PERIOD - RING_WINDUP, 0.0)
+		queue_redraw()
+		return
+	_ring_wait -= delta
+	if _ring_wait <= 0.0:
+		_begin_ring_windup()
+
+
+func _begin_ring_windup() -> void:
+	_ring_winding = true
+	_ring_windup = RING_WINDUP
+	_ring_locked = false
+	_steer_ring_gap()
+	queue_redraw()
+
+
+func _steer_ring_gap() -> void:
+	var from := SliceLayout.ARENA_CENTRE
+	if player != null and is_instance_valid(player):
+		var to: Vector2 = player.global_position - from
+		if to.length_squared() > 0.0001:
+			_ring_gap = to.angle()
+			return
+	_ring_gap = 0.0
+
+
+func _cancel_ring() -> void:
+	_ring_winding = false
+	_ring_wait = 0.0
+	_ring_windup = 0.0
+	_ring_locked = false
+
+
+func _ring_dot_in_gap(angle: float) -> bool:
+	return absf(angle_difference(angle, _ring_gap)) <= RING_GAP * 0.5
+
+
+func _fire_ring() -> void:
+	last_ring.clear()
+	var centre := SliceLayout.ARENA_CENTRE
+	for i in RING_DOTS:
+		var ang := TAU * float(i) / float(RING_DOTS)
+		if _ring_dot_in_gap(ang):
+			continue
+		var pos := centre + Vector2.from_angle(ang) * RING_RADIUS
+		var req := ShotRequest.polar(pos, ang, RING_SPEED)
+		req.radius = RING_BULLET_RADIUS
+		req.lifetime = RING_LIFETIME
+		req.damage = 1.0
+		req.hit_mask = Layers.PLAYER
+		req.owner_layer = Layers.ENEMY
+		req.color = LANCE_COLOR
+		req.pierces_script_invuln = false
+		req.collide_world = true
+		req.behavior_id = 0
+		last_ring.append(req)
+		if _bullets != null and is_instance_valid(_bullets):
+			_bullets.spawn(req)
+
+
 func _step_lance(delta: float) -> void:
 	if _lance_winding:
 		_lance_windup -= delta
@@ -614,35 +935,38 @@ func _try_contact(centre: Vector2, radius: float) -> void:
 		player.health.try_damage(1.0)
 
 
-func _on_body_hit(damage: float, hit_position: Vector2, _vel: Vector2) -> void:
-	_hit_body(hit_position, damage, _body_hurt.last_hit_flags if _body_hurt != null else 0)
+func _on_body_hit(damage: float, hit_position: Vector2, vel: Vector2) -> void:
+	_hit_body(hit_position, damage, _body_hurt.last_hit_flags if _body_hurt != null else 0, vel)
 
 
-func _on_gap_hit(damage: float, _hit_position: Vector2, _vel: Vector2) -> void:
+func _on_gap_hit(damage: float, _hit_position: Vector2, vel: Vector2) -> void:
 	if not _alive or not _aggro:
 		return
 	var flags := _gap_hurt.last_hit_flags if _gap_hurt != null else 0
-	_apply_core_damage(damage, flags)
+	_apply_core_damage(damage, flags, vel)
 
 
-func _hit_body(hit_position: Vector2, damage: float, flags: int) -> void:
+func _hit_body(hit_position: Vector2, damage: float, flags: int, velocity: Vector2 = Vector2.ZERO) -> void:
 	if not _alive or not _aggro:
 		return
 	# Gap tick has priority if a sweep somehow delivered the body first while
 	# the point is inside the tick circle (should be rare; far-side shots hit
 	# the tick first because its outer edge is at 56 vs the body's 48).
 	if _in_gap_tick(hit_position):
-		_apply_core_damage(damage, flags)
+		_apply_core_damage(damage, flags, velocity)
 		return
 	if ARMOR_ABSORBS:
+		habituation.record_hit(velocity)
 		return
-	_apply_core_damage(damage * BODY_DAMAGE_SCALE, flags)
+	_apply_core_damage(damage * BODY_DAMAGE_SCALE, flags, velocity)
 
 
-func _apply_core_damage(amount: float, flags: int) -> void:
+func _apply_core_damage(amount: float, flags: int, velocity: Vector2 = Vector2.ZERO) -> void:
 	if health == null or not _alive:
 		return
-	if health.try_damage(amount, flags) == Health.DamageResult.APPLIED:
+	habituation.record_hit(velocity)
+	var scaled := habituation.scale(amount)
+	if health.try_damage(scaled, flags) == Health.DamageResult.APPLIED:
 		_register_query()
 
 
@@ -666,8 +990,18 @@ func _sync_phase() -> void:
 		phase_changed.emit(_phase)
 		_shake()
 		_notify_hud_phase()
-		# Row 9 stub: keep three husks and the Lance; Fan / Broken ring /
-		# habituation / a fourth husk land in the next PR.
+		_on_entered_phase(_phase)
+
+
+func _on_entered_phase(phase: int) -> void:
+	_sync_husk_count()
+	if phase == 2:
+		_cancel_fan()
+		_fan_wait = FAN_FIRST_WAIT
+		_pulse_t = 0.0
+	elif phase == 3:
+		_cancel_ring()
+		_ring_wait = RING_FIRST_WAIT
 
 
 func _shake() -> void:
@@ -682,6 +1016,8 @@ func _on_core_died() -> void:
 	_alive = false
 	_aggro = false
 	_lance_winding = false
+	_cancel_fan()
+	_cancel_ring()
 	_set_hurtboxes_active(false)
 	_despawn_husks()
 	_remove_warp()
@@ -792,6 +1128,26 @@ func _draw() -> void:
 		cue.draw_on(self, BODY_RADIUS)
 	if _lance_winding:
 		draw_line(Vector2.ZERO, to_local(_lance_aim), Color(LANCE_COLOR, 0.85), 2.0, true)
+	if _fan_winding:
+		var fan_start := _fan_aim - FAN_ARC * 0.5
+		var fan_step := FAN_ARC / float(FAN_COUNT - 1) if FAN_COUNT > 1 else 0.0
+		for i in FAN_COUNT:
+			var heading := fan_start + fan_step * float(i)
+			draw_line(
+				Vector2.ZERO,
+				Vector2.from_angle(heading) * 80.0,
+				Color(COLOR_FILL, 0.85),
+				2.0,
+				true
+			)
+	if _ring_winding:
+		var centre := to_local(SliceLayout.ARENA_CENTRE)
+		for i in RING_DOTS:
+			var ang := TAU * float(i) / float(RING_DOTS)
+			if _ring_dot_in_gap(ang):
+				continue
+			var pos := centre + Vector2.from_angle(ang) * RING_RADIUS
+			draw_circle(pos, 3.0, Color(COLOR_FILL, 0.9))
 	if _tithe_left > 0.0:
 		draw_line(to_local(_tithe_from), Vector2.ZERO, Color(COLOR_FILL, 0.9), 2.0, true)
 		draw_arc(Vector2.ZERO, BODY_RADIUS + 6.0, 0.0, TAU, 48, Color(COLOR_FILL, 0.7), 3.0, true)

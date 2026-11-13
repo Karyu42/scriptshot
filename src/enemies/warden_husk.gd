@@ -19,6 +19,9 @@ var _alive := true
 var _flash_left := 0.0
 ## Current angle on the orbit circle, driven by the core.
 var orbit_angle := 0.0
+## Phase-2 Phasing affix: absorb hits unless the pulse is open.
+var phasing := false
+var phase_open := false
 
 
 func setup(core: Warden, slot: int) -> void:
@@ -76,8 +79,19 @@ func despawn() -> void:
 	queue_free()
 
 
+func set_phasing(active: bool, open: bool) -> void:
+	var changed := phasing != active or phase_open != open
+	phasing = active
+	phase_open = open
+	if changed:
+		queue_redraw()
+
+
 func _on_hit(damage: float, _hit_position: Vector2, _vel: Vector2) -> void:
 	if not _alive or health == null:
+		return
+	# Absorb except during the 0.4 s pulse.
+	if phasing and not phase_open:
 		return
 	health.try_damage(damage, _hurtbox.last_hit_flags if _hurtbox != null else 0)
 
@@ -106,4 +120,6 @@ func _on_died() -> void:
 func _draw() -> void:
 	var fill := Color.WHITE if _flash_left > 0.0 else COLOR_FILL
 	draw_circle(Vector2.ZERO, RADIUS, fill)
-	draw_arc(Vector2.ZERO, RADIUS, 0.0, TAU, 32, COLOR_OUTLINE, OUTLINE_WIDTH, true)
+	var outline := Color.WHITE if phasing and phase_open else COLOR_OUTLINE
+	var width := OUTLINE_WIDTH + (1.5 if phasing and phase_open else 0.0)
+	draw_arc(Vector2.ZERO, RADIUS, 0.0, TAU, 32, outline, width, true)
