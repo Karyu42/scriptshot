@@ -65,8 +65,22 @@ func test_overheal_pips_use_the_violet_count() -> void:
 	player.health.hp = 7.0
 	hud._on_hp_changed(7.0, 5.0)
 	assert_eq(hud.overheal_pips(), 2)
+	assert_eq(hud.overheal_overflow(), 0)
+	assert_eq(hud.overheal_overflow_text(), "")
 	for i in range(5):
 		assert_true(hud.pip_filled(i))
+
+
+func test_overheal_pips_cap_at_five_and_then_show_plus_n() -> void:
+	# 5 base + 5 violet, then a "+N" label for anything past 10 (GD on #94).
+	hud._on_hp_changed(10.0, 5.0)
+	assert_eq(hud.overheal_pips(), 5)
+	assert_eq(hud.overheal_overflow(), 0)
+	assert_eq(hud.overheal_overflow_text(), "")
+	hud._on_hp_changed(13.0, 5.0)
+	assert_eq(hud.overheal_pips(), 5, "no more than five extra pips")
+	assert_eq(hud.overheal_overflow(), 3)
+	assert_eq(hud.overheal_overflow_text(), "+3")
 
 
 func test_dash_arc_matches_cooldown_and_hides_when_ready() -> void:
@@ -208,6 +222,13 @@ func test_boss_bar_can_be_driven_without_a_node() -> void:
 	assert_eq(hud.boss_fraction(), 1.0)
 	hud.set_boss_health(0.0, 900.0)
 	assert_false(hud.is_boss_bar_visible())
+
+
+func test_boss_bar_is_a_plain_arc_from_noon_with_no_gap() -> void:
+	# The 70° weak-point gap is the Warden armor ring (row 8), not this bar.
+	assert_eq(SliceHud.BOSS_START, -PI * 0.5)
+	hud.set_boss_health(450.0, 900.0)
+	assert_almost_eq(hud.boss_fraction(), 0.5, 0.001)
 
 
 func test_main_scene_has_a_slice_hud_node() -> void:

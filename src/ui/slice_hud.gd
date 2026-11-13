@@ -2,8 +2,10 @@ class_name SliceHud
 extends Node
 ## Vertical-slice HUD (vertical-slice.md §14 / §10 row 11). Pips, dash arc and
 ## Sense marks are drawn on the player; the boss arc is drawn on a bound boss
-## node (the Warden is not built here). Hints, the Sense toast and the death
-## overlay are screen labels that keep to the left of the script editor.
+## node (the Warden is not built here). The 70° weak-point gap belongs to the
+## Warden's armor ring (row 8), not this bar. The victory card is row 10.
+## Hints, the Sense toast and the death overlay are screen labels that keep
+## to the left of the script editor.
 
 signal hint_shown(text: String)
 signal toast_shown(text: String)
@@ -15,11 +17,18 @@ const DASH_RADIUS := 24.0
 const DASH_STROKE := 2.0
 const SENSE_TOP := Vector2(0, 28)
 const SENSE_BOTTOM := Vector2(0, 36)
+## 4 px diameter (GD on #94).
 const SENSE_RADIUS := 2.0
 const BOSS_ARC_RADIUS := 78.0
 const BOSS_STROKE := 2.0
-const BOSS_GAP := deg_to_rad(70.0)
+## 12 o'clock; the arc fills clockwise as hp/max. No gap (GD on #94).
+const BOSS_START := -PI * 0.5
 const BOSS_FLASH_SEC := 0.15
+const BASE_PIPS := 5
+const OVERHEAL_PIP_CAP := 5
+## Overflow label is shown when hp exceeds this (5 base + 5 extra).
+const OVERHEAL_LABEL_AFTER := 10.0
+const OVERHEAL_LABEL_SIZE := 10
 const PROMPT_SEC := 8.0
 const TOAST_SEC := 2.5
 const HINT_SIZE := 18
@@ -75,6 +84,8 @@ var _hint_armed: int = 0b11111
 var _hint_current := 0
 var _editor_open := false
 var _gamepad := false
+var _overflow_text := ""
+var _overflow_width := 0.0
 
 
 func _ready() -> void:
@@ -106,6 +117,7 @@ func bind(player: Player, progress: SliceProgress, editor: ScriptEditorPanel = n
 		_hp = _player.health.hp if _player.health != null else 5.0
 		_max_hp = _player.health.max_hp if _player.health != null else 5.0
 		_dash_cd = maxf(_player.dash_cooldown, 0.001)
+		_sync_overheal()
 		if _ring.get_parent() != _player:
 			if _ring.get_parent() != null:
 				_ring.get_parent().remove_child(_ring)
@@ -185,7 +197,28 @@ func pip_filled(index: int) -> bool:
 
 
 func overheal_pips() -> int:
-	return maxi(floori(_hp - _max_hp + 0.0001), 0)
+	return mini(maxi(floori(_hp - _max_hp + 0.0001), 0), OVERHEAL_PIP_CAP)
+
+
+## N for the "+N" label: hp past the 10 drawn pips. Zero when hp <= 10.
+func overheal_overflow() -> int:
+	return maxi(floori(_hp - OVERHEAL_LABEL_AFTER + 0.0001), 0)
+
+
+func overheal_overflow_text() -> String:
+	return _overflow_text
+
+
+func _sync_overheal() -> void:
+	var n := overheal_overflow()
+	_overflow_text = "+%d" % n if n > 0 else ""
+	_overflow_width = 0.0
+	if _overflow_text.is_empty():
+		return
+	var font := ThemeDB.fallback_font
+	if font == null:
+		return
+	_overflow_width = font.get_string_size(_overflow_text, HORIZONTAL_ALIGNMENT_LEFT, -1, OVERHEAL_LABEL_SIZE).x
 
 
 func dash_fraction() -> float:
@@ -345,6 +378,7 @@ func _on_script_saved(_file_name: String, _origin: StringName) -> void:
 func _on_hp_changed(hp: float, max_hp: float) -> void:
 	_hp = hp
 	_max_hp = max_hp
+	_sync_overheal()
 	_ring.queue_redraw()
 
 
@@ -357,6 +391,7 @@ func _on_respawned(_at: Vector2) -> void:
 	if _player != null and _player.health != null:
 		_hp = _player.health.hp
 		_max_hp = _player.health.max_hp
+		_sync_overheal()
 		_ring.queue_redraw()
 
 
@@ -495,7 +530,9 @@ class _PlayerRing:
 		_draw_senses()
 
 	func _draw_pips() -> void:
-		var n := maxi(roundi(hud._max_hp), 1)
+		# Base pips keep a fixed TAU/5 spacing, even when overheal pips sit
+		# in the midpoints or a "+N" label is showing (GD on #94).
+		var n := SliceHud.BASE_PIPS
 		var step := TAU / float(n)
 		for i in range(n):
 			var ang := -PI * 0.5 + step * float(i)
@@ -505,13 +542,20 @@ class _PlayerRing:
 			else:
 				draw_arc(at, SliceHud.PIP_RADIUS, 0.0, TAU, 16, SliceHud.COLOR_FILL, SliceHud.PIP_STROKE, true)
 		var extra := hud.overheal_pips()
-		if extra <= 0:
-			return
-		# Extra pips continue around the same ring, in the violet accent.
 		for j in range(extra):
-			var ang2 := -PI * 0.5 + step * float(n + j)
+			# Midpoints, so the five base pips do not move.
+			var ang2 := -PI * 0.5 + step * (float(j) + 0.5)
 			var at2 := Vector2(cos(ang2), sin(ang2)) * SliceHud.PIP_RING_RADIUS
 			draw_circle(at2, SliceHud.PIP_RADIUS, SliceHud.COLOR_OVERHEAL)
+		if hud._overflow_text.is_empty():
+			return
+		var font := ThemeDB.fallback_font
+		if font == null:
+			return
+		var fs := SliceHud.OVERHEAL_LABEL_SIZE
+		# Baseline just below the bottom pip (6 o'clock on the radius-20 ring).
+		var at_label := Vector2(-hud._overflow_width * 0.5, SliceHud.PIP_RING_RADIUS + SliceHud.PIP_RADIUS + fs + 1.0)
+		draw_string(font, at_label, hud._overflow_text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, SliceHud.COLOR_OVERHEAL)
 
 	func _draw_dash() -> void:
 		if not hud.dash_visible():
@@ -538,9 +582,6 @@ class _BossArc:
 	var _shown := false
 	var _flash_left := 0.0
 	var _health: Health
-	## Gap centred on this bearing (radians). Default: due east, same side as
-	## the Warden's far-side weak point until the body is built.
-	var gap_center := 0.0
 
 	func _ready() -> void:
 		z_index = -1
@@ -607,9 +648,11 @@ class _BossArc:
 		if not _shown:
 			return
 		var color := SliceHud.COLOR_FILL if _flash_left > 0.0 else SliceHud.COLOR_BOSS
-		var span := TAU - SliceHud.BOSS_GAP
-		var start := gap_center + SliceHud.BOSS_GAP * 0.5
 		var frac := fraction()
 		if frac <= 0.0:
 			return
-		draw_arc(Vector2.ZERO, SliceHud.BOSS_ARC_RADIUS, start, start + span * frac, 48, color, SliceHud.BOSS_STROKE, true)
+		# Godot 2D angles increase clockwise visually (Y is down), so a
+		# rising end angle from 12 o'clock fills clockwise.
+		var start := SliceHud.BOSS_START
+		var points := maxi(roundi(64.0 * frac), 8)
+		draw_arc(Vector2.ZERO, SliceHud.BOSS_ARC_RADIUS, start, start + TAU * frac, points, color, SliceHud.BOSS_STROKE, true)
