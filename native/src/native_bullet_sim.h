@@ -44,7 +44,9 @@ public:
 		REASON_CLEARED,
 		REASON_WALL,
 		REASON_INVALID,
+		REASON_ABSORBED,
 	};
+	static constexpr int REASON_COUNT = REASON_ABSORBED + 1;
 
 	static constexpr int FLOATS_PER_INSTANCE = 12;
 	// Native ids carry this bit so they never collide with BulletPool ids.
@@ -297,7 +299,7 @@ private:
 	float min_target_radius = 0.0f;
 	int last_hit_count = 0;
 	int last_wall_hit_count = 0;
-	int64_t despawn_counts[7] = { 0, 0, 0, 0, 0, 0, 0 };
+	int64_t despawn_counts[REASON_COUNT] = {};
 	int64_t invalid_total = 0;
 
 	// ---- world ----
