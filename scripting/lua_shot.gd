@@ -20,13 +20,20 @@ extends ShotPattern
 ##     drops the behaviour, and its host drops the weapon table so the old
 ##     chunk is collected. The host goes back to its slot for a later generation;
 ##   * with every slot busy (MAX_GENERATIONS versions with shots in flight), a
-##     save is never refused: once the new code compiles, the oldest old
-##     generation is stripped (strip_hooks_for_owner, then release_behavior).
-##     Its shots fly on as plain bullets with the same speed, damage, lifetime
-##     and look, and run no hooks. Silent by design (slice spec, #93).
-## Shots never switch to another version's callbacks. A released slot's host
-## also gets its sandbox globals reset, so a new version does not inherit
-## globals an older one set.
+##     save is never refused: the new code loads into a fresh env on the
+##     oldest old generation's host, and once it is adopted (it ran and
+##     returned a weapon table, see _load_into) that generation is stripped
+##     (strip_hooks_for_owner, then release_behavior). Its shots fly on as
+##     plain bullets with the same speed, damage, lifetime and look, and run
+##     no hooks. Silent by design (slice spec, #93). A load that fails strips
+##     nothing.
+## Shots never switch to another version's callbacks: a released behaviour
+## runs no callback again, even when it was stripped from inside one of its
+## own hooks. Globals: every new generation (a new or reused slot) starts
+## from fresh sandbox globals and its own copies of the library tables
+## (string, math, table...), so it does not inherit what an older version set
+## or changed. An in-place reload of an idle version keeps that version's env:
+## top-level globals it set stay visible to the new code.
 ## Lua states are never freed (lua-gdextension #240), so a weapon keeps at most
 ## MAX_GENERATIONS ScriptHosts (one per slot) for its whole life, however often
 ## it is reloaded. A failed apply never replaces the running version.
@@ -165,7 +172,7 @@ func _apply(code: String) -> ScriptHost.RunResult:
 			# Only with MAX_GENERATIONS < 2: nothing old to strip.
 			return _load_into(_current, code)
 		# The new version runs in a fresh env on that slot's host; the oldest
-		# generation is stripped only once it loaded (see _load_into).
+		# generation is stripped only once it is adopted (see _load_into).
 		return _load_into(slot, code, true)
 	return _load_into(slot, code)
 
@@ -173,15 +180,16 @@ func _apply(code: String) -> ScriptHost.RunResult:
 ## Loads `code` into `slot`: in place when it holds the current generation,
 ## otherwise as a new generation that becomes current on success. With
 ## `replacing`, `slot` holds an old generation with shots in flight: the code
-## loads into a fresh env on its host, and only when that load gives a weapon
-## is the old generation stripped and released. A load that fails (compile,
+## loads into a fresh env on its host, and only when the new version is
+## adopted (it ran and returned a weapon table) is the old generation stripped
+## and released. A load that fails (compile,
 ## top-level error, budget stop, no table) leaves its weapon, callbacks and
 ## globals as they were, so its shots keep running their own code.
 func _load_into(slot: int, code: String, replacing: bool = false) -> ScriptHost.RunResult:
 	var in_place := _gens[slot] != null and not replacing
 	var behavior_ref := _gens[slot]
 	if not in_place:
-		behavior_ref = LuaBulletBehavior.new(_hosts[slot])
+		behavior_ref = _new_behavior(_hosts[slot])
 		behavior_ref.skip_failed_callbacks = true
 	var result: ScriptHost.RunResult
 	if in_place:
@@ -211,6 +219,11 @@ func _load_into(slot: int, code: String, replacing: bool = false) -> ScriptHost.
 	applied_count += 1
 	_read_settings(behavior_ref.host)
 	return result
+
+
+## The behaviour of a new generation on `host`. Tests override it.
+func _new_behavior(host: ScriptHost) -> LuaBulletBehavior:
+	return LuaBulletBehavior.new(host)
 
 
 func _free_slot() -> int:
@@ -282,6 +295,10 @@ func _release_idle_old() -> void:
 ## new version has just loaded there).
 func _release_slot(slot: int, drop_weapon: bool = true) -> void:
 	var id := _gen_ids[slot]
+	if _gens[slot] != null:
+		# Its host may run another version from now on. A call already on the
+		# stack (apply() from inside one of its hooks) must not reach it.
+		_gens[slot].released = true
 	_gens[slot] = null
 	_gen_ids[slot] = 0
 	_gen_serial[slot] = 0

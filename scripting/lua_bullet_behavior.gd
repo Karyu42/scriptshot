@@ -34,6 +34,9 @@ var _skipped: Dictionary[String, bool] = {}
 ## every callback is skipped until the next load (§7.5).
 var guard_stops := 0
 const SUSPEND_AFTER_STOPS := 3
+## Set by LuaShot when this generation is released: its host may hold another
+## version's weapon now, so no callback runs any more.
+var released := false
 
 
 ## `shared_host`: run on an existing ScriptHost (LuaShot reuses one per
@@ -144,7 +147,7 @@ func apply_to_request(request: ShotRequest, behavior_id: int) -> void:
 
 
 func on_update_batch(batch: BatchView) -> void:
-	if not host.has_callback("on_batch") or _skipped.has("on_batch") or guard_stops >= SUSPEND_AFTER_STOPS:
+	if released or not host.has_callback("on_batch") or _skipped.has("on_batch") or guard_stops >= SUSPEND_AFTER_STOPS:
 		return
 	_dispatches["on_batch"] = _count_of("on_batch") + 1
 	var result := host.call_batch(batch)
@@ -168,7 +171,7 @@ func on_hit(pool: BulletPool, index: int, _hurtbox: Hurtbox) -> void:
 
 
 func can_hit(pool: BulletPool, index: int, _hurtbox: Hurtbox) -> bool:
-	if not host.has_callback("can_hit") or _skipped.has("can_hit") or guard_stops >= SUSPEND_AFTER_STOPS:
+	if released or not host.has_callback("can_hit") or _skipped.has("can_hit") or guard_stops >= SUSPEND_AFTER_STOPS:
 		return true
 	var p := pool.pos[index]
 	var result := _dispatch("can_hit", "can_hit", pool, index, host.make_hit(pool.damage[index], p.x, p.y), true)
@@ -213,7 +216,7 @@ func _dispatch(
 	pass_arg: bool
 ) -> ScriptHost.RunResult:
 	_dispatches[count_name] = _count_of(count_name) + 1
-	if lua_name == "" or not host.has_callback(lua_name) or _skipped.has(lua_name) or guard_stops >= SUSPEND_AFTER_STOPS:
+	if released or lua_name == "" or not host.has_callback(lua_name) or _skipped.has(lua_name) or guard_stops >= SUSPEND_AFTER_STOPS:
 		var skipped := ScriptHost.RunResult.new()
 		skipped.ok = true
 		skipped.chunk_name = count_name

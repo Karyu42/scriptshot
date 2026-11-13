@@ -105,7 +105,12 @@ reused; Lua states are pinned, so a weapon holds at most `MAX_GENERATIONS` (3).
 When all three are busy, the new version loads into a fresh env on the oldest
 one's host; only if that load gives a weapon is the oldest stripped silently
 (its shots fly on as plain bullets). A save that fails to load strips nothing.
-A new generation always starts from fresh sandbox globals.
+A new generation (a new or reused slot) always starts from fresh sandbox
+globals and its own copies of the library tables (`string`, `math`, `table`,
+...), so it neither sees nor changes what another version set. Method calls on
+strings (`s:sub(...)`) always use the sandbox's string functions. An in-place
+reload of an idle version (no hooked shots in flight) keeps that version's env:
+top-level globals it set stay visible to the new code.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and

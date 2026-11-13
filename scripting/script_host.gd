@@ -290,20 +290,43 @@ end
 ## Trusted. Copies the env's top level as it is now (before any script ran)
 ## and returns a function that makes a fresh env from that copy. The two
 ## sandbox functions that look themselves up in their env (load's default env,
-## xpcall's pcall) are rebuilt for the new env. Library tables (math, string,
-## sense...) are shared with the original, as they are between reloads today.
+## xpcall's pcall) are rebuilt for the new env.
+## Each env also gets its own shallow copies of the plain library tables
+## (string, table, math, utf8, os, coroutine...), made from private copies
+## taken here, so what one version does to them stays in that version's env.
+## Tables with a metatable (host-owned read-only views, like a Senses table)
+## are shared as they are. The string metatable keeps the state's original
+## string table, which no fresh env can reach, so `s:sub(...)` always runs the
+## sandbox's string functions; getmetatable(s).__index is the env's own copy.
+## The copies are made once per load, never per call.
 const _FRESH_ENV := """
 return function(env)
-	local next, rawset = next, rawset
+	local next, rawset, type, getmetatable = next, rawset, type, getmetatable
 	local pack, unpack = table.pack, table.unpack
+	local function plain(v)
+		return type(v) == "table" and getmetatable(v) == nil
+	end
+	local function copy(t)
+		local c = {}
+		for k, v in next, t do
+			rawset(c, k, v)
+		end
+		return c
+	end
 	local base = {}
 	for k, v in next, env do
+		if k ~= "_G" and plain(v) then
+			v = copy(v)
+		end
 		base[k] = v
 	end
-	local base_load = base.load
+	local base_load, base_getmetatable = base.load, base.getmetatable
 	return function()
 		local e = {}
 		for k, v in next, base do
+			if k ~= "_G" and plain(v) then
+				v = copy(v)
+			end
 			rawset(e, k, v)
 		end
 		rawset(e, "_G", e)
@@ -318,6 +341,15 @@ return function(env)
 			local handled = pack(e.pcall(h, r[2]))
 			return false, handled[2]
 		end)
+		local str = e.string
+		if type(base_getmetatable) == "function" then
+			rawset(e, "getmetatable", function(x)
+				if type(x) == "string" then
+					return { __index = str }
+				end
+				return base_getmetatable(x)
+			end)
+		end
 		return e
 	end
 end
@@ -915,7 +947,7 @@ func hook_mask() -> int:
 ## previous one. A compile error, a runtime error or a budget stop leaves the
 ## previous weapon in place. The chunk name is what Lua prints in errors.
 ## With `fresh_env` (and snapshot_globals done) the chunk runs in a new env
-## with only the sandbox globals, which replaces the current env only when the
+## with only the sandbox globals and its own library tables, which replaces the current env only when the
 ## weapon is adopted. Until then the previous weapon, its callbacks and its
 ## globals are untouched, so a load that fails leaves them exactly as they were.
 func load_string(code: String, chunk_name: String = "script.lua", fresh_env: bool = false) -> RunResult:

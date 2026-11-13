@@ -14,6 +14,8 @@ const RELOADS := 50
 ## Per-bullet hooks (pool) and a batch-only weapon (native sim when native).
 const HOOKED := "return { name = 'G%d', speed = 1, lifetime = %s, on_hit = function(b, h) end, on_spawn = function(b) local t = {} for i = 1, 64 do t[i] = i end end }"
 const BATCH := "return { name = 'B%d', speed = 1, lifetime = %s, on_batch = function(v, dt) end }"
+## Lua heap growth allowed over RELOADS reloads (see _reload_many).
+const LEAK_BOUND := 64 * 1024
 
 var _mgrs: Array[BulletManager] = []
 var _shots: Array[LuaShot] = []
@@ -92,10 +94,18 @@ func _drain_all(manager: BulletManager) -> void:
 		manager.step(DT)
 
 
+## Full collections on every Lua state the weapon holds (current and
+## retired), twice: the first pass can leave objects that only become garbage
+## once it ran (weak tables, Variant wrappers released on the Godot side), so
+## the heap reading after the second pass is the live size, not GC timing.
 func _collect(shot: LuaShot) -> void:
-	for h in shot._hosts:
-		if h._state != null:
-			h._state.collect_garbage()
+	for pass_i in 2:
+		for h in shot._hosts:
+			if h._state != null:
+				h._state.collect_garbage()
+			for r in h._retired:
+				if r.state != null:
+					r.state.collect_garbage()
 
 
 func _reload_many(preference: String, template: String, life: String) -> void:
@@ -138,8 +148,15 @@ func _reload_many(preference: String, template: String, life: String) -> void:
 	assert_eq(shot.in_place_with_live_shots, 0)
 	if preference == "native" and template == BATCH:
 		assert_gt(in_native, 0, "batch-only shots live in the native sim")
-	# One sandbox state is about 100 KiB. A state per reload would add MiBs.
-	assert_lt(mem_after - mem_before, 16 * 1024, "%s: Lua heap %d -> %d bytes over %d reloads" % [preference, mem_before, mem_after, RELOADS])
+	# Leak bound. What is live at the two readings differs a little (which
+	# versions are in flight, Lua's string and hash tables at their current
+	# size): about 10 KiB on Linux and up to about 19 KiB on Windows CI for the
+	# busy batch case, flat over a 200-reload soak. So the bound has headroom
+	# over that jitter, and stays far below any per-reload leak: one sandbox
+	# state is about 100 KiB (50 would add about 5 MiB), and a kept env with its
+	# library copies, weapon table and chunk is several KiB (50 would add
+	# hundreds of KiB). The state and host counts above are the exact checks.
+	assert_lt(mem_after - mem_before, LEAK_BOUND, "%s: Lua heap %d -> %d bytes over %d reloads" % [preference, mem_before, mem_after, RELOADS])
 	gut.p("%s %s life %s: %d reloads, Lua states %d, hosts %d, Lua heap %.1f -> %.1f KiB, released %d, stripped %d" % [preference, prefix, life, RELOADS, shot.lua_state_count(), shot.host_count(), mem_before / 1024.0, mem_after / 1024.0, shot.released_count - released_before, shot.evicted_count - evicted_before])
 	_drain_all(manager)
 	assert_eq(shot.generation_count(), 1, "only the current generation is left once everything drained")
@@ -626,3 +643,212 @@ func test_a_weapon_outliving_its_manager_does_not_crash() -> void:
 	assert_false(r.ok)
 	assert_eq(r.error, "no bullet manager")
 	assert_eq(shot._live_shots(0), 0)
+
+
+## What a version sees of the library tables, read from its own hooks.
+const LIB_PROBE := "type(string.sub) .. ',' .. tostring(string.x) .. ',' .. type(math.floor) .. ',' .. type(table.insert) .. ',' .. ('abc'):sub(2, 2) .. ',' .. ('abc'):upper()"
+const LIB_CLEAN := "function,nil,function,function,b,ABC"
+
+
+## Each version gets its own library tables: a save that changes them and
+## then fails to load, with every slot busy, leaves the oldest running
+## version's string / math / table functions as they were (and method calls
+## on strings), and the next good save on that host starts from clean ones.
+func test_each_version_gets_its_own_library_tables() -> void:
+	var bad := "string.x = 'changed'\nstring.sub = nil\nmath.floor = nil\ntable.insert = nil\ngetmetatable('').__index.upper = nil\nerror('boom')"
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		var ids: Array[int] = []
+		var versions: Array[LuaBulletBehavior] = []
+		for v: String in ["A", "B", "C"]:
+			_apply(shot, "return { name = '%s', speed = 30, lifetime = 9, on_hit = function(b, h) end, on_despawn = function(b, why) print(%s) end }" % [v, LIB_PROBE])
+			ids.append(shot.behavior_id())
+			versions.append(shot.behavior())
+			_fire(manager, shot, 2)
+			_steps(manager, 1)
+		var r := shot.apply(bad)
+		assert_false(r.ok, pref)
+		assert_string_contains(r.error, "boom")
+		assert_eq(shot.evicted_count, 0, "%s: nothing stripped" % pref)
+		# One shot of each version despawns now; its hook reports what it sees.
+		for k in ids.size():
+			var snaps := _snap_pool(manager, ids[k])
+			assert_eq(snaps.size(), 2, "%s: version %d has its shots in the pool" % [pref, k])
+			if snaps.size() > 0:
+				manager.pool.mark_dead(manager.pool.slot_of(snaps[0].id))
+		_steps(manager, 1)
+		for k in versions.size():
+			assert_eq(versions[k].dispatches("on_despawn"), 1, "%s: version %d" % [pref, k])
+			assert_eq(versions[k].last_result.output, PackedStringArray([LIB_CLEAN]), "%s: version %d keeps its library tables" % [pref, k])
+		# Still busy: the good save loads on the oldest version's host.
+		var a_host := versions[0].host
+		r = shot.apply("local ok = pcall(function() string.y = 1 end)\nreturn { name = %s .. ',' .. tostring(string.y), speed = 30, lifetime = 9 }" % LIB_PROBE)
+		assert_true(r.ok, "%s: %s" % [pref, r.error])
+		assert_eq(shot.behavior().host, a_host, pref)
+		assert_eq(shot.title, LIB_CLEAN + ",1", "%s: the next version starts from clean library tables" % pref)
+		# Senses and the rest of the game API still work in the new env.
+		r = shot.apply("local f = 'function'\nlocal ok = type(sense) == 'table' and type(spawn) == f and type(coroutine.wrap) == f and type(os.clock) == f and type(utf8.char) == f and type(table.concat) == f and rad(180) == PI\nprint('x')\nreturn { name = tostring(ok), speed = 30, lifetime = 9 }")
+		assert_true(r.ok, "%s: %s" % [pref, r.error])
+		assert_eq(shot.title, "true", pref)
+
+
+## A version that changes its own library tables still sees the change
+## itself, and string methods keep the sandbox's string functions.
+func test_a_version_can_change_its_own_library_tables() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		_apply(shot, "function string.shout(s) return s .. '!' end\nmath.answer = 42\nreturn { name = string.shout('hi') .. ',' .. math.answer .. ',' .. tostring(getmetatable('').__index.shout ~= nil) .. ',' .. ('xy'):sub(1, 1), speed = 30, lifetime = 9, on_hit = function(b, h) end }")
+		assert_eq(shot.title, "hi!,42,true,x", pref)
+
+
+## Stripping the generation whose hook is running right now (apply() called
+## from inside that hook, mid-step) does not crash: the save goes through, the
+## stripped version runs no more callbacks (its host now holds the new
+## version, whose callbacks never run on the old shots), and its shots fly on
+## as plain bullets.
+func test_stripping_the_generation_whose_hook_is_running() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		for when: String in ["before", "after"]:
+			_strip_from_inside_batch(pref, when)
+			_strip_from_inside_despawn(pref, when)
+
+
+class _ReentrantBehavior:
+	extends LuaBulletBehavior
+	## Called once, from inside the next batch / despawn hook, before or after
+	## the Lua callback runs.
+	var trigger := Callable()
+	var trigger_after := false
+	var fired := 0
+
+	func _init(h: ScriptHost) -> void:
+		super(h)
+
+	func _fire_trigger(after: bool) -> void:
+		if trigger.is_valid() and after == trigger_after:
+			var f := trigger
+			trigger = Callable()
+			fired += 1
+			f.call()
+
+	func on_update_batch(batch: BatchView) -> void:
+		_fire_trigger(false)
+		super(batch)
+		_fire_trigger(true)
+
+	func on_despawn(pool: BulletPool, index: int, reason: int) -> void:
+		_fire_trigger(false)
+		super(pool, index, reason)
+		_fire_trigger(true)
+
+
+class _ProbeShot:
+	extends LuaShot
+	## The first generation gets a _ReentrantBehavior.
+	var probe: _ReentrantBehavior
+
+	func _init(m: BulletManager) -> void:
+		super(m)
+
+	func _new_behavior(h: ScriptHost) -> LuaBulletBehavior:
+		if probe == null:
+			probe = _ReentrantBehavior.new(h)
+			return probe
+		return super(h)
+
+
+func _probe_shot(manager: BulletManager) -> _ProbeShot:
+	var shot := _ProbeShot.new(manager)
+	_shots.append(shot)
+	return shot
+
+
+func _strip_from_inside_batch(pref: String, when: String) -> void:
+	var manager := _mgr(pref)
+	var shot := _probe_shot(manager)
+	var ids: Array[int] = []
+	for v: String in ["A", "B", "C"]:
+		_apply(shot, "return { name = '%s', speed = 30, lifetime = 9, on_batch = function(v, dt) for i = 0, v.n - 1 do v.vy[i] = v.vy[i] + 60 * dt end end }" % v)
+		ids.append(shot.behavior_id())
+		_fire(manager, shot)
+		_steps(manager, 1)
+	var probe := shot.probe
+	assert_eq(manager._behaviors[ids[0]], probe, "%s/%s: version A is the probe" % [pref, when])
+	var results: Array[ScriptHost.RunResult] = []
+	probe.trigger_after = when == "after"
+	# D's on_batch would fling every shot it steers far away.
+	probe.trigger = func() -> void:
+		results.append(shot.apply("return { name = 'D', speed = 30, lifetime = 9, on_batch = function(v, dt) for i = 0, v.n - 1 do v.vx[i] = 99999 end end }"))
+	var alive := manager.alive_count()
+	var a_calls := probe.dispatches("on_batch")
+	_steps(manager, 1)
+	assert_eq(probe.fired, 1, "%s/%s: apply ran from inside A's on_batch" % [pref, when])
+	assert_eq(results.size(), 1)
+	if results.size() == 1:
+		assert_true(results[0].ok, "%s/%s: %s" % [pref, when, results[0].error])
+	assert_eq(shot.title, "D")
+	assert_eq(shot.evicted_count, 1, "%s/%s: A was stripped" % [pref, when])
+	assert_true(probe.released)
+	assert_lte(probe.dispatches("on_batch"), a_calls + 1, "%s/%s: A's batch ran at most once more" % [pref, when])
+	assert_eq(manager.hooked_count_for_owner(ids[0]), 0)
+	assert_eq(manager.alive_count(), alive, "%s/%s: no shot was dropped" % [pref, when])
+	var plain := _snap_pool(manager, 0)
+	assert_eq(plain.size(), 1, "%s/%s: A's shot is a plain bullet" % [pref, when])
+	var calls := probe.dispatches("on_batch")
+	_steps(manager, 5)
+	assert_eq(probe.dispatches("on_batch"), calls, "%s/%s: A runs no callback after the strip" % [pref, when])
+	for snap in plain:
+		var slot := manager.pool.slot_of(snap.id)
+		assert_gte(slot, 0, "%s/%s: A's shot keeps flying" % [pref, when])
+		if slot >= 0:
+			assert_lt(absf(manager.pool.vel[slot].x), 1000.0, "%s/%s: D's code never ran on A's shot" % [pref, when])
+	_drain_all(manager)
+	assert_eq(manager.alive_count(), 0)
+
+
+func _strip_from_inside_despawn(pref: String, when: String) -> void:
+	var manager := _mgr(pref)
+	var shot := _probe_shot(manager)
+	var ids: Array[int] = []
+	for v: String in ["A", "B", "C"]:
+		_apply(shot, "n = 0\nreturn { name = '%s', speed = 30, lifetime = 9, on_hit = function(b, h) end, on_despawn = function(b, why) n = n + 1 print('%s' .. n) end }" % [v, v])
+		ids.append(shot.behavior_id())
+		_fire(manager, shot, 3)
+		_steps(manager, 1)
+	var probe := shot.probe
+	var results: Array[ScriptHost.RunResult] = []
+	probe.trigger_after = when == "after"
+	probe.trigger = func() -> void:
+		results.append(shot.apply("return { name = 'D', speed = 30, lifetime = 9, on_despawn = function(b, why) b:set_velocity(99999, 0) print('D') end }"))
+	# Two of A's shots despawn in the same step; the first one's hook strips A.
+	var snaps := _snap_pool(manager, ids[0])
+	assert_eq(snaps.size(), 3, "%s/%s" % [pref, when])
+	for k in 2:
+		if k < snaps.size():
+			manager.pool.mark_dead(manager.pool.slot_of(snaps[k].id))
+	var alive := manager.alive_count()
+	_steps(manager, 1)
+	assert_eq(probe.fired, 1, "%s/%s: apply ran from inside A's on_despawn" % [pref, when])
+	assert_eq(results.size(), 1)
+	if results.size() == 1:
+		assert_true(results[0].ok, "%s/%s: %s" % [pref, when, results[0].error])
+	assert_eq(shot.title, "D")
+	assert_eq(shot.evicted_count, 1, "%s/%s: A was stripped" % [pref, when])
+	assert_true(probe.released)
+	var out := probe.last_result.output
+	for line in out:
+		assert_true(line.begins_with("A"), "%s/%s: only A's code ran for A's shots: %s" % [pref, when, line])
+	assert_eq(shot.behavior().dispatches("on_despawn"), 0, "%s/%s: D's code never ran on A's shots" % [pref, when])
+	assert_eq(manager.alive_count(), alive - 2, "%s/%s: only the two killed shots are gone" % [pref, when])
+	assert_eq(manager.hooked_count_for_owner(ids[0]), 0)
+	assert_eq(_snap_pool(manager, 0).size(), 1, "%s/%s: A's last shot flies on as a plain bullet" % [pref, when])
+	_drain_all(manager)
+	assert_eq(manager.alive_count(), 0)
