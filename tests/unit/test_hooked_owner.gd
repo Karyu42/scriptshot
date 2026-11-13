@@ -225,13 +225,23 @@ func test_release_behavior_lets_the_behavior_go() -> void:
 	assert_eq(manager.release_behavior(owner), 1)
 	assert_true(ref.get_ref() == null, "nothing holds the old generation any more")
 	assert_eq(_drained, [owner] as Array[int])
-	# The id is not reused and a late shot naming it is plain.
+	# A late shot naming the released id is rejected: it becomes a plain bullet.
+	# The slot may be reused, but the packed id is not, so a later script never
+	# sees that stale handle.
 	var late := manager.spawn(_shot(owner))
 	assert_gte(late, 0)
+	assert_eq(manager.pool.behavior[late], 0, "a stale id is rejected")
 	manager.step(DT)
-	assert_eq(manager.pool.hooked_count, 1, "still listed (behavior id kept), but the inert hook does nothing")
-	var fresh := manager.register_behavior(Steer.new())
-	assert_ne(fresh, owner)
+	assert_eq(manager.pool.hooked_count, 0, "the late shot is plain")
+	var fresh_steer := Steer.new()
+	var fresh := manager.register_behavior(fresh_steer)
+	assert_ne(fresh, owner, "a released packed id is not reused")
+	var late2 := manager.spawn(_shot(owner))
+	assert_gte(late2, 0)
+	manager.step(DT)
+	assert_eq(fresh_steer.ticks, 0, "a stale id never runs the new script")
+	assert_eq(manager.hooked_count_for_owner(owner), 0)
+	assert_eq(manager.hooked_count_for_owner(fresh), 0)
 
 
 func test_native_batch_owner_counts_drains_and_strips() -> void:
@@ -343,7 +353,9 @@ func test_native_two_owners_drain_in_one_tick_and_the_listener_releases() -> voi
 	m.spawn(_shot(d, Vector2(10, 0), 0.5 * DT))
 	m.step(DT)
 	_drained.sort()
-	assert_eq(_drained, [c, d] as Array[int])
+	var want_cd: Array[int] = [c, d]
+	want_cd.sort()
+	assert_eq(_drained, want_cd, "each reused owner exactly once")
 
 
 # --- a second drain inside the same emit loop (SE re-review #76, blocker) ---------
@@ -504,3 +516,58 @@ func test_gd_owner_drains_by_hit_and_by_wall() -> void:
 	var want: Array[int] = [by_hit, by_wall]
 	want.sort()
 	assert_eq(_drained, want)
+
+func test_ten_thousand_releases_stay_bounded_and_reject_stale_ids() -> void:
+	const N := 10000
+	var first_id := 0
+	var mid_id := 0
+	var refs: Array[WeakRef] = []
+	var mem_after_warmup := 0
+	for i in N:
+		var steer := Steer.new()
+		var id := manager.register_behavior(steer)
+		if i == 0:
+			first_id = id
+		elif i == N / 2:
+			mid_id = id
+		if i == 200:
+			mem_after_warmup = OS.get_static_memory_usage()
+		if i % 1000 == 0:
+			refs.append(weakref(steer))
+		assert_eq(manager.release_behavior(id), 0)
+		steer = null
+	assert_lte(manager._behaviors.size(), 2, "slots are reused: only slot 0 plus one recycled slot")
+	assert_eq(manager._owner_free.size(), 1)
+	assert_eq(manager._get_behavior(first_id), null, "the first id is stale")
+	assert_eq(manager._get_behavior(mid_id), null, "the mid-run id is stale")
+	var late := manager.spawn(_shot(first_id))
+	assert_gte(late, 0)
+	assert_eq(manager.hooked_count_for_owner(first_id), 0)
+	if manager.is_native_id(late):
+		assert_eq(manager.native.count_with_behavior(first_id), 0, "a stale id is not tagged on the sim")
+	else:
+		assert_eq(manager.pool.behavior[late], 0, "a stale id becomes a plain bullet")
+	var fresh := Steer.new()
+	var fresh_id := manager.register_behavior(fresh)
+	assert_ne(fresh_id, first_id)
+	assert_ne(fresh_id, mid_id)
+	assert_eq(manager._behaviors.size(), 2, "the new register reused the free slot")
+	manager.spawn(_shot(first_id))
+	manager.step(DT)
+	assert_eq(fresh.ticks, 0, "a stale id never runs the new script")
+	manager.spawn(_shot(fresh_id))
+	manager.step(DT)
+	assert_eq(fresh.ticks, 1, "the live id still runs")
+	for r: WeakRef in refs:
+		assert_true(r.get_ref() == null, "released behaviours are freed")
+	var mem := OS.get_static_memory_usage()
+	# 10k inert ~2.4 KiB objects would be ~24 MiB. A few MiB of allocator noise is fine.
+	assert_lt(mem, mem_after_warmup + 8 * 1024 * 1024, "memory stays bounded across 10k releases")
+
+
+func test_ten_thousand_releases_stay_bounded_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	manager = _make_manager("native")
+	test_ten_thousand_releases_stay_bounded_and_reject_stale_ids()

@@ -18,11 +18,19 @@ const BATCH_WARN_VELOCITY := 1
 const BATCH_WARN_SPEED := 2
 const BATCH_WARN_PA := 3
 const BATCH_WARN_PB := 4
+## Owner ids are (generation << OWNER_SLOT_BITS) | slot. Generation 0 is the
+## first life of a slot, so the first ids are 1, 2, 3, ... until that slot is
+## reused. The sign bit is kept clear so ids stay non-negative.
+const OWNER_SLOT_BITS := 16
+const OWNER_SLOT_MASK := (1 << OWNER_SLOT_BITS) - 1
+const OWNER_GEN_MASK := 0x7fffffff
 ## Script owners (hot reload, see hooked_count_for_owner()). An *owner id* is
-## the behavior id register_behavior() returned: every bullet spawned with that
-## ShotRequest.behavior_id carries it, and its hooks (per-bullet and on_batch)
-## run on that BulletBehavior. A LuaBulletBehavior is one script generation, so
-## a fresh generation registers a new behavior and gets a new owner id.
+## the packed value register_behavior() returned: (generation << OWNER_SLOT_BITS)
+## | slot. Every bullet spawned with that ShotRequest.behavior_id carries it, and
+## its hooks (per-bullet and on_batch) run on that BulletBehavior. A
+## LuaBulletBehavior is one script generation, so a fresh generation registers
+## a new behavior and gets a new owner id. Released slots are reused under a
+## new generation; a stale id never resolves to the new script.
 ##
 ## Emitted when the live bullets of `owner_id` (both stores) went from > 0 to 0:
 ## they despawned, were cleared, or were stripped. Checked at the end of step(),
@@ -124,8 +132,10 @@ var _nt_pos := PackedVector2Array()
 var _nt_radius := PackedFloat32Array()
 var _nt_layer := PackedInt32Array()
 var _nt_ids := PackedInt64Array()
+## Indexed by slot, not by the public packed owner id. Slot 0 is unused.
+## A released slot is null and sits on `_owner_free`.
 var _behaviors: Array[BulletBehavior] = [null]
-# Per behaviour id: the hooks its script overrides (BulletBehavior.HOOK_*) and the script that
+# Per slot: the hooks its script overrides (BulletBehavior.HOOK_*) and the script that
 # answer was worked out for. A behaviour whose script changes is re-detected on its next
 # dispatch (see _hooks_of), so a cached mask cannot go stale.
 var _hook_cache := PackedInt32Array([0])
@@ -136,6 +146,10 @@ var _declared_scripts: Array[Script] = [null]
 ## mask. on_update is not a hook_mask bit; an override still keeps the bullet
 ## on the GDScript pool.
 var _update_override := PackedByteArray([0])
+## Per-slot generation of the current occupant (or the next occupant, once released).
+var _owner_gen := PackedInt32Array([0])
+## Released slot indices, reused by register_behavior().
+var _owner_free: Array[int] = []
 ## Behavior ids that are batch-only (no per-bullet hook). Rebuilt when hooks change.
 var _batch_only_ids: Array[int] = []
 var _batch_ids_dirty := true
@@ -295,51 +309,62 @@ func set_bullet_limits(cap: int, reserve: int = -1) -> void:
 		native.set_limits(pool.logical_cap, pool.enemy_reserve)
 
 
-## Registers a behaviour and returns the id for ShotRequest.behavior_id.
+## Registers a behaviour and returns the packed owner id for ShotRequest.behavior_id.
 func register_behavior(behavior: BulletBehavior) -> int:
 	behavior.emitter = emitter
-	_behaviors.append(behavior)
-	_hook_cache.append(0)
-	_hook_scripts.append(null)
-	_declared_checked.append(-2)
-	_declared_scripts.append(null)
-	_update_override.append(0)
-	var id := _behaviors.size() - 1
-	_refresh_hooks(id, behavior)
-	return id
+	var slot: int
+	if _owner_free.is_empty():
+		slot = _behaviors.size()
+		_behaviors.append(behavior)
+		_hook_cache.append(0)
+		_hook_scripts.append(null)
+		_declared_checked.append(-2)
+		_declared_scripts.append(null)
+		_update_override.append(0)
+		_owner_gen.append(0)
+	else:
+		slot = _owner_free.pop_back()
+		_behaviors[slot] = behavior
+		_hook_cache[slot] = 0
+		_hook_scripts[slot] = null
+		_declared_checked[slot] = -2
+		_declared_scripts[slot] = null
+		_update_override[slot] = 0
+	_refresh_hooks(slot, behavior)
+	return _pack_owner(slot)
 
 
 ## Works out again which hooks behaviour `id` implements. Needed only after something
 ## changed the behaviour's methods in place without changing its script object (a script
 ## hot-reload); `set_script()` and a changed `hook_mask` are noticed on their own.
 func refresh_behavior(id: int) -> void:
-	var b := _get_behavior(id)
-	if b == null:
+	var slot := _owner_slot(id)
+	if slot <= 0:
 		return
-	_refresh_hooks(id, b)
-	_declared_checked[id] = -2
+	_refresh_hooks(slot, _behaviors[slot])
+	_declared_checked[slot] = -2
 
 
-func _refresh_hooks(id: int, b: BulletBehavior) -> void:
-	_hook_scripts[id] = b.get_script()
-	_hook_cache[id] = BulletBehavior.detect_hooks(b)
-	_update_override[id] = 1 if BulletBehavior.overrides_on_update(b) else 0
-	_sync_batch_routing(id)
+func _refresh_hooks(slot: int, b: BulletBehavior) -> void:
+	_hook_scripts[slot] = b.get_script()
+	_hook_cache[slot] = BulletBehavior.detect_hooks(b)
+	_update_override[slot] = 1 if BulletBehavior.overrides_on_update(b) else 0
+	_sync_batch_routing(_pack_owner(slot))
 
 
 ## The hooks of behaviour `id` that exist (BulletBehavior.HOOK_* bits). An explicit
 ## `hook_mask` wins; otherwise the detected mask, redone when the object's script is not
 ## the one it was detected for.
-func _hooks_of(id: int, b: BulletBehavior) -> int:
+func _hooks_of(slot: int, b: BulletBehavior) -> int:
 	var declared := b.hook_mask
 	if declared >= 0:
 		declared &= BulletBehavior.HOOK_ALL
 		# The debug check is keyed on the mask and the script: set_script() with the same
 		# explicit mask must look at the new script's overrides too.
 		var script: Script = b.get_script()
-		if _declared_checked[id] != declared or _declared_scripts[id] != script:
-			_declared_checked[id] = declared
-			_declared_scripts[id] = script
+		if _declared_checked[slot] != declared or _declared_scripts[slot] != script:
+			_declared_checked[slot] = declared
+			_declared_scripts[slot] = script
 			_declared_checks += 1
 			if OS.is_debug_build() and not b.hook_mask_exact:
 				var found := BulletBehavior.detect_hooks(b)
@@ -348,9 +373,9 @@ func _hooks_of(id: int, b: BulletBehavior) -> int:
 					"BulletBehavior.hook_mask %d leaves out an overridden hook (the script overrides %d)" % [declared, found]
 				)
 		return declared
-	if b.get_script() != _hook_scripts[id]:
-		_refresh_hooks(id, b)
-	return _hook_cache[id]
+	if b.get_script() != _hook_scripts[slot]:
+		_refresh_hooks(slot, b)
+	return _hook_cache[slot]
 
 
 ## Adds a static wall rectangle (world space) that bullets collide with unless
@@ -415,6 +440,21 @@ func collect_walls() -> int:
 ## stays in the pool. spawn() then returns that bullet's stable native id
 ## (bit 62 set), not a pool slot. Only >= 0 means the spawn succeeded.
 func spawn(request: ShotRequest) -> int:
+	# A stale or unknown owner id must never land on a new script, and must not
+	# be handed to the native sim still tagged with that id. The request is
+	# restored before return: it is the caller's object.
+	var asked := request.behavior_id
+	var stale := asked != 0 and _get_behavior(asked) == null
+	if stale:
+		push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % asked)
+		request.behavior_id = 0
+	var result := _spawn_dispatch(request)
+	if stale:
+		request.behavior_id = asked
+	return result
+
+
+func _spawn_dispatch(request: ShotRequest) -> int:
 	if pool.hook_owner >= 0:
 		return _spawn_inheriting(pool.hook_owner, request, "BulletManager.spawn", "a hook")
 	# A batch hook is not one bullet, so there is no single owner to inherit.
@@ -444,15 +484,16 @@ func _wants_native(request: ShotRequest) -> bool:
 func _has_per_bullet_hooks(behavior_id: int) -> bool:
 	if behavior_id == 0:
 		return false
-	var b := _get_behavior(behavior_id)
-	if b == null:
+	var slot := _owner_slot(behavior_id)
+	if slot <= 0:
 		push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % behavior_id)
 		return false
-	if _hooks_of(behavior_id, b) != 0:
+	var b := _behaviors[slot]
+	if _hooks_of(slot, b) != 0:
 		return true
-	if b.get_script() != _hook_scripts[behavior_id]:
-		_refresh_hooks(behavior_id, b)
-	return _update_override[behavior_id] != 0
+	if b.get_script() != _hook_scripts[slot]:
+		_refresh_hooks(slot, b)
+	return _update_override[slot] != 0
 
 
 ## True when this behaviour's only scripted update is the batch hook.
@@ -502,7 +543,7 @@ func _migrate_native_behavior(behavior_id: int) -> void:
 	var veto := false
 	var behavior := _get_behavior(behavior_id)
 	if behavior != null:
-		veto = (_hooks_of(behavior_id, behavior) & BulletBehavior.HOOK_CAN_HIT) != 0
+		veto = (_hooks_of(_owner_slot(behavior_id), behavior) & BulletBehavior.HOOK_CAN_HIT) != 0
 	for i in rows.size():
 		var item: Variant = rows[i]
 		if not item is Dictionary:
@@ -529,7 +570,10 @@ func _ensure_batch_ids() -> void:
 	if not _batch_ids_dirty:
 		return
 	_batch_only_ids.clear()
-	for id in range(1, _behaviors.size()):
+	for slot in range(1, _behaviors.size()):
+		if _behaviors[slot] == null:
+			continue
+		var id := _pack_owner(slot)
 		if _is_batch_only(id):
 			_batch_only_ids.append(id)
 	_batch_ids_dirty = false
@@ -748,7 +792,7 @@ func _spawn_checked(request: ShotRequest) -> int:
 			var outer_slot := pool.hook_slot
 			pool.hook_owner = pool.owner_layer[i]
 			pool.hook_slot = i
-			if _hooks_of(request.behavior_id, b) & BulletBehavior.HOOK_ON_SPAWN:
+			if _hooks_of(_owner_slot(request.behavior_id), b) & BulletBehavior.HOOK_ON_SPAWN:
 				b.on_spawn(pool, i)
 				pool.hook_ran = true
 			pool.hook_owner = outer
@@ -1146,10 +1190,11 @@ func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
 
 func _run_batch_hooks(delta: float) -> void:
 	_batch_depth += 1
-	for id in range(1, _behaviors.size()):
-		var b := _behaviors[id]
+	for slot in range(1, _behaviors.size()):
+		var b := _behaviors[slot]
 		if b == null or not _wants_batch_callback(b):
 			continue
+		var id := _pack_owner(slot)
 		# AUTO batch on a per-bullet behaviour is not invoked (see _wants_batch_callback).
 		if b.update_mode != BulletBehavior.UpdateMode.BATCH and _has_per_bullet_hooks(id):
 			continue
@@ -1189,7 +1234,7 @@ func step(delta: float) -> void:
 
 	# Script hooks: only bullets that asked for them. A hook may have killed a
 	# later bullet in the list already; dead bullets get no more updates.
-	pool.run_update_hooks(_behaviors, delta)
+	pool.run_update_hooks(_behaviors, delta, _owner_gen, OWNER_SLOT_BITS)
 
 	# Batch-only native bullets integrate here, before the batch callback and
 	# before pool collision, so the callback sees the post-move position and a
@@ -1307,7 +1352,7 @@ func step(delta: float) -> void:
 			pool.hook_owner = pool.owner_layer[slot]
 			pool.hook_slot = slot
 			var db := _get_behavior(id)
-			if db != null and _hooks_of(id, db) & BulletBehavior.HOOK_ON_DESPAWN:
+			if db != null and _hooks_of(_owner_slot(id), db) & BulletBehavior.HOOK_ON_DESPAWN:
 				db.on_despawn(pool, slot, pool.dead_reason[slot] - 1)
 				pool.hook_ran = true
 			pool.hook_owner = outer
@@ -1489,26 +1534,32 @@ func strip_hooks_for_owner(owner_id: int) -> int:
 	return n
 
 
-## strip_hooks_for_owner(), then forgets the behaviour itself: its table entry
-## becomes an inert behaviour with no hooks, so the manager no longer holds the
+## strip_hooks_for_owner(), then forgets the behaviour itself: the slot is
+## cleared and put on the free list, so the manager no longer holds the
 ## BulletBehavior (for a LuaBulletBehavior, its ScriptHost and Lua chunk). The
-## id is never reused; a late shot that still names it becomes a GDScript-pool
-## bullet whose hooks do nothing. The table keeps one small inert entry per
-## released id (one per hot-reload generation). Returns how many bullets were
-## stripped.
+## slot may be reused under a new generation; a late shot that still names the
+## old id is rejected (it becomes a plain bullet) and never runs the new script.
+## Returns how many bullets were stripped.
 func release_behavior(owner_id: int) -> int:
-	if owner_id <= 0 or owner_id >= _behaviors.size():
+	var slot := _owner_slot(owner_id)
+	if slot <= 0:
 		return 0
 	var n := strip_hooks_for_owner(owner_id)
-	var inert := BulletBehavior.new()
-	inert.hook_mask = 0
-	inert.hook_mask_exact = true
-	inert.update_mode = BulletBehavior.UpdateMode.PER_BULLET
-	inert.emitter = emitter
-	_behaviors[owner_id] = inert
-	_refresh_hooks(owner_id, inert)
-	_declared_checked[owner_id] = -2
-	_declared_scripts[owner_id] = null
+	_behaviors[slot] = null
+	_hook_cache[slot] = 0
+	_hook_scripts[slot] = null
+	_declared_checked[slot] = -2
+	_declared_scripts[slot] = null
+	_update_override[slot] = 0
+	if pool != null:
+		pool.set_batch_only(owner_id, false)
+	_native_owner_watch.erase(owner_id)
+	var g := (_owner_gen[slot] + 1) & OWNER_GEN_MASK
+	if g == 0:
+		g = 1
+	_owner_gen[slot] = g
+	_owner_free.append(slot)
+	_batch_ids_dirty = true
 	return n
 
 
@@ -2122,7 +2173,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 			pool.hook_slot = bullet
 			var allowed := true
 			var vb := _get_behavior(veto_id)
-			if vb != null and _hooks_of(veto_id, vb) & BulletBehavior.HOOK_CAN_HIT:
+			if vb != null and _hooks_of(_owner_slot(veto_id), vb) & BulletBehavior.HOOK_CAN_HIT:
 				allowed = vb.can_hit(pool, bullet, hurtbox)
 				pool.hook_ran = true
 			pool.hook_owner = outer
@@ -2169,7 +2220,7 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 		pool.hook_owner = pool.owner_layer[bullet]
 		pool.hook_slot = bullet
 		var hb := _get_behavior(id)
-		if hb != null and _hooks_of(id, hb) & BulletBehavior.HOOK_ON_HIT:
+		if hb != null and _hooks_of(_owner_slot(id), hb) & BulletBehavior.HOOK_ON_HIT:
 			hb.on_hit(pool, bullet, hurtbox)
 			pool.hook_ran = true
 		pool.hook_owner = outer
@@ -2188,4 +2239,23 @@ func _apply_hit(bullet: int, target: int, t: float) -> void:
 
 
 func _get_behavior(id: int) -> BulletBehavior:
-	return _behaviors[id] if id > 0 and id < _behaviors.size() else null
+	var slot := _owner_slot(id)
+	return _behaviors[slot] if slot > 0 else null
+
+
+## Slot index for packed owner `id`, or -1 when the id is 0, unknown, or stale.
+func _owner_slot(id: int) -> int:
+	if id <= 0:
+		return -1
+	var slot := id & OWNER_SLOT_MASK
+	if slot <= 0 or slot >= _behaviors.size():
+		return -1
+	if _owner_gen[slot] != (id >> OWNER_SLOT_BITS):
+		return -1
+	if _behaviors[slot] == null:
+		return -1
+	return slot
+
+
+func _pack_owner(slot: int) -> int:
+	return (_owner_gen[slot] << OWNER_SLOT_BITS) | slot

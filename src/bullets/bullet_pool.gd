@@ -47,6 +47,10 @@ const OWNER_NONE := 0
 const OWNER_PLAYER := 1
 const OWNER_ENEMY := 2
 const OWNER_SLOTS := 3
+## Same packing BulletManager uses for script owner ids: (generation << bits) | slot.
+## batch_only is indexed by slot so a packed id cannot grow this table.
+const OWNER_SLOT_BITS := 16
+const OWNER_SLOT_MASK := (1 << OWNER_SLOT_BITS) - 1
 
 # Local copies of the BulletLimits bounds (the hot paths below compare against them).
 const MAX_SPEED_SQ := BulletLimits.MAX_SPEED_SQ
@@ -254,11 +258,14 @@ var drained_ids := PackedInt64Array()
 
 ## Marks behavior `id` as batch-only (its bullets are not listed for on_update).
 func set_batch_only(id: int, on: bool) -> void:
-	if id < 0:
+	if id <= 0:
 		return
-	if batch_only.size() <= id:
-		batch_only.resize(id + 1)
-	batch_only[id] = 1 if on else 0
+	var slot := id & OWNER_SLOT_MASK
+	if slot <= 0:
+		return
+	if batch_only.size() <= slot:
+		batch_only.resize(slot + 1)
+	batch_only[slot] = 1 if on else 0
 	any_batch_only = false
 	for flag in batch_only:
 		if flag != 0:
@@ -524,7 +531,11 @@ func advance(delta: float, bounds: Rect2) -> void:
 				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
 			continue
 		var bid := behavior[i]
-		if bid != 0 and (not any_batch_only or bid >= batch_only.size() or batch_only[bid] == 0):
+		# Plain bullets (bid == 0) skip this. When no behaviour is batch-only,
+		# the rest of the condition is not evaluated, so this is not a new cost
+		# on the hooked or plain per-bullet path. Slot mask is used only when a
+		# batch-only behaviour is live, so packed owner ids cannot index the table.
+		if bid != 0 and (not any_batch_only or (bid & OWNER_SLOT_MASK) >= batch_only.size() or batch_only[bid & OWNER_SLOT_MASK] == 0):
 			hooked[hooked_count] = i
 			hooked_count += 1
 
@@ -579,10 +590,16 @@ func advance_one(i: int, delta: float, bounds: Rect2) -> void:
 ## `hook_owner` itself is corrected before the next bullet's hook). Nested spawns
 ## from a hook save and restore it around their own on_spawn, so nesting and
 ## re-entrancy see exactly what they saw with a per-hook wrap.
-func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
+func run_update_hooks(
+	behaviors: Array[BulletBehavior],
+	delta: float,
+	owner_gen: PackedInt32Array = PackedInt32Array(),
+	slot_bits: int = 0,
+) -> void:
 	var outer := hook_owner
 	var outer_slot := hook_slot
 	var table_size := behaviors.size()
+	var mask := ((1 << slot_bits) - 1) if slot_bits > 0 else 0
 	var ran := false
 	for k in hooked_count:
 		var i := hooked[k]
@@ -593,17 +610,30 @@ func run_update_hooks(behaviors: Array[BulletBehavior], delta: float) -> void:
 		var id := behavior[i]
 		if id == 0:
 			continue
-		if id >= table_size or id < 0:
-			# Only a hook writing garbage into `behavior` gets here: spawning an unknown id
+		var slot := id
+		var stale := false
+		if slot_bits > 0:
+			slot = id & mask
+			stale = (
+				slot <= 0
+				or slot >= table_size
+				or owner_gen[slot] != (id >> slot_bits)
+				or behaviors[slot] == null
+			)
+		else:
+			stale = id >= table_size or id < 0
+		if stale:
+			# Only a hook writing garbage into `behavior`, or a stale released id
+			# that somehow kept its number, gets here: spawning an unknown id
 			# already yields a plain bullet. Drop the script rather than index out of range.
-			behavior[i] = 0
+			set_behavior(i, 0)
 			ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
 			continue
 		var o := owner_layer[i]
 		if hook_owner != o:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
-		behaviors[id].on_update(self, i, delta)
+		behaviors[slot].on_update(self, i, delta)
 		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot
