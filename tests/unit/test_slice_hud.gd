@@ -231,12 +231,40 @@ func test_boss_bar_is_a_plain_arc_from_noon_with_no_gap() -> void:
 	assert_almost_eq(hud.boss_fraction(), 0.5, 0.001)
 
 
-func test_main_scene_has_a_slice_hud_node() -> void:
+func test_boss_bar_survives_the_host_being_freed() -> void:
+	var body := Node2D.new()
+	add_child(body)
+	var health := Health.new()
+	health.max_hp = 900.0
+	body.add_child(health)
+	await wait_physics_frames(1)
+	hud.bind_boss(body, health)
+	assert_true(hud.is_boss_bar_visible())
+	body.free()
+	assert_false(hud.is_boss_bar_visible())
+	assert_eq(hud.boss_fraction(), 0.0)
+	# Must not throw once the host (and the reparented arc) are gone.
+	hud.set_boss_health(900.0, 900.0)
+	hud.notify_boss_phase_changed()
+	hud._process(0.016)
+	assert_false(hud.is_boss_bar_visible())
+	# Re-binding recreates the arc.
+	var body2 := Node2D.new()
+	add_child_autofree(body2)
+	var health2 := Health.new()
+	health2.max_hp = 900.0
+	body2.add_child(health2)
+	await wait_physics_frames(1)
+	hud.bind_boss(body2, health2)
+	assert_true(hud.is_boss_bar_visible())
+	assert_eq(hud.boss_fraction(), 1.0)
+
+
+func test_main_scene_has_a_slice_hud_and_a_warden() -> void:
 	var packed := load("res://scenes/main.tscn") as PackedScene
 	var state := packed.get_state()
-	var found := false
+	var names: Array[String] = []
 	for i in range(state.get_node_count()):
-		if state.get_node_name(i) == "SliceHud":
-			found = true
-			break
-	assert_true(found, "main.tscn should instance SliceHud")
+		names.append(String(state.get_node_name(i)))
+	assert_true(names.has("SliceHud"), "main.tscn should instance SliceHud")
+	assert_true(names.has("Warden"), "main.tscn should instance the Warden")

@@ -1,4 +1,4 @@
-[gd_scene load_steps=20 format=3]
+[gd_scene load_steps=23 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/open_ground.gd" id="2_ground"]
@@ -19,6 +19,9 @@
 [ext_resource type="Script" path="res://src/world/slice_progress.gd" id="16_progress"]
 [ext_resource type="Script" path="res://src/ui/slice_hud.gd" id="17_hud"]
 [ext_resource type="Script" path="res://src/world/slice_packs.gd" id="18_packs"]
+[ext_resource type="Script" path="res://src/world/lesson_pad.gd" id="17_pad"]
+[ext_resource type="Script" path="res://src/world/lesson_plate.gd" id="18_plate"]
+[ext_resource type="PackedScene" path="res://scenes/warden.tscn" id="16_warden"]
 
 [node name="Main" type="Node2D"]
 script = ExtResource("1_main")
@@ -51,6 +54,26 @@ position = Vector2(-150, 260)
 [node name="Target2" parent="Dummies" instance=ExtResource("4_dummy")]
 position = Vector2(-150, -260)
 
+[node name="LessonProps" type="Node2D" parent="."]
+
+[node name="LessonPad" type="Node2D" parent="LessonProps"]
+position = Vector2(2780, 0)
+script = ExtResource("17_pad")
+
+[node name="LessonPlate" type="Node2D" parent="LessonProps"]
+position = Vector2(3500, 0)
+script = ExtResource("18_plate")
+
+[node name="ShieldDummy" parent="LessonProps" instance=ExtResource("4_dummy")]
+position = Vector2(1800, 0)
+absorb = true
+absorb_facing = 3.1415927
+absorb_arc_deg = 120.0
+
+[node name="HpDummy" parent="LessonProps" instance=ExtResource("4_dummy")]
+position = Vector2(3200, 0)
+hurtbox_hp_cap = 4.0
+
 [node name="ChunkStream" type="Node" parent="."]
 script = ExtResource("9_chunks")
 enemy_scene = ExtResource("11_enemy")
@@ -61,6 +84,9 @@ script = ExtResource("5_bm")
 backend_preference = "auto"
 
 [node name="Player" parent="." instance=ExtResource("3_player")]
+
+[node name="Warden" parent="." instance=ExtResource("16_warden")]
+position = Vector2(9664, 0)
 
 [node name="StressTest" type="Node" parent="."]
 script = ExtResource("6_stress")
