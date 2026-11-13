@@ -85,6 +85,7 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("slot_of", "id"), &NativeBulletSim::slot_of);
 	ClassDB::bind_method(D_METHOD("id_of", "slot"), &NativeBulletSim::id_of);
 	ClassDB::bind_method(D_METHOD("kill", "id"), &NativeBulletSim::kill);
+	ClassDB::bind_method(D_METHOD("compact"), &NativeBulletSim::compact);
 	ClassDB::bind_method(D_METHOD("clear"), &NativeBulletSim::clear);
 	ClassDB::bind_method(D_METHOD("get_count"), &NativeBulletSim::get_count);
 	ClassDB::bind_method(D_METHOD("get_capacity"), &NativeBulletSim::get_capacity);
