@@ -118,7 +118,7 @@ func _bind_slice_progress() -> void:
 	_progress = get_node_or_null("SliceProgress") as SliceProgress
 	if _progress == null:
 		return
-	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
+	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save, shot_scripts, _bullets)
 
 
 func current_save_path() -> String:
