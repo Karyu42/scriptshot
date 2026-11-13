@@ -151,12 +151,21 @@ func test_main_has_the_ribbon_and_keeps_the_cold_start() -> void:
 	assert_not_null(room_d)
 	assert_true(room_d.elite_alive())
 	assert_true(room_d.escort_alive())
+	var packs := main.get_node("SlicePacks") as SlicePacks
+	assert_not_null(packs)
+	assert_eq(packs.pack_alive(SlicePacks.PACK_DRIFTERS), 3)
+	assert_eq(packs.pack_alive(SlicePacks.PACK_SWARMERS), 10)
+	assert_eq(packs.pack_alive(SlicePacks.PACK_SHIELD), 1)
+	assert_eq(packs.pack_alive(SlicePacks.PACK_SNIPER), 1)
 	for node: Node in main.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
 		var body := node as RegularEnemy
 		assert_gte(body.global_position.length() - body.body_radius, WorldGen.SAFE_RADIUS - 0.05, "no hostile in the disk")
 		if body.is_in_group(SliceRoomD.GROUP):
 			assert_true(SliceLayout.in_footprint(body.anchor), "scripted room D sits in D (%s)" % body.anchor)
 			assert_eq(SliceLayout.room_at(body.anchor), SliceLayout.ROOM_D)
+			continue
+		if body.is_in_group(SlicePacks.GROUP):
+			assert_true(SliceLayout.in_footprint(body.anchor), "scripted packs sit in C (%s)" % body.anchor)
 			continue
 		assert_false(SliceLayout.in_footprint(body.anchor), "no streamed anchor inside the footprint (%s)" % body.anchor)
 	var bullets := main.get_node("BulletManager") as BulletManager

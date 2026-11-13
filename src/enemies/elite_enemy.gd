@@ -89,7 +89,8 @@ func configure_elite(
 	# The Herald and a natural elite both drop one shard. A half does not.
 	# Encounter index -1 is the Herald (and halves): no chunk bit. L3 passes
 	# the real chunk and index so the kill mask can name the encounter.
-	# Room D also emits shard_dropped; SliceRoomD adds 3, not 1.
+	# Room D sets grants_shard = false after configure: SliceRoomD adds 3,
+	# and must not also emit shard_dropped.
 	grants_shard = not p_half
 	# Halves keep the def (HP fraction, speed) but not the affix, so they cannot split.
 	affixes = []
@@ -156,20 +157,9 @@ func summon_alive() -> int:
 	return kept.size()
 
 
-func _ribbon_has_walls() -> bool:
-	if not is_inside_tree():
-		return false
-	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
-		var slice := node as SliceLayout
-		if slice != null and slice.enabled:
-			return true
-	return false
-
-
 func _ready() -> void:
-	# Stay out of SliceLayout walls when the ribbon is on. Off (or no
-	# layout in the tree): skip the world-layer query; there are no rooms.
-	collide_walls = _ribbon_has_walls()
+	# RegularEnemy._ready sets collide_walls from the shared helper when an
+	# enabled ribbon is in the tree.
 	super._ready()
 	if is_half:
 		woken = true

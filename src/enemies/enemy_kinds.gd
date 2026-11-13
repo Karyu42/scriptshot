@@ -13,7 +13,7 @@ const SWARMER := &"swarmer"
 const SHIELDBEARER := &"shieldbearer"
 const SNIPER := &"sniper"
 const HUSK := &"husk"
-## The vertical-slice boss (comes in a later PR).
+## The vertical-slice boss (Warden, row 8).
 const WARDEN := &"warden"
 ## Tutorial training dummy (TrainingDummy).
 const DUMMY := &"dummy"

@@ -622,6 +622,30 @@ func test_enemy_reserve_is_shared_and_matches_the_pool_rules() -> void:
 	assert_true(manager.emitter.is_saturated(Layers.PLAYER))
 
 
+func test_despawn_owned_compacts_native_and_drops_owner_counts() -> void:
+	if not _need_native():
+		return
+	var player := _shot(Vector2(0, 0), Vector2(10, 0))
+	assert_true(manager.is_native_id(manager.spawn(player)))
+	for i in 2:
+		var enemy := _shot(Vector2(i, 10), Vector2(10, 0))
+		enemy.owner_layer = Layers.ENEMY
+		enemy.hit_mask = Layers.PLAYER
+		assert_true(manager.is_native_id(manager.spawn(enemy)))
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 2)
+	assert_eq(manager.owner_count_all(Layers.PLAYER), 1)
+	assert_eq(manager.despawn_owned(Layers.ENEMY), 2)
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 0, "compact must drop native owner counts")
+	assert_eq(manager.native.count(), 1)
+	assert_eq(manager.owner_count_all(Layers.PLAYER), 1)
+	# The slots are free again immediately, not only after the next step().
+	var again := _shot(Vector2(0, 20), Vector2(10, 0))
+	again.owner_layer = Layers.ENEMY
+	again.hit_mask = Layers.PLAYER
+	assert_true(manager.is_native_id(manager.spawn(again)))
+	assert_eq(manager.owner_count_all(Layers.ENEMY), 1)
+
+
 func _auto_manager() -> BulletManager:
 	return _bare_manager("auto")
 

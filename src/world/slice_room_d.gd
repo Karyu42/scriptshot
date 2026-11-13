@@ -37,6 +37,8 @@ func bind(
 	if save != null and save.slice_rare_dead:
 		_bound = true
 		return
+	# A reload before the kill spawns a fresh body, so the fight resets
+	# to full HP.
 	_spawn()
 	_bound = true
 
@@ -73,6 +75,9 @@ func _spawn() -> void:
 	)
 	body.wake_x = SliceLayout.gate_rect(SliceLayout.GATE_G4).position.x
 	body.summon_after_wake = true
+	# SliceRoomD grants the +3 shards itself. The body must not also
+	# emit shard_dropped (a 1-shard natural-elite drop).
+	body.grants_shard = false
 	body.add_to_group(GROUP)
 	add_child(body)
 	body.died.connect(_on_elite_died)

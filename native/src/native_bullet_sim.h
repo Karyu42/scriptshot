@@ -196,8 +196,12 @@ public:
 	bool is_alive(int64_t p_id) const;
 	int slot_of(int64_t p_id) const;
 	int64_t id_of(int p_slot) const;
-	// Marks a bullet for removal (reason MANUAL); it disappears at the next step().
+	// Marks a bullet for removal (reason MANUAL); it disappears at the next
+	// step() or compact().
 	bool kill(int64_t p_id);
+	// Swap-removes every slot marked dead (kill, expired, etc.) and updates
+	// owner counts. despawn_owned() calls this so counts match immediately.
+	void compact();
 	void clear();
 
 	// --- inspection ------------------------------------------------------
@@ -385,7 +389,6 @@ private:
 	void mark_dead(int slot, int reason);
 	void claim_from_bounds(int slot, int reason);
 	void remove_at(int slot);
-	void compact();
 	bool id_valid(int64_t p_id, uint32_t &r_handle) const;
 	void reset_handles();
 	int owner_slot_of(int layer) const;
