@@ -44,6 +44,10 @@ window/stretch/mode="canvas_items"
 window/stretch/aspect="keep"
 window/vsync/vsync_mode=1
 
+[editor]
+
+import/use_multiple_threads=false
+
 [editor_plugins]
 
 enabled=PackedStringArray("res://addons/gut/plugin.cfg")
