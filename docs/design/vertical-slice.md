@@ -218,9 +218,11 @@ Same type, same Sense. HP ×1.2 rare (1080), ×1.3 legendary (1170). From phase 
 
 ### 5.5 Boss bar
 
-The bar is on the body, not a screen widget. A 2 px arc at radius 78, boss hue, fraction `hp / 900`, drawn under the core. The weak-point gap is separate and always 70°. Phase changes tick the arc (a 0.15 s white flash).
+**Game Designer call.** The bar is on the body, not a screen widget, and it has **no gap**. It is a plain **2 px** arc at radius **78**, boss hue, that starts at 12 o'clock and fills clockwise to `hp / 900`, drawn under the core. The **70°** weak-point gap belongs only to the armor ring: it tracks facing and never shrinks with HP. Phase changes tick the arc (a 0.15 s white flash). Gone when the fight is over.
 
 ### 5.6 Reward
+
+The victory card below is built in GE row 10, not in the HUD row (row 11).
 
 When core HP hits 0:
 
@@ -546,7 +548,7 @@ Ordered. Each row is done when its acceptance passes. Dependencies are other row
 8. **Warden phase 1.** 900 HP, gap, 3 husks, Lance, aggro line at `x = 8736`, tithe 50, solid bodies. Acceptance: before aggro, shots deal 0; with the player pressed against the near husk from outside, the nearest centre is that husk; a shot into the core centre deals ×0.1 and a shot into the gap tick deals full damage; a husk death adds 50 HP unless the core hit 0; Lance telegraph is 0.6 s, the bullet has `pierces_script_invuln` false, it deals 1 pip, and it deals 0 during a dash. Depends: rows 1 and 5.
 9. **Phases 2–3 and Habituation flag.** Fan, phasing husks, broken ring, turn caps, `boss_habituation` default true. Acceptance: phase 2 starts the first tick HP ≤ 630; phasing husks take damage only inside the 0.4 s window; the ring has a 50° gap and its bullets deal 1 pip; with the flag on, a single signature loses damage as §5.2; with the flag off, a single signature does not. Depends: row 8.
 10. **Victory and the open world.** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: after the kill, a respawn that happens then is `(9664, 0)`, including a death that started before the kill and whose 1.5 s ends after it (Game Designer call, §2); G0 is open; a fresh `chunk_encounters` outside the footprint is unchanged; `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
-11. **HUD.** Pips, dash arc, sense marks, boss arc (§14). Acceptance: 5 pips track `Health`; the dash arc matches `DashState.cooldown_left`; sense marks fill only when the book says so; the boss arc fraction matches HP and is absent when the Warden is dead. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
+11. **HUD (Game Designer calls, §5.5 and §14).** Pips, dash arc, sense marks, boss arc. The §5.6 victory card is row 10, not this row. Acceptance: 5 pips track `Health` on the radius-20 ring; up to 5 extra violet pips, then a violet `+N` (`N = hp - 10`) and no further pips; sense marks are 4 px in diameter and fill only when the book says so; the dash arc matches `DashState.cooldown_left`; the boss arc is a gapless 2 px stroke at radius 78, from 12 o'clock clockwise to `hp / 900`, and is absent when the Warden is dead. The armor ring's 70° gap is not this arc. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
 12. **Hydra alcove, Phasing on husks if not done in row 9, Null-shot L4 test, summon spacing.** Acceptance: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6, 2 every 6 s; a wave's summons are spread along their flank and do not share one point; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
 13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
 
@@ -621,10 +623,10 @@ All of it is drawn on the player or the boss, not as a panel.
 
 | Element | Draw |
 |---|---|
-| HP | 5 pips on a ring radius **20** around the player. Filled white, empty hollow. Overheal pips use the violet accent (pillars §5.4). Not on screen today; `Player._draw` has no pips yet |
+| HP | **Game Designer call.** 5 pips on a ring radius **20** around the player. Filled white, empty hollow. Overheal continues in violet on that same ring, up to **5** extra pips (**10** total). Past that, a violet `+N` label, **10 px**, centred just below the ring, where `N = hp - 10`, and no more pips are drawn |
 | Dash | Arc radius 24, stroke 2 px, fraction `1 - cooldown_left / 1.5`. Hidden when the dash is ready |
-| Sense icons | Two 4 px marks at local `(0, 28)` and `(0, 36)`. Top is `nearest_enemy`, bottom is `enemies_in`. Hollow until that flag is set, then filled `#F2F2F2`. No Level II mark |
-| Boss bar | The radius-78 arc on the core (§5.5). Gone when the fight is over |
+| Sense icons | **Game Designer call.** Two marks **4 px in diameter** at local `(0, 28)` and `(0, 36)`. Top is `nearest_enemy`, bottom is `enemies_in`. Hollow until that flag is set, then filled `#F2F2F2`. No Level II mark |
+| Boss bar | **Game Designer call.** The gapless radius-78 arc in §5.5: 2 px, starts at 12 o'clock, fills clockwise to `hp / 900`. The 70° weak-point gap is only on the armor ring. Gone when the fight is over |
 | Rarity tag | The cue itself (§8): ring count, tick count, outline weight. Common shows **no** text. Rare and legendary keep the 2 s name line spawning §8.1 already specifies (`Hydra` on the alcove elite). No `COMMON` chip |
 
 ### SE
