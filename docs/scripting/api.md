@@ -613,7 +613,7 @@ Only `nearest_enemy` and `enemies_in` exist, at Level I. The other four fields s
 - **Entities are read-only snapshots**: `e.id`, `e.pos.x`, `e.pos.y`, `e.radius`, `e.kind` (a string: `drifter`,
   `swarmer`, `shieldbearer`, `sniper`, `husk`, `warden`, `dummy`), `e.rarity` (a string: `""` for a regular, a husk
   or a dummy, otherwise `common`, `rare` or `legendary`, matching the rarity cue on screen) and `e:alive()`. `e.vel`,
-  `e.hp`, `e.hp_max` and speed are Level II and `nil` here. Writing a field is an error (`sense results are read-only`). Positions are where
+  `e.hp`, `e.hp_max` and speed are Level II and `nil` here. Writing a field is an error (`sense results are read-only`); `pairs(e)` lists the fields and stays read-only. Positions are where
   the body was at the start of this tick. Within one tick the same body is always the same table, so asking for it
   per bullet allocates nothing; `e:alive()` turns `false` once that body dies (or leaves the view), even on a table you kept.
 - **`opts.exclude`**: a table keyed by `e.id`, or by an entity table from this tick. **`opts.filter(e)`**: return
