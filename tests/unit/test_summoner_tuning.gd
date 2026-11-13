@@ -140,8 +140,8 @@ func test_legendary_column_is_six_drifters_at_105_hp() -> void:
 	add._physics_process(1.0)
 	assert_almost_eq(add.global_position.x - x0, RegularEnemy.DRIFTER_SPEED, 0.5)
 	assert_almost_eq(add.global_position.y, player.global_position.y, 0.5)
-	# 105 HP: a 1-damage stream needs 105 hits. Waves stack on the same two
-	# flank points, so clear the other adds out of the line first.
+	# 105 HP: a 1-damage stream needs 105 hits. Later waves jitter off the
+	# first flank points, but still clear the other adds out of the line first.
 	for other: SummonAdd in adds:
 		if other != add:
 			other.health.damage(other.health.max_hp)
@@ -181,6 +181,7 @@ func test_each_summon_dies_to_one_hit() -> void:
 func test_summons_spawn_on_both_flanks_at_ninety_degrees() -> void:
 	var player := _node_player(FAR + Vector2(300, 0))
 	var elite := _elite(FAR, player)
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
 	for dir: Vector2 in [Vector2.RIGHT, Vector2(0.6, 0.8), Vector2.LEFT, Vector2(-0.28, -0.96)]:
 		player.global_position = elite.global_position + dir * 300.0
 		_kill_all(elite.get_parent())
@@ -192,10 +193,94 @@ func test_summons_spawn_on_both_flanks_at_ninety_degrees() -> void:
 			var off := add.global_position - elite.global_position
 			assert_almost_eq(off.length(), EliteEnemy.SUMMON_OFFSET, 0.01)
 			var angle := rad_to_deg(dir.angle_to(off))
-			assert_almost_eq(absf(angle), 90.0, 0.5, "summon at %.1f° from the elite-to-player line" % angle)
+			assert_gte(absf(angle), 90.0 - half_arc - 0.01, "summon at %.1f° from the elite-to-player line" % angle)
+			assert_lte(absf(angle), 90.0 + half_arc + 0.01, "summon at %.1f° from the elite-to-player line" % angle)
 			sides.append(signf(angle))
 			assert_eq(add.summoner, elite)
 		assert_ne(sides[0], sides[1], "one summon on each flank")
+
+
+## vertical-slice §4 / §10 row 12: a wave jitters across the flank arc, and
+## the roll is WorldGen.hash_u so a test can recompute it from the seed.
+func test_summon_wave_jitter_stays_within_the_flank_arc() -> void:
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	var dir := Vector2.RIGHT
+	player.global_position = hydra.global_position + dir * 3000.0
+	# Tick the summoner only, so idle drift does not walk the body off the spawn.
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	var adds := _adds(hydra.get_parent())
+	assert_eq(adds.size(), 6)
+	var half := EliteEnemy.SUMMON_FLANK_ARC * 0.5
+	for i in adds.size():
+		var add: SummonAdd = hydra._summons[i]
+		var expected_jitter := EliteEnemy.summon_flank_jitter_for(
+			hydra.world_seed, hydra.chunk, hydra.encounter_index, add.member_index
+		)
+		assert_eq(add.member_index, i)
+		assert_almost_eq(hydra.summon_flank_jitter(i), expected_jitter, 0.0000001)
+		assert_gte(expected_jitter, -half)
+		assert_lte(expected_jitter, half)
+		var expected := hydra.summon_spawn_point(
+			1.0 if i % 2 == 0 else -1.0, expected_jitter
+		)
+		assert_almost_eq(add.global_position.x, expected.x, 0.01)
+		assert_almost_eq(add.global_position.y, expected.y, 0.01)
+		var angle := dir.angle_to(add.global_position - hydra.global_position)
+		assert_gte(absf(angle), PI * 0.5 - half - 0.001)
+		assert_lte(absf(angle), PI * 0.5 + half + 0.001)
+		assert_almost_eq(
+			(add.global_position - hydra.global_position).length(),
+			EliteEnemy.SUMMON_OFFSET,
+			0.01
+		)
+
+
+func test_summon_wave_jitter_differs_between_waves_and_is_seedable() -> void:
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2.RIGHT * 3000.0
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	assert_eq(hydra.summon_alive(), 6)
+	# Same flank, later wave: not the same point.
+	for side_index in 2:
+		var a: Vector2 = hydra._summons[side_index].global_position
+		var b: Vector2 = hydra._summons[side_index + 2].global_position
+		var c: Vector2 = hydra._summons[side_index + 4].global_position
+		assert_gt(a.distance_to(b), 0.01, "wave 1 and 2 share a flank point")
+		assert_gt(a.distance_to(c), 0.01, "wave 1 and 3 share a flank point")
+		assert_gt(b.distance_to(c), 0.01, "wave 2 and 3 share a flank point")
+	# Same seed, chunk, encounter, and serial: same offset.
+	var again := EliteEnemy.summon_flank_jitter_for(
+		hydra.world_seed, hydra.chunk, hydra.encounter_index, 0
+	)
+	assert_almost_eq(again, hydra.summon_flank_jitter(0), 0.0000001)
+	# A second Hydra with the same seed lands on the same points.
+	# Same spawn point so chunk_of matches (encounter_index is -1, so chunk is from spawn).
+	var twin := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	twin.set_physics_process(false)
+	player.global_position = twin.global_position + Vector2.RIGHT * 3000.0
+	twin._summon_wait = 0.0
+	twin._tick_summon(0.0)
+	for i in 2:
+		var first: Vector2 = hydra._summons[i].global_position - hydra.global_position
+		var copy: Vector2 = twin._summons[i].global_position - twin.global_position
+		assert_almost_eq(first.x, copy.x, 0.01)
+		assert_almost_eq(first.y, copy.y, 0.01)
+	# A different seed must be able to move the first spawn (hash_u is not
+	# constant across seeds).
+	var other := EliteEnemy.summon_flank_jitter_for(2, Vector2i.ZERO, -1, 0)
+	assert_true(
+		other != hydra.summon_flank_jitter(0)
+		or EliteEnemy.summon_flank_jitter_for(3, Vector2i.ZERO, -1, 0)
+		!= hydra.summon_flank_jitter(0)
+	)
 
 
 func test_cooldown_is_at_least_four_seconds() -> void:

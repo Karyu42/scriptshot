@@ -19,8 +19,14 @@ const HALF_RADIUS := 12.0
 ## Centre gap so two radius-12 halves do not sit on top of each other.
 const HALF_SEPARATION := 32.0
 ## Same spacing the slice uses for a 1-point escort, so adds clear the body.
-## Summons spawn this far out on a flank: ±90° from the elite-to-player line.
+## Summons spawn this far out on a flank: ±90° from the elite-to-player line,
+## jittered across SUMMON_FLANK_ARC so a later wave does not stack on the
+## same two points (vertical-slice §4 / §10 row 12).
 const SUMMON_OFFSET := 48.0
+## Total width of the flank arc, centred on ±90°. Each spawn is a deterministic
+## hash_u roll in ± half of this, so tests can recompute the offset from the
+## elite's world_seed, chunk, encounter_index, and summon serial.
+const SUMMON_FLANK_ARC := deg_to_rad(40.0)
 
 var affix := StringName()
 ## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
@@ -263,7 +269,8 @@ func _spawn_one_summon() -> void:
 	# Alternate flanks: even serials left of the elite-to-player line, odd right.
 	var side := 1.0 if _summon_serial % 2 == 0 else -1.0
 	var pos := RegularEnemy.push_centre_outside(
-		summon_spawn_point(side), RegularEnemy.radius_of(_summon_kind)
+		summon_spawn_point(side, summon_flank_jitter(_summon_serial)),
+		RegularEnemy.radius_of(_summon_kind)
 	)
 	body.name = "HeraldSummon%d" % _summon_serial
 	body.summoner = self
@@ -279,10 +286,28 @@ func _spawn_one_summon() -> void:
 	_summons.append(body)
 
 
+## Deterministic flank-arc offset in radians for summon `serial`, in
+## ± SUMMON_FLANK_ARC / 2. Uses WorldGen.hash_u so the same seed, chunk,
+## encounter, and serial always land on the same point (row 12).
+func summon_flank_jitter(serial: int) -> float:
+	return summon_flank_jitter_for(world_seed, chunk, encounter_index, serial)
+
+
+static func summon_flank_jitter_for(
+	p_seed: int, p_chunk: Vector2i, p_encounter: int, serial: int
+) -> float:
+	var u := WorldGen.hash_u(
+		p_seed, p_chunk.x, p_chunk.y, p_encounter, serial, "summon", "arc"
+	)
+	return (u - 0.5) * SUMMON_FLANK_ARC
+
+
 ## Where a summon on `side` (+1 left, -1 right of the elite-to-player line)
-## appears: SUMMON_OFFSET px out at ±90°, never between the elite and the
-## player. With no player the heading stands in for the line.
-func summon_spawn_point(side: float) -> Vector2:
+## appears: SUMMON_OFFSET px out, at ±90° plus a flank-arc jitter, never
+## between the elite and the player. With no player the heading stands in
+## for the line. `flank_jitter` is radians along the arc (see
+## summon_flank_jitter).
+func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
 	var lane := _heading
 	if player != null:
 		var to_player := player.global_position - global_position
@@ -292,6 +317,10 @@ func summon_spawn_point(side: float) -> Vector2:
 		lane = Vector2.RIGHT
 	lane = lane.normalized()
 	var normal := Vector2(-lane.y, lane.x)
+	var half := SUMMON_FLANK_ARC * 0.5
+	var jitter := clampf(flank_jitter, -half, half)
+	if absf(jitter) > 0.000001:
+		normal = normal.rotated(jitter)
 	return global_position + normal * side * SUMMON_OFFSET
 
 
