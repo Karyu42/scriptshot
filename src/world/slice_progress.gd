@@ -4,13 +4,14 @@ extends Node
 ## §10 row 5). Checkers read the world (HP, hits, aim, fire held); they do not
 ## parse Lua. Death does not clear flags or close gates.
 ##
-## Real checkers run for lessons 1 and 2 (the three origin TrainingDummies).
-## Lessons 3–5, the four room-C packs, the room-D rare elite, and the Warden
-## are not built in this row: later rows call the hooks below, and tests or a
-## session can use the debug overrides.
+## Real checkers run for lessons 1–5 (origin dummies, the room-A shielded
+## dummy, and the room-B pad and plate). The four room-C packs, the room-D
+## rare elite, and the Warden are not built in this row: later rows call the
+## hooks below, and tests or a session can use the debug overrides.
 ##
-##   - complete_lesson(3) opens G2 (room A shielded dummy, row 4).
-##   - complete_lesson(4) and complete_lesson(5) together open G3 (pad / plate, row 4).
+##   - Lesson 3 (shielded dummy dies) opens G2.
+##   - Lessons 4 and 5 (pad killing blow while hp <= 4, plate speed >= 640
+##     after a qualifying equipped-file save) together open G3.
 ##   - notify_pack_cleared(0..3) opens G4 once all four packs are marked (row 2).
 ##   - notify_room_d_elite_died() opens G5 (row 7).
 ##   - notify_warden_defeated() opens G0 and sets the arena respawn (row 8 / 10).
@@ -45,7 +46,10 @@ const LESSON_2_AIM_TOLERANCE := 0.4
 const EAST_DUMMY := Vector2(300, 0)
 const NORTH_DUMMY := Vector2(-150, 260)
 const SOUTH_DUMMY := Vector2(-150, -260)
+const SHIELD_DUMMY := Vector2(1800, 0)
+const PAD_DUMMY := Vector2(3200, 0)
 const DUMMY_MATCH_PX := 8.0
+const LESSON_5_SPEED := 640.0
 
 ## Bit 0 = lesson 1. Applied in bind() (OR'd into the loaded flags).
 @export var debug_lessons := 0
@@ -76,6 +80,15 @@ var _first_deaths := 0
 var _regen_suppressed := false
 var _bound := false
 var _health_connected := false
+var _shot_scripts: ShotScripts
+var _bullets: BulletManager
+var _pad: LessonPad
+var _plate: LessonPlate
+var _shield_dummy: TrainingDummy
+var _pad_dummy: TrainingDummy
+## Armed by script_saved on the equipped file (origin editor or file).
+var _lesson_5_armed := false
+var _scripts_connected := false
 
 
 func _physics_process(delta: float) -> void:
@@ -83,32 +96,52 @@ func _physics_process(delta: float) -> void:
 
 
 ## Deterministic step for tests. Updates the fire hold, the lesson 2 aim window,
-## room-B regen suppression, and retries a delayed lesson 2 grant.
+## room-B regen suppression, the pad windup, the plate scan, and retries a
+## delayed lesson 2 grant.
 func tick(delta: float) -> void:
 	if not is_finite(delta) or delta < 0.0:
 		return
 	_update_fire(delta)
 	_tick_lesson_2(delta)
 	_update_room_b_regen()
+	_sync_pad_dummy_hurtbox()
+	if _pad != null and is_instance_valid(_pad):
+		_pad.tick(delta)
+	_scan_plate()
 	_try_pass_lesson_2()
 
 
-## Wires the player, the origin dummy group, the ribbon, and an optional save.
-## Safe to call more than once; previous signal connections are dropped first.
-func bind(player: Player, dummies: Node, layout: SliceLayout, save: SaveGame = null) -> void:
+## Wires the player, the dummy group, the ribbon, an optional save, the
+## optional ShotScripts (lesson 5 save arm), and the optional BulletManager
+## (lesson 5 plate scan). Safe to call more than once; previous signal
+## connections are dropped first.
+func bind(
+	player: Player,
+	dummies: Node,
+	layout: SliceLayout,
+	save: SaveGame = null,
+	shot_scripts: ShotScripts = null,
+	bullets: BulletManager = null
+) -> void:
 	_unbind()
 	_player = player
 	_dummies = dummies
 	_layout = layout
 	_save = save
+	_shot_scripts = shot_scripts
+	_bullets = bullets
 	_bound = true
 	_load_from_save()
 	if debug_lessons != 0:
 		_lessons |= debug_lessons & _lesson_mask_all()
 	if debug_gates != 0:
 		_gates |= debug_gates & _gate_mask_all()
+	_discover_rooms_ab()
 	_connect_player()
 	_connect_dummies()
+	_connect_scripts()
+	_bind_rooms_ab()
+	_sync_pad_dummy_hurtbox()
 	_sync_layout_gates()
 	_restore_warden_respawn()
 	_try_open_gates()
@@ -249,15 +282,30 @@ func _unbind() -> void:
 			_disconnect_owned(dummy.destroyed)
 	if GameEvents.enemy_killed.is_connected(_on_enemy_killed):
 		GameEvents.enemy_killed.disconnect(_on_enemy_killed)
+	if _scripts_connected and _shot_scripts != null and is_instance_valid(_shot_scripts):
+		if _shot_scripts.script_saved.is_connected(_on_script_saved):
+			_shot_scripts.script_saved.disconnect(_on_script_saved)
 	if _regen_suppressed and _player != null and is_instance_valid(_player) and _player.health != null:
 		_player.health.regen_enabled = true
 	_regen_suppressed = false
 	_health_connected = false
+	_scripts_connected = false
 	_bound = false
+	if _pad != null and is_instance_valid(_pad):
+		_pad.player = null
+	if _plate != null and is_instance_valid(_plate):
+		_plate.bullets = null
 	_player = null
 	_dummies = null
 	_layout = null
 	_save = null
+	_shot_scripts = null
+	_bullets = null
+	_pad = null
+	_plate = null
+	_shield_dummy = null
+	_pad_dummy = null
+	_lesson_5_armed = false
 
 
 func _connect_player() -> void:
@@ -280,20 +328,26 @@ func _disconnect_owned(sig: Signal) -> void:
 
 
 func _connect_dummies() -> void:
-	if _dummies == null:
-		return
-	for child in _dummies.get_children():
-		var dummy := child as TrainingDummy
-		if dummy == null or _role_of(dummy) == &"":
-			continue
-		var box := dummy.get_node_or_null("Hurtbox") as Hurtbox
-		if box != null:
-			_disconnect_owned(box.hit)
-			box.hit.connect(_on_hurtbox_hit.bind(dummy))
-		_disconnect_owned(dummy.destroyed)
-		dummy.destroyed.connect(_on_dummy_destroyed.bind(dummy))
+	if _dummies != null:
+		for child in _dummies.get_children():
+			_connect_one_dummy(child as TrainingDummy)
+	# Room A/B dummies live under LessonProps in main.tscn, not Dummies.
+	_connect_one_dummy(_shield_dummy)
+	_connect_one_dummy(_pad_dummy)
 	if not GameEvents.enemy_killed.is_connected(_on_enemy_killed):
 		GameEvents.enemy_killed.connect(_on_enemy_killed)
+
+
+func _connect_one_dummy(dummy: TrainingDummy) -> void:
+	if dummy == null or not is_instance_valid(dummy):
+		return
+	var role := _role_of(dummy)
+	var box := dummy.get_node_or_null("Hurtbox") as Hurtbox
+	if box != null and role != &"":
+		_disconnect_owned(box.hit)
+		box.hit.connect(_on_hurtbox_hit.bind(dummy))
+	_disconnect_owned(dummy.destroyed)
+	dummy.destroyed.connect(_on_dummy_destroyed.bind(dummy))
 
 
 func _update_fire(delta: float) -> void:
@@ -352,9 +406,10 @@ func _on_dummy_destroyed(dummy: TrainingDummy) -> void:
 	if dummy == null:
 		return
 	var role := _role_of(dummy)
-	if role == &"":
+	if role != &"":
+		_on_dummy_died(role, dummy.deaths == 1)
 		return
-	_on_dummy_died(role, dummy.deaths == 1)
+	_try_pass_lesson_3_or_4(dummy)
 
 
 func _on_enemy_killed(kind: StringName, _rarity: int, _tier: int, pos: Vector2, first_death: bool) -> void:
@@ -531,6 +586,7 @@ func _persist() -> void:
 
 func _on_hp_changed(hp: float, max_hp: float) -> void:
 	hp_changed.emit(hp, max_hp)
+	_sync_pad_dummy_hurtbox()
 
 
 func _on_player_died() -> void:
@@ -541,6 +597,118 @@ func _on_player_respawned(at: Vector2) -> void:
 	respawned.emit(at)
 	# Death must not clear flags; re-apply open gates in case a debug close happened.
 	_sync_layout_gates()
+
+
+func _connect_scripts() -> void:
+	if _shot_scripts == null:
+		return
+	if not _shot_scripts.script_saved.is_connected(_on_script_saved):
+		_shot_scripts.script_saved.connect(_on_script_saved)
+		_scripts_connected = true
+
+
+func _discover_rooms_ab() -> void:
+	if _dummies != null:
+		_collect_rooms_ab(_dummies)
+		var parent := _dummies.get_parent()
+		if parent != null:
+			for child in parent.get_children():
+				if child == _dummies:
+					continue
+				if child is LessonPad or child is LessonPlate:
+					_collect_rooms_ab(child)
+				elif child.name in [&"LessonProps", &"RoomsAB"]:
+					_collect_rooms_ab(child)
+
+
+func _collect_rooms_ab(node: Node) -> void:
+	if node is LessonPad and _pad == null:
+		_pad = node
+	elif node is LessonPlate and _plate == null:
+		_plate = node
+	elif node is TrainingDummy:
+		var dummy: TrainingDummy = node
+		if _is_at(dummy.global_position, SHIELD_DUMMY):
+			_shield_dummy = dummy
+		elif _is_at(dummy.global_position, PAD_DUMMY):
+			_pad_dummy = dummy
+	for child in node.get_children():
+		_collect_rooms_ab(child)
+
+
+func _bind_rooms_ab() -> void:
+	if _pad != null:
+		_pad.player = _player
+	if _plate != null:
+		if _bullets != null:
+			_plate.bullets = _bullets
+		if not _plate.overlapped.is_connected(_on_plate_overlapped):
+			_plate.overlapped.connect(_on_plate_overlapped)
+
+
+func _sync_pad_dummy_hurtbox() -> void:
+	if _pad_dummy == null or not is_instance_valid(_pad_dummy):
+		return
+	var hp := observed_player_hp()
+	_pad_dummy.set_observed_player_hp(hp)
+
+
+func observed_player_hp() -> float:
+	if _player != null and is_instance_valid(_player) and _player.health != null:
+		return _player.health.hp
+	return 5.0
+
+
+func _scan_plate() -> void:
+	if is_lesson_done(5):
+		return
+	if _plate == null or not is_instance_valid(_plate):
+		return
+	_plate.scan()
+
+
+func _on_plate_overlapped(speed: float) -> void:
+	# The plate always reports the speed; the lesson only passes after a
+	# qualifying equipped-file save, at >= 640.
+	if is_lesson_done(5):
+		return
+	if not _lesson_5_armed:
+		return
+	if speed >= LESSON_5_SPEED:
+		complete_lesson(5)
+
+
+func _on_script_saved(_file_name: String, origin: StringName) -> void:
+	if origin == ShotScripts.ORIGIN_EDITOR or origin == ShotScripts.ORIGIN_FILE:
+		_lesson_5_armed = true
+
+
+## Test hook: arm lesson 5 the same way a qualifying script_saved would.
+func debug_arm_lesson_5() -> void:
+	_lesson_5_armed = true
+
+
+func is_lesson_5_armed() -> bool:
+	return _lesson_5_armed
+
+
+func plate_last_speed() -> float:
+	if _plate != null and is_instance_valid(_plate):
+		return _plate.last_speed
+	return -1.0
+
+
+func _try_pass_lesson_3_or_4(dummy: TrainingDummy) -> void:
+	if _is_at(dummy.global_position, SHIELD_DUMMY):
+		complete_lesson(3)
+		return
+	if _is_at(dummy.global_position, PAD_DUMMY):
+		if observed_player_hp() <= 4.0:
+			complete_lesson(4)
+
+
+func _is_at(pos: Vector2, anchor: Vector2) -> bool:
+	return pos.distance_to(anchor) <= DUMMY_MATCH_PX
 
 
 func _role_of(dummy: TrainingDummy) -> StringName:

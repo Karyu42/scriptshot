@@ -63,7 +63,7 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	cfg.save(_SAVE)
 
 	var loaded := SaveGame.load_from(_SAVE)
-	assert_true(loaded.sense_nearest, "bool() accepts a truthy int")
+	assert_false(loaded.sense_nearest, "a non-bool stays false (_read_bool)")
 	assert_eq(loaded.sense_enemies_in, 0, "a negative level clamps to 0")
 	assert_eq(loaded.slice_lessons, 5, "int() truncates a float")
 	assert_eq(loaded.slice_gates, 2)
