@@ -307,6 +307,7 @@ func _on_died() -> void:
 	_hurtbox.active = false
 	hide()
 	died.emit()
+	GameEvents.player_died.emit()
 
 
 func _draw() -> void:
