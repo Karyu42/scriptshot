@@ -288,6 +288,74 @@ return function(t)
 end
 """ % MAX_WEAPON_KEYS
 
+## Trusted. Copies the env's top level as it is now (before any script ran)
+## and returns a function that makes a fresh env from that copy. The two
+## sandbox functions that look themselves up in their env (load's default env,
+## xpcall's pcall) are rebuilt for the new env.
+## Each env also gets its own shallow copies of the plain library tables
+## (string, table, math, utf8, os, coroutine...), made from private copies
+## taken here, so what one version does to them stays in that version's env.
+## Tables with a metatable (host-owned read-only views, like a Senses table)
+## are shared as they are. The string metatable keeps the state's original
+## string table, which no fresh env can reach, so `s:sub(...)` always runs the
+## sandbox's string functions; getmetatable(s).__index is the env's own copy.
+## The copies are made once per load, never per call.
+const _FRESH_ENV := """
+return function(env)
+	local next, rawset, type, getmetatable = next, rawset, type, getmetatable
+	local pack, unpack = table.pack, table.unpack
+	local function plain(v)
+		return type(v) == "table" and getmetatable(v) == nil
+	end
+	local function copy(t)
+		local c = {}
+		for k, v in next, t do
+			rawset(c, k, v)
+		end
+		return c
+	end
+	local base = {}
+	for k, v in next, env do
+		if k ~= "_G" and plain(v) then
+			v = copy(v)
+		end
+		base[k] = v
+	end
+	local base_load, base_getmetatable = base.load, base.getmetatable
+	return function()
+		local e = {}
+		for k, v in next, base do
+			if k ~= "_G" and plain(v) then
+				v = copy(v)
+			end
+			rawset(e, k, v)
+		end
+		rawset(e, "_G", e)
+		rawset(e, "load", function(chunk, name, mode, en)
+			return base_load(chunk, name, mode, en or e)
+		end)
+		rawset(e, "xpcall", function(f, h, ...)
+			local r = pack(e.pcall(f, ...))
+			if r[1] then
+				return unpack(r, 1, r.n)
+			end
+			local handled = pack(e.pcall(h, r[2]))
+			return false, handled[2]
+		end)
+		local str = e.string
+		if type(base_getmetatable) == "function" then
+			rawset(e, "getmetatable", function(x)
+				if type(x) == "string" then
+					return { __index = str }
+				end
+				return base_getmetatable(x)
+			end)
+		end
+		return e
+	end
+end
+"""
+
 ## Per-run tunable copies of the defaults. Tests tighten the budget; the game
 ## leaves them at the values above.
 var instruction_budget: int = INSTRUCTION_BUDGET
@@ -311,6 +379,9 @@ var _make_bullet: LuaFunction
 ## Sandbox entry point for script code (sandbox.lua host.call). See _run_script.
 var _call: LuaFunction
 var _names_of: LuaFunction
+## Makes a fresh sandbox env (snapshot_globals), and the state it belongs to.
+var _fresh_env: LuaFunction
+var _fresh_env_state := 0
 var _ready := false
 var _init_error := ""
 
@@ -614,6 +685,9 @@ func shutdown() -> void:
 	_ready = false
 	_strip_ok = true
 	_expire_views()
+	# Kept like every other wrapper (see _release_state).
+	_retain(_fresh_env)
+	_fresh_env = null
 	for i in _retired.size():
 		_release_retired(_retired[i])
 	_release_current()
@@ -808,6 +882,67 @@ func memory_peak() -> int:
 	return _mem_peak
 
 
+## Lua heap in bytes: the current state plus the retired ones.
+func lua_memory() -> int:
+	var n := int(_state.get_memory_used()) if _state != null else 0
+	for r in _retired:
+		if r.state != null:
+			n += int(r.state.get_memory_used())
+	return n
+
+
+## Lua states this host holds: the current one plus the retired ones.
+func lua_state_count() -> int:
+	return (1 if _state != null else 0) + _retired.size()
+
+
+## Remembers the sandbox globals as they are now, before any script ran, so
+## a later load_string(..., true) or release_weapon() can start from a fresh
+## env with only those. LuaShot calls it on a new host. A state rotated after
+## three guard stops has a new env and gets no fresh env (the snapshot
+## belongs to the old state); loads there share the env as before.
+func snapshot_globals() -> void:
+	if not is_ready():
+		return
+	var maker: Variant = _state.do_string(_FRESH_ENV, "@fresh-env.lua")
+	if not maker is LuaFunction:
+		return
+	var fresh_v: Variant = _as_function(maker).invoke(_env)
+	if fresh_v is LuaFunction:
+		_fresh_env = _as_function(fresh_v)
+		_fresh_env_state = _instance_id(_state)
+
+
+## A new env from the snapshot_globals copy, or null when there is none for
+## the current state.
+func _new_env() -> LuaTable:
+	if _fresh_env == null or _fresh_env_state != _instance_id(_state):
+		return null
+	var e: Variant = _fresh_env.invoke()
+	return _as_table(e) if e is LuaTable else null
+
+
+## Drops the weapon table and its callbacks so the chunk that built them can
+## be collected, swaps in a fresh env (see snapshot_globals) so the old
+## globals go too, then runs a full collection. The state and its sandbox stay
+## (states are never freed, see shutdown()); a later load_string reuses them.
+## LuaShot calls this when a generation is released. No-op inside a call.
+func release_weapon() -> void:
+	if _closed or _in_lua or _state == null:
+		return
+	_callbacks.clear()
+	_weapon = null
+	_names = PackedStringArray()
+	_source = ""
+	var fresh := _new_env()
+	if fresh != null:
+		_env = fresh
+	# _value_threads and _parked stay: a wrapper elsewhere may still be tied
+	# to one of those coroutines (see _run).
+	_clear_pending()
+	_state.collect_garbage()
+
+
 func has_weapon() -> bool:
 	return _weapon != null
 
@@ -851,13 +986,20 @@ func hook_mask() -> int:
 ## Compiles and runs `code`. A returned table becomes the weapon, replacing the
 ## previous one. A compile error, a runtime error or a budget stop leaves the
 ## previous weapon in place. The chunk name is what Lua prints in errors.
-func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
+## With `fresh_env` (and snapshot_globals done) the chunk runs in a new env
+## with only the sandbox globals and its own library tables, which replaces the current env only when the
+## weapon is adopted. Until then the previous weapon, its callbacks and its
+## globals are untouched, so a load that fails leaves them exactly as they were.
+func load_string(code: String, chunk_name: String = "script.lua", fresh_env: bool = false) -> RunResult:
 	if _closed:
 		return _fail("script host shut down", chunk_name)
 	if not _ready:
 		return _fail(_init_error, chunk_name)
 	_sync_senses()
-	var loaded: Variant = _state.load_string(code, "@" + chunk_name, _env)
+	var env := _new_env() if fresh_env else null
+	if env == null:
+		env = _env
+	var loaded: Variant = _state.load_string(code, "@" + chunk_name, env)
 	if loaded is LuaError:
 		return _fail(_lua_error_message(loaded), chunk_name)
 	if not loaded is LuaFunction:
@@ -875,6 +1017,7 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		if not adopted.ok:
 			return adopted
 		adopted.value = result.value
+		_env = env
 		_source = code
 		_chunk_name = chunk_name
 	return result
