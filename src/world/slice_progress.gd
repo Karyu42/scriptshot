@@ -50,10 +50,6 @@ const DUMMY_MATCH_PX := 8.0
 var _lessons := 0
 var _gates := 0
 var _packs := 0
-## Unix times at which lessons 1–5 completed; 0 if not yet. Saved so a field
-## that was absent on an old slot stays distinguishable from "completed at 0".
-var _lesson_at: Array[int] = [0, 0, 0, 0, 0]
-
 var _player: Player
 var _layout: SliceLayout
 var _save: SaveGame
@@ -104,7 +100,6 @@ func bind(player: Player, dummies: Node, layout: SliceLayout, save: SaveGame = n
 	_load_from_save()
 	if debug_lessons != 0:
 		_lessons |= debug_lessons & _lesson_mask_all()
-		_stamp_new_lessons()
 	if debug_gates != 0:
 		_gates |= debug_gates & _gate_mask_all()
 	_connect_player()
@@ -139,6 +134,34 @@ func is_gate_unlocked(id: StringName) -> bool:
 	return bit >= 0 and (_gates & (1 << bit)) != 0
 
 
+## Where the player should come back: the arena centre if the Warden is already
+## dead (G0 open), otherwise RespawnPoints. Chosen at respawn time so a trade
+## kill during the 1.5 s window still lands in the arena.
+func respawn_position() -> Vector2:
+	if is_gate_unlocked(SliceLayout.GATE_G0):
+		return SliceLayout.ARENA_CENTRE
+	return RespawnPoints.get_respawn_position()
+
+
+## Room-C pack absent-since, forwarded to the bound save. 0 if there is no save
+## or the pack is present. Row 2 wires the packs; this is just the slot API.
+func field_absent_since(key: StringName) -> float:
+	return _save.field_absent_since(key) if _save != null else 0.0
+
+
+func set_field_absent_since(key: StringName, unix: float) -> void:
+	if _save == null:
+		return
+	_save.set_field_absent_since(key, unix)
+	_save.save()
+
+
+func field_pack_is_present(key: StringName, now_unix: float = -1.0) -> bool:
+	if _save == null:
+		return true
+	return _save.field_pack_is_present(key, now_unix)
+
+
 ## Marks lesson `id` (1–5) complete. Idempotent. Opens any gate whose
 ## requirements are now met. This is the hook later rows call for lessons 3–5.
 func complete_lesson(id: int) -> bool:
@@ -168,10 +191,9 @@ func notify_room_d_elite_died() -> void:
 	_unlock_gate(SliceLayout.GATE_G5)
 
 
-## Hook for row 8 / 10: the Warden died. Opens G0 and moves the respawn to
-## the arena centre. The next death uses that point; this death's respawn is
-## already decided by Main before the hook would run, so fights after the kill
-## are the ones that come back in E.
+## Hook for row 8 / 10: the Warden died. Opens G0 and records the arena as
+## the respawn point. Main chooses the point when the respawn timer fires, so
+## a trade kill during the 1.5 s window still comes back at the arena centre.
 func notify_warden_defeated() -> void:
 	var already := is_gate_unlocked(SliceLayout.GATE_G0)
 	_unlock_gate(SliceLayout.GATE_G0)
@@ -438,16 +460,8 @@ func _set_lesson(id: int) -> bool:
 	if (_lessons & mask) != 0:
 		return false
 	_lessons |= mask
-	_lesson_at[bit] = int(Time.get_unix_time_from_system())
 	lesson_completed.emit(id)
 	return true
-
-
-func _stamp_new_lessons() -> void:
-	var now := int(Time.get_unix_time_from_system())
-	for bit in range(LESSON_COUNT):
-		if (_lessons & (1 << bit)) != 0 and _lesson_at[bit] == 0:
-			_lesson_at[bit] = now
 
 
 func _try_open_gates() -> void:
@@ -497,12 +511,6 @@ func _load_from_save() -> void:
 	_lessons = _save.slice_lessons & _lesson_mask_all()
 	_gates = _save.slice_gates & _gate_mask_all()
 	_packs = _save.slice_packs & ((1 << PACK_COUNT) - 1)
-	_lesson_at = [0, 0, 0, 0, 0]
-	var times: Array = _save.slice_lesson_at
-	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
-	for i in range(mini(times.size(), LESSON_COUNT)):
-		_lesson_at[i] = int(times[i])
-	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 
 func _persist() -> void:
@@ -511,10 +519,6 @@ func _persist() -> void:
 	_save.slice_lessons = _lessons
 	_save.slice_gates = _gates
 	_save.slice_packs = _packs
-	var times: Array = []
-	for v in _lesson_at:
-		times.append(v)
-	_save.slice_lesson_at = times
 	_save.save()
 
 

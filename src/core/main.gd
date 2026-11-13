@@ -10,8 +10,9 @@ extends Node2D
 @onready var _reticle: AimReticle = $AimReticle
 @onready var _hud: Label = $Hud/Label
 ## Seconds between dying and respawning. The respawn keeps everything (enemies,
-## bullets, weapon) and only resets the player's hp to max. It happens at
-## RespawnPoints.get_respawn_position(): the last cleared boss arena, else the origin.
+## bullets, weapon) and only resets the player's hp to max. The point is chosen
+## when the timer fires: the arena centre if the Warden is already dead, else
+## RespawnPoints.get_respawn_position() (last cleared arena, or the origin).
 @export var respawn_delay := 1.5
 ## Save slot. Empty, or the player default, means SaveGame.resolved_path():
 ## the player slot in the game, and the GUT throwaway slot while tests run.
@@ -162,8 +163,15 @@ func _process(delta: float) -> void:
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
-			_player.respawn(RespawnPoints.get_respawn_position())
+			_player.respawn(respawn_position())
 	_update_hud()
+
+
+## Picked at respawn time so a trade kill during the delay still lands in E.
+func respawn_position() -> Vector2:
+	if _progress != null:
+		return _progress.respawn_position()
+	return RespawnPoints.get_respawn_position()
 
 
 func _update_hud() -> void:

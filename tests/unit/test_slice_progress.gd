@@ -276,10 +276,10 @@ func test_save_round_trip_restores_flags_and_gates() -> void:
 	assert_eq(reloaded.slice_lessons, progress.lessons_mask())
 	assert_eq(reloaded.slice_gates, progress.gates_mask())
 	assert_eq(reloaded.slice_packs, 1)
-	assert_eq(reloaded.slice_lesson_at.size(), 5)
-	@warning_ignore("unsafe_call_argument")
-	var first_at := int(reloaded.slice_lesson_at[0])
-	assert_gt(first_at, 0)
+	assert_eq(reloaded.field_drifters, 0.0)
+	assert_eq(reloaded.field_swarmers, 0.0)
+	assert_eq(reloaded.field_shield, 0.0)
+	assert_eq(reloaded.field_sniper, 0.0)
 	var fresh := SliceProgress.new()
 	add_child_autofree(fresh)
 	var gates := SliceLayout.new()
@@ -302,7 +302,11 @@ func test_absent_slice_fields_on_an_old_save_default_to_zero() -> void:
 	assert_eq(loaded.slice_lessons, 0)
 	assert_eq(loaded.slice_gates, 0)
 	assert_eq(loaded.slice_packs, 0)
-	assert_eq(loaded.slice_lesson_at, [])
+	assert_eq(loaded.field_drifters, 0.0)
+	assert_eq(loaded.field_swarmers, 0.0)
+	assert_eq(loaded.field_shield, 0.0)
+	assert_eq(loaded.field_sniper, 0.0)
+	assert_true(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS))
 
 
 func test_dying_in_room_c_respawns_at_the_origin_and_keeps_open_gates() -> void:
@@ -324,8 +328,8 @@ func test_dying_in_room_c_respawns_at_the_origin_and_keeps_open_gates() -> void:
 	assert_true(player.health.is_dead())
 	assert_signal_emitted(player, "died")
 	assert_signal_emitted(progress, "died")
-	assert_eq(RespawnPoints.get_respawn_position(), Vector2.ZERO)
-	player.respawn(RespawnPoints.get_respawn_position())
+	assert_eq(progress.respawn_position(), Vector2.ZERO)
+	player.respawn(progress.respawn_position())
 	assert_eq(player.global_position, Vector2.ZERO)
 	assert_eq(player.health.hp, 5.0)
 	assert_false(player.health.is_engine_invulnerable())
@@ -336,6 +340,44 @@ func test_dying_in_room_c_respawns_at_the_origin_and_keeps_open_gates() -> void:
 	assert_true(layout.gate_flag(SliceLayout.GATE_G1))
 	assert_true(layout.gate_flag(SliceLayout.GATE_G2))
 	assert_true(layout.gate_flag(SliceLayout.GATE_G3))
+
+
+
+func test_a_trade_kill_during_the_respawn_window_lands_in_the_arena() -> void:
+	# Player dies first, then the Warden dies inside the 1.5 s window.
+	assert_eq(progress.respawn_position(), Vector2.ZERO)
+	for _i in range(5):
+		assert_true(player.health.damage(1.0))
+		if not player.health.is_dead():
+			_tick_health(player.health.invulnerability_time)
+	assert_true(player.health.is_dead())
+	assert_eq(progress.respawn_position(), Vector2.ZERO, "Warden still alive")
+	progress.notify_warden_defeated()
+	assert_eq(progress.respawn_position(), SliceLayout.ARENA_CENTRE)
+	player.respawn(progress.respawn_position())
+	assert_eq(player.global_position, SliceLayout.ARENA_CENTRE)
+	assert_eq(player.health.hp, 5.0)
+	assert_true(layout.gate_flag(SliceLayout.GATE_G0))
+
+
+func test_room_c_pack_absent_keys_default_to_present_and_return_after_300s() -> void:
+	assert_true(progress.field_pack_is_present(SaveGame.FIELD_DRIFTERS))
+	assert_eq(progress.field_absent_since(SaveGame.FIELD_SWARMERS), 0.0)
+	var t0 := 1_000_000.0
+	progress.set_field_absent_since(SaveGame.FIELD_DRIFTERS, t0)
+	progress.set_field_absent_since(SaveGame.FIELD_SWARMERS, t0)
+	progress.set_field_absent_since(SaveGame.FIELD_SHIELD, t0)
+	progress.set_field_absent_since(SaveGame.FIELD_SNIPER, t0)
+	assert_false(progress.field_pack_is_present(SaveGame.FIELD_DRIFTERS, t0 + 299.0))
+	assert_true(progress.field_pack_is_present(SaveGame.FIELD_DRIFTERS, t0 + 300.0))
+	var reloaded := SaveGame.load_from(_SAVE)
+	assert_eq(reloaded.field_drifters, t0)
+	assert_eq(reloaded.field_swarmers, t0)
+	assert_eq(reloaded.field_shield, t0)
+	assert_eq(reloaded.field_sniper, t0)
+	assert_false(reloaded.field_pack_is_present(SaveGame.FIELD_SHIELD, t0 + 10.0))
+	reloaded.set_field_absent_since(SaveGame.FIELD_SHIELD, 0.0)
+	assert_true(reloaded.field_pack_is_present(SaveGame.FIELD_SHIELD, t0))
 
 
 func test_regen_is_disabled_while_the_player_centre_is_in_room_b() -> void:
