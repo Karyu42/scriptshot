@@ -108,24 +108,9 @@ func summon_alive() -> int:
 	return kept.size()
 
 
-func _enabled_slice_layout() -> SliceLayout:
-	if not is_inside_tree():
-		return null
-	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
-		var slice := node as SliceLayout
-		if slice != null and slice.enabled:
-			return slice
-	return null
-
-
-func _ribbon_has_walls() -> bool:
-	return _enabled_slice_layout() != null
-
-
 func _ready() -> void:
-	# Stay out of SliceLayout walls when the ribbon is on. Off (or no
-	# layout in the tree): skip the world-layer query; there are no rooms.
-	collide_walls = _ribbon_has_walls()
+	# RegularEnemy._ready sets collide_walls from the shared helper when an
+	# enabled ribbon is in the tree.
 	super._ready()
 	if is_half:
 		woken = true
@@ -272,14 +257,19 @@ func _spawn_one_summon() -> void:
 		return
 	# Alternate flanks: even serials left of the elite-to-player line, odd right.
 	var side := 1.0 if _summon_serial % 2 == 0 else -1.0
+	var jitter := summon_flank_jitter(_summon_serial)
+	var slid := summon_spawn_point(side, jitter)
 	var pos := RegularEnemy.push_centre_outside(
-		summon_spawn_point(side, summon_flank_jitter(_summon_serial)),
+		slid,
 		RegularEnemy.radius_of(_summon_kind)
 	)
 	body.name = "HeraldSummon%d" % _summon_serial
 	body.summoner = self
 	body.side = side
 	body.summon_hp = _summon_hp
+	# Hold at this add's own spawn offset (hashed angle + wall-slide radius).
+	body.flank_jitter = jitter
+	body.flank_hold_radius = slid.distance_to(global_position)
 	# Swarmer adds hold their flank; legendary (Hydra) Drifter adds chase as
 	# plain Drifters (vertical-slice §4).
 	body.holds_flank = _summon_kind == ARCH_SWARMER
@@ -328,9 +318,12 @@ func summon_flank_dir(side: float, flank_jitter: float) -> Vector2:
 
 
 ## Where a summon on `side` appears: SUMMON_OFFSET px out along
-## summon_flank_dir. If that 48 px point sits in a ribbon wall, the spawn
-## slides inward along the same ray until the add's circle is clear, down
-## to 0 px from this body's edge. The angle is never re-rolled (row 12).
+## summon_flank_dir. If the add's circle along that ray overlaps a ribbon
+## wall, the spawn slides inward along the same ray until the circle and
+## the segment from this body's edge are clear, down to 0 px from the
+## edge. A far-side clear point past a thin wall is not accepted: if the
+## near side has no clear point, the elite-edge point is used. The angle
+## is never re-rolled (row 12).
 func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
 	var dir := summon_flank_dir(side, flank_jitter)
 	return _slide_summon_inward(global_position + dir * SUMMON_OFFSET, dir)
@@ -341,22 +334,43 @@ func _slide_summon_inward(pos: Vector2, dir: Vector2) -> Vector2:
 	if layout == null:
 		return pos
 	var radius := RegularEnemy.radius_of(_summon_kind)
-	if not layout.touches_wall(pos, radius):
+	var min_dist := body_radius
+	var inner := global_position + dir * min_dist
+	# Check the add's circle along the ray, not just the 48 px endpoint, so
+	# a thin wall between the elite and a far-side clear point still slides.
+	if not _summon_ray_blocked(layout, dir, min_dist, SUMMON_OFFSET, radius):
 		return pos
-	# Farthest clear distance on this ray, not closer than the elite's edge.
-	var lo := body_radius
-	var inner := global_position + dir * lo
 	if layout.touches_wall(inner, radius):
+		# Near side has no clear point down to the elite edge: stay there
+		# rather than tunneling to the far side.
 		return inner
+	var lo := min_dist
 	var hi := SUMMON_OFFSET
 	for _i in 24:
 		var mid := (lo + hi) * 0.5
-		var p := global_position + dir * mid
-		if layout.touches_wall(p, radius):
+		if _summon_ray_blocked(layout, dir, min_dist, mid, radius):
 			hi = mid
 		else:
 			lo = mid
 	return global_position + dir * lo
+
+
+## True when the add's circle overlaps a wall at any sample on the ray
+## segment from `d0` to `d1` (distances from this body, inclusive).
+func _summon_ray_blocked(
+	layout: SliceLayout, dir: Vector2, d0: float, d1: float, radius: float
+) -> bool:
+	var start := minf(d0, d1)
+	var end := maxf(d0, d1)
+	# Step small enough that a WALL_PX wall cannot be skipped between
+	# samples of a circle of `radius`.
+	var step := minf(maxf(radius, 1.0), SliceLayout.WALL_PX * 0.5)
+	var d := start
+	while d < end:
+		if layout.touches_wall(global_position + dir * d, radius):
+			return true
+		d += step
+	return layout.touches_wall(global_position + dir * end, radius)
 
 
 func _spawn_halves() -> void:

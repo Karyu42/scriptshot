@@ -342,6 +342,46 @@ func test_a_wall_on_the_flank_slides_the_summon_inward_without_rerolling_the_ang
 	assert_almost_eq(add.global_position.y, slid.y, 0.01)
 
 
+func test_a_thin_wall_on_the_ray_does_not_leave_the_summon_on_the_far_side() -> void:
+	# QA probe: elite at (8104, 1152). The alcove east wall is 16 px thick
+	# (inner face 8112, outer 8128). The unslid east 48 px point (8152,
+	# 1152) is clear — a r=16 circle starts at 8136, past the wall — but
+	# the ray crosses the wall. The spawn must stay on the near side, at
+	# the same angle, and must not accept the far-side point. The elite
+	# edge itself sits in the wall, so the near-side result is the edge.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	var at := Vector2(8104.0, 1152.0)
+	var player := _node_player(at + Vector2(0, 3000))
+	var hydra := _elite(at, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2(0, 3000)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_DRIFTER)
+	var dir := Vector2.RIGHT
+	var unobstructed := hydra.global_position + dir * EliteEnemy.SUMMON_OFFSET
+	assert_almost_eq(unobstructed.x, 8152.0, 0.01)
+	assert_almost_eq(unobstructed.y, 1152.0, 0.01)
+	assert_false(
+		layout.touches_wall(unobstructed, add_radius),
+		"the far-side 48 px point is clear of the wall"
+	)
+	assert_true(
+		layout.touches_wall(hydra.global_position + dir * 24.0, add_radius),
+		"the ray itself crosses the wall"
+	)
+	var slid := hydra._slide_summon_inward(unobstructed, dir)
+	var off := slid - hydra.global_position
+	assert_almost_eq(off.angle(), dir.angle(), 0.0001, "the angle is not re-rolled")
+	assert_gt(unobstructed.distance_to(slid), 0.01, "the spawn did not stay on the far side")
+	assert_lte(slid.x, 8128.0, "the spawn did not tunnel past the east wall")
+	assert_gte(off.length(), hydra.body_radius - 0.01, "not closer than the elite edge")
+	# The elite edge (8104+16=8120) is inside the wall, so the near side
+	# has no clear point: return the edge rather than the far side.
+	assert_almost_eq(off.length(), hydra.body_radius, 0.01)
+	assert_almost_eq(slid.x, 8120.0, 0.01)
+	assert_almost_eq(slid.y, 1152.0, 0.01)
+
+
 func _summon_angles_for_seed(
 	seed: int, chunk: Vector2i, encounter: int, player: Node2D
 ) -> Array[float]:
@@ -387,7 +427,11 @@ func test_cooldown_is_at_least_four_seconds() -> void:
 			assert_gte(waves[i] - waves[i - 1], 4.0 - 0.001, "waves %d and %d" % [i - 1, i])
 
 
-func test_summons_drift_to_the_player_and_stay_out_of_the_lane() -> void:
+func test_summons_hold_their_flank_offset_and_stay_out_of_the_lane() -> void:
+	# Common Swarmers hold at their spawn offset relative to the elite
+	# (per-serial hashed angle + wall-slide radius), tracking the
+	# elite-to-player facing. They stay off the firing lane and do not
+	# have to reach the player.
 	var player := _node_player(FAR + Vector2(STANDOFF, 0))
 	var elite := _elite(FAR, player)
 	elite.woken = true
@@ -395,20 +439,82 @@ func test_summons_drift_to_the_player_and_stay_out_of_the_lane() -> void:
 	elite._physics_process(elite.summon_interval())
 	var adds := _adds(elite.get_parent())
 	assert_eq(adds.size(), 2)
-	var start: Array[float] = []
 	for add: SummonAdd in adds:
 		add.set_physics_process(false)
-		start.append(add.global_position.distance_to(player.global_position))
+		assert_almost_eq(add.flank_jitter, elite.summon_flank_jitter(add.member_index), 0.0000001)
+		assert_almost_eq(add.flank_hold_radius, EliteEnemy.SUMMON_OFFSET, 0.01)
 	for frame in 300:
 		for add: SummonAdd in adds:
 			add._physics_process(DT)
 			var muzzle := player.global_position + (elite.global_position - player.global_position).normalized() * MUZZLE
 			var lane := _segment_distance(add.global_position, muzzle, elite.global_position)
 			assert_gt(lane, add.body_radius + 4.0, "frame %d: %s is in the firing lane" % [frame, add.name])
-	for i in adds.size():
-		var d := adds[i].global_position.distance_to(player.global_position)
-		assert_lt(d, start[i], "%s drifted toward the player" % adds[i].name)
-		assert_lte(d, RegularEnemy.PLAYER_RADIUS + adds[i].body_radius, "%s reached contact range" % adds[i].name)
+	var holds: Array[Vector2] = []
+	for add: SummonAdd in adds:
+		var hold := add.flank_point()
+		holds.append(hold)
+		assert_lt(
+			add.global_position.distance_to(hold),
+			0.5,
+			"%s left its own hold point" % add.name
+		)
+		# The hold equals the spawn offset, recomputed from current facing.
+		var expected := elite.global_position + elite.summon_flank_dir(add.side, add.flank_jitter) * add.flank_hold_radius
+		assert_almost_eq(hold.x, expected.x, 0.01)
+		assert_almost_eq(hold.y, expected.y, 0.01)
+	assert_gt(holds[0].distance_to(holds[1]), 0.01, "both adds share a hold point")
+
+
+func test_rare_flank_adds_keep_distinct_hold_points_at_the_cap() -> void:
+	# At a rare cap of 8, after 5 s, each Swarmer add still holds at its
+	# own spawn offset rather than stacking on one flank_point per side.
+	# Four r=8 Swarmers can still overlap on a 40° / 48 px arc (~33 px);
+	# that is a Game Designer reading, not a reason to widen the arc.
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var rare := _elite(FAR, player, AffixDef.RARITY_RARE)
+	rare.woken = true
+	rare.set_physics_process(false)
+	player.global_position = rare.global_position + Vector2.RIGHT * 3000.0
+	while rare.summon_alive() < rare.summon_cap():
+		rare._summon_wait = 0.0
+		rare._tick_summon(0.0)
+	assert_eq(rare.summon_alive(), 8)
+	var adds := _adds(rare.get_parent())
+	assert_eq(adds.size(), 8)
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+	for _frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	var left: Array[Vector2] = []
+	var right: Array[Vector2] = []
+	for add: SummonAdd in adds:
+		var hold := add.flank_point()
+		assert_lt(
+			add.global_position.distance_to(hold),
+			0.5,
+			"%s left its own hold point" % add.name
+		)
+		assert_almost_eq(add.flank_jitter, rare.summon_flank_jitter(add.member_index), 0.0000001)
+		if add.side > 0.0:
+			left.append(hold)
+		else:
+			right.append(hold)
+	assert_eq(left.size(), 4)
+	assert_eq(right.size(), 4)
+	_assert_side_holds_are_spread(left, "left")
+	_assert_side_holds_are_spread(right, "right")
+
+
+func _assert_side_holds_are_spread(holds: Array[Vector2], label: String) -> void:
+	var min_d := INF
+	for i in holds.size():
+		for j in range(i + 1, holds.size()):
+			var d := holds[i].distance_to(holds[j])
+			assert_gt(d, 0.01, "%s holds %d and %d stack (%.4f px)" % [label, i, j, d])
+			min_d = minf(min_d, d)
+	assert_gt(min_d, 0.01, "%s hold points are not distinct" % label)
 
 
 func test_straight_starter_strafing_at_220_kills_the_herald_within_25_s() -> void:
