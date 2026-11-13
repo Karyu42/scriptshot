@@ -18,6 +18,13 @@ var herald_done := false
 var elite_kills: Array = []
 var regular_absent: Array = []
 var shards := 0
+## Vertical-slice lesson bits (bit 0 = lesson 1) and gate bits (bit 0 = G0).
+## Absent keys in an older slot default to 0. slice_lesson_at holds a unix
+## timestamp per lesson (0 if that lesson is not done).
+var slice_lessons := 0
+var slice_gates := 0
+var slice_packs := 0
+var slice_lesson_at: Array = []
 var existed := false
 
 
@@ -50,6 +57,10 @@ func save() -> void:
 	cfg.set_value("world", "elite_kills", elite_kills)
 	cfg.set_value("world", "regular_absent", regular_absent)
 	cfg.set_value("world", "shards", shards)
+	cfg.set_value("world", "slice_lessons", slice_lessons)
+	cfg.set_value("world", "slice_gates", slice_gates)
+	cfg.set_value("world", "slice_packs", slice_packs)
+	cfg.set_value("world", "slice_lesson_at", slice_lesson_at)
 	cfg.save(path)
 
 
@@ -63,6 +74,11 @@ func _read(cfg: ConfigFile) -> void:
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
+	slice_lessons = int(cfg.get_value("world", "slice_lessons", 0))
+	slice_gates = int(cfg.get_value("world", "slice_gates", 0))
+	slice_packs = int(cfg.get_value("world", "slice_packs", 0))
+	var times: Variant = cfg.get_value("world", "slice_lesson_at", [])
+	slice_lesson_at = times if times is Array else []
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 

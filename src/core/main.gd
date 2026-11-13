@@ -30,6 +30,7 @@ var _herald_director: HeraldDirector
 var _chunks: ChunkStream
 var _save: SaveGame
 var _slice: SliceLayout
+var _progress: SliceProgress
 
 
 func _ready() -> void:
@@ -48,6 +49,7 @@ func _ready() -> void:
 		for mirror: Mirror in mirrors.get_children():
 			mirror.target = _player
 	_bind_open_world()
+	_bind_slice_progress()
 	WorldQuery.bind_bullets(_bullets)
 	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
@@ -109,6 +111,13 @@ func _bind_open_world() -> void:
 	# The bullet window follows the camera. The sandbox scene has no chunk
 	# stream and keeps the fixed rect its walls were built for.
 	_bullets.bounds_center = _camera
+
+
+func _bind_slice_progress() -> void:
+	_progress = get_node_or_null("SliceProgress") as SliceProgress
+	if _progress == null:
+		return
+	_progress.bind(_player, get_node_or_null("Dummies"), _slice, _save)
 
 
 func current_save_path() -> String:
