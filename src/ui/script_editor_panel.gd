@@ -704,6 +704,8 @@ func _input(event: InputEvent) -> void:
 func _unhandled_input(event: InputEvent) -> void:
 	if _open:
 		return
+	if _victory_card_up():
+		return
 	if event.is_action_pressed("script_editor"):
 		open()
 		# open() focuses the code view; take that back until the opening
@@ -711,6 +713,18 @@ func _unhandled_input(event: InputEvent) -> void:
 		_swallow_open_key = true
 		_code.release_focus()
 		get_viewport().set_input_as_handled()
+
+
+func _victory_card_up() -> bool:
+	var tree := get_tree()
+	if tree == null:
+		return false
+	for n in tree.get_nodes_in_group(&"slice_hud"):
+		if n != null and is_instance_valid(n) and n.has_method("is_victory_card_up"):
+			var up: Variant = n.call("is_victory_card_up")
+			if up is bool and up:
+				return true
+	return false
 
 
 func _set_player_blocked(on: bool) -> void:

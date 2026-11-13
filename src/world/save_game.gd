@@ -46,6 +46,12 @@ var field_drifters := 0.0
 var field_swarmers := 0.0
 var field_shield := 0.0
 var field_sniper := 0.0
+## Once the Warden's core hits 0 this slot is cleared: the body does not
+## respawn. The common Warden also counts as the save's starter boss (Q25),
+## so starter_consumed is set with it and a later region-boss pass will not
+## place a second starter. Missing or a non-bool value means false.
+var warden_dead := false
+var starter_consumed := false
 var existed := false
 
 
@@ -88,6 +94,8 @@ func save() -> void:
 	cfg.set_value("world", "field_swarmers", field_swarmers)
 	cfg.set_value("world", "field_shield", field_shield)
 	cfg.set_value("world", "field_sniper", field_sniper)
+	cfg.set_value("world", "warden_dead", warden_dead)
+	cfg.set_value("world", "starter_consumed", starter_consumed)
 	cfg.save(path)
 
 
@@ -113,6 +121,11 @@ func _read(cfg: ConfigFile) -> void:
 	field_swarmers = float(cfg.get_value("world", "field_swarmers", 0))
 	field_shield = float(cfg.get_value("world", "field_shield", 0))
 	field_sniper = float(cfg.get_value("world", "field_sniper", 0))
+	# Missing or a non-bool (e.g. an int) stays false.
+	var dead: Variant = cfg.get_value("world", "warden_dead", false)
+	warden_dead = dead is bool and bool(dead)
+	var consumed: Variant = cfg.get_value("world", "starter_consumed", false)
+	starter_consumed = consumed is bool and bool(consumed)
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 

@@ -5,10 +5,12 @@ extends Node
 ## node (the Warden is not built here). The 70° weak-point gap belongs to the
 ## Warden's armor ring (row 8), not this bar. The victory card is row 10.
 ## Hints, the Sense toast and the death overlay are screen labels that keep
-## to the left of the script editor.
+## to the left of the script editor. The victory card (§5.6 / row 10) is two
+## centred lines shown at time scale 0 until Fire or E dismisses it.
 
 signal hint_shown(text: String)
 signal toast_shown(text: String)
+signal victory_dismissed
 
 const PIP_RING_RADIUS := 20.0
 const PIP_RADIUS := 2.5
@@ -32,6 +34,10 @@ const OVERHEAL_LABEL_SIZE := 10
 const PROMPT_SEC := 8.0
 const TOAST_SEC := 2.5
 const HINT_SIZE := 18
+const VICTORY_LINE_1 := "The Warden is down."
+const VICTORY_LINE_2 := "sense.enemies_in"
+const VICTORY_SIZE := 28
+const VICTORY_SUB_SIZE := 20
 const COLOR_FILL := Color("F2F2F2")
 const COLOR_HINT := Color("C9D2E0")
 const COLOR_OVERHEAL := Color("C9A7FF")
@@ -66,6 +72,10 @@ var _prompt: Label
 var _hint: Label
 var _toast: Label
 var _death: ColorRect
+var _victory_line1: Label
+var _victory_line2: Label
+var _victory_up := false
+var _victory_cb: Callable
 var _scale := 1.0
 
 var _hp := 5.0
@@ -89,8 +99,10 @@ var _overflow_width := 0.0
 
 
 func _ready() -> void:
+	add_to_group(&"slice_hud")
 	_build()
 	set_process(true)
+	set_process_input(true)
 	if not SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.connect(_on_sense_granted)
 	var vp := get_viewport()
@@ -100,6 +112,10 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if _victory_up:
+		_victory_up = false
+		Engine.time_scale = 1.0
+		_victory_cb = Callable()
 	_unbind()
 	if SenseBook.events.granted.is_connected(_on_sense_granted):
 		SenseBook.events.granted.disconnect(_on_sense_granted)
@@ -285,6 +301,45 @@ func death_overlay_visible() -> bool:
 	return _death.visible
 
 
+func is_victory_card_up() -> bool:
+	return _victory_up
+
+
+func victory_lines() -> PackedStringArray:
+	return PackedStringArray([VICTORY_LINE_1, VICTORY_LINE_2])
+
+
+## Time scale 0, two centred lines. Fire or E (action script_editor) dismisses.
+## `on_dismiss` runs after time scale is restored to 1.
+func present_victory_card(on_dismiss: Callable = Callable()) -> void:
+	if _victory_up:
+		return
+	_victory_up = true
+	_victory_cb = on_dismiss
+	Engine.time_scale = 0.0
+	if _victory_line1 != null:
+		_victory_line1.visible = true
+	if _victory_line2 != null:
+		_victory_line2.visible = true
+	_layout_labels()
+
+
+func dismiss_victory_card() -> void:
+	if not _victory_up:
+		return
+	_victory_up = false
+	Engine.time_scale = 1.0
+	if _victory_line1 != null:
+		_victory_line1.visible = false
+	if _victory_line2 != null:
+		_victory_line2.visible = false
+	var cb := _victory_cb
+	_victory_cb = Callable()
+	victory_dismissed.emit()
+	if cb.is_valid():
+		cb.call()
+
+
 func _process(delta: float) -> void:
 	if not is_finite(delta) or delta < 0.0:
 		return
@@ -296,6 +351,16 @@ func _process(delta: float) -> void:
 	var boss := _living_boss()
 	if boss != null:
 		boss.tick(delta)
+
+
+func _input(event: InputEvent) -> void:
+	if not _victory_up:
+		return
+	if event.is_action_pressed("fire") or event.is_action_pressed("script_editor"):
+		var vp := get_viewport()
+		if vp != null:
+			vp.set_input_as_handled()
+		dismiss_victory_card()
 
 
 func _tick_dash() -> void:
@@ -458,6 +523,10 @@ func _on_viewport_resized() -> void:
 	_prompt.add_theme_font_size_override("font_size", font)
 	_hint.add_theme_font_size_override("font_size", font)
 	_toast.add_theme_font_size_override("font_size", font)
+	if _victory_line1 != null:
+		_victory_line1.add_theme_font_size_override("font_size", roundi(VICTORY_SIZE * _scale))
+	if _victory_line2 != null:
+		_victory_line2.add_theme_font_size_override("font_size", roundi(VICTORY_SUB_SIZE * _scale))
 	_layout_labels()
 
 
@@ -471,9 +540,13 @@ func _layout_labels() -> void:
 	_place_bottom(_prompt, width, right_frac, 56.0 * _scale)
 	_place_bottom(_hint, width, right_frac, 88.0 * _scale)
 	_place_bottom(_toast, width, right_frac, 120.0 * _scale)
+	_place_victory(_victory_line1, right_frac, -22.0 * _scale)
+	_place_victory(_victory_line2, right_frac, 22.0 * _scale)
 
 
 func _place_bottom(label: Label, _width: float, right_frac: float, from_bottom: float) -> void:
+	if label == null:
+		return
 	label.anchor_left = 0.0
 	label.anchor_right = right_frac
 	label.anchor_top = 1.0
@@ -483,6 +556,21 @@ func _place_bottom(label: Label, _width: float, right_frac: float, from_bottom: 
 	label.offset_top = -from_bottom - 22.0 * _scale
 	label.offset_bottom = -from_bottom
 	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+
+
+func _place_victory(label: Label, right_frac: float, y_offset: float) -> void:
+	if label == null:
+		return
+	label.anchor_left = 0.0
+	label.anchor_right = right_frac
+	label.anchor_top = 0.5
+	label.anchor_bottom = 0.5
+	label.offset_left = 0.0
+	label.offset_right = 0.0
+	label.offset_top = y_offset - 20.0 * _scale
+	label.offset_bottom = y_offset + 20.0 * _scale
+	label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 
 
 func _hide_editor_start_prompt() -> void:
@@ -531,9 +619,17 @@ func _build() -> void:
 	_prompt = _make_label("Prompt", COLOR_FILL)
 	_hint = _make_label("Hint", COLOR_HINT)
 	_toast = _make_label("Toast", COLOR_FILL)
+	_victory_line1 = _make_label("VictoryLine1", COLOR_FILL)
+	_victory_line1.text = VICTORY_LINE_1
+	_victory_line1.add_theme_font_size_override("font_size", VICTORY_SIZE)
+	_victory_line2 = _make_label("VictoryLine2", COLOR_FILL)
+	_victory_line2.text = VICTORY_LINE_2
+	_victory_line2.add_theme_font_size_override("font_size", VICTORY_SUB_SIZE)
 	_prompt.visible = false
 	_hint.visible = false
 	_toast.visible = false
+	_victory_line1.visible = false
+	_victory_line2.visible = false
 
 
 func _make_label(node_name: String, color: Color) -> Label:

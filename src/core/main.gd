@@ -177,6 +177,11 @@ func _bind_warden() -> void:
 	_warden = get_node_or_null("Warden") as Warden
 	if _warden == null:
 		return
+	# The core does not respawn once the slot is cleared (§5.6).
+	if not Warden.appears_in_slot(_save):
+		_warden.queue_free()
+		_warden = null
+		return
 	_warden.bind(_player, _bullets, _camera, _save)
 	if _slice_hud != null:
 		_slice_hud.bind_boss(_warden, _warden.health)

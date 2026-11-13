@@ -26,6 +26,8 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	save.field_swarmers = 12.0
 	save.field_shield = 99.25
 	save.field_sniper = 3.0
+	save.warden_dead = true
+	save.starter_consumed = true
 	save.save()
 
 	var loaded := SaveGame.load_from(_SAVE)
@@ -40,6 +42,8 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.field_swarmers, 12.0)
 	assert_eq(loaded.field_shield, 99.25)
 	assert_eq(loaded.field_sniper, 3.0)
+	assert_true(loaded.warden_dead)
+	assert_true(loaded.starter_consumed)
 	assert_false(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS, 1_710_000_010.0))
 	assert_true(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS, 1_710_000_000.5 + SaveGame.FIELD_PACK_RETURN))
 
@@ -88,7 +92,30 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.field_swarmers, 0.0)
 	assert_eq(loaded.field_shield, 0.0)
 	assert_eq(loaded.field_sniper, 0.0)
+	assert_false(loaded.warden_dead)
+	assert_false(loaded.starter_consumed)
 	assert_true(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS))
+
+
+func test_warden_dead_and_starter_consumed_reject_non_bools() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("world", "warden_dead", 1)
+	cfg.set_value("world", "starter_consumed", "yes")
+	cfg.save(_SAVE)
+	var loaded := SaveGame.load_from(_SAVE)
+	assert_false(loaded.warden_dead, "a truthy int must not set warden_dead")
+	assert_false(loaded.starter_consumed, "a string must not set starter_consumed")
+
+	_discard()
+	cfg = ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("world", "warden_dead", true)
+	cfg.set_value("world", "starter_consumed", true)
+	cfg.save(_SAVE)
+	loaded = SaveGame.load_from(_SAVE)
+	assert_true(loaded.warden_dead)
+	assert_true(loaded.starter_consumed)
 
 
 func _discard() -> void:

@@ -6,6 +6,10 @@ extends Node2D
 ## husks, and Phasing on the two closest to the player. Phase 3 (HP ≤ 360) is
 ## the Broken ring and two husks. Habituation is on behind boss_habituation.
 ##
+## Row 10: when the core hits 0 the husks are already gone, the ring scales
+## to 0 over 1.2 s, then the victory card, G0, the arena respawn, shards +5,
+## and SenseBook.grant(&"enemies_in", 1) fire as in §5.6.
+##
 ## #85's Hurtbox ABSORB is not on main. ARMOR_ABSORBS is an easy local switch:
 ## false (default, per §5 / GD #96) applies ×0.1 to the body; true makes body
 ## hits vanish. The 70° gap is the armor *ring* (tracks facing, never shrinks
@@ -82,6 +86,10 @@ const PLAYER_RADIUS := 13.0
 ## Trauma that caps FollowCamera shake at 3 px on the default 18 px x-axis.
 const PHASE_TRAUMA := 0.40824829
 const TIER := RarityCue.TIER_BOSS_COMMON
+## §5.6: ring shrinks to 0 over this many seconds (time scale stays 1).
+const DEATH_ANIM := 1.2
+## Common-boss shard drop (spawning §7.2).
+const SHARDS := 5
 
 
 var player: Player
@@ -114,6 +122,14 @@ var _feeds_recorded := false
 var _warp_id := 0
 var _death_emitted := false
 var _bound := false
+## Seconds left on the 1.2 s ring shrink. 0 when the shrink is done or unused.
+var _death_left := 0.0
+var _death_animating := false
+## Rewards (shards, flags) have been written; the card may still be up.
+var _rewards_applied := false
+## Toast / Codex `granted` is held until the card is dismissed (or, with no
+## HUD, until the shrink finishes).
+var _grant_ux_pending := false
 ## Last Lance request, for tests. Null until the first shot. Only set when
 ## spawn() returns a live id (>= 0).
 var last_lance: ShotRequest
@@ -279,6 +295,23 @@ func is_alive() -> bool:
 	return _alive
 
 
+## False once this slot has cleared the core: Main frees the authored body
+## on load and the core does not come back.
+static func appears_in_slot(save: SaveGame) -> bool:
+	return save == null or not save.warden_dead
+
+
+## 1 at full size, 0 when the death ring has finished shrinking.
+func death_ring_scale() -> float:
+	if _alive:
+		return 1.0
+	if _death_animating:
+		return clampf(_death_left / DEATH_ANIM, 0.0, 1.0)
+	if _death_emitted:
+		return 0.0
+	return 1.0
+
+
 func is_aggroed() -> bool:
 	return _aggro
 
@@ -323,6 +356,7 @@ func apply_debug_hit(
 
 func _physics_process(delta: float) -> void:
 	if not _alive:
+		_step_death(delta)
 		return
 	_core_hit_ids = PackedInt64Array()
 	if _flash_left > 0.0:
@@ -1119,17 +1153,93 @@ func _on_core_died() -> void:
 	GameEvents.boss_defeated.emit(
 		EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, TIER, pos
 	)
-	_notify_progress()
-	# ROW 10 (not this PR): SenseBook.grant, victory card, register_arena_cleared,
-	# starter_consumed. Leave them for the ending beat.
+	# Quiet grant now so SenseBook.boss_down's queued grant (next process_frame)
+	# is a no-op. The toast and Codex wait until the card is dismissed.
+	# The field and the save int are 1 from this moment (§5.6 step 2).
+	SenseBook.grant(SenseBook.ENEMIES_IN, 1, true)
+	_grant_ux_pending = true
+	# A trade kill during the 1.2 s shrink or the card still respawns here.
+	RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	_death_animating = true
+	_death_left = DEATH_ANIM
+	# G0 waits until the shrink finishes (and the card is dismissed, if any).
 	defeated.emit()
 	queue_redraw()
 
 
+func _step_death(delta: float) -> void:
+	if not _death_animating:
+		return
+	_death_left = maxf(_death_left - maxf(delta, 0.0), 0.0)
+	queue_redraw()
+	if _death_left > 0.0:
+		return
+	_death_animating = false
+	_begin_victory()
+
+
+## Tests: skip the 1.2 s shrink and start the victory beat immediately.
+func debug_finish_death_anim() -> void:
+	if not _death_emitted:
+		return
+	_death_left = 0.0
+	_death_animating = false
+	_begin_victory()
+
+
+func _begin_victory() -> void:
+	if _rewards_applied:
+		return
+	_rewards_applied = true
+	# The field is already 1 when listen() was on; this covers a bare test
+	# that never subscribed, and is a no-op otherwise.
+	SenseBook.grant(SenseBook.ENEMIES_IN, 1, true)
+	if save != null:
+		save.shards += SHARDS
+		save.warden_dead = true
+		save.starter_consumed = true
+		# Grant may have run before bind_save (unit tests); still persist the int.
+		if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
+			save.sense_enemies_in = maxi(save.sense_enemies_in, 1)
+		save.save()
+	var hud := _find_hud()
+	if hud != null and hud.has_method("present_victory_card"):
+		# G0 unlocks under the freeze so a mid-card quit still loads with the
+		# gate open and the arena respawn. The player can walk it after dismiss.
+		hud.call("present_victory_card", _on_victory_card_dismissed)
+		_notify_progress()
+		return
+	_notify_progress()
+	_emit_grant_ux()
+
+
+func _on_victory_card_dismissed() -> void:
+	_emit_grant_ux()
+
+
+func _emit_grant_ux() -> void:
+	if not _grant_ux_pending:
+		return
+	_grant_ux_pending = false
+	if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
+		SenseBook.events.granted.emit(SenseBook.ENEMIES_IN, 1)
+
+
+func _find_hud() -> Node:
+	var tree := get_tree()
+	if tree == null:
+		return null
+	var named := tree.root.find_child("SliceHud", true, false)
+	if named != null:
+		return named
+	for n in tree.get_nodes_in_group(&"slice_hud"):
+		if n != null and is_instance_valid(n):
+			return n
+	return null
+
+
 func _notify_progress() -> void:
-	# SliceProgress is not on main yet (PR #91). When it lands, call
-	# notify_warden_defeated if the method exists. Marked hook:
-	# SLICE_PROGRESS_HOOK
+	# Marked hook: SLICE_PROGRESS_HOOK
 	var tree := get_tree()
 	if tree == null:
 		return
@@ -1227,22 +1337,26 @@ func _in_body(world_pos: Vector2) -> bool:
 
 
 func _draw() -> void:
+	var ring_s := death_ring_scale()
+	if ring_s <= 0.0:
+		return
 	var fill := Color.WHITE if _flash_left > 0.0 else COLOR_FILL
 	if not _alive:
 		fill = fill.darkened(0.45)
-	draw_circle(Vector2.ZERO, BODY_RADIUS, fill)
-	draw_arc(Vector2.ZERO, BODY_RADIUS, 0.0, TAU, 64, COLOR_OUTLINE, OUTLINE_WIDTH, true)
+	var body := BODY_RADIUS * ring_s
+	draw_circle(Vector2.ZERO, body, fill)
+	draw_arc(Vector2.ZERO, body, 0.0, TAU, 64, COLOR_OUTLINE, OUTLINE_WIDTH, true)
 	# Armor ring: a 70° missing arc that tracks facing and never shrinks with HP.
 	var half := deg_to_rad(GAP_DEGREES * 0.5)
 	var start := _gap_angle + half
 	var sweep_end := _gap_angle + TAU - half
 	draw_arc(
-		Vector2.ZERO, ARMOR_RING_RADIUS, start, sweep_end, 72, COLOR_OUTLINE, 2.5, true
+		Vector2.ZERO, ARMOR_RING_RADIUS * ring_s, start, sweep_end, 72, COLOR_OUTLINE, 2.5, true
 	)
-	var tick := Vector2.from_angle(_gap_angle) * GAP_OFFSET
-	draw_circle(tick, 3.0, COLOR_TICK)
+	var tick := Vector2.from_angle(_gap_angle) * GAP_OFFSET * ring_s
+	draw_circle(tick, 3.0 * ring_s, COLOR_TICK)
 	if cue.drawing_full:
-		cue.draw_on(self, BODY_RADIUS)
+		cue.draw_on(self, body)
 	if _lance_winding:
 		draw_line(Vector2.ZERO, to_local(_lance_aim), Color(LANCE_COLOR, 0.85), 2.0, true)
 	if _fan_winding:
