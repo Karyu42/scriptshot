@@ -201,7 +201,7 @@ func _chase(delta: float, to_player: Vector2) -> void:
 	var aim := global_position + _heading
 	if player != null:
 		aim = player.global_position
-	global_position = _slide_outside_disk(global_position, step, aim)
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, aim))
 
 
 ## Heading = direction to the player plus a uniform ±60° from hash_u, re-rolled
@@ -223,7 +223,46 @@ func _idle(delta: float) -> void:
 		_heading = _heading.bounce(outward)
 		proposed = anchor + from_anchor.limit_length(IDLE_RADIUS)
 		step = proposed - global_position
-	global_position = _slide_outside_disk(global_position, step, global_position + _heading)
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, global_position + _heading))
+
+
+## Off for regulars (row 2 decides their wall rule). EliteEnemy turns it on,
+## so elites, their halves and the Herald stay out of `world`-layer walls (the
+## SliceLayout rooms): after each step the body is pushed out of any wall it
+## overlaps, which also slides it along that wall. A step is at most a few px,
+## well under the 4 px gate plus the body radius, so it cannot tunnel.
+var collide_walls := false
+var _wall_query: PhysicsShapeQueryParameters2D
+
+
+func _keep_off_walls(p: Vector2) -> Vector2:
+	if not collide_walls or not is_inside_tree():
+		return p
+	var space := get_world_2d().direct_space_state
+	if space == null:
+		return p
+	if _wall_query == null or not is_equal_approx((_wall_query.shape as CircleShape2D).radius, body_radius):
+		var circle := CircleShape2D.new()
+		circle.radius = body_radius
+		_wall_query = PhysicsShapeQueryParameters2D.new()
+		_wall_query.shape = circle
+		_wall_query.collision_mask = Layers.WORLD
+		_wall_query.collide_with_areas = false
+	var out := p
+	for _i in 4:
+		_wall_query.transform = Transform2D(0.0, out)
+		var info := space.get_rest_info(_wall_query)
+		if info.is_empty():
+			break
+		var contact: Vector2 = info["point"]
+		var normal: Vector2 = info["normal"]
+		if normal.length_squared() <= 0.000001:
+			break
+		var depth := body_radius - (out - contact).dot(normal)
+		if depth <= 0.0:
+			break
+		out += normal * (depth + 0.01)
+	return out
 
 
 ## One step that is not allowed to enter the disk of radius 512 + body radius.
