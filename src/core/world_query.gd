@@ -67,6 +67,11 @@ var _boss_row := -1
 ## Last snapshot position per id, for the velocity estimate.
 var _last_pos: Dictionary[int, Vector2] = {}
 var _snapshots := 0
+## Bumped by every refresh(), unregister_enemy() and reset(); see revision().
+var _revision := 0
+## live_rows() for _live_rows_rev (several Lua states read one snapshot).
+var _live_rows: Dictionary = {}
+var _live_rows_rev := -1
 var _bullets: BulletManager
 
 
@@ -127,6 +132,7 @@ func unregister_enemy(body: Node2D) -> void:
 	var id := body.get_instance_id()
 	_entries.erase(id)
 	_last_pos.erase(id)
+	_revision += 1
 
 
 func is_registered(body: Node2D) -> bool:
@@ -147,6 +153,7 @@ func reset() -> void:
 	_entries.clear()
 	_last_pos.clear()
 	_clear_snapshot()
+	_revision += 1
 
 
 ## Gives raycast_terrain() the walls of this manager. Main binds its manager.
@@ -168,6 +175,7 @@ func unbind_bullets(manager: BulletManager) -> void:
 func refresh(delta: float = 1.0 / 60.0) -> void:
 	_clear_snapshot()
 	_snapshots += 1
+	_revision += 1
 	var gone: Array[int] = []
 	var seen: Dictionary[int, Vector2] = {}
 	var windowed := _bullets != null and is_instance_valid(_bullets)
@@ -208,6 +216,47 @@ func snapshot_count() -> int:
 ## Bodies in the current snapshot.
 func snapshot_size() -> int:
 	return _ids.size()
+
+
+## Changes whenever an answer of nearest_enemy() / enemies_in_radius() can
+## change: a new snapshot, or a body leaving the registry after it (a death
+## mid-tick). Readers that mirror the snapshot (the Lua Senses, ScriptHost)
+## re-read live_rows() only when this moved.
+func revision() -> int:
+	return _revision
+
+
+## The rows nearest_enemy() / enemies_in_radius() can return right now, as
+## parallel packed columns: {ids: PackedInt64Array, x, y, radius:
+## PackedFloat64Array, kind: PackedStringArray, rarity: PackedInt32Array
+## (EnemyKinds.RARITY_*)}. Same positions as the snapshot, bodies that died
+## since it skipped. Plain data only (#50).
+## Each call returns its own copy of the cached rows, columns included
+## (duplicate(true): packed arrays inside a Dictionary are shared by
+## reference, so a shallow copy would still let a write into a column reach
+## the cache). Writing into the result never reaches another caller. The copy
+## is O(rows) per call; ScriptHost calls this only when revision() moved.
+func live_rows() -> Dictionary:
+	if _live_rows_rev == _revision:
+		return _live_rows.duplicate(true)
+	var ids := PackedInt64Array()
+	var xs := PackedFloat64Array()
+	var ys := PackedFloat64Array()
+	var radii := PackedFloat64Array()
+	var kinds := PackedStringArray()
+	var rarities := PackedInt32Array()
+	for row in _ids.size():
+		if not _alive(row):
+			continue
+		ids.append(_ids[row])
+		xs.append(_pos[row].x)
+		ys.append(_pos[row].y)
+		radii.append(_radius[row])
+		kinds.append(String(_kind[row]))
+		rarities.append(_rarity[row])
+	_live_rows = {"ids": ids, "x": xs, "y": ys, "radius": radii, "kind": kinds, "rarity": rarities}
+	_live_rows_rev = _revision
+	return _live_rows.duplicate(true)
 
 
 # --- queries -------------------------------------------------------------------
