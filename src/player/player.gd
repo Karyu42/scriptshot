@@ -44,6 +44,9 @@ signal died
 ## Injected by the scene (Main): where shots go, and what to fire.
 var emitter: ShotEmitter
 var weapon: ShotPattern = BasicShot.new()
+## True while a UI owns the keyboard (the script editor): no move, dash, aim
+## or fire input is read. The world keeps running.
+var input_blocked := false
 
 ## Validated read/write access for scripts (hp, invulnerability, position,
 ## velocity, dash state). See PlayerState.
@@ -93,10 +96,10 @@ func _physics_process(delta: float) -> void:
 		return
 	_time += delta
 	_prev_position = global_position
-	var move_input := Input.get_vector("move_left", "move_right", "move_up", "move_down")
+	var move_input := Vector2.ZERO if input_blocked else Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	# Cooldown first, so a dash that becomes available this tick can start now.
 	_dash.tick_cooldown(delta)
-	if Input.is_action_just_pressed("dash"):
+	if not input_blocked and Input.is_action_just_pressed("dash"):
 		request_dash()
 	if _dash_wanted:
 		_update_dash_buffer(move_input, delta)
@@ -113,8 +116,9 @@ func _physics_process(delta: float) -> void:
 		velocity = velocity.limit_length(max_speed)
 		dash_finished.emit()
 
-	_update_aim()
-	_trigger.update(Input.is_action_pressed("fire"), delta)
+	if not input_blocked:
+		_update_aim()
+	_trigger.update(not input_blocked and Input.is_action_pressed("fire"), delta)
 	_update_weapon(delta)
 	var autofire := _trigger.pressed and weapon != null and weapon.auto_fire
 	var shots := _cooldown.update(delta, autofire, weapon.fire_interval if weapon != null else 0.0)
@@ -303,6 +307,7 @@ func _on_died() -> void:
 	_hurtbox.active = false
 	hide()
 	died.emit()
+	GameEvents.player_died.emit()
 
 
 func _draw() -> void:

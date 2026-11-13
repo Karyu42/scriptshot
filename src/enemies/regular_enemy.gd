@@ -119,6 +119,22 @@ func is_alive() -> bool:
 	return _alive
 
 
+## Stable kind for GameEvents and WorldQuery (an EnemyKinds constant). Elites,
+## the Herald and halves are drifter bodies too; rarity tells them apart.
+func enemy_kind() -> StringName:
+	return EnemyKinds.SWARMER if archetype == ARCH_SWARMER else EnemyKinds.DRIFTER
+
+
+## EnemyKinds.RARITY_*. Regulars are not elites: RARITY_NONE.
+func enemy_rarity() -> int:
+	return EnemyKinds.RARITY_NONE
+
+
+## World tier of the chunk this body belongs to (WorldGen.chunk_tier).
+func enemy_tier() -> int:
+	return WorldGen.chunk_tier(chunk.x, chunk.y)
+
+
 func _ready() -> void:
 	health = get_node("Health") as Health
 	_hurtbox = get_node("Hurtbox") as Hurtbox
@@ -128,6 +144,23 @@ func _ready() -> void:
 	health.died.connect(_on_died)
 	add_to_group(GROUP)
 	_ready_done = true
+	_register_world()
+
+
+func _enter_tree() -> void:
+	# _ready() registers the first time; this covers a body moved to another parent.
+	if _ready_done:
+		_register_world()
+
+
+func _exit_tree() -> void:
+	WorldQuery.unregister_enemy(self)
+
+
+func _register_world() -> void:
+	if not _alive:
+		return
+	WorldQuery.register_enemy(self, enemy_kind(), enemy_rarity(), enemy_tier(), body_radius, health)
 
 
 func _physics_process(delta: float) -> void:
@@ -263,6 +296,8 @@ func _on_died() -> void:
 		return
 	_alive = false
 	_hurtbox.active = false
+	WorldQuery.unregister_enemy(self)
+	GameEvents.enemy_killed.emit(enemy_kind(), enemy_rarity(), enemy_tier(), global_position, true)
 	died.emit()
 	hide()
 	queue_free()
