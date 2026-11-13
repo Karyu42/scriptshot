@@ -1,6 +1,6 @@
 # Scriptshot — First playable: elites slice
 
-> Status: **build-order slice for implementation.** Companion to [`spawning-and-rarity.md`](spawning-and-rarity.md) (full elites/rarity spec) and [`pillars.md`](pillars.md) (combat, world, decisions log). This file covers **only the first playable minutes**: safe zone, T0 regulars, the Herald, T0 common elites, then the rest of the Q23 affix set. It does not retune rarity, odds, or affixes. **Every number is a starting value** already fixed in those two docs, except the slice defaults in §5 (gaps those docs do not pin). Do not reopen Q17–Q24, Q20 (elites never respawn), or Q21 (the Herald is the one seed-purity exception).
+> Status: **build-order slice for implementation.** Companion to [`spawning-and-rarity.md`](spawning-and-rarity.md) (full elites/rarity spec) and [`pillars.md`](pillars.md) (combat, world, decisions log). This file covers **only the first playable minutes**: safe zone, T0 regulars, the Herald, T0 common elites, then the rest of the Q23 affix set. It does not retune rarity, odds, or affixes. **Every number is a starting value** already fixed in those two docs, except the slice defaults in §5 (gaps those docs do not pin). Do not reopen Q17–Q24, Q20 (elites never respawn), or Q21 (the Herald is the one seed-purity exception). The first-run content past this file (rooms, lessons, the common Warden, `enemies_in`) is [`vertical-slice.md`](vertical-slice.md). Bosses stay out of L0–L4.
 
 Checked against `main` @ `aa83001` (through merged PR #15). Engineering is currently on hybrid C++ bullets + M1 Lua. L0–L3 do not wait on that work: they sit on the GDScript body/bullet core already on `main` (`Health`, dash, reflect, `TrainingDummy`, `ShotRequest.pierces_script_invuln` from PR #4). Scripts may write player state; this slice adds no bans, marks, leaderboards, or in-game script sharing.
 
@@ -23,7 +23,7 @@ Ship none of these in this slice. They stay specified in the companion docs.
 | Legendary signatures. **Hydra** is the one signature whose affixes exist after Q23 (Splitting + Summoner, the exclusion exception, Drifter T2+ / Tank T3+). It is still legendary and out of this slice. Prism Knight, Nullwalker, Phase Choir need Mirrored, Blinker, or Warded | spawning §3.5 |
 | Affixes **Mirrored, Warded, Blinker** | spawning §3.4, Q23 |
 | T1+ archetype pool (Shieldbearer, Sniper, Tank, Phaser, Mirror) and T1+ chunks | pillars §5.1–§5.2 |
-| Bosses, boss rarity, beacons, hum, grid warp, Habituation, Null rings, Equalizer, Rift, Eater | pillars §5.3, §6.3–§6.4, §12; spawning §4–§5 |
+| Bosses, boss rarity, beacons, hum, grid warp, Habituation, Null rings, Equalizer, Rift, Eater. Not this file; the handcrafted common Warden is [`vertical-slice.md`](vertical-slice.md) | pillars §5.3, §6.3–§6.4, §12; spawning §4–§5 |
 | Full region pass, ordinal boss pity, elite region pity, golden hashes of rings 0–6 | spawning §6, §10.2 |
 | `RarityDef` / `rarity_table.tres` for rare and legendary rows | spawning §10.3 |
 | Codex pages, trophies, Sense Level I/II, Shard **spending** (25 = one token). A **stub Shard counter** is in L3; nothing spends it | spawning §7; pillars §4, §12.4 |
@@ -31,7 +31,7 @@ Ship none of these in this slice. They stay specified in the companion docs.
 | In-game editor, hot reload, capability prompt, leaderboards, in-game script sharing | pillars §2, §7, §10; Q15/Q16 |
 | Sparse terrain blocks, `sense.terrain` | pillars §6.1 |
 | Web/Android cue QA (legendary additive halo, `AudioStreamGenerator` on device). Shapes and the legendary halo are in code; device QA is still open ([issue #24](https://github.com/Karyu42/scriptshot/issues/24)). The halo is legendary-only (spawning §8.4): rare keeps the double ring, three ticks, and 4 px outline. The legendary 3 dB duck and the boss proximity hum are **INCOMPLETE / deferred** | spawning §10.7, Q24 |
-| Tutorial **shielded** dummy (needs an absorb arc). Three plain targets ship in L0; the shield attaches in L4 | pillars §2 step 4 |
+| Tutorial **shielded** dummy (needs an absorb arc). Three plain targets ship in L0. The shield is the room-A dummy in [`vertical-slice.md`](vertical-slice.md), not one of the origin three | pillars §2 step 4 |
 
 ## 2. Build layers
 
@@ -39,7 +39,7 @@ Each layer is playable on its own. Do not start a layer before the previous laye
 
 Two cuts forced by `main` (no absorb arc on `Hurtbox`; Lua gameplay is not in `src/` yet):
 
-- L0 targets are plain `TrainingDummy` nodes. The shielded dummy is L4.
+- L0 targets are plain `TrainingDummy` nodes. The shielded dummy is L4, placed in room A of the vertical slice (the origin three stay plain).
 - "Default/example script" means `BasicShot` (`src/player/basic_shot.gd`: 1 damage, interval 0.11 s) until `shots/default.lua` is wired. Both Herald affixes are solvable by that single bullet (sustained damage; Summoner caps at 6 adds). Do not retune `BasicShot` or `Health`.
 
 Combat already on `main`, do not retune: 5 HP, regen +1 / 3 s after 5 s quiet, 0.75 s hit i-frames, dash 160 px / 0.2 s i-frames / 1.5 s cooldown, reflected bullets are enemy-owned and deal 1, respawn keeps everything (`Main.respawn_delay` 1.5 s, `RespawnPoints`).
@@ -135,7 +135,7 @@ Still first-playable, **after** L3. Not rolled in T0. Bulwark and Phasing are T1
 
 Telegraph drawing is unpinned beyond "≥ 0.8 s warning"; §5 gives a line so it can be built. Rare intensity (wider arc, slower pulse, two Null bullets) is data on `AffixDef` and **not executed** while rarity is hardcoded common.
 
-Once ABSORB exists, swap **one** of the three L0 dummies to a static front-arc absorb (pillars §2 step 4). It stays non-hostile and is still not a spawn.
+Once ABSORB exists, the absorb dummy is the shielded target in room A of [`vertical-slice.md`](vertical-slice.md). The three origin dummies stay plain. (This replaces the earlier note that would have swapped one L0 dummy.) It stays non-hostile and is still not a spawn.
 
 ## 3. Data contracts
 
@@ -244,7 +244,7 @@ Playable checks. Headless scene tests are enough for the rows marked *test*; the
 - [ ] Forced Phasing Drifter: vulnerable only in the 0.4 s window.
 - [ ] Forced Null-shot: script `invulnerable` does not stop the bullet; dash i-frames do; `pierces_script_invuln` is set. *test*
 - [ ] T0 `chunk_encounters` still never returns these three affixes. *test*
-- [ ] One tutorial dummy shows a static absorb arc and still does not shoot or deal contact damage.
+- [ ] The room-A dummy (vertical slice) shows a static absorb arc and still does not shoot or deal contact damage. The three origin dummies stay plain.
 
 ## 5. Open blockers
 

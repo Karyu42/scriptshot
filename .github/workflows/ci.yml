@@ -18,7 +18,9 @@
 #            module in, native bullet wasm and src/qa/ out of the shipping export) and loads them in headless
 #            Chromium (boot; a Lua shot through ScriptHost; one fallback warning when native is requested).
 #            docs/qa/release-builds.md section 4.1.
-#   export : manual (workflow_dispatch) Windows/macOS/Linux/Web/Android export (unsigned/debug). docs/qa/release-builds.md.
+#   export : on push to main (after Import + GUT passes), unsigned Linux/Windows/Web releases, uploaded as
+#            scriptshot-{linux,windows,web}-<sha7> and kept for 90 days. workflow_dispatch with run_export runs the
+#            full matrix, including macOS (ad-hoc) and Android (debug). Not run on pull requests. docs/qa/release-builds.md.
 #   native-linux / native-web / gut-windows / gut-macos ("Native libs (linux)", "Native libs (web)",
 #            "GUT (windows, native)", "GUT (macos, native)"): on every PR and push to main, build the native bullet core
 #            (tools/build_native.sh, native/godot-cpp submodule) and, except web, run the full GUT suite with it loaded
@@ -35,7 +37,7 @@ on:
   workflow_dispatch:
     inputs:
       run_export:
-        description: "Run the export matrix (needs a committed export_presets.cfg)"
+        description: "Run the full export matrix (Linux/Windows/Web plus macOS and Android; needs a committed export_presets.cfg)"
         type: boolean
         default: false
       perf_parent_base:
@@ -129,6 +131,9 @@ jobs:
       # that second call is a no-op when the pin file is already present.
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
 
       # Mid-suite GUT stalls (#67) are not covered by the #41 exit-after-results
@@ -196,6 +201,9 @@ jobs:
           chmod +x godot
       - name: Fetch native Lua libraries (linux.x86_64)
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
       - name: Unit-test the perf gate (tools/ci/check_perf.py)
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
@@ -645,37 +653,54 @@ jobs:
           path: build/web-smoke/
           if-no-files-found: ignore
 
+  # Decides the Export matrix. A separate job is required because a job-level `if` cannot see
+  # matrix values (the condition is evaluated before the matrix expands). PRs never run this,
+  # so they never pay for an export. A #67 GUT flake fails `test` and skips exports; rerun the
+  # failed Import + GUT job (or the whole workflow) rather than shipping a red commit.
+  export-matrix:
+    name: Export matrix
+    if: ${{ !cancelled() && needs.test.result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_export)) }}
+    needs: [test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.select.outputs.matrix }}
+    steps:
+      - id: select
+        env:
+          FULL: ${{ github.event_name == 'workflow_dispatch' && inputs.run_export }}
+        run: |
+          set -euo pipefail
+          # One line so the script is not indented by the YAML block (a heredoc would SyntaxError).
+          # slug is the artifact prefix (scriptshot-<slug>-<sha7>). out matches export_presets.cfg.
+          # iOS is not a release target.
+          python3 -c 'import json,os; core=[{"preset":"Linux","platform":"linux.x86_64","mode":"release","out":"build/linux/Scriptshot.x86_64","slug":"linux"},{"preset":"Windows Desktop","platform":"windows.x86_64","mode":"release","out":"build/windows/Scriptshot.exe","slug":"windows"},{"preset":"Web","platform":"web.wasm32","mode":"release","out":"build/web/index.html","slug":"web"}]; extra=[{"preset":"macOS","platform":"macos.universal","mode":"release","out":"build/macos/Scriptshot.zip","slug":"macos"},{"preset":"Android","platform":"android.arm64","mode":"debug","out":"build/android/Scriptshot-debug.apk","slug":"android"}]; cells=core+extra if os.environ.get("FULL")=="true" else core; print("matrix="+json.dumps({"include":cells},separators=(",",":")))' >> "$GITHUB_OUTPUT"
+
   export:
     # Static name. GitHub does not evaluate ${{ }} in a skipped job's name, so a conditional
     # shows up as the raw expression in the checks list. The preset is on the Export and Verify steps.
     name: Export
-    # Manual only. Preset names must match export_presets.cfg exactly (commit it; PR #2 un-ignored it,
+    # Preset names must match export_presets.cfg exactly (commit it; PR #2 un-ignored it,
     # export_credentials.cfg stays ignored). Everything is exported from Linux with the headless editor:
     # Windows/macOS/Linux/Web are release builds, unsigned (macOS is ad-hoc signed only), Android is a
     # DEBUG apk signed with a throwaway debug keystore generated below. Release signing for Android needs a
     # keystore secret (GODOT_ANDROID_KEYSTORE_RELEASE_*), which is Karyu's call and is not wired up.
+    # Push to main: Linux, Windows, Web only (export-matrix). workflow_dispatch with run_export: the full
+    # matrix, including macOS and Android. Pull requests do not run this job.
     # Native bullet core (#38): scriptshot_native.gdextension lists a library for every desktop platform, and an export
     # without bin/<platform>/ fails (dispatch 42696143148: Windows and Linux). Each cell restores the libraries from the
     # native jobs of this run: linux.x86_64 always (the Linux editor host loads it during import/export), plus its own
     # platform's. Linux and Windows cells need their library uploaded; the macOS cell needs GUT (macos, native) green.
     # macOS ships native, unsigned. Android stays without it (deferred, #39); Web excludes it by preset (#36).
-    if: ${{ !cancelled() && needs.test.result == 'success' && github.event_name == 'workflow_dispatch' && inputs.run_export }}
-    needs: [test, native-linux, gut-windows, gut-macos]
+    # Tests must have passed (needs.test / export-matrix). A mid-suite GUT hang (#67) is handled by rerunning, not by
+    # shipping builds from a red commit.
+    if: ${{ !cancelled() && needs.test.result == 'success' && needs.export-matrix.result == 'success' && ((github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_export)) }}
+    needs: [test, export-matrix, native-linux, gut-windows, gut-macos]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - { preset: "Windows Desktop", platform: "windows.x86_64", mode: release, out: "build/windows/Scriptshot.exe" }
-          - { preset: "macOS",           platform: "macos.universal", mode: release, out: "build/macos/Scriptshot.zip" }
-          - { preset: "Linux",           platform: "linux.x86_64",   mode: release, out: "build/linux/Scriptshot.x86_64" }
-          - { preset: "Web",             platform: "web.wasm32",     mode: release, out: "build/web/index.html" }
-          - { preset: "Android",         platform: "android.arm64",  mode: debug,   out: "build/android/Scriptshot-debug.apk" }
-          # Output paths equal the export_path of each preset in export_presets.cfg.
-          # iOS is NOT a release target. If an iOS compile check is ever wanted it must run on a macOS
-          # runner and is low priority; leave this commented out:
-          # - { preset: "iOS", platform: "ios.universal", mode: debug, out: "build/ios/Scriptshot.xcodeproj" }
+      matrix: ${{ fromJSON(needs.export-matrix.outputs.matrix) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -800,6 +825,9 @@ jobs:
       # the gdextension file, not by a second download.
       - name: Fetch native Lua libraries (${{ matrix.platform }})
         if: ${{ hashFiles('tools/ci/fetch_native_libs.sh') != '' }}
+        env:
+          # Authenticated calls avoid the shared-IP 403 rate limit on the release API.
+          GITHUB_TOKEN: ${{ github.token }}
         run: bash tools/ci/fetch_native_libs.sh "${{ matrix.platform }}"
       - name: Native bullet libraries built and tested in this run
         env:
@@ -892,10 +920,19 @@ jobs:
                 || { echo "::error::Windows export has no native bullet DLL next to the exe (#38)"; exit 1; }
               ;;
           esac
+      - name: Artifact identity
+        id: art
+        run: |
+          set -euo pipefail
+          echo "sha7=${GITHUB_SHA:0:7}" >> "$GITHUB_OUTPUT"
+          echo "dir=$(dirname -- '${{ matrix.out }}')" >> "$GITHUB_OUTPUT"
+      # Ready-to-run folder only (Linux/Windows: binary + native and Lua libs; Web: the site tree).
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: scriptshot-${{ matrix.preset }}
-          path: build/
+          name: scriptshot-${{ matrix.slug }}-${{ steps.art.outputs.sha7 }}
+          path: ${{ steps.art.outputs.dir }}
+          if-no-files-found: error
+          retention-days: 90
 
   # ---- Native bullet core (issue #38; docs/native.md) -------------------------------------------------------------
   # Four jobs with stable names, on every PR and push to main and on workflow_dispatch. Not required checks (yet).
