@@ -235,6 +235,19 @@ var batch_only := PackedByteArray()
 ## False when no behavior is batch-only, so advance() does not touch batch_only.
 var any_batch_only := false
 
+# --- per-behavior live counts (script owners) -----------------------------------
+## Bullets occupying a slot per behavior id (only ids != 0 have an entry),
+## including ones marked dead but not yet flushed. Kept in step by spawn,
+## swap-remove, reflect() (a reflect that drops the script moves the bullet to 0),
+## adopt_native, set_behavior, strip_behavior and clear(). BulletManager reads it
+## for hooked_count_for_owner(). Writing `behavior[i]` directly bypasses it; use
+## set_behavior(), or call recount_behaviors().
+var behavior_live: Dictionary[int, int] = {}
+## Behavior ids whose live count went from > 0 to 0, in order, since the last
+## take_drained(). An id can appear more than once; the manager re-checks the
+## total before it announces anything.
+var drained_ids := PackedInt64Array()
+
 
 ## Marks behavior `id` as batch-only (its bullets are not listed for on_update).
 func set_batch_only(id: int, on: bool) -> void:
@@ -383,6 +396,8 @@ func spawn(request: ShotRequest) -> int:
 		can_hit_veto[i] = 0
 	hit_mask[i] = shot_mask & ~shot_owner
 	behavior[i] = request.behavior_id
+	if request.behavior_id != 0:
+		_behavior_added(request.behavior_id)
 	pierce[i] = request.pierce
 	collide_world[i] = 1 if request.collide_world else 0
 	clear_hit_memory(i)
@@ -858,11 +873,12 @@ func _clamp_into_range(i: int) -> void:
 ## key per field (`<where>.clamp.<field>`), so a script that clamps every tick cannot
 ## flood the log: ScriptWarnings prints each key LIMIT times and then goes quiet.
 ## `where` is the code path ("BulletPool.spawn", "BulletPool.hook_write", ...).
-func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
-	ScriptWarnings.warn(
-		"%s.clamp.%s" % [where, field],
-		"%s: %s %s is outside its allowed range and was clamped to %s (BulletLimits.%s)" % [where, field, _fmt_number(asked), _fmt_number(kept), limit_name]
-	)
+static func _note_clamp(where: String, field: String, asked: float, kept: float, limit_name: String) -> void:
+	var key := "%s.clamp.%s" % [where, field]
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.clamp_message(where, field, asked, kept, limit_name))
+	else:
+		ScriptWarnings.keep_clamp(key, where, field, asked, kept, limit_name)
 
 
 ## Number for a warning: plain up to 1e7, scientific beyond (1e30 would be 31 digits).
@@ -875,29 +891,31 @@ static func _fmt_number(x: float) -> String:
 
 ## Speed over BulletLimits.MAX_SPEED. The length is taken in a way that cannot
 ## overflow (a velocity component near 1e30 would square to inf).
-func _warn_speed_clamped(where: String, v: Vector2) -> void:
+static func _warn_speed_clamped(where: String, v: Vector2) -> void:
 	report_speed_clamp(where, v)
 
 
 ## Same text as a pool set_velocity / hook_write removal. Native batch commits
 ## call this so both backings share one message.
 static func report_removed(key: String, what: String) -> void:
-	ScriptWarnings.warn(key, "%s: %s, the bullet was removed (DespawnReason.INVALID)" % [key, what])
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.removed_message(key, what))
+	else:
+		ScriptWarnings.keep_removed(key, what)
 
 
 ## Same text as `_note_clamp` for a speed ceiling. `where` is the code path
 ## ("BulletPool.set_velocity", "BulletPool.hook_write", ...).
 static func report_speed_clamp(where: String, v: Vector2) -> void:
-	var m := maxf(absf(v.x), absf(v.y))
-	var speed := (v / m).length() * m if m > 0.0 else 0.0
-	ScriptWarnings.warn(
-		"%s.clamp.speed" % where,
-		"%s: speed %s is outside its allowed range and was clamped to %s (BulletLimits.MAX_SPEED)" % [where, _fmt_number(speed), _fmt_number(BulletLimits.MAX_SPEED)]
-	)
+	var key := "%s.clamp.speed" % where
+	if ScriptWarnings.begin(key):
+		ScriptWarnings.finish(key, ScriptWarnings.speed_message(where, v))
+	else:
+		ScriptWarnings.keep_speed(key, v)
 
 
 ## spawn_simple(): the clamped fields are velocity, lifetime and radius.
-func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> void:
+static func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> void:
 	if BulletLimits.exceeds(v):
 		_warn_speed_clamped(where, v)
 	if r < 0.0 or r > MAX_RADIUS:
@@ -907,7 +925,7 @@ func _warn_clamped_fields(where: String, v: Vector2, r: float, life: float) -> v
 
 
 ## spawn(): names each field of `request` that had to be clamped.
-func _warn_clamped_request(where: String, request: ShotRequest) -> void:
+static func _warn_clamped_request(where: String, request: ShotRequest) -> void:
 	_warn_clamped_fields(where, request.velocity, request.radius, request.lifetime)
 	var acc := request.acceleration
 	if absf(acc) > MAX_ACCELERATION:
@@ -1041,6 +1059,9 @@ func clear() -> void:
 	_rebuild_free_list()
 	user.fill(null)
 	owner_counts.fill(0)
+	for id: int in behavior_live:
+		drained_ids.append(id)
+	behavior_live.clear()
 	veto_count = 0
 	count = 0
 	pending_count = 0
@@ -1113,6 +1134,96 @@ func recount_owners() -> void:
 		owner_counts[owner_slot(owner_layer[i])] += 1
 		if can_hit_veto[i] != 0:
 			veto_count += 1
+
+
+## Live bullets (alive or marked dead, not yet flushed) carrying behavior `id`.
+func live_with_behavior(id: int) -> int:
+	if id == 0:
+		return 0
+	var n: int = behavior_live.get(id, 0)
+	return n
+
+
+## Sets the behavior of slot `i` and keeps behavior_live in step. Does not run
+## any hook and does not touch can_hit_veto (see strip_behavior()). With
+## `report` false, the old id reaching 0 is not listed in drained_ids (the
+## manager undoing a spawn with an unknown id, which never really had bullets).
+func set_behavior(i: int, id: int, report: bool = true) -> void:
+	var old := behavior[i]
+	if old == id:
+		return
+	if old != 0:
+		_behavior_removed(old, report)
+	behavior[i] = id
+	if id != 0:
+		_behavior_added(id)
+
+
+## Turns every bullet of behavior `id` (also one marked dead, which then gets no
+## on_despawn) into a plain bullet: behavior 0, user state dropped, can_hit veto
+## off. Position, velocity and the rest of the bullet (declarative acceleration
+## and turn rate, damage, pierce, owner, script-invulnerability flag) are kept.
+## Returns how many were stripped. O(count); not meant for every tick.
+func strip_behavior(id: int) -> int:
+	if id == 0 or live_with_behavior(id) == 0:
+		return 0
+	var n := 0
+	for i in count:
+		if behavior[i] != id:
+			continue
+		behavior[i] = 0
+		user[i] = null
+		if can_hit_veto[i] != 0:
+			can_hit_veto[i] = 0
+			veto_count -= 1
+		n += 1
+	if n > 0:
+		behavior_live.erase(id)
+		drained_ids.append(id)
+	return n
+
+
+## Rebuilds behavior_live from the arrays (repair after code wrote `behavior[i]`
+## directly). Does not report drained ids.
+func recount_behaviors() -> void:
+	behavior_live.clear()
+	for i in count:
+		var id := behavior[i]
+		if id != 0:
+			_behavior_added(id)
+
+
+## True if behavior_live matches the `behavior` array (debug / tests).
+func behavior_counts_consistent() -> bool:
+	var seen: Dictionary[int, int] = {}
+	for i in count:
+		var id := behavior[i]
+		if id != 0:
+			var n: int = seen.get(id, 0)
+			seen[id] = n + 1
+	return seen == behavior_live
+
+
+## Returns and clears drained_ids.
+func take_drained() -> PackedInt64Array:
+	var out := drained_ids
+	drained_ids = PackedInt64Array()
+	return out
+
+
+func _behavior_added(id: int) -> void:
+	var n: int = behavior_live.get(id, 0)
+	behavior_live[id] = n + 1
+
+
+func _behavior_removed(id: int, report: bool = true) -> void:
+	var n: int = behavior_live.get(id, 0)
+	if n > 1:
+		behavior_live[id] = n - 1
+		return
+	behavior_live.erase(id)
+	if n == 1 and report:
+		drained_ids.append(id)
 
 
 ## True if the counters match the arrays (debug / tests).
@@ -1312,6 +1423,8 @@ func reflect(
 	if new_damage >= 0.0:
 		damage[slot] = new_damage
 	if not keep_script:
+		if behavior[slot] != 0:
+			_behavior_removed(behavior[slot])
 		behavior[slot] = 0
 		user[slot] = null
 		param_a[slot] = 0.0
@@ -1344,6 +1457,8 @@ func _remove_at(i: int) -> void:
 			despawn_log_life.append(lifetime[i])
 	var last := count - 1
 	owner_counts[owner_slot(owner_layer[i])] -= 1
+	if behavior[i] != 0:
+		_behavior_removed(behavior[i])
 	if can_hit_veto[i] != 0:
 		veto_count -= 1
 	_release_handle(_handle_of_slot[i])
@@ -1439,6 +1554,8 @@ func adopt_native(row: Dictionary) -> int:
 	if row.has("behavior"):
 		var behavior_v: int = row["behavior"]
 		behavior[i] = behavior_v
+		if behavior_v != 0:
+			_behavior_added(behavior_v)
 	pierce[i] = pierce_v
 	var collides: bool = row["collide"]
 	collide_world[i] = 1 if collides else 0

@@ -18,7 +18,7 @@ Nothing here limits what a player may write (P2). Elites and rare bosses are *qu
 10. Engineering notes (what to build, how to test)
 11. Decisions on the rarity questions (Q17–Q24, in the `pillars.md` decisions log)
 
-Build order for the first playable minutes (Herald, T0 regulars, T0 common elites): [`first-playable-elites.md`](first-playable-elites.md). This file stays the full spec.
+Build order for the first playable minutes (Herald, T0 regulars, T0 common elites): [`first-playable-elites.md`](first-playable-elites.md). The handcrafted first run (rooms, a guaranteed common Warden, rarity placements that do not retune these tables) is [`vertical-slice.md`](vertical-slice.md). This file stays the full spec.
 
 ## 1. Goals and constraints
 

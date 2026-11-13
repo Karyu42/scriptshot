@@ -44,6 +44,17 @@ Policy (agreed targets):
     "perf base: none (TEXT)" and the fallback, which is mode=raw everywhere with no relative check, i.e. only the
     raw bars. A fallback can never pass a run that the raw bars would fail.
 
+  * Other tiers (perf_ab.sh --tiers=onbatch,auto; the "Bullet benchmark (native on_batch, p95 gate)" CI job): the same
+    rules, run as a separate invocation with the tier's own report as REPORT and its own same-run base as
+    --base-report. --tier-name / --title only change the wording ("plain" / "Bullet benchmark" by default, so the
+    plain + hooked invocation prints exactly as before). --p95-target-ms gives the TARGET count its own bar (default
+    --p95-ms). --reference-ms is then that tier's reference (F = the tier's base FLOOR p95 / --reference-ms).
+    --expect-backend NAME / --expect-batch N: the head report's top-level "backend" / "batch" must match (hard fail),
+    so a run whose native library did not load cannot pass as a GDScript run; a base report that does not match is
+    unusable (mode=raw, no relative check, ::warning::).
+    --informational: timings, bars and the relative check are reported as ::warning:: only and never fail the job
+    (logged as "perf mode: informational"). The --expect-backend / --expect-batch checks still fail.
+
 "work" is the CPU time of one tick of bullet work on the headless dummy renderer. It is not a GPU
 or rendering measurement (see docs/qa/stress-test-plan.md). The full results table and verdict
 lines are appended to --summary (pass "$GITHUB_STEP_SUMMARY"); annotations go to stdout.
@@ -58,6 +69,20 @@ import sys
 # 7.47 and 7.44 ms (PR #35 notes, 2026-11-09); the slow hosts of the same day printed 14-16 ms. Revisit when
 # main's plain cost really moves (a perf PR), otherwise every runner looks "slow" or "fast" by the wrong amount.
 REFERENCE_PLAIN_FLOOR_P95_MS = 7.5
+
+# Native on_batch tier ("Bullet benchmark (native on_batch, p95 gate)" job; .github/workflows/ci.yml passes these
+# numbers explicitly and tools/ci/test_check_perf.py checks that they match). Calibrated in PR #64 from CI run
+# 43200042914 (ubuntu-24.04): main 119c0925 native on_batch work p95 at 5k 1.79-2.00 ms (4 rounds, merged 1.96),
+# at 10k 3.14-3.37 ms (merged 3.32). Locally 1.8-2.5 / 3.3-4.4 ms; the regressed #63 head 1322ebcc 11.0 / 19.2 ms.
+#   * bars: about 3x main's runner p95 (plain has 16.6 / 7.5 = 2.2x; hosts differ by about 2x): 6.0 ms at 5k (hard),
+#     10.0 ms at 10k (warning). Well below 16.6 ms, and 6.0 x the 1.5 slow-runner cap = 9.0 ms < 10 ms, so a 5k
+#     on_batch p95 of 10 ms (1322ebcc) fails in every mode.
+#   * reference: main's native on_batch 5k p95 on the runner, 2.0 ms (the role 7.5 ms plays for plain). Slow-runner
+#     mode needs the base itself over 6.0 ms (F >= 3), so F is then always capped at 1.5. One runner sample so far:
+#     revisit with more runs, or when main's native on_batch cost really moves.
+NATIVE_ON_BATCH_FLOOR_MS = 6.0
+NATIVE_ON_BATCH_TARGET_MS = 10.0
+REFERENCE_NATIVE_ON_BATCH_FLOOR_P95_MS = 2.0
 
 # Wording per --base-kind. "pr" is the original text, byte for byte (PR runs must not change).
 BASE_NAMES = {
@@ -116,14 +141,18 @@ def fmt(r, key):
     return f"{v:.2f}" if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else "n/a"
 
 
-def table(results, floor, target, budget, title="Bullet benchmark", modes=None):
+def table(results, floor, target, budget, title="Bullet benchmark", modes=None, budgets=None):
     modes = modes or {}
+    budgets = budgets or {}
     extra = ""
-    if any(m[0] != budget for m in modes.values()):
+    if any(m[0] != budgets.get(n, budget) for n, m in modes.items()):
         extra = "; slow-runner bars: " + ", ".join(f"{n}: {m[0]:.1f} ms" for n, m in sorted(modes.items())
-                                                    if m[0] != budget)
+                                                    if m[0] != budgets.get(n, budget))
+    shown = f"{budget} ms"
+    if any(v != budget for v in budgets.values()):
+        shown = ", ".join(f"{budgets.get(n, budget)} ms at {n}" for n in (floor, target))
     lines = [
-        f"### {title} (headless CPU work per tick, budget p95 <= {budget} ms{extra})",
+        f"### {title} (headless CPU work per tick, budget p95 <= {shown}{extra})",
         "",
         "| bullets | role | work p50 ms | work p95 ms | work p99 ms | verdict |",
         "|---:|---|---:|---:|---:|---|",
@@ -131,7 +160,7 @@ def table(results, floor, target, budget, title="Bullet benchmark", modes=None):
     for n, r in sorted(results.items()):
         role = "floor" if n == floor else "target" if n == target else ""
         if role:
-            bar = modes.get(n, (budget,))[0]
+            bar = modes.get(n, (budgets.get(n, budget),))[0]
             ok = not bad_timings(r) and r["work_p95_ms"] <= bar and r.get("reached") is not False
             verdict = "pass" if ok else ("**FAIL**" if role == "floor" else "over budget / shortfall (warning)")
         else:
@@ -142,7 +171,7 @@ def table(results, floor, target, budget, title="Bullet benchmark", modes=None):
 
 
 def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
-          title="Bullet benchmark", label="", modes=None):
+          title="Bullet benchmark", label="", modes=None, budgets=None):
     """Returns (exit_code, annotations, summary_lines).
 
     A row with a missing / NaN / infinite / negative timing is reported instead of compared
@@ -150,6 +179,7 @@ def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
     A shortfall does not also earn a "within budget" note.
     modes: {count: (bar, mode_text)} from bar_modes() when a same-run base exists; the bar replaces budget for that
     count and mode_text is appended to the messages. None = budget for every count (mode=raw, old messages).
+    budgets: {count: bar} overriding budget per count without a base (--p95-target-ms); None = budget everywhere.
     """
     errors, warnings, notes = [], [], []
 
@@ -168,8 +198,8 @@ def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
             sink.append(f"{label}shortfall at {n} bullets ({role}): only {r.get('min_alive_before_step', '?')} were alive "
                         f"on the slowest-filled frame, so the timing is not valid")
         p95 = r["work_p95_ms"]
-        bar, mode = (modes or {}).get(n, (budget, None))
-        shown_bar = f"{budget}" if mode is None else f"{bar:.2f}"
+        bar, mode = (modes or {}).get(n, ((budgets or {}).get(n, budget), None))
+        shown_bar = f"{bar}" if mode is None else f"{bar:.2f}"
         tail = "" if mode is None else f", {mode}"
         if p95 > bar:
             sink.append(f"{label}p95 {p95:.2f} ms > budget {shown_bar} ms at {n} bullets ({role}){tail}")
@@ -189,7 +219,7 @@ def check(results, floor, target, budget, baseline=None, regression_pct=25.0,
     judge(target, "target", warnings)
 
     annotations = [f"::error::{m}" for m in errors] + [f"::warning::{m}" for m in warnings]
-    summary = table(results, floor, target, budget, title, modes) + [""]
+    summary = table(results, floor, target, budget, title, modes, budgets) + [""]
     summary += [f"- :x: **FAIL** {m}" for m in errors]
     summary += [f"- :warning: **WARNING** {m}" for m in warnings]
     summary += [f"- :white_check_mark: {m}" for m in notes]
@@ -270,17 +300,19 @@ def speed_factor(base_plain, floor, reference_ms):
 
 def bar_modes(base, counts, bar, factor, cap):
     """{count: (head_bar, mode_text)} for one tier. mode=slow-runner only when the base's own p95 at that count is
-    over the bar (the runner is provably slow); then head_bar = bar * min(factor, cap). Otherwise mode=raw, bar."""
+    over the bar (the runner is provably slow); then head_bar = bar * min(factor, cap). Otherwise mode=raw, bar.
+    bar: one bar for every count, or {count: bar} (--p95-target-ms)."""
     out = {}
     for n in counts:
+        bar_n = bar[n] if isinstance(bar, dict) else bar
         bp = _base_p95(base, n)
-        if factor is not None and bp is not None and bp > bar:
-            eff = bar * min(factor, cap)
-            out[n] = (eff, f"mode=slow-runner (base {bp:.1f} > {bar:.1f}, F={factor:.2f}, cap {cap:g}, bar {eff:.1f})")
+        if factor is not None and bp is not None and bp > bar_n:
+            eff = bar_n * min(factor, cap)
+            out[n] = (eff, f"mode=slow-runner (base {bp:.1f} > {bar_n:.1f}, F={factor:.2f}, cap {cap:g}, bar {eff:.1f})")
         elif bp is None:
-            out[n] = (bar, "mode=raw (no valid base at this count)")
+            out[n] = (bar_n, "mode=raw (no valid base at this count)")
         else:
-            out[n] = (bar, "mode=raw")
+            out[n] = (bar_n, "mode=raw")
     return out
 
 
@@ -308,12 +340,12 @@ def relative(head, base, floor, target, tol_pct, label="", names=BASE_NAMES["pr"
     return errors, warnings, rows
 
 
-def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct, names=BASE_NAMES["pr"]):
+def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct, names=BASE_NAMES["pr"], tier="plain"):
     """tiers: [(name, bar, rel_rows, head_results, modes)]. Markdown for the step summary."""
     def f(v, spec=".2f"):
         return "n/a" if v is None else format(v, spec)
     lines = [f"### Same-runner comparison: {names['cmp_title']}, measured in this job", "",
-             f"Runner speed factor F = base plain p95 {base_p95:.2f} ms / reference {reference_ms:g} ms, "
+             f"Runner speed factor F = base {tier} p95 {base_p95:.2f} ms / reference {reference_ms:g} ms, "
              f"clamped to >= 1.0: **F = {factor:.2f}**. It is used only in mode=slow-runner, which applies to a tier "
              f"and count only when the base's own raw p95 there is over the bar; the head bar is then "
              f"bar x min(F, {cap:g}). Everywhere else mode=raw: head raw p95 <= bar.",
@@ -349,6 +381,26 @@ def comparison_lines(tiers, factor, base_p95, reference_ms, cap, tol_pct, names=
                          f"{head_bar:.2f} | {'pass' if bar_ok else 'over' if r['head'] is not None else 'n/a'} | "
                          f"{verdict} |")
     return lines
+
+
+def meta_mismatch(path, backend=None, batch=None):
+    """What in the report's top-level "backend" / "batch" differs from the expectation ([] = matches)."""
+    if backend is None and batch is None:
+        return []
+    try:
+        with open(path) as f:
+            doc = json.load(f)
+        if not isinstance(doc, dict):
+            raise ValueError("not a JSON object")
+    except (OSError, ValueError) as e:
+        return [f"cannot read {path}: {e}"]
+    out = []
+    if backend is not None and doc.get("backend") != backend:
+        out.append(f'"backend" is {doc.get("backend")!r}, expected {backend!r}')
+    got = doc.get("batch")
+    if batch is not None and (isinstance(got, bool) or got != batch):
+        out.append(f'"batch" is {got!r}, expected {batch!r}')
+    return out
 
 
 def _finite_float(text, minimum, inclusive, what):
@@ -407,8 +459,21 @@ def main(argv=None):
     ap.add_argument("--no-base-reason", default=None,
                     help="push-parent only: why there is no base report at all (logged as the fallback reason; "
                     "the gate is then the raw bars only)")
+    ap.add_argument("--tier-name", default="plain",
+                    help="name of the REPORT tier in messages, mode lines and the comparison table (default plain)")
+    ap.add_argument("--title", default="Bullet benchmark", help="title of the REPORT tier's summary table")
+    ap.add_argument("--p95-target-ms", type=positive_ms, default=None,
+                    help="REPORT tier bar at the TARGET count (default: --p95-ms)")
+    ap.add_argument("--expect-backend", default=None,
+                    help='REPORT must have this top-level "backend" (hard fail); a base without it is unusable')
+    ap.add_argument("--expect-batch", type=int, default=None,
+                    help='REPORT must have this top-level "batch" (hard fail); a base without it is unusable')
+    ap.add_argument("--informational", action="store_true",
+                    help="report bars and the relative check as warnings only; exit 0 unless an --expect-* check fails")
     a = ap.parse_args(argv)
     names = BASE_NAMES[a.base_kind]
+    tier = a.tier_name
+    tlabel = "" if tier == "plain" else f"[{tier}] "
     if a.no_base_reason is not None and a.base_kind != "push-parent":
         ap.error("--no-base-reason needs --base-kind push-parent")
 
@@ -424,6 +489,8 @@ def main(argv=None):
         except (OSError, ValueError, KeyError, TypeError) as e:
             print(f"::error::cannot read baseline results from {a.baseline}: {e}")
             return 1
+    meta_errors = [f"{tlabel}{m} in {a.report}: wrong tier (did the native library load?)"
+                   for m in meta_mismatch(a.report, a.expect_backend, a.expect_batch)]
 
     # Same-run base (main). Unusable base -> mode=raw everywhere and no relative check (never looser).
     base_plain = base_hooked = None
@@ -434,6 +501,11 @@ def main(argv=None):
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
             pre.append(f"::warning::cannot read {names['base']} results from {a.base_report}: {e}; "
                        f"mode=raw (no usable base)")
+        bad_meta = meta_mismatch(a.base_report, a.expect_backend, a.expect_batch) if base_plain is not None else []
+        if bad_meta:
+            pre.append(f"::warning::{tlabel}{names['base']} report {a.base_report}: {'; '.join(bad_meta)}; "
+                       f"mode=raw (no usable base) and no relative check")
+            base_plain = None
     if a.base_hooked_report and base_plain is not None:
         try:
             base_hooked, bfrac = load_hooked(a.base_hooked_report)
@@ -445,14 +517,19 @@ def main(argv=None):
                        f"hooked tier: mode=raw and no relative check")
     factor, base_p95 = speed_factor(base_plain, a.floor_bullets, a.reference_ms)
     if base_plain is not None and factor is None:
-        pre.append(f"::warning::the {names['base']} run has no valid plain {a.floor_bullets}-bullet p95; "
+        pre.append(f"::warning::the {names['base']} run has no valid {tier} {a.floor_bullets}-bullet p95; "
                    f"mode=raw (no usable base) and no relative check")
         base_plain = base_hooked = None
     counts = [a.floor_bullets, a.target_bullets]
     hooked_budget = a.hooked_target_ms if a.hooked_target_ms is not None else a.p95_ms
     plain_modes = hooked_modes = None
+    budgets = None
+    plain_bar = a.p95_ms
+    if a.p95_target_ms is not None:
+        budgets = {a.floor_bullets: a.p95_ms, a.target_bullets: a.p95_target_ms}
+        plain_bar = budgets
     if base_plain is not None:
-        plain_modes = bar_modes(base_plain, counts, a.p95_ms, factor, a.slow_runner_cap)
+        plain_modes = bar_modes(base_plain, counts, plain_bar, factor, a.slow_runner_cap)
         if base_hooked is not None:
             hooked_modes = bar_modes(base_hooked, counts, hooked_budget, factor, a.slow_runner_cap)
     mode_lines = []
@@ -466,14 +543,18 @@ def main(argv=None):
                               f"-> FALLBACK mode=raw: raw bars only, no relative check")
         else:
             mode_lines.append(f"perf base: parent commit{sha} (previous branch tip: main on push, the dispatched branch on workflow_dispatch), same job, same runner")
-    for name, modes in (("plain", plain_modes), ("hooked", hooked_modes if a.hooked_report else {})):
+    if a.informational:
+        mode_lines.append(f"perf mode: {tier}: informational (bars and relative check reported as warnings, "
+                          f"never fail the job)")
+    for name, modes in ((tier, plain_modes), ("hooked", hooked_modes if a.hooked_report else {})):
         if modes is None:
             mode_lines.append(f"perf mode: {name}: mode=raw (no usable same-run base)")
         for n, (_bar, m) in sorted((modes or {}).items()):
             mode_lines.append(f"perf mode: {name} {n}: {m}")
 
     code, annotations, summary = check(results, a.floor_bullets, a.target_bullets, a.p95_ms,
-                                       baseline, a.regression_pct, modes=plain_modes)
+                                       baseline, a.regression_pct, title=a.title, label=tlabel,
+                                       modes=plain_modes, budgets=budgets)
     annotations = pre + annotations
     hresults = None
     if a.hooked_report:
@@ -491,8 +572,8 @@ def main(argv=None):
                 print(f"::warning::could not write {a.ratio_json}: {e}")
     if base_plain is not None:
         errs, warns, rows = relative(results, base_plain, a.floor_bullets, a.target_bullets, a.rel_tolerance_pct,
-                                     names=names)
-        tiers = [("plain", a.p95_ms, rows, results, plain_modes)]
+                                     label=tlabel, names=names)
+        tiers = [(tier, a.p95_ms, rows, results, plain_modes)]
         if a.hooked_report:
             if base_hooked is not None:
                 herrs, hwarns, hrows = relative(hresults, base_hooked, a.floor_bullets, a.target_bullets,
@@ -507,7 +588,7 @@ def main(argv=None):
         if errs:
             code = 1
         cmp_lines = comparison_lines(tiers, factor, base_p95, a.reference_ms, a.slow_runner_cap,
-                                     a.rel_tolerance_pct, names)
+                                     a.rel_tolerance_pct, names, tier=tier)
         cmp_lines += [""] + [f"- :x: **FAIL** {m}" for m in errs] + [f"- :warning: **WARNING** {m}" for m in warns]
         summary = cmp_lines + [""] + summary
     elif a.base_report is None:
@@ -515,7 +596,18 @@ def main(argv=None):
         summary = [names["none"].format(reason=reason), ""] + summary
     else:
         summary = [names["unusable"], ""] + summary
-    if a.base_report or a.base_hooked_report or a.base_kind != "pr":
+    if a.informational:
+        annotations = [m.replace("::error::", "::warning::", 1) if m.startswith("::error::") else m
+                       for m in annotations]
+        summary = [s_.replace(":x: **FAIL**", ":warning: **WARNING (informational)**")
+                   .replace("**FAIL**", "warning (informational)") for s_ in summary]
+        summary = [f"_Informational tier ({tier}): misses are warnings and never fail the job._", ""] + summary
+        code = 0
+    if meta_errors:
+        annotations = [f"::error::{m}" for m in meta_errors] + annotations
+        summary = [f"- :x: **FAIL** {m}" for m in meta_errors] + [""] + summary
+        code = 1
+    if a.base_report or a.base_hooked_report or a.base_kind != "pr" or tier != "plain" or a.informational:
         print("\n".join(mode_lines))
     print("\n".join(summary))
     print("\n".join(annotations))

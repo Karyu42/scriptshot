@@ -97,6 +97,17 @@ func _printed_texts() -> Array[String]:
 	return out
 
 
+func test_a_suppressed_warning_still_updates_the_last_message() -> void:
+	for i in ScriptWarnings.LIMIT:
+		assert_true(ScriptWarnings.begin(KEY))
+		ScriptWarnings.finish(KEY, ScriptWarnings.removed_message(KEY, "first"))
+	assert_false(ScriptWarnings.begin(KEY))
+	ScriptWarnings.keep_removed(KEY, "second")
+	assert_eq(ScriptWarnings.printed_count(KEY), ScriptWarnings.LIMIT)
+	assert_eq(ScriptWarnings.count(KEY), ScriptWarnings.LIMIT + 1)
+	assert_eq(ScriptWarnings.last_message(KEY), ScriptWarnings.removed_message(KEY, "second"))
+
+
 func test_the_last_warning_of_a_window_says_the_rest_are_suppressed() -> void:
 	for i in 5:
 		ScriptWarnings.warn(KEY, "bad value")

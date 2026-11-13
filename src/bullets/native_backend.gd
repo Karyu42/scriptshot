@@ -247,9 +247,9 @@ func last_despawns() -> Array:
 
 ## Spawns a plain bullet from a request. Returns a stable id (> 0), or -1 if the
 ## store is full or the request is non-finite. Finite values outside BulletLimits
-## are clamped the same way BulletPool.spawn clamps them (the pool also warns;
-## this prototype clamp is silent). The owner's own layer is stripped from
-## hit_mask, matching the pool.
+## are clamped the same way BulletPool.spawn clamps them, and a clamp raises the
+## same ScriptWarning (key and text) the pool uses. The owner's own layer is
+## stripped from hit_mask, matching the pool.
 func spawn(r: ShotRequest, seq: int) -> int:
 	var bad := _non_finite_field(r)
 	if bad != "":
@@ -269,6 +269,21 @@ func spawn(r: ShotRequest, seq: int) -> int:
 	var flags := Health.SOURCE_PIERCES_SCRIPT_INVULN if r.pierces_script_invuln else 0
 	var id: int = sim.spawn(r.position, velocity, r.angle, life, radius, dmg, mask, r.color, acc, turn, r.pierce,
 		r.collide_world, r.owner_layer, flags, seq, r.behavior_id, pa, pb)
+	# The pool warns only after admission. A full store refuses the shot and
+	# does not count a clamp warning for it.
+	if id < 0:
+		return -1
+	if (
+		velocity != r.velocity
+		or radius != r.radius
+		or life != r.lifetime
+		or acc != r.acceleration
+		or turn != r.turn_rate
+		or dmg != r.damage
+		or pa != r.param_a
+		or pb != r.param_b
+	):
+		BulletPool._warn_clamped_request("BulletPool.spawn", r)
 	return id
 
 
@@ -442,7 +457,8 @@ func gather_batch(behavior_id: int) -> Dictionary:
 
 ## One dictionary for the whole commit, not a sim call per row. Totals:
 ## killed, vel_nonfinite, pa_nonfinite, pb_nonfinite, plus clamp_vx/clamp_vy.
-## warn_row/warn_key/warn_what/warn_vx/warn_vy are those events in row order.
+## warn_row and warn_code are those events in row order (integer codes, no
+## strings). An older library omits them; the manager then uses the totals.
 func apply_batch(ids: PackedInt64Array, vx: PackedFloat32Array, vy: PackedFloat32Array, pa: PackedFloat32Array, pb: PackedFloat32Array) -> Dictionary:
 	var d: Dictionary = sim.apply_batch(ids, vx, vy, pa, pb)
 	return d

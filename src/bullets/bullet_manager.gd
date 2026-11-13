@@ -13,6 +13,23 @@ extends Node2D
 ## (ties broken by tree order), so the manager runs after everything at the
 ## default priority of 0.
 const PHYSICS_PRIORITY := 100
+## apply_batch warn_code values. Kept in step with native_bullet_sim.cpp.
+const BATCH_WARN_VELOCITY := 1
+const BATCH_WARN_SPEED := 2
+const BATCH_WARN_PA := 3
+const BATCH_WARN_PB := 4
+## Script owners (hot reload, see hooked_count_for_owner()). An *owner id* is
+## the behavior id register_behavior() returned: every bullet spawned with that
+## ShotRequest.behavior_id carries it, and its hooks (per-bullet and on_batch)
+## run on that BulletBehavior. A LuaBulletBehavior is one script generation, so
+## a fresh generation registers a new behavior and gets a new owner id.
+##
+## Emitted when the live bullets of `owner_id` (both stores) went from > 0 to 0:
+## they despawned, were cleared, or were stripped. Checked at the end of step(),
+## clear_bullets() and strip_hooks_for_owner(), so a bullet that despawns and a
+## new one spawned in the same tick do not fire it.
+signal hooked_owner_drained(owner_id: int)
+
 ## Managers currently in a tree. Reflector enter/exit notifies each of them.
 ## Node2D, not BulletManager: a static Array of this class cannot be parsed
 ## while the class is still being compiled.
@@ -182,6 +199,19 @@ var _ret_t := PackedFloat32Array()
 var _ret_count := 0
 ## Next unified slot index. Seqs of live bullets are {0 .. _order_count - 1}.
 var _order_count := 0
+## Owner ids with live bullets in the native sim (batch-only behaviours), so
+## a drain that happens there is noticed. Usually empty.
+var _native_owner_watch: Dictionary[int, bool] = {}
+## _emit_drained() nesting depth and the owners it still has to announce.
+## _drain_k is the outer loop's read index: entries before it were handled.
+var _drain_depth := 0
+var _drain_queue: Array[int] = []
+var _drain_k := 0
+## Guards against listeners that respawn and drain the same owner forever:
+## past these, the rest of the queue is deferred to the next _emit_drained()
+## (the next tick at the latest).
+const DRAIN_EMITS_PER_OWNER := 8
+const DRAIN_ITERATIONS := 4096
 
 # The owner_layer of the bullet whose hook is running lives in `pool.hook_owner` (-1
 # outside any hook). A spawn made while it is set is a child spawn and inherits it
@@ -394,7 +424,10 @@ func spawn(request: ShotRequest) -> int:
 	if _batch_depth > 0:
 		return _spawn_checked(request)
 	if _wants_native(request):
-		return _spawn_native(request)
+		var nid := _spawn_native(request)
+		if nid >= 0 and request.behavior_id > 0:
+			_native_owner_watch[request.behavior_id] = true
+		return nid
 	return _spawn_checked(request)
 
 
@@ -483,7 +516,7 @@ func _migrate_native_behavior(behavior_id: int) -> void:
 				"BulletManager.migrate: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
 			)
 			continue
-		pool.behavior[slot] = behavior_id
+		pool.set_behavior(slot, behavior_id)
 		if veto and pool.can_hit_veto[slot] == 0:
 			pool.can_hit_veto[slot] = 1
 			pool.veto_count += 1
@@ -709,7 +742,7 @@ func _spawn_checked(request: ShotRequest) -> int:
 		var b := _get_behavior(request.behavior_id)
 		if b == null:
 			push_warning("BulletManager: unknown behavior_id %d, spawning a plain bullet" % request.behavior_id)
-			pool.behavior[i] = 0
+			pool.set_behavior(i, 0, false)
 		else:
 			var outer := pool.hook_owner
 			var outer_slot := pool.hook_slot
@@ -989,32 +1022,113 @@ func _batch_teleport(view: BatchView, bullet_id: int, x: float, y: float) -> voi
 	pool.teleport(slot, Vector2(x, y))
 
 
-## Emits apply_batch's offending rows in the order the pool would warn.
-## pa and pb share BulletPool.hook_write, so the first LIMIT prints and the
-## last message follow this list. One sim call per commit; this walk is only
-## the rows that warned.
+## Emits apply_batch's offending rows in warn_row order, which is the order the
+## pool would warn. pa and pb share BulletPool.hook_write, so the first LIMIT
+## prints and the last message follow this list. One sim call per commit.
+## The row list is used only when it agrees with the totals. Anything else
+## (an older library, a short list, a bad code) emits from the totals.
 func _emit_native_batch_warnings(report: Dictionary) -> void:
+	var codes := _report_ints(report, "warn_code")
+	var rows := _report_ints(report, "warn_row")
+	if _warn_rows_consistent(report, rows, codes):
+		_emit_native_batch_warnings_from_rows(report, rows, codes)
+	else:
+		_emit_native_batch_warnings_from_totals(report)
+
+
+## True when warn_row and warn_code describe the same events as the totals:
+## equal lengths, every row >= 0, codes 1-4 only, and each code's count matches
+## vel_nonfinite / the clamp arrays / pa_nonfinite / pb_nonfinite.
+func _warn_rows_consistent(report: Dictionary, rows: PackedInt32Array, codes: PackedInt32Array) -> bool:
+	if codes.is_empty() or rows.size() != codes.size():
+		return false
+	var vel := 0
+	var speed := 0
+	var pa := 0
+	var pb := 0
+	for i in codes.size():
+		if rows[i] < 0:
+			return false
+		match codes[i]:
+			BATCH_WARN_VELOCITY:
+				vel += 1
+			BATCH_WARN_SPEED:
+				speed += 1
+			BATCH_WARN_PA:
+				pa += 1
+			BATCH_WARN_PB:
+				pb += 1
+			_:
+				return false
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
+	if speed != clamp_vx.size() or speed != clamp_vy.size():
+		return false
+	if vel != _report_count(report, "vel_nonfinite"):
+		return false
+	if pa != _report_count(report, "pa_nonfinite"):
+		return false
+	if pb != _report_count(report, "pb_nonfinite"):
+		return false
+	return true
+
+
+func _emit_native_batch_warnings_from_rows(report: Dictionary, rows: PackedInt32Array, codes: PackedInt32Array) -> void:
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
+	var clamp_i := 0
+	for i in rows.size():
+		match codes[i]:
+			BATCH_WARN_VELOCITY:
+				BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+			BATCH_WARN_SPEED:
+				BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[clamp_i], clamp_vy[clamp_i]))
+				clamp_i += 1
+			BATCH_WARN_PA:
+				BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+			BATCH_WARN_PB:
+				BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
+
+
+## Category totals, for a library that does not send warn_row / warn_code.
+func _emit_native_batch_warnings_from_totals(report: Dictionary) -> void:
+	var vel_nf := _report_count(report, "vel_nonfinite")
+	var pa_nf := _report_count(report, "pa_nonfinite")
+	var pb_nf := _report_count(report, "pb_nonfinite")
+	var clamp_vx := _report_floats(report, "clamp_vx")
+	var clamp_vy := _report_floats(report, "clamp_vy")
+	for _i in vel_nf:
+		BulletPool.report_removed("BulletPool.set_velocity", "a non-finite velocity")
+	var clamps := mini(clamp_vx.size(), clamp_vy.size())
+	for i in clamps:
+		BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(clamp_vx[i], clamp_vy[i]))
+	for _i in pa_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_a")
+	for _i in pb_nf:
+		BulletPool.report_removed("BulletPool.hook_write", "a non-finite value written to param_b")
+
+
+func _report_count(report: Dictionary, key: String) -> int:
+	var value: Variant = report.get(key, 0)
+	if not value is int:
+		return 0
 	@warning_ignore("unsafe_cast")
-	var rows := report["warn_row"] as PackedInt32Array
-	@warning_ignore("unsafe_cast")
-	var keys := report["warn_key"] as PackedStringArray
-	@warning_ignore("unsafe_cast")
-	var whats := report["warn_what"] as PackedStringArray
-	@warning_ignore("unsafe_cast")
-	var wvx := report["warn_vx"] as PackedFloat32Array
-	@warning_ignore("unsafe_cast")
-	var wvy := report["warn_vy"] as PackedFloat32Array
-	var n := rows.size()
-	n = mini(n, keys.size())
-	n = mini(n, whats.size())
-	n = mini(n, wvx.size())
-	n = mini(n, wvy.size())
-	for i in n:
-		var key := keys[i]
-		if key == "BulletPool.set_velocity.clamp.speed":
-			BulletPool.report_speed_clamp("BulletPool.set_velocity", Vector2(wvx[i], wvy[i]))
-		else:
-			BulletPool.report_removed(key, whats[i])
+	var n := value as int
+	return n
+
+
+func _report_ints(report: Dictionary, key: String) -> PackedInt32Array:
+	var value: Variant = report.get(key, PackedInt32Array())
+	if value is PackedInt32Array:
+		return value
+	return PackedInt32Array()
+
+
+func _report_floats(report: Dictionary, key: String) -> PackedFloat32Array:
+	var value: Variant = report.get(key, PackedFloat32Array())
+	if value is PackedFloat32Array:
+		return value
+	return PackedFloat32Array()
 
 
 func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
@@ -1225,6 +1339,8 @@ func step(delta: float) -> void:
 		_renderer.update_from(pool)
 	if _native_renderer != null:
 		_native_renderer.update_from(native)
+	if not pool.drained_ids.is_empty() or not _native_owner_watch.is_empty() or not _drain_queue.is_empty():
+		_emit_drained()
 	var t5 := Time.get_ticks_usec()
 	last_phase_usec[Phase.TARGETS_AND_ADVANCE] = t1 - t0
 	last_phase_usec[Phase.HOOKS_AND_WALLS] = t2 - t1
@@ -1296,6 +1412,165 @@ func clear_bullets() -> void:
 		if _native_renderer != null:
 			_native_renderer.update_from(native)
 	_order_count = 0
+	_emit_drained()
+
+
+## Live bullets of script owner `owner_id` (see hooked_owner_drained): every
+## bullet still carrying that behavior id, in the pool (per-bullet hooks always
+## live there) and, for a batch-only behaviour, in the native sim. Includes a
+## bullet marked dead this tick and not yet removed. 0 for 0 or an unknown id.
+## The pool side is a counter; the native side asks the sim only while it holds
+## bullets of a batch-only behaviour.
+func hooked_count_for_owner(owner_id: int) -> int:
+	if owner_id <= 0:
+		return 0
+	var n := pool.live_with_behavior(owner_id)
+	if native != null and _native_owner_watch.has(owner_id):
+		n += native.count_with_behavior(owner_id)
+	return n
+
+
+## Turns every in-flight bullet of `owner_id` into a plain bullet that keeps
+## flying: its behavior id becomes 0, so no hook of that behaviour runs again
+## and the bullets hold no reference to it. Position, velocity and the shot's
+## declarative fields (acceleration, turn rate, damage, pierce, owner layer,
+## script-invulnerability flag) are kept; per-bullet script state (`user`) and
+## the can_hit veto are dropped. A batch-only behaviour's native bullets move to
+## the pool as plain bullets. Returns how many were stripped. Emits
+## hooked_owner_drained when any were. Call it between ticks (SE: deferred, at
+## a frame boundary), not from inside a bullet hook.
+func strip_hooks_for_owner(owner_id: int) -> int:
+	if owner_id <= 0:
+		return 0
+	var n := 0
+	if native != null and _native_owner_watch.has(owner_id) and native.count_with_behavior(owner_id) > 0:
+		n += _adopt_native_plain(owner_id)
+	n += pool.strip_behavior(owner_id)
+	_emit_drained()
+	return n
+
+
+## strip_hooks_for_owner(), then forgets the behaviour itself: its table entry
+## becomes an inert behaviour with no hooks, so the manager no longer holds the
+## BulletBehavior (for a LuaBulletBehavior, its ScriptHost and Lua chunk). The
+## id is never reused; a late shot that still names it becomes a GDScript-pool
+## bullet whose hooks do nothing. The table keeps one small inert entry per
+## released id (one per hot-reload generation). Returns how many bullets were
+## stripped.
+func release_behavior(owner_id: int) -> int:
+	if owner_id <= 0 or owner_id >= _behaviors.size():
+		return 0
+	var n := strip_hooks_for_owner(owner_id)
+	var inert := BulletBehavior.new()
+	inert.hook_mask = 0
+	inert.hook_mask_exact = true
+	inert.update_mode = BulletBehavior.UpdateMode.PER_BULLET
+	inert.emitter = emitter
+	_behaviors[owner_id] = inert
+	_refresh_hooks(owner_id, inert)
+	_declared_checked[owner_id] = -2
+	_declared_scripts[owner_id] = null
+	return n
+
+
+## Moves the native bullets of `behavior_id` into the pool as plain bullets.
+func _adopt_native_plain(behavior_id: int) -> int:
+	var rows: Array = native.extract_behavior(behavior_id)
+	_sync_pool_external()
+	var n := 0
+	for i in rows.size():
+		var item: Variant = rows[i]
+		if not item is Dictionary:
+			continue
+		@warning_ignore("unsafe_cast")
+		var row := item as Dictionary
+		var slot := pool.adopt_native(row)
+		if slot < 0:
+			ScriptWarnings.warn(
+				"BulletManager.strip",
+				"BulletManager.strip_hooks_for_owner: the pool has no room for a native bullet of behavior %d; that bullet was dropped" % behavior_id
+			)
+			continue
+		pool.set_behavior(slot, 0)
+		# extract_behavior already retired the native seq. This bullet needs its own.
+		pool.seq[slot] = _alloc_order()
+		n += 1
+	_sync_pool_external()
+	return n
+
+
+## Announces owners whose live count is 0. Re-entrant safe: a listener that
+## calls strip_hooks_for_owner(), release_behavior() or clear_bullets() runs this
+## again from inside the emit loop. The nested call only queues what it finds
+## and the outer loop emits it. Collecting is one-shot per transition (watch
+## entries are erased while collecting; drained_ids only gets an id on >0 -> 0),
+## so an owner found again after it was emitted has really drained again (a
+## listener respawned for it and it drained) and is announced again. Dedupe is
+## only against the part of the queue not yet handled, so each actual drain is
+## announced at most once. An owner a listener respawned for before its turn is
+## skipped; its next drain queues it again. Bounded by DRAIN_EMITS_PER_OWNER
+## and DRAIN_ITERATIONS: anything left over stays queued for the next call.
+func _emit_drained() -> void:
+	_collect_drained()
+	if _drain_depth > 0:
+		return
+	_drain_depth += 1
+	var emits: Dictionary[int, int] = {}
+	var deferred: Array[int] = []
+	var iterations := 0
+	_drain_k = 0
+	while _drain_k < _drain_queue.size():
+		if iterations >= DRAIN_ITERATIONS:
+			break
+		iterations += 1
+		var id := _drain_queue[_drain_k]
+		_drain_k += 1
+		# A listener may have spawned for it again; then it has not drained.
+		if hooked_count_for_owner(id) != 0:
+			continue
+		var n: int = emits.get(id, 0)
+		if n >= DRAIN_EMITS_PER_OWNER:
+			if not deferred.has(id):
+				deferred.append(id)
+			continue
+		emits[id] = n + 1
+		hooked_owner_drained.emit(id)
+	for i in range(_drain_k, _drain_queue.size()):
+		var id := _drain_queue[i]
+		if not deferred.has(id):
+			deferred.append(id)
+	_drain_queue = deferred
+	_drain_k = 0
+	_drain_depth -= 1
+
+
+## Appends to _drain_queue every owner from the pool's drained list and the
+## native watch whose total is 0 now, erasing its watch entry. Skips owners
+## already waiting in the unhandled part of the queue.
+func _collect_drained() -> void:
+	var check: Array[int] = []
+	for id in pool.take_drained():
+		if not check.has(id):
+			check.append(id)
+	for id: int in _native_owner_watch.keys():
+		if not check.has(id):
+			check.append(id)
+	for id in check:
+		var native_n := 0
+		if _native_owner_watch.has(id):
+			if native != null:
+				native_n = native.count_with_behavior(id)
+			if native_n == 0:
+				_native_owner_watch.erase(id)
+		if native_n == 0 and pool.live_with_behavior(id) == 0 and not _drain_pending(id):
+			_drain_queue.append(id)
+
+
+func _drain_pending(id: int) -> bool:
+	for i in range(_drain_k, _drain_queue.size()):
+		if _drain_queue[i] == id:
+			return true
+	return false
 
 
 ## Number of alive bullets in both backends (native plain bullets + pool).

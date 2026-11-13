@@ -30,6 +30,10 @@ var herald: EliteEnemy
 ## False in tests that force natural elite rolls off, so a decoy elite in the
 ## tree does not cancel the spawn. The chunk stream's own rolls stay on.
 var natural_elites_cancel := true
+## The vertical-slice ribbon, when the scene has one (Main sets it). A spawn
+## point that lands in a walled room is redirected into room C
+## (SliceLayout.redirect_herald). Null or disabled: no redirect.
+var slice: SliceLayout
 var counting := false
 var resolved := false
 var elapsed := 0.0
@@ -154,6 +158,7 @@ func _spawn() -> void:
 	var heading := _heading_of(player)
 	var point := WorldGen.clamp_herald_point(player.global_position, heading)
 	var centre := RegularEnemy.push_centre_outside(point, RegularEnemy.DRIFTER_RADIUS)
+	centre = _slice_redirect(centre)
 	var affix := WorldGen.herald_affix(seed)
 	var packed := load("res://scenes/elite_enemy.tscn") as PackedScene
 	if packed == null or _holder == null:
@@ -167,6 +172,13 @@ func _spawn() -> void:
 	herald = body
 	if not body.shard_dropped.is_connected(_on_shard):
 		body.shard_dropped.connect(_on_shard)
+
+
+## Final placement step: the ribbon's redirect, after every other clamp.
+func _slice_redirect(p: Vector2) -> Vector2:
+	if slice == null or not is_instance_valid(slice) or not slice.enabled:
+		return p
+	return slice.redirect_herald(p, RegularEnemy.DRIFTER_RADIUS)
 
 
 func _on_shard() -> void:

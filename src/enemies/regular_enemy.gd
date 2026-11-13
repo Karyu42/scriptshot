@@ -119,6 +119,22 @@ func is_alive() -> bool:
 	return _alive
 
 
+## Stable kind for GameEvents and WorldQuery (an EnemyKinds constant). Elites,
+## the Herald and halves are drifter bodies too; rarity tells them apart.
+func enemy_kind() -> StringName:
+	return EnemyKinds.SWARMER if archetype == ARCH_SWARMER else EnemyKinds.DRIFTER
+
+
+## EnemyKinds.RARITY_*. Regulars are not elites: RARITY_NONE.
+func enemy_rarity() -> int:
+	return EnemyKinds.RARITY_NONE
+
+
+## World tier of the chunk this body belongs to (WorldGen.chunk_tier).
+func enemy_tier() -> int:
+	return WorldGen.chunk_tier(chunk.x, chunk.y)
+
+
 func _ready() -> void:
 	health = get_node("Health") as Health
 	_hurtbox = get_node("Hurtbox") as Hurtbox
@@ -128,6 +144,23 @@ func _ready() -> void:
 	health.died.connect(_on_died)
 	add_to_group(GROUP)
 	_ready_done = true
+	_register_world()
+
+
+func _enter_tree() -> void:
+	# _ready() registers the first time; this covers a body moved to another parent.
+	if _ready_done:
+		_register_world()
+
+
+func _exit_tree() -> void:
+	WorldQuery.unregister_enemy(self)
+
+
+func _register_world() -> void:
+	if not _alive:
+		return
+	WorldQuery.register_enemy(self, enemy_kind(), enemy_rarity(), enemy_tier(), body_radius, health)
 
 
 func _physics_process(delta: float) -> void:
@@ -168,7 +201,7 @@ func _chase(delta: float, to_player: Vector2) -> void:
 	var aim := global_position + _heading
 	if player != null:
 		aim = player.global_position
-	global_position = _slide_outside_disk(global_position, step, aim)
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, aim))
 
 
 ## Heading = direction to the player plus a uniform ±60° from hash_u, re-rolled
@@ -190,7 +223,46 @@ func _idle(delta: float) -> void:
 		_heading = _heading.bounce(outward)
 		proposed = anchor + from_anchor.limit_length(IDLE_RADIUS)
 		step = proposed - global_position
-	global_position = _slide_outside_disk(global_position, step, global_position + _heading)
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, global_position + _heading))
+
+
+## Off for regulars (row 2 decides their wall rule). EliteEnemy turns it on,
+## so elites, their halves and the Herald stay out of `world`-layer walls (the
+## SliceLayout rooms): after each step the body is pushed out of any wall it
+## overlaps, which also slides it along that wall. A step is at most a few px,
+## well under the 4 px gate plus the body radius, so it cannot tunnel.
+var collide_walls := false
+var _wall_query: PhysicsShapeQueryParameters2D
+
+
+func _keep_off_walls(p: Vector2) -> Vector2:
+	if not collide_walls or not is_inside_tree():
+		return p
+	var space := get_world_2d().direct_space_state
+	if space == null:
+		return p
+	if _wall_query == null or not is_equal_approx((_wall_query.shape as CircleShape2D).radius, body_radius):
+		var circle := CircleShape2D.new()
+		circle.radius = body_radius
+		_wall_query = PhysicsShapeQueryParameters2D.new()
+		_wall_query.shape = circle
+		_wall_query.collision_mask = Layers.WORLD
+		_wall_query.collide_with_areas = false
+	var out := p
+	for _i in 4:
+		_wall_query.transform = Transform2D(0.0, out)
+		var info := space.get_rest_info(_wall_query)
+		if info.is_empty():
+			break
+		var contact: Vector2 = info["point"]
+		var normal: Vector2 = info["normal"]
+		if normal.length_squared() <= 0.000001:
+			break
+		var depth := body_radius - (out - contact).dot(normal)
+		if depth <= 0.0:
+			break
+		out += normal * (depth + 0.01)
+	return out
 
 
 ## One step that is not allowed to enter the disk of radius 512 + body radius.
@@ -263,6 +335,8 @@ func _on_died() -> void:
 		return
 	_alive = false
 	_hurtbox.active = false
+	WorldQuery.unregister_enemy(self)
+	GameEvents.enemy_killed.emit(enemy_kind(), enemy_rarity(), enemy_tier(), global_position, true)
 	died.emit()
 	hide()
 	queue_free()
