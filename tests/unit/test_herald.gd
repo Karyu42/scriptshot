@@ -55,7 +55,13 @@ func test_rolls_off_every_seed_spawns_inside_the_window() -> void:
 		assert_true(_director.herald.is_herald)
 		assert_eq(_director.herald.affix, WorldGen.herald_affix(seed_value))
 		assert_true(_save.herald_done)
-		assert_almost_eq(_director.herald.global_position.x, 1800.0, 1.0)
+		# 1,200 px ahead unless an encounter anchor is within 800 px (issue #81).
+		var want := WorldGen.herald_point(seed_value, Vector2(600, 0), Vector2.RIGHT, RegularEnemy.DRIFTER_RADIUS)
+		assert_almost_eq(_director.herald.global_position.x, want.x, 1.0)
+		assert_almost_eq(_director.herald.global_position.y, want.y, 1.0)
+		if WorldGen.herald_point_is_clear(seed_value, Vector2(1800, 0)):
+			assert_almost_eq(_director.herald.global_position.x, 1800.0, 1.0, "a clear heading point is kept")
+		assert_true(WorldGen.herald_point_is_clear(seed_value, _director.herald.global_position), "seed %d" % seed_value)
 		_drop()
 
 
@@ -145,8 +151,13 @@ func test_placement_affix_and_safe_disk_including_the_tier_edge() -> void:
 	_arm_at(Vector2(600, 0), Vector2(5, 0))
 	_player.aim_direction = Vector2(0, 1)
 	_director.advance(WorldGen.herald_delay(1))
-	assert_almost_eq(_director.herald.global_position.x, 600.0, 1.0)
-	assert_almost_eq(_director.herald.global_position.y, 1200.0, 1.0)
+	# The aim heading's own point (600, 1200) is the first candidate; seed 1 has
+	# an anchor within 800 px of it, so the search turns off it.
+	assert_eq(WorldGen.herald_candidates(Vector2(600, 0), Vector2(0, 1))[0], Vector2(600, 1200))
+	var aimed := WorldGen.herald_point(1, Vector2(600, 0), Vector2(0, 1), RegularEnemy.DRIFTER_RADIUS)
+	assert_almost_eq(_director.herald.global_position.x, aimed.x, 1.0)
+	assert_almost_eq(_director.herald.global_position.y, aimed.y, 1.0)
+	assert_ne(aimed, WorldGen.herald_point(1, Vector2(600, 0), Vector2.RIGHT, RegularEnemy.DRIFTER_RADIUS))
 	_drop()
 
 
@@ -317,9 +328,29 @@ func test_main_scene_spawns_a_fightable_herald_and_a_reload_does_not() -> void:
 	assert_almost_eq(herald.health.hp, 75.0, 0.01)
 	assert_true(herald.cue.draws_ring())
 	assert_eq(herald.cue.glyph, EliteCue.GLYPH_CIRCLE)
-	assert_almost_eq(herald.global_position.x, 1800.0, 1.5)
+	var want := WorldGen.herald_point(1, Vector2(600, 0), Vector2.RIGHT, RegularEnemy.DRIFTER_RADIUS)
+	assert_almost_eq(herald.global_position.x, want.x, 1.5)
+	assert_almost_eq(herald.global_position.y, want.y, 1.5)
+	assert_almost_eq(herald.global_position.distance_to(Vector2(600, 0)), WorldGen.HERALD_AHEAD, 1.5)
 	assert_gte(herald.global_position.length() - herald.body_radius, WorldGen.SAFE_RADIUS - 0.05)
 	assert_eq(WorldGen.tier_at(herald.global_position.x, herald.global_position.y), 0)
+	# Issue #81: seed 1's chunk (0,-1) Swarmer pack used to sit 500-660 px from
+	# the Herald at (1800, 0). Its anchor and its bodies are now >= 800 px away,
+	# and the pack is still there, awake-able, untouched.
+	var pack := WorldGen.chunk_encounters(1, 0, -1)[0]
+	assert_false(pack.is_elite)
+	assert_lt(pack.anchor.distance_to(Vector2(1800, 0)), WorldGen.HERALD_PACK_CLEARANCE, "the old point was blocked")
+	assert_gte(pack.anchor.distance_to(herald.global_position), WorldGen.HERALD_PACK_CLEARANCE)
+	var members := 0
+	for node: Node in main.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
+		var body := node as RegularEnemy
+		if body == null or body is EliteEnemy or body.chunk != Vector2i(0, -1) or body.encounter_index != 0:
+			continue
+		members += 1
+		assert_true(body.is_alive())
+		assert_true(body.visible)
+		assert_gte(body.global_position.distance_to(herald.global_position), WorldGen.HERALD_PACK_CLEARANCE - 0.5)
+	assert_eq(members, pack.count_of(0), "the whole pack is still streamed in")
 	var bullets := main.get_node("BulletManager") as BulletManager
 	var hp := herald.health.hp
 	_one_shot(bullets, herald)
