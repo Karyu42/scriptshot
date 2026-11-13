@@ -589,7 +589,9 @@ func test_live_rows_are_the_rows_queries_can_return() -> void:
 	assert_eq(kinds[ia], "husk")
 	assert_eq(xs[ia], 10.0)
 	assert_eq(radii[ia], 16.0)
-	assert_same(wq.live_rows(), rows, "cached until the revision moves")
+	var rarities: PackedInt32Array = rows["rarity"]
+	assert_eq(rarities[ia], EnemyKinds.RARITY_NONE)
+	assert_eq(wq.live_rows(), rows, "same rows until the revision moves")
 	a.position = Vector2(500, 500)
 	wq.unregister_enemy(a)
 	var after := wq.live_rows()
@@ -597,3 +599,30 @@ func test_live_rows_are_the_rows_queries_can_return() -> void:
 	assert_eq(after_ids, PackedInt64Array([b.get_instance_id()]), "the dead body is gone, the snapshot is not rebuilt")
 	var bx: PackedFloat64Array = after["x"]
 	assert_eq(bx[0], -30.0)
+
+
+func test_live_rows_carries_the_rarity_column() -> void:
+	var n := _body(Vector2(40, 0))
+	wq.register_enemy(n, EnemyKinds.DRIFTER, EnemyKinds.RARITY_LEGENDARY, 0, 16.0)
+	wq.refresh(DT)
+	var rarities: PackedInt32Array = wq.live_rows()["rarity"]
+	assert_eq(rarities, PackedInt32Array([EnemyKinds.RARITY_LEGENDARY]))
+
+
+func test_writing_into_live_rows_does_not_reach_the_next_caller() -> void:
+	var a := _add(Vector2(10, 20))
+	wq.refresh(DT)
+	var rows := wq.live_rows()
+	# A careless caller: replace a column, add a key, write into a column.
+	rows["x"] = PackedFloat64Array([999.0])
+	rows["extra"] = true
+	rows.erase("kind")
+	var ids: PackedInt64Array = rows["ids"]
+	ids[0] = 7
+	var next := wq.live_rows()
+	assert_false(next.has("extra"))
+	assert_true(next.has("kind"))
+	var xs: PackedFloat64Array = next["x"]
+	assert_eq(xs, PackedFloat64Array([10.0]))
+	var next_ids: PackedInt64Array = next["ids"]
+	assert_eq(next_ids, PackedInt64Array([a.get_instance_id()]), "a write into a column does not reach the cache")

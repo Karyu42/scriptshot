@@ -228,16 +228,23 @@ func revision() -> int:
 
 ## The rows nearest_enemy() / enemies_in_radius() can return right now, as
 ## parallel packed columns: {ids: PackedInt64Array, x, y, radius:
-## PackedFloat64Array, kind: PackedStringArray}. Same positions as the
-## snapshot, bodies that died since it skipped. Plain data only (#50).
+## PackedFloat64Array, kind: PackedStringArray, rarity: PackedInt32Array
+## (EnemyKinds.RARITY_*)}. Same positions as the snapshot, bodies that died
+## since it skipped. Plain data only (#50).
+## Each call returns its own copy of the cached rows, columns included
+## (duplicate(true): packed arrays inside a Dictionary are shared by
+## reference, so a shallow copy would still let a write into a column reach
+## the cache). Writing into the result never reaches another caller. The copy
+## is O(rows) per call; ScriptHost calls this only when revision() moved.
 func live_rows() -> Dictionary:
 	if _live_rows_rev == _revision:
-		return _live_rows
+		return _live_rows.duplicate(true)
 	var ids := PackedInt64Array()
 	var xs := PackedFloat64Array()
 	var ys := PackedFloat64Array()
 	var radii := PackedFloat64Array()
 	var kinds := PackedStringArray()
+	var rarities := PackedInt32Array()
 	for row in _ids.size():
 		if not _alive(row):
 			continue
@@ -246,9 +253,10 @@ func live_rows() -> Dictionary:
 		ys.append(_pos[row].y)
 		radii.append(_radius[row])
 		kinds.append(String(_kind[row]))
-	_live_rows = {"ids": ids, "x": xs, "y": ys, "radius": radii, "kind": kinds}
+		rarities.append(_rarity[row])
+	_live_rows = {"ids": ids, "x": xs, "y": ys, "radius": radii, "kind": kinds, "rarity": rarities}
 	_live_rows_rev = _revision
-	return _live_rows
+	return _live_rows.duplicate(true)
 
 
 # --- queries -------------------------------------------------------------------

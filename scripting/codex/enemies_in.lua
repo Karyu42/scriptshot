@@ -2,7 +2,7 @@
 -- Gives every enemy within r of pos, nearest first: a list you can loop over.
 --   r      up to 600 px (a bigger r counts as 600)
 -- Each entry is the same as sense.nearest_enemy's: e.pos.x, e.pos.y,
--- e.radius, e.kind, e.id and e:alive(). No speed, no hp.
+-- e.radius, e.kind, e.rarity, e.id and e:alive(). No speed, no hp.
 -- The closest body is not always the one you want. Here the shots skip
 -- the husks and push toward the Warden itself (e.kind == "warden").
 -- Insert this snippet, save, and fire near the Warden's ring.

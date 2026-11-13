@@ -100,8 +100,8 @@ that uses it. Senses you have not earned yet are listed grey with how you get
 them (`nearest_enemy  (3 kills)`, `enemies_in  (found at: ???)`).
 
 Earned Senses are saved with your game. What they return is described in
-[api.md](api.md#senses-in-this-build-vertical-slice): positions, size and kind
-of each enemy, never its health or speed.
+[api.md](api.md#senses-in-this-build-vertical-slice): position, size, kind and
+rarity of each enemy within 600 px, never its health or speed.
 
 ## Writing your own
 

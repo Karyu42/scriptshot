@@ -296,16 +296,19 @@ return function(host)
 	--
 	-- Results are read-only entity tables, one per body per snapshot (asking
 	-- twice in a tick hands back the same table, so a hot loop allocates
-	-- nothing). Level I fields: id, pos {x, y}, radius, kind, alive().
-	local SENSE_RANGE = 600       -- nearest_enemy range when omitted
-	local ENEMIES_IN_R_MAX = 600  -- enemies_in Level I clamp
+	-- nothing). Level I fields: id, pos {x, y}, radius, kind, rarity, alive().
+	local SENSE_RANGE = 600       -- range / r when omitted
+	local SENSE_R_MAX = 600       -- Level I clamp, both Senses
 	local SENSE_LIST_CAP = 256    -- WorldQuery.MAX_RESULTS
 	local sense_pcall = env.pcall
 	local sense_print = env.print
 	local tostr = tostring
 	local sense_levels = { nearest_enemy = 0, enemies_in = 0 }
 	local S_n = 0
-	local S_id, S_x, S_y, S_r, S_kind = {}, {}, {}, {}, {}
+	local S_id, S_x, S_y, S_r, S_kind, S_rar = {}, {}, {}, {}, {}, {}
+	-- EnemyKinds.RARITY_* to the script-facing string. RARITY_NONE (-1:
+	-- regulars, husks, dummies, halves, adds) and anything unknown are "".
+	local RARITY_NAMES = { [0] = "common", [1] = "rare", [2] = "legendary" }
 	local S_ent, S_live = {}, {}
 	-- [1] = enemies_in lists cut at SENSE_LIST_CAP since the state opened.
 	local sense_notes = { 0 }
@@ -338,6 +341,7 @@ return function(host)
 				pos = read_only({ x = S_x[row], y = S_y[row] }),
 				radius = S_r[row],
 				kind = S_kind[row],
+				rarity = S_rar[row],
 				alive = ent_alive,
 			})
 			S_ent[row] = e
@@ -479,6 +483,10 @@ return function(host)
 		if x == nil or range ~= range or range < 0 then
 			return nil
 		end
+		-- Level I clamps the range like enemies_in; Level II would not.
+		if sense_levels.nearest_enemy < 2 and range > SENSE_R_MAX then
+			range = SENSE_R_MAX
+		end
 		local limit = range * range
 		if filter == nil then
 			-- The hot path (homing calls this per bullet): locals only, and the
@@ -519,8 +527,8 @@ return function(host)
 			return out
 		end
 		-- Level I clamps the radius; Level II (not in this build) would not.
-		if sense_levels.enemies_in < 2 and r > ENEMIES_IN_R_MAX then
-			r = ENEMIES_IN_R_MAX
+		if sense_levels.enemies_in < 2 and r > SENSE_R_MAX then
+			r = SENSE_R_MAX
 		end
 		local rows, n = sense_rows(x, y, r * r, ex)
 		local k = 0
@@ -558,9 +566,9 @@ return function(host)
 	-- Host only: copies one WorldQuery snapshot (packed columns, 0-based).
 	-- Entity tables from the previous snapshot keep their values; their
 	-- alive() reads the new snapshot.
-	host.sense_sync = function(n, ids, xs, ys, rs, kinds)
+	host.sense_sync = function(n, ids, xs, ys, rs, kinds, rars)
 		n = math_tointeger(n) or 0
-		local nid, nx, ny, nr, nk, live = {}, {}, {}, {}, {}, {}
+		local nid, nx, ny, nr, nk, nrar, live = {}, {}, {}, {}, {}, {}, {}
 		for row = 1, n do
 			local id = ids[row - 1]
 			nid[row] = id
@@ -568,10 +576,11 @@ return function(host)
 			ny[row] = ys[row - 1]
 			nr[row] = rs[row - 1]
 			nk[row] = tostr(kinds[row - 1])
+			nrar[row] = RARITY_NAMES[math_tointeger(rars[row - 1])] or ""
 			live[id] = true
 		end
 		S_n = n
-		S_id, S_x, S_y, S_r, S_kind = nid, nx, ny, nr, nk
+		S_id, S_x, S_y, S_r, S_kind, S_rar = nid, nx, ny, nr, nk, nrar
 		S_ent, S_live = {}, live
 	end
 

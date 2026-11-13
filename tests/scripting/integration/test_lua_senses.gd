@@ -113,11 +113,41 @@ func test_nearest_enemy_level_one_shape() -> void:
 	var out := _out(_run("""
 		local e = sense.nearest_enemy({ x = 0, y = 0 })
 		print(e.id, e.pos.x, e.pos.y, e.radius, e.kind, type(e.kind), e:alive())
-		print(e.vel, e.hp, e.hp_max, e.rarity, e.tier, e.is_boss, e.hp_frac)
+		print(e.vel, e.hp, e.hp_max, e.speed, e.tier, e.is_boss, e.hp_frac)
+		print("[" .. e.rarity .. "]", type(e.rarity))
 	""".dedent()))
 	var lines := out.split("\n")
 	assert_eq(lines[0], "%d\t30.0\t40.0\t16.0\thusk\tstring\ttrue" % near.get_instance_id())
-	assert_eq(lines[1], "nil\tnil\tnil\tnil\tnil\tnil\tnil", "Level I: positions only, no velocity, no hp")
+	assert_eq(lines[1], "nil\tnil\tnil\tnil\tnil\tnil\tnil", "Level I: positions only, no velocity, no hp, no speed")
+	assert_eq(lines[2], "[]\tstring", "a husk has no rarity: the empty string")
+
+
+func test_rarity_is_a_string_for_every_enemy_kinds_value() -> void:
+	SenseBook.grant(&"enemies_in", 1)
+	var cases := {
+		EnemyKinds.RARITY_NONE: "",
+		EnemyKinds.RARITY_COMMON: "common",
+		EnemyKinds.RARITY_RARE: "rare",
+		EnemyKinds.RARITY_LEGENDARY: "legendary",
+		# Not an EnemyKinds value today; a future tier must not reach Lua as nil.
+		9: "",
+	}
+	var want := PackedStringArray()
+	var x := 10.0
+	for rarity: int in cases:
+		_body(Vector2(x, 0), EnemyKinds.DRIFTER, 4.0, rarity)
+		want.append("%s:%s" % [str(x), cases[rarity]])
+		x += 10.0
+	# The slice's non-elites register as RARITY_NONE (regulars, husks, dummies).
+	_body(Vector2(x, 0), EnemyKinds.DUMMY, 4.0, EnemyKinds.RARITY_NONE)
+	want.append("%s:" % str(x))
+	WorldQuery.refresh()
+	var out := _out(_run("""
+		for _, e in ipairs(sense.enemies_in({ x = 0, y = 0 }, 600)) do
+			print(e.pos.x .. ":" .. e.rarity)
+		end
+	""".dedent()))
+	assert_eq(out, "\n".join(want))
 
 
 func test_range_is_inclusive_and_defaults_to_600() -> void:
@@ -133,6 +163,28 @@ func test_range_is_inclusive_and_defaults_to_600() -> void:
 		print(sense.nearest_enemy({ x = 1 / 0, y = 0 }))
 	""".dedent()))
 	assert_eq(out, "true\nfalse\nfalse\ntrue\nnil\tnil\nnil")
+
+
+func test_nearest_enemy_level_one_clamps_range_to_600() -> void:
+	# Both Level I Senses share the 600 px reach (GD, #92).
+	SenseBook.grant(&"nearest_enemy", 1)
+	_body(Vector2(650, 0))
+	WorldQuery.refresh()
+	var out := _out(_run("""
+		print(sense.nearest_enemy({ x = 0, y = 0 }, 1000))
+		print(sense.nearest_enemy({ x = 0, y = 0 }, 1 / 0))
+		print(sense.nearest_enemy({ x = 50, y = 0 }, 1000) ~= nil)
+		print(sense.nearest_enemy({ x = 49, y = 0 }, 1000))
+	""".dedent()))
+	assert_eq(out, "nil\nnil\ntrue\nnil", "the clamp is 600 px, inclusive, and no error")
+
+
+func test_nearest_enemy_level_two_would_lift_the_clamp() -> void:
+	# The API keeps the level. Nothing in the slice grants above Level I.
+	SenseBook.grant(&"nearest_enemy", 2)
+	_body(Vector2(650, 0))
+	WorldQuery.refresh()
+	assert_eq(_out(_run("print(sense.nearest_enemy({ x = 0, y = 0 }, 1000) ~= nil)")), "true")
 
 
 func test_ties_go_to_the_lower_id_like_world_query() -> void:
@@ -195,7 +247,7 @@ func test_results_are_read_only_snapshots() -> void:
 		list[1] = nil  -- the list itself is the script's own table
 		print(#list, sense.nearest_enemy({ x = 0, y = 0 }).kind)
 	""".dedent()))
-	assert_eq(out, "false\tfalse\nalive,id,kind,pos,radius\n0\tdrifter")
+	assert_eq(out, "false\tfalse\nalive,id,kind,pos,radius,rarity\n0\tdrifter")
 
 
 func test_the_same_body_is_the_same_table_within_a_snapshot() -> void:
@@ -347,7 +399,7 @@ func test_lua_answers_match_world_query() -> void:
 	for p in points:
 		for r: float in radii:
 			lua.append("q(%d, %d, %d)" % [int(p.x), int(p.y), int(r)])
-			var n: Dictionary = WorldQuery.nearest_enemy(p, r)
+			var n: Dictionary = WorldQuery.nearest_enemy(p, minf(r, 600.0))
 			var ids := PackedStringArray()
 			for e in WorldQuery.enemies_in_radius(p, minf(r, 600.0), 256):
 				ids.append(str(e["id"]))

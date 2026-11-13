@@ -577,7 +577,7 @@ rectangle `x, y, w, h`), and reads of your own shots (`b.*`, `shots_in(pos, rang
 
 | Sense | Unlocked by | Level I (any boss kill) | Level II (rare or legendary kill of that boss, or 25 Shards) |
 |---|---|---|---|
-| `sense.nearest_enemy(pos, range?, opts?)` | free after the first 3 kills | nearest enemy or `nil`; `opts.exclude` (set keyed by `e.id` or by the entity), `opts.filter(e)` | same |
+| `sense.nearest_enemy(pos, range?, opts?)` | free after the first 3 kills | nearest enemy within `range` (default 600; Level I clamps to 600) or `nil`; `opts.exclude` (set keyed by `e.id` or by the entity), `opts.filter(e)` | same |
 | `sense.enemies_in(pos, r, opts?)` | Warden (pool A, tier 0-1) | positions within 600 px (capped, see limits) | positions, velocities and hp in any radius |
 | `sense.enemy_bullets` | Sower (pool A, tier 0-1) | handles of enemy shots in range (for `reflect`, bullet-eating) | + velocity/damage |
 | `sense.terrain` (`:raycast(from, to)` -> `{ pos, normal }` or `nil`) | Prism (pool A, tier 0-1) | walls near a point | full raycast |
@@ -587,7 +587,7 @@ rectangle `x, y, w, h`), and reads of your own shots (`b.*`, `shots_in(pos, rang
 **Level II is not a clean kill.** Q15/Q16 dropped clean-kill gating, tags, and leaderboards. Per Q19 and pillars §12.4, Level II of a boss's Sense comes from a **rare or legendary kill of that boss type**, or from **Shards at 25 per token** (Mantle, which has no Sense, gives a token). `nearest_enemy` does not grow at Level II (the cell stays "same"). The vertical slice ([`../design/vertical-slice.md`](../design/vertical-slice.md)) ships Level I only: `nearest_enemy` after 3 kills, `enemies_in` from the common Warden. Level II fields stay absent there.
 
 Gating is a *data* gate in the facade (the entry is `nil` / the query is absent), enforced by the host
-(the sandbox's `sense` table is read-only); no script can read an ungranted sense. Entity (enemy) fields: `e.id` (int, stable for the life of that body), `e.pos`, `e.radius`, `e.kind`, `e:alive()`;
+(the sandbox's `sense` table is read-only); no script can read an ungranted sense. Entity (enemy) fields: `e.id` (int, stable for the life of that body), `e.pos`, `e.radius`, `e.kind`, `e.rarity`, `e:alive()`;
 `e.vel`, `e.hp`, `e.hp_max` at Level II. `opts.exclude` is a set keyed by `e.id` or by an entity table from this tick (the same table `nearest_enemy` and `enemies_in` return). Players cannot modify enemies directly; shots affect them through
 hits.
 
@@ -605,13 +605,15 @@ Only `nearest_enemy` and `enemies_in` exist, at Level I. The other four fields s
   Anything else is an error that names the call (`sense.nearest_enemy: pos must be a table with x and y numbers`).
   A non-finite `x`/`y` finds nothing.
 - **`sense.nearest_enemy(pos, range?, opts?)`** returns the living enemy whose centre is closest to `pos`, or `nil`.
-  `range` defaults to **600** and is inclusive; ties go to the lower `e.id`.
+  `range` defaults to **600** and is inclusive; ties go to the lower `e.id`. At Level I a `range` above **600** counts as
+  600 (no error), the same reach as `enemies_in`.
 - **`sense.enemies_in(pos, r?, opts?)`** returns a list (a plain table you own), nearest first. At Level I `r` above
   **600** counts as 600 (no error), and `r` defaults to 600. At most **256** entries: past that the nearest 256 are
   kept and the editor shows `sense list truncated`.
 - **Entities are read-only snapshots**: `e.id`, `e.pos.x`, `e.pos.y`, `e.radius`, `e.kind` (a string: `drifter`,
-  `swarmer`, `shieldbearer`, `sniper`, `husk`, `warden`, `dummy`) and `e:alive()`. `e.vel`, `e.hp`, `e.hp_max`
-  (Level II) and rarity are `nil`. Writing a field is an error (`sense results are read-only`). Positions are where
+  `swarmer`, `shieldbearer`, `sniper`, `husk`, `warden`, `dummy`), `e.rarity` (a string: `""` for a regular, a husk
+  or a dummy, otherwise `common`, `rare` or `legendary`, matching the rarity cue on screen) and `e:alive()`. `e.vel`,
+  `e.hp`, `e.hp_max` and speed are Level II and `nil` here. Writing a field is an error (`sense results are read-only`). Positions are where
   the body was at the start of this tick. Within one tick the same body is always the same table, so asking for it
   per bullet allocates nothing; `e:alive()` turns `false` once that body dies (or leaves the view), even on a table you kept.
 - **`opts.exclude`**: a table keyed by `e.id`, or by an entity table from this tick. **`opts.filter(e)`**: return

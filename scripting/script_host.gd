@@ -1096,7 +1096,9 @@ func _sync_senses() -> void:
 	_sense_world_rev = world_rev
 	var rows := WorldQuery.live_rows()
 	var ids: PackedInt64Array = rows["ids"]
-	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], rows["radius"], rows["kind"])
+	# Read-only use: host.sense_sync copies the columns into its own Lua
+	# tables and never writes back into them.
+	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], rows["radius"], rows["kind"], rows["rarity"])
 
 
 ## One editor note per enemies_in list the script had cut at 256 (§6.2).
