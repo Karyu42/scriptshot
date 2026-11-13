@@ -10,6 +10,8 @@ const BLINK_STEP := 0.062
 ## Forwarded from the Health component.
 signal damaged(amount: float)
 signal died
+## Emitted at the end of respawn(), after hp and dash have been reset.
+signal respawned(at: Vector2)
 
 @export_group("Movement")
 @export var max_speed := 300.0
@@ -250,6 +252,7 @@ func respawn(at: Vector2) -> void:
 	health.reset()
 	_hurtbox.active = true
 	show()
+	respawned.emit(at)
 
 
 func _update_aim() -> void:
