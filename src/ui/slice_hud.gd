@@ -327,14 +327,19 @@ func victory_line_separation() -> int:
 func present_victory_card(on_dismiss: Callable = Callable()) -> void:
 	if _victory_up:
 		return
+	# Mark the card up before close() so the editor does not restore time
+	# scale 1.0 under it, then freeze the world.
 	_victory_up = true
 	_victory_cb = on_dismiss
+	if _editor != null and _editor.is_open():
+		_editor.close()
 	Engine.time_scale = 0.0
 	_victory_unlock_msec = Time.get_ticks_msec() + int(VICTORY_LOCKOUT * 1000.0)
 	_victory_fire_held = Input.is_action_pressed("fire")
 	_victory_edit_held = Input.is_action_pressed("script_editor")
 	if _victory_box != null:
 		_victory_box.visible = true
+	_hide_edit_prompt()
 	_layout_labels()
 
 
@@ -345,6 +350,7 @@ func dismiss_victory_card() -> void:
 	Engine.time_scale = 1.0
 	if _victory_box != null:
 		_victory_box.visible = false
+	_sync_prompt_text()
 	var cb := _victory_cb
 	_victory_cb = Callable()
 	victory_dismissed.emit()
@@ -428,6 +434,9 @@ func _tick_dash() -> void:
 
 
 func _tick_prompt(delta: float) -> void:
+	if _victory_up:
+		_hide_edit_prompt()
+		return
 	if _prompt_left <= 0.0:
 		return
 	_prompt_left -= delta
@@ -438,6 +447,9 @@ func _tick_prompt(delta: float) -> void:
 
 
 func _sync_prompt_text() -> void:
+	if _victory_up:
+		_hide_edit_prompt()
+		return
 	if _prompt_left <= 0.0:
 		return
 	var pad := InputDevice.is_gamepad()
@@ -446,6 +458,12 @@ func _sync_prompt_text() -> void:
 	_gamepad = pad
 	_prompt.text = PROMPT_PAD if pad else PROMPT_KB
 	_prompt.visible = true
+
+
+func _hide_edit_prompt() -> void:
+	if _prompt != null:
+		_prompt.hide()
+	_hide_editor_start_prompt()
 
 
 func _tick_toast(delta: float) -> void:

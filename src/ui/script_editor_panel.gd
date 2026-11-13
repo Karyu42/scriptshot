@@ -249,7 +249,10 @@ func close() -> void:
 		return
 	_open = false
 	_root.hide()
-	Engine.time_scale = _time_scale_before if _time_scale_before != OPEN_TIME_SCALE else 1.0
+	# The victory card owns time scale 0. Restoring here would resume the
+	# world under the card (Esc while the editor was open when it appeared).
+	if not _victory_card_up():
+		Engine.time_scale = _time_scale_before if _time_scale_before != OPEN_TIME_SCALE else 1.0
 	_set_player_blocked(false)
 	_set_ui_cursor(false)
 	_swallow_open_key = false

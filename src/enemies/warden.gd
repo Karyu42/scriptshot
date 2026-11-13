@@ -1178,6 +1178,14 @@ func _step_death(delta: float) -> void:
 	_begin_victory()
 
 
+## Tests: radii of the kill-tick enemy-shot fade, empty if none is running.
+func debug_fade_radii() -> PackedFloat32Array:
+	var fade := get_node_or_null("EnemyShotFade") as _EnemyShotFade
+	if fade == null:
+		return PackedFloat32Array()
+	return fade.radii()
+
+
 ## Tests: skip the 1.2 s shrink and start the victory beat immediately.
 func debug_finish_death_anim() -> void:
 	if not _death_emitted:
@@ -1365,6 +1373,10 @@ static func _snapshot_enemy_shots(bullets: BulletManager) -> Array[Dictionary]:
 			})
 	var native := bullets.native
 	if native != null:
+		# snapshot() is the existing way to read per-slot radius; pos/vel/owner
+		# come from the accessors. Do not use LANCE_RADIUS for every shot.
+		var snap: Dictionary = native.snapshot()
+		var rads: PackedFloat32Array = snap.get("radius", PackedFloat32Array())
 		for s in native.count():
 			if not native.is_slot_alive(s):
 				continue
@@ -1373,7 +1385,7 @@ static func _snapshot_enemy_shots(bullets: BulletManager) -> Array[Dictionary]:
 			shots.append({
 				"pos": native.position_at(s),
 				"vel": native.velocity_at(s),
-				"radius": LANCE_RADIUS,
+				"radius": rads[s] if s < rads.size() else 0.0,
 				"color": Layers.bullet_color(Layers.ENEMY),
 			})
 	return shots
@@ -1484,6 +1496,14 @@ class _EnemyShotFade:
 		z_index = 6
 		set_physics_process(true)
 		queue_redraw()
+
+	func radii() -> PackedFloat32Array:
+		var out := PackedFloat32Array()
+		out.resize(_items.size())
+		for i in _items.size():
+			var r: float = _items[i]["radius"]
+			out[i] = r
+		return out
 
 	func _physics_process(delta: float) -> void:
 		if _left <= 0.0:

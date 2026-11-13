@@ -225,6 +225,54 @@ func test_e_dismisses_with_a_fresh_press_after_the_lockout() -> void:
 	assert_false(editor.is_open())
 
 
+func test_present_victory_card_closes_the_open_editor_and_keeps_time_frozen() -> void:
+	# Order 1: the editor is already open when the card appears.
+	var hud := _hud()
+	var editor := ScriptEditorPanel.new()
+	add_child_autofree(editor)
+	var progress := SliceProgress.new()
+	add_child_autofree(progress)
+	hud.bind(_player(), progress, editor)
+	editor.open()
+	assert_true(editor.is_open())
+	assert_almost_eq(Engine.time_scale, ScriptEditorPanel.OPEN_TIME_SCALE, 1e-6)
+	hud.present_victory_card()
+	assert_false(editor.is_open())
+	assert_true(hud.is_victory_card_up())
+	assert_eq(Engine.time_scale, 0.0)
+
+
+func test_closing_the_editor_does_not_restore_time_scale_while_the_card_is_up() -> void:
+	# Order 2: the card is already up, then close() runs (Esc). The editor
+	# is left unbound so present_victory_card does not close it first; it
+	# still finds the HUD via the slice_hud group.
+	var hud := _hud()
+	var editor := ScriptEditorPanel.new()
+	add_child_autofree(editor)
+	editor.open()
+	assert_almost_eq(Engine.time_scale, ScriptEditorPanel.OPEN_TIME_SCALE, 1e-6)
+	hud.present_victory_card()
+	assert_true(editor.is_open())
+	assert_eq(Engine.time_scale, 0.0)
+	editor.close()
+	assert_false(editor.is_open())
+	assert_true(hud.is_victory_card_up())
+	assert_eq(Engine.time_scale, 0.0)
+
+
+func test_the_edit_prompt_is_hidden_while_the_card_is_up() -> void:
+	var hud := _hud()
+	var progress := SliceProgress.new()
+	add_child_autofree(progress)
+	hud.bind(_player(), progress)
+	assert_eq(hud.prompt_text(), "E edits.")
+	hud.present_victory_card()
+	assert_eq(hud.prompt_text(), "")
+	hud._process(DT)
+	assert_eq(hud.prompt_text(), "")
+	assert_true(hud.is_victory_card_up())
+
+
 func test_enemy_bullets_deal_no_damage_after_the_kill() -> void:
 	var manager := BulletManager.new()
 	manager.backend_preference = "gdscript"
@@ -251,8 +299,39 @@ func test_enemy_bullets_deal_no_damage_after_the_kill() -> void:
 	assert_eq(player.health.hp, before, "a shot overlapping the player deals no damage after the kill")
 	var fade := warden.get_node_or_null("EnemyShotFade")
 	assert_not_null(fade)
+	var gds_radii := warden.debug_fade_radii()
+	assert_eq(gds_radii.size(), 1)
+	assert_almost_eq(gds_radii[0], 16.0, 0.0001, "the fade uses the shot's own radius")
 	fade._physics_process(Warden.SHOT_FADE)
 	assert_true(fade.is_queued_for_deletion())
+
+
+func test_native_kill_fade_uses_each_shot_radius() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim is not built")
+		return
+	var manager := BulletManager.new()
+	manager.backend_preference = "native"
+	manager.capacity = 64
+	manager.world_bounds = Rect2(8000, -2000, 4000, 4000)
+	manager.render_enabled = false
+	manager.auto_step = false
+	add_child_autofree(manager)
+	var player := _player()
+	var warden := _warden()
+	warden.bind(player, manager)
+	var req := ShotRequest.with_velocity(player.global_position, Vector2.ZERO)
+	req.radius = 16.0
+	req.damage = 1.0
+	req.hit_mask = Layers.PLAYER
+	req.owner_layer = Layers.ENEMY
+	req.lifetime = 2.0
+	manager.spawn(req)
+	warden.health.set_hp(0.0)
+	assert_not_null(warden.get_node_or_null("EnemyShotFade"))
+	var nat_radii := warden.debug_fade_radii()
+	assert_eq(nat_radii.size(), 1)
+	assert_almost_eq(nat_radii[0], 16.0, 0.0001, "native fade uses the shot's own radius, not LANCE_RADIUS")
 
 
 func test_a_cleared_slot_does_not_place_the_warden() -> void:
