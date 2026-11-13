@@ -427,11 +427,10 @@ func test_cooldown_is_at_least_four_seconds() -> void:
 			assert_gte(waves[i] - waves[i - 1], 4.0 - 0.001, "waves %d and %d" % [i - 1, i])
 
 
-func test_summons_hold_their_flank_offset_and_stay_out_of_the_lane() -> void:
-	# Common Swarmers hold at their spawn offset relative to the elite
-	# (per-serial hashed angle + wall-slide radius), tracking the
-	# elite-to-player facing. They stay off the firing lane and do not
-	# have to reach the player.
+func test_summons_drift_to_the_player_and_stay_out_of_the_lane() -> void:
+	# Common Swarmers drift to a contact hold around the player: their
+	# side plus hashed arc offset, at player radius + add radius + 20,
+	# and stay out of the firing lane.
 	var player := _node_player(FAR + Vector2(STANDOFF, 0))
 	var elite := _elite(FAR, player)
 	elite.woken = true
@@ -439,42 +438,46 @@ func test_summons_hold_their_flank_offset_and_stay_out_of_the_lane() -> void:
 	elite._physics_process(elite.summon_interval())
 	var adds := _adds(elite.get_parent())
 	assert_eq(adds.size(), 2)
+	var start: Array[float] = []
 	for add: SummonAdd in adds:
 		add.set_physics_process(false)
+		start.append(add.global_position.distance_to(player.global_position))
 		assert_almost_eq(add.flank_jitter, elite.summon_flank_jitter(add.member_index), 0.0000001)
-		assert_almost_eq(add.flank_hold_radius, EliteEnemy.SUMMON_OFFSET, 0.01)
 	for frame in 300:
 		for add: SummonAdd in adds:
 			add._physics_process(DT)
 			var muzzle := player.global_position + (elite.global_position - player.global_position).normalized() * MUZZLE
 			var lane := _segment_distance(add.global_position, muzzle, elite.global_position)
 			assert_gt(lane, add.body_radius + 4.0, "frame %d: %s is in the firing lane" % [frame, add.name])
-	var holds: Array[Vector2] = []
-	for add: SummonAdd in adds:
-		var hold := add.flank_point()
-		holds.append(hold)
-		assert_lt(
-			add.global_position.distance_to(hold),
-			0.5,
-			"%s left its own hold point" % add.name
-		)
-		# The hold equals the spawn offset, recomputed from current facing.
-		var expected := elite.global_position + elite.summon_flank_dir(add.side, add.flank_jitter) * add.flank_hold_radius
-		assert_almost_eq(hold.x, expected.x, 0.01)
-		assert_almost_eq(hold.y, expected.y, 0.01)
-	assert_gt(holds[0].distance_to(holds[1]), 0.01, "both adds share a hold point")
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
+	var lane_dir := elite.global_position - player.global_position
+	var angles: Array[float] = []
+	for i in adds.size():
+		var add: SummonAdd = adds[i]
+		var d := add.global_position.distance_to(player.global_position)
+		assert_lt(d, start[i], "%s drifted toward the player" % add.name)
+		assert_almost_eq(d, contact, 0.5, "%s contact distance" % add.name)
+		assert_almost_eq(d, add.contact_offset(), 0.5)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5, "%s left its hold" % add.name)
+		var off := add.global_position - player.global_position
+		var angle := rad_to_deg(lane_dir.angle_to(off))
+		assert_gte(absf(angle), 90.0 - half_arc - 0.5, "hold at %.1f° from the player-to-elite line" % angle)
+		assert_lte(absf(angle), 90.0 + half_arc + 0.5, "hold at %.1f° from the player-to-elite line" % angle)
+		angles.append(angle)
+	assert_ne(angles[0], angles[1], "both adds share a hold angle")
 
 
-func test_rare_flank_adds_keep_distinct_hold_points_at_the_cap() -> void:
-	# At a rare cap of 8, after 5 s, each Swarmer add still holds at its
-	# own spawn offset rather than stacking on one flank_point per side.
-	# Four r=8 Swarmers can still overlap on a 40° / 48 px arc (~33 px);
-	# that is a Game Designer reading, not a reason to widen the arc.
-	var player := _node_player(FAR + Vector2(3000, 0))
+func test_rare_flank_adds_keep_distinct_hold_angles_at_the_cap() -> void:
+	# At a rare cap of 8, after 5 s, each Swarmer holds at its own angle
+	# around the player, within the 60° arcs, out of the firing lane, at
+	# player radius + add radius + 20. Overlap of up to about half a
+	# radius is fine; there is no separation steering.
+	var player := _node_player(FAR + Vector2(STANDOFF, 0))
 	var rare := _elite(FAR, player, AffixDef.RARITY_RARE)
 	rare.woken = true
 	rare.set_physics_process(false)
-	player.global_position = rare.global_position + Vector2.RIGHT * 3000.0
+	player.global_position = rare.global_position + Vector2(STANDOFF, 0)
 	while rare.summon_alive() < rare.summon_cap():
 		rare._summon_wait = 0.0
 		rare._tick_summon(0.0)
@@ -484,37 +487,44 @@ func test_rare_flank_adds_keep_distinct_hold_points_at_the_cap() -> void:
 	for add: SummonAdd in adds:
 		add.set_physics_process(false)
 		add.woken = true
-	for _frame in 300:
+	for frame in 300:
 		for add: SummonAdd in adds:
 			add._physics_process(DT)
-	var left: Array[Vector2] = []
-	var right: Array[Vector2] = []
+			var muzzle := player.global_position + (rare.global_position - player.global_position).normalized() * MUZZLE
+			var lane := _segment_distance(add.global_position, muzzle, rare.global_position)
+			assert_gt(lane, add.body_radius + 4.0, "frame %d: %s is in the firing lane" % [frame, add.name])
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
+	var lane_dir := rare.global_position - player.global_position
+	var left: Array[float] = []
+	var right: Array[float] = []
 	for add: SummonAdd in adds:
-		var hold := add.flank_point()
-		assert_lt(
-			add.global_position.distance_to(hold),
-			0.5,
-			"%s left its own hold point" % add.name
-		)
+		var off := add.global_position - player.global_position
+		assert_almost_eq(off.length(), contact, 0.5, "%s contact distance" % add.name)
+		assert_almost_eq(off.length(), add.contact_offset(), 0.5)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5, "%s left its hold" % add.name)
 		assert_almost_eq(add.flank_jitter, rare.summon_flank_jitter(add.member_index), 0.0000001)
+		var angle := rad_to_deg(lane_dir.angle_to(off))
+		assert_gte(absf(angle), 90.0 - half_arc - 0.5, "%s hold at %.1f°" % [add.name, angle])
+		assert_lte(absf(angle), 90.0 + half_arc + 0.5, "%s hold at %.1f°" % [add.name, angle])
 		if add.side > 0.0:
-			left.append(hold)
+			left.append(angle)
 		else:
-			right.append(hold)
+			right.append(angle)
 	assert_eq(left.size(), 4)
 	assert_eq(right.size(), 4)
-	_assert_side_holds_are_spread(left, "left")
-	_assert_side_holds_are_spread(right, "right")
+	_assert_side_angles_are_distinct(left, "left")
+	_assert_side_angles_are_distinct(right, "right")
 
 
-func _assert_side_holds_are_spread(holds: Array[Vector2], label: String) -> void:
-	var min_d := INF
-	for i in holds.size():
-		for j in range(i + 1, holds.size()):
-			var d := holds[i].distance_to(holds[j])
-			assert_gt(d, 0.01, "%s holds %d and %d stack (%.4f px)" % [label, i, j, d])
-			min_d = minf(min_d, d)
-	assert_gt(min_d, 0.01, "%s hold points are not distinct" % label)
+func _assert_side_angles_are_distinct(angles: Array[float], label: String) -> void:
+	for i in angles.size():
+		for j in range(i + 1, angles.size()):
+			assert_gt(
+				absf(angles[i] - angles[j]),
+				0.01,
+				"%s holds %d and %d share an angle (%.4f, %.4f)" % [label, i, j, angles[i], angles[j]]
+			)
 
 
 func test_straight_starter_strafing_at_220_kills_the_herald_within_25_s() -> void:

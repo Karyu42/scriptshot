@@ -23,10 +23,11 @@ const HALF_SEPARATION := 32.0
 ## jittered across SUMMON_FLANK_ARC so a later wave does not stack on the
 ## same two points (vertical-slice §4 / §10 row 12).
 const SUMMON_OFFSET := 48.0
-## Total width of the flank arc, centred on ±90°. Each spawn is a deterministic
-## hash_u roll in ± half of this, so tests can recompute the offset from the
-## elite's world_seed, chunk, encounter_index, and summon serial.
-const SUMMON_FLANK_ARC := deg_to_rad(40.0)
+## Total width of the flank arc, centred on ±90° (±30°, so 60–120° off the
+## lane). Spawn and hold both use this. Each spawn is a deterministic hash_u
+## roll in ± half of this, so tests can recompute the offset from the elite's
+## world_seed, chunk, encounter_index, and summon serial.
+const SUMMON_FLANK_ARC := deg_to_rad(60.0)
 
 var affix := StringName()
 ## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
@@ -267,9 +268,8 @@ func _spawn_one_summon() -> void:
 	body.summoner = self
 	body.side = side
 	body.summon_hp = _summon_hp
-	# Hold at this add's own spawn offset (hashed angle + wall-slide radius).
+	# The hashed angle is reused for this add's contact hold around the player.
 	body.flank_jitter = jitter
-	body.flank_hold_radius = slid.distance_to(global_position)
 	# Swarmer adds hold their flank; legendary (Hydra) Drifter adds chase as
 	# plain Drifters (vertical-slice §4).
 	body.holds_flank = _summon_kind == ARCH_SWARMER
