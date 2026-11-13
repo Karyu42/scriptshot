@@ -146,49 +146,79 @@ func bind(player: Player, progress: SliceProgress, editor: ScriptEditorPanel = n
 	_layout_labels()
 
 
+
+## The boss arc is reparented onto the Warden. If that host is freed, the
+## arc goes with it; callers must tolerate a missing node.
+func _living_boss() -> _BossArc:
+	if _boss != null and is_instance_valid(_boss):
+		return _boss
+	return null
+
+
+func _ensure_boss() -> _BossArc:
+	var boss := _living_boss()
+	if boss != null:
+		return boss
+	_boss = _BossArc.new()
+	add_child(_boss)
+	return _boss
+
+
 ## Attaches the radius-78 boss arc to `host`. `health` is used when given;
 ## otherwise a child or property named `health` is tried. Tests can also drive
 ## the bar with set_boss_health() without a living Warden.
 func bind_boss(host: Node, health: Health = null) -> void:
-	_boss.unbind_health()
-	if host != null and _boss.get_parent() != host:
-		if _boss.get_parent() != null:
-			_boss.get_parent().remove_child(_boss)
-		host.add_child(_boss)
-	if health == null and host != null:
+	var boss := _ensure_boss()
+	boss.unbind_health()
+	if host != null and is_instance_valid(host) and boss.get_parent() != host:
+		if boss.get_parent() != null:
+			boss.get_parent().remove_child(boss)
+		host.add_child(boss)
+	if health == null and host != null and is_instance_valid(host):
 		var node := host.get_node_or_null("Health")
 		if node is Health:
 			health = node
 		elif host is Player:
 			health = (host as Player).health
-	_boss.bind_health(health)
-	_boss.queue_redraw()
+	boss.bind_health(health)
+	boss.queue_redraw()
 
 
 func unbind_boss() -> void:
-	_boss.unbind_health()
-	_boss.clear()
-	if _boss.get_parent() != self:
-		if _boss.get_parent() != null:
-			_boss.get_parent().remove_child(_boss)
-		add_child(_boss)
-	_boss.queue_redraw()
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.unbind_health()
+	boss.clear()
+	if boss.get_parent() != self:
+		if boss.get_parent() != null:
+			boss.get_parent().remove_child(boss)
+		add_child(boss)
+	boss.queue_redraw()
 
 
 func set_boss_health(hp: float, max_hp: float) -> void:
-	_boss.set_health(hp, max_hp)
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.set_health(hp, max_hp)
 
 
 func notify_boss_phase_changed() -> void:
-	_boss.flash()
+	var boss := _living_boss()
+	if boss == null:
+		return
+	boss.flash()
 
 
 func is_boss_bar_visible() -> bool:
-	return _boss.is_shown()
+	var boss := _living_boss()
+	return boss != null and boss.is_shown()
 
 
 func boss_fraction() -> float:
-	return _boss.fraction()
+	var boss := _living_boss()
+	return 0.0 if boss == null else boss.fraction()
 
 
 func pip_filled(index: int) -> bool:
@@ -263,7 +293,9 @@ func _process(delta: float) -> void:
 	_tick_toast(delta)
 	_tick_hints(delta)
 	_tick_editor_layout()
-	_boss.tick(delta)
+	var boss := _living_boss()
+	if boss != null:
+		boss.tick(delta)
 
 
 func _tick_dash() -> void:

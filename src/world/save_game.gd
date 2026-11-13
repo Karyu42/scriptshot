@@ -5,6 +5,8 @@ extends RefCounted
 ## shards when that body dies. L3 adds 1 shard per natural elite body and sets
 ## a bit in elite_kills for that chunk encounter. Halves, summons, and escorts
 ## do not. The countdown remainder and the Herald's position are not stored.
+## SenseBook writes the earned Senses (vertical-slice §6.1): `sense_nearest`
+## and `sense_enemies_in` (the level, 1 in this slice), section [senses].
 
 const DEFAULT_PATH := "user://save.cfg"
 ## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.
@@ -18,6 +20,12 @@ var herald_done := false
 var elite_kills: Array = []
 var regular_absent: Array = []
 var shards := 0
+## Senses earned in this slot (SenseBook.bind_save). Permanent for the slot.
+var sense_nearest := false
+var sense_enemies_in := 0
+## Once-per-save flag for the Warden tithe line "It feeds." Missing or a
+## non-bool value means false (old slots, type-guarded).
+var seen_it_feeds := false
 ## Vertical-slice lesson bits (bit 0 = lesson 1) and gate bits (bit 0 = G0).
 ## Absent keys in an older slot default to 0.
 var slice_lessons := 0
@@ -70,6 +78,9 @@ func save() -> void:
 	cfg.set_value("world", "elite_kills", elite_kills)
 	cfg.set_value("world", "regular_absent", regular_absent)
 	cfg.set_value("world", "shards", shards)
+	cfg.set_value("senses", "sense_nearest", sense_nearest)
+	cfg.set_value("senses", "sense_enemies_in", sense_enemies_in)
+	cfg.set_value("world", "seen_it_feeds", seen_it_feeds)
 	cfg.set_value("world", "slice_lessons", slice_lessons)
 	cfg.set_value("world", "slice_gates", slice_gates)
 	cfg.set_value("world", "slice_packs", slice_packs)
@@ -91,6 +102,9 @@ func _read(cfg: ConfigFile) -> void:
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
+	sense_nearest = _read_bool(cfg, "sense_nearest", false, "senses")
+	sense_enemies_in = maxi(_read_int(cfg, "sense_enemies_in", 0, "senses"), 0)
+	seen_it_feeds = _read_bool(cfg, "seen_it_feeds", false)
 	slice_lessons = _read_int(cfg, "slice_lessons", 0)
 	slice_gates = _read_int(cfg, "slice_gates", 0)
 	slice_packs = _read_int(cfg, "slice_packs", 0)
@@ -100,8 +114,8 @@ func _read(cfg: ConfigFile) -> void:
 	field_sniper = _read_field_time(cfg, "field_sniper")
 
 
-func _read_int(cfg: ConfigFile, key: String, default: int) -> int:
-	var v: Variant = cfg.get_value("world", key, default)
+func _read_int(cfg: ConfigFile, key: String, default: int, section: String = "world") -> int:
+	var v: Variant = cfg.get_value(section, key, default)
 	var result := default
 	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
 	if typeof(v) == TYPE_INT:
@@ -114,8 +128,8 @@ func _read_int(cfg: ConfigFile, key: String, default: int) -> int:
 	return result
 
 
-func _read_bool(cfg: ConfigFile, key: String, default: bool) -> bool:
-	var v: Variant = cfg.get_value("world", key, default)
+func _read_bool(cfg: ConfigFile, key: String, default: bool, section: String = "world") -> bool:
+	var v: Variant = cfg.get_value(section, key, default)
 	if typeof(v) == TYPE_BOOL:
 		@warning_ignore_start("unsafe_cast")
 		var b: bool = v
@@ -138,6 +152,8 @@ func _read_field_time(cfg: ConfigFile, key: String) -> float:
 	return f
 
 
+## Unix "absent since" for a room-C pack key, or 0 if the pack is present /
+## the key is unknown. A missing save key loads as 0.
 func field_absent_since(key: StringName) -> float:
 	match key:
 		FIELD_DRIFTERS:

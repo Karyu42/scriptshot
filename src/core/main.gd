@@ -18,6 +18,9 @@ extends Node2D
 ## the player slot in the game, and the GUT throwaway slot while tests run.
 ## Set a different path before the node enters the tree to use another file.
 @export var save_path := ""
+## Play-test: move the player just west of the Warden's aggro line (x=8736).
+## Same effect as the `warden-debug` command-line user arg.
+@export var debug_spawn_warden := false
 
 ## The player's scripted weapon (LuaShot), the shots/ files it comes from
 ## (lesson checkers listen to its script_saved / weapon_swapped signals), and
@@ -33,9 +36,14 @@ var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
+var _warden: Warden
 
 
 func _ready() -> void:
+	# Senses (vertical-slice §6.1): a fresh book per game scene, counting
+	# GameEvents kills; _bind_open_world restores the slot's Senses quietly.
+	SenseBook.reset()
+	SenseBook.listen()
 	_player.emitter = _bullets.emitter
 	_bind_script_weapon()
 	_stress.emitter = _bullets.emitter
@@ -54,7 +62,8 @@ func _ready() -> void:
 	_bind_slice_progress()
 	_bind_slice_hud()
 	WorldQuery.bind_bullets(_bullets)
-	_player.died.connect(func() -> void: _respawn_timer = respawn_delay)
+	_bind_warden()
+	_player.died.connect(_on_player_died)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
 	GameEvents.run_started.emit()
 
@@ -93,6 +102,7 @@ func _bind_open_world() -> void:
 	if _chunks == null:
 		return
 	_save = SaveGame.load_from(_slot_path())
+	SenseBook.bind_save(_save)
 	_chunks.seed = _save.world_seed
 	_chunks.load_absent(_save.regular_absent)
 	_chunks.load_elite_kills(_save.elite_kills)
@@ -163,8 +173,34 @@ func _on_natural_shard() -> void:
 	_save.save()
 
 
+func _bind_warden() -> void:
+	_warden = get_node_or_null("Warden") as Warden
+	if _warden == null:
+		return
+	_warden.bind(_player, _bullets, _camera, _save)
+	if _slice_hud != null:
+		_slice_hud.bind_boss(_warden, _warden.health)
+	if debug_spawn_warden or _has_user_arg("warden-debug"):
+		_player.global_position = Vector2(Warden.AGGRO_X - 200.0, 0.0)
+
+
+func _has_user_arg(flag: String) -> bool:
+	for arg in OS.get_cmdline_user_args():
+		if arg == flag or arg == "--" + flag:
+			return true
+	return false
+
+
+func _on_player_died() -> void:
+	_respawn_timer = respawn_delay
+	if _warden != null and is_instance_valid(_warden):
+		_warden.on_player_died()
+
+
 func _exit_tree() -> void:
 	WorldQuery.unbind_bullets(_bullets)
+	SenseBook.unlisten()
+	SenseBook.bind_save(null)
 	_on_absent_changed()
 
 

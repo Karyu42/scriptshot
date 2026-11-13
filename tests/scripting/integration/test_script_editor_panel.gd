@@ -171,3 +171,98 @@ func test_an_outside_change_to_another_file_shows_a_toast() -> void:
 	assert_eq(_scripts.weapon.title, "Straight")
 	assert_false(_panel.status_text().contains("Still running"), "no error line: %s" % _panel.status_text())
 	assert_eq(_panel.load_problems.size(), 0, "not shown as a failed reload")
+
+
+func _e_key(pressed: bool, echo := false) -> InputEventKey:
+	var ev := InputEventKey.new()
+	ev.physical_keycode = KEY_E
+	ev.keycode = KEY_E
+	ev.pressed = pressed
+	ev.echo = echo
+	ev.unicode = "e".unicode_at(0) if pressed else 0
+	return ev
+
+
+func test_the_opening_key_does_not_type_into_the_buffer() -> void:
+	var before := _panel.text()
+	var press := _e_key(true)
+	assert_true(press.is_action_pressed("script_editor"), "E is the editor key")
+	_panel._unhandled_input(press)
+	assert_true(_panel.is_open())
+	# The same press and its repeats must not land in the buffer, even if
+	# they also reach CodeEdit (the old path focused it on the opening frame).
+	_panel._input(press)
+	var echo := _e_key(true, true)
+	_panel._input(echo)
+	assert_eq(_panel.text(), before, "the opening E and its repeats do not type")
+	assert_false(_panel._code.has_focus(), "focus waits for keyup")
+	var rel := _e_key(false)
+	_panel._input(rel)
+	assert_true(_panel._code.has_focus(), "the code view takes focus once E is up")
+	assert_eq(_panel.text(), before)
+
+
+func test_gamepad_x_opens_without_changing_the_buffer() -> void:
+	var before := _panel.text()
+	var press := InputEventJoypadButton.new()
+	press.button_index = JOY_BUTTON_X
+	press.pressed = true
+	assert_true(press.is_action_pressed("script_editor"))
+	_panel._unhandled_input(press)
+	assert_true(_panel.is_open())
+	_panel._input(press)
+	assert_eq(_panel.text(), before)
+	assert_false(_panel._code.has_focus())
+	var rel := InputEventJoypadButton.new()
+	rel.button_index = JOY_BUTTON_X
+	rel.pressed = false
+	_panel._input(rel)
+	assert_true(_panel._code.has_focus())
+	assert_eq(_panel.text(), before)
+
+
+func test_inserting_a_starter_clears_the_last_load_error() -> void:
+	_panel.set_text("return {\n  name = 'Bad',\n  on_fire = function(ctx)\n    spawn { angle = ctx.aim speed = 1 }\n  end,\n}")
+	assert_true(_panel.request_save())
+	_scripts.flush_pending()
+	assert_eq(_panel.marked_lines(), PackedInt32Array([4]))
+	assert_eq(_panel.problems().size(), 1)
+	_panel.set_show_details(true)
+	assert_true(_panel.details_visible())
+	assert_true(_panel.load_starter("spread"))
+	assert_eq(_panel.load_problems.size(), 0)
+	assert_eq(_panel.problems().size(), 0)
+	assert_eq(_panel.marked_lines().size(), 0)
+	assert_false(_panel.details_visible(), "details hide when there is no problem")
+	assert_string_starts_with(_panel.status_text(), "Inserted Spread.")
+
+
+func test_details_and_the_toast_do_not_crowd_the_footer() -> void:
+	# Anchors keep the toast in the playfield at both shipping sizes.
+	for width: float in [1280.0, 1920.0]:
+		var toast_right: float = ScriptEditorPanel.EDITOR_ANCHOR_LEFT * width - 12.0
+		var frame_left: float = ScriptEditorPanel.EDITOR_ANCHOR_LEFT * width
+		assert_lt(toast_right, frame_left, "toast stays left of the editor at width %s" % width)
+	_panel.open()
+	_panel.set_text("return {\n  name = 'Bad',\n  on_fire = function(ctx)\n    spawn { angle = ctx.aim speed = 1 }\n  end,\n}")
+	assert_true(_panel.request_save())
+	_scripts.flush_pending()
+	_panel.set_show_details(true)
+	_panel.show_toast("shots/foo.lua saved (not equipped)")
+	await get_tree().process_frame
+	await get_tree().process_frame
+	assert_true(_panel.details_visible())
+	var details_r: Rect2 = _panel._details.get_global_rect()
+	var footer_r: Rect2 = _panel._footer.get_global_rect()
+	var toast_r: Rect2 = _panel._toast.get_global_rect()
+	var frame_r: Rect2 = _panel._frame.get_global_rect()
+	assert_gt(details_r.size.y, 0.0, "details have height")
+	assert_lt(details_r.end.y, footer_r.position.y, "details sit above the footer")
+	assert_almost_eq(_panel._toast.anchor_right, ScriptEditorPanel.EDITOR_ANCHOR_LEFT, 0.001)
+	assert_lt(toast_r.end.x, frame_r.position.x + 1.0, "toast stays left of the editor")
+	assert_false(toast_r.intersects(details_r), "toast does not overlap details")
+	assert_false(toast_r.intersects(footer_r), "toast does not overlap the footer")
+	_panel.close()
+	_panel.show_toast("shots/foo.lua saved (not equipped)")
+	await get_tree().process_frame
+	assert_almost_eq(_panel._toast.anchor_right, 1.0, 0.001, "full-width toast when the editor is shut")

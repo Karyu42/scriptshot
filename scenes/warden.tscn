@@ -1,0 +1,10 @@
+[gd_scene load_steps=3 format=3 uid="uid://bq8wardenscene"]
+
+[ext_resource type="Script" uid="uid://bq8wardenc0re1" path="res://src/enemies/warden.gd" id="1_warden"]
+[ext_resource type="Script" path="res://src/core/health.gd" id="2_health"]
+
+[node name="Warden" type="Node2D"]
+script = ExtResource("1_warden")
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("2_health")

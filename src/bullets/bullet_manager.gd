@@ -1399,6 +1399,45 @@ func wall_normal_of(slot: int) -> Vector2:
 	return _return_wall_normal[slot] if _return_wall_hit[slot] != 0 else Vector2.ZERO
 
 
+## Between-tick helper: mark every live bullet whose `owner_layer` shares a bit
+## with `layer` dead (MANUAL) and remove them on both backends. Returns how
+## many were despawned. Call from a gameplay event (player death, boss death
+## or fight reset), never from inside a bullet hook or step().
+func despawn_owned(layer: int) -> int:
+	if layer == 0:
+		return 0
+	var n := 0
+	for i in pool.count:
+		if (pool.owner_layer[i] & layer) == 0:
+			continue
+		pool.mark_dead(i, BulletPool.DespawnReason.MANUAL)
+		n += 1
+	if n > 0:
+		pool.flush_dead()
+	if native != null:
+		var to_kill: PackedInt64Array = PackedInt64Array()
+		for s in native.count():
+			if not native.is_slot_alive(s):
+				continue
+			if (native.owner_at(s) & layer) == 0:
+				continue
+			to_kill.append(native.id_of_slot(s))
+		for id in to_kill:
+			if native.kill(id):
+				n += 1
+		if not to_kill.is_empty():
+			# kill() only marks dead; compact frees the slots and drops owner counts,
+			# same as pool.flush_dead() on the GD side.
+			native.compact()
+			_sync_pool_external()
+	if n > 0:
+		if _renderer != null:
+			_renderer.update_from(pool)
+		if native != null and _native_renderer != null:
+			_native_renderer.update_from(native)
+	return n
+
+
 ## Removes all bullets (no hooks are called).
 func clear_bullets() -> void:
 	_native_reflect_queue.clear()
