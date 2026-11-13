@@ -469,6 +469,7 @@ Time scale stays **0.15** while the editor is open.
 - Lesson 5 passes on `script_saved` for the equipped file only. Cold start does not emit it. `weapon_swapped(file_name, origin)` is the equip (`origin` `start`, `editor`, or `file`) and is not the lesson-5 pass.
 - A save of any other `shots/` file emits `unequipped_file_saved(file_name)` and does not reload. That signal drives only the toast `shots/<f>.lua saved (not equipped)`, at most once per file per 3 s, whether or not the editor is open. It never passes a lesson.
 - In-flight shots keep the callbacks they spawned with, and at most **3** script versions stay alive. **Game Designer call (SE PR #95):** a save is never refused. When a 4th version arrives while all 3 kept versions still have hooked shots in flight, the oldest version's in-flight shots drop their script hooks and fly on as plain bullets. They keep their speed, damage, lifetime, and look. They get no more steering, `on_hit`, or `on_batch`. The drop is silent, with no toast. `script_saved` still fires, so lesson 5 is never blocked.
+- **Game Designer call (SE PR #95):** every save starts the new script version with fresh top-level globals, whether or not shots are in flight. Nothing at file scope carries over. Data meant to survive a save goes in `state`.
 
 ### 7.4 Out of this slice
 

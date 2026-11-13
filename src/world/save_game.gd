@@ -5,6 +5,8 @@ extends RefCounted
 ## shards when that body dies. L3 adds 1 shard per natural elite body and sets
 ## a bit in elite_kills for that chunk encounter. Halves, summons, and escorts
 ## do not. The countdown remainder and the Herald's position are not stored.
+## SenseBook writes the earned Senses (vertical-slice §6.1): `sense_nearest`
+## and `sense_enemies_in` (the level, 1 in this slice), section [senses].
 
 const DEFAULT_PATH := "user://save.cfg"
 ## When non-empty, resolved_path() returns this instead of DEFAULT_PATH.
@@ -18,6 +20,29 @@ var herald_done := false
 var elite_kills: Array = []
 var regular_absent: Array = []
 var shards := 0
+## Senses earned in this slot (SenseBook.bind_save). Permanent for the slot.
+var sense_nearest := false
+var sense_enemies_in := 0
+## Vertical-slice lesson bits (bit 0 = lesson 1) and gate bits (bit 0 = G0).
+## Absent keys in an older slot default to 0.
+var slice_lessons := 0
+var slice_gates := 0
+var slice_packs := 0
+## Room-C scripted packs: unix "absent since" times. 0 (or a missing key) means
+## the pack is present. Each pack returns after FIELD_PACK_RETURN seconds
+## outside C. Row 2 wires the packs themselves; this slot only stores the keys.
+const FIELD_PACK_RETURN := 300.0
+const FIELD_DRIFTERS := &"field_drifters"
+const FIELD_SWARMERS := &"field_swarmers"
+const FIELD_SHIELD := &"field_shield"
+const FIELD_SNIPER := &"field_sniper"
+const FIELD_KEYS: Array[StringName] = [
+	FIELD_DRIFTERS, FIELD_SWARMERS, FIELD_SHIELD, FIELD_SNIPER,
+]
+var field_drifters := 0.0
+var field_swarmers := 0.0
+var field_shield := 0.0
+var field_sniper := 0.0
 var existed := false
 
 
@@ -50,6 +75,15 @@ func save() -> void:
 	cfg.set_value("world", "elite_kills", elite_kills)
 	cfg.set_value("world", "regular_absent", regular_absent)
 	cfg.set_value("world", "shards", shards)
+	cfg.set_value("senses", "sense_nearest", sense_nearest)
+	cfg.set_value("senses", "sense_enemies_in", sense_enemies_in)
+	cfg.set_value("world", "slice_lessons", slice_lessons)
+	cfg.set_value("world", "slice_gates", slice_gates)
+	cfg.set_value("world", "slice_packs", slice_packs)
+	cfg.set_value("world", "field_drifters", field_drifters)
+	cfg.set_value("world", "field_swarmers", field_swarmers)
+	cfg.set_value("world", "field_shield", field_shield)
+	cfg.set_value("world", "field_sniper", field_sniper)
 	cfg.save(path)
 
 
@@ -63,7 +97,62 @@ func _read(cfg: ConfigFile) -> void:
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
+	sense_nearest = bool(cfg.get_value("senses", "sense_nearest", false))
+	sense_enemies_in = maxi(int(cfg.get_value("senses", "sense_enemies_in", 0)), 0)
+	slice_lessons = int(cfg.get_value("world", "slice_lessons", 0))
+	slice_gates = int(cfg.get_value("world", "slice_gates", 0))
+	slice_packs = int(cfg.get_value("world", "slice_packs", 0))
+	field_drifters = float(cfg.get_value("world", "field_drifters", 0))
+	field_swarmers = float(cfg.get_value("world", "field_swarmers", 0))
+	field_shield = float(cfg.get_value("world", "field_shield", 0))
+	field_sniper = float(cfg.get_value("world", "field_sniper", 0))
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+
+
+## Unix "absent since" for a room-C pack key, or 0 if the pack is present /
+## the key is unknown. A missing save key loads as 0.
+func field_absent_since(key: StringName) -> float:
+	match key:
+		FIELD_DRIFTERS:
+			return field_drifters
+		FIELD_SWARMERS:
+			return field_swarmers
+		FIELD_SHIELD:
+			return field_shield
+		FIELD_SNIPER:
+			return field_sniper
+		_:
+			push_warning("SaveGame.field_absent_since(): unknown key %s" % key)
+			return 0.0
+
+
+## Records when a room-C pack became absent (unix seconds). 0 marks it present.
+## Does not write the file; call save() when the slot should hit disk.
+func set_field_absent_since(key: StringName, unix: float) -> void:
+	var value := 0.0 if is_nan(unix) else maxf(unix, 0.0)
+	match key:
+		FIELD_DRIFTERS:
+			field_drifters = value
+		FIELD_SWARMERS:
+			field_swarmers = value
+		FIELD_SHIELD:
+			field_shield = value
+		FIELD_SNIPER:
+			field_sniper = value
+		_:
+			push_warning("SaveGame.set_field_absent_since(): unknown key %s" % key)
+
+
+## True when the pack should be in C: never marked absent, or at least
+## FIELD_PACK_RETURN seconds have passed since `unix`. `now_unix` defaults to
+## the current unix time.
+func field_pack_is_present(key: StringName, now_unix: float = -1.0) -> bool:
+	var since := field_absent_since(key)
+	if since <= 0.0:
+		return true
+	if now_unix < 0.0:
+		now_unix = Time.get_unix_time_from_system()
+	return now_unix - since >= FIELD_PACK_RETURN
 
 
 ## Bits for one chunk, OR of every saved row for that coordinate. 0 when none.
