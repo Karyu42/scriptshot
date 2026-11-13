@@ -242,3 +242,62 @@ func test_room_walls_stop_bullets() -> void:
 	for _i in 60:
 		m.step(DT)
 	assert_eq(m.alive_count(), 0, "S north wall")
+
+
+func test_closing_a_gate_updates_bullet_walls_in_the_same_call() -> void:
+	var m := _manager()
+	layout.bind_bullets(m)
+	layout.open_gate(&"G1")
+	layout.flush_bullet_walls()
+	var open_count := SliceLayout.wall_rects().size() + SliceLayout.GATE_IDS.size() - 1
+	assert_eq(m.walls.wall_count, open_count)
+	layout.close_gate(&"G1")
+	# No flush_bullet_walls(), no idle frame: the shut gate is already a wall.
+	assert_eq(m.walls.wall_count, open_count + 1)
+	_shot_east(m, Vector2(850, 0))
+	for _i in 20:
+		m.step(DT)
+	assert_eq(m.alive_count(), 0, "a shot this frame already meets the shut gate")
+
+
+func test_closing_a_gate_pushes_a_body_out_of_the_doorway() -> void:
+	# QA #84: force the gates open, stand at (896, 0), set it false, walk.
+	layout.force_gates_open = true
+	walker.global_position = Vector2(896, 0)
+	await wait_physics_frames(1)
+	assert_eq(SliceLayout.room_at(walker.global_position), &"G1")
+	layout.force_gates_open = false
+	var radius := 13.0
+	assert_false(layout.touches_wall(walker.global_position, radius),
+		"ejected from the new wall (at %s)" % walker.global_position)
+	assert_eq(SliceLayout.room_at(walker.global_position), &"G1", "still in the corridor")
+	# At rest in the exact doorway, the nearest clear side is west (S).
+	assert_lt(walker.global_position.x, SliceLayout.gate_rect(&"G1").position.x)
+	assert_true(_reaches(walker.global_position, Vector2(700, 0)), "can walk toward S")
+
+
+func test_closing_a_gate_pushes_an_elite_out_of_the_doorway() -> void:
+	layout.force_gates_open = true
+	var elite := (load("res://scenes/elite_enemy.tscn") as PackedScene).instantiate() as EliteEnemy
+	elite.configure_elite(&"", Vector2(896, 0), Vector2(896, 0), 1, walker, false)
+	add_child_autofree(elite)
+	await wait_physics_frames(1)
+	assert_true(elite.collide_walls, "ribbon on: world-layer query stays")
+	layout.force_gates_open = false
+	assert_false(layout.touches_wall(elite.global_position, elite.body_radius),
+		"elite ejected (at %s)" % elite.global_position)
+
+
+func test_draw_reads_the_cached_walls() -> void:
+	# _draw may only run under NOTIFICATION_DRAW; queue a real redraw.
+	layout._walls_cached.clear()
+	layout.queue_redraw()
+	await wait_process_frames(2)
+	assert_eq(layout._walls_cached.size(), SliceLayout.wall_rects().size())
+
+
+func test_elites_skip_the_world_query_when_the_ribbon_is_off() -> void:
+	layout.remove_from_group(&"slice_layouts")
+	var elite := (load("res://scenes/elite_enemy.tscn") as PackedScene).instantiate() as EliteEnemy
+	add_child_autofree(elite)
+	assert_false(elite.collide_walls, "no enabled ribbon in the tree")

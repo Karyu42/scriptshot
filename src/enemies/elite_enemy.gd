@@ -92,9 +92,20 @@ func summon_alive() -> int:
 	return kept.size()
 
 
+func _ribbon_has_walls() -> bool:
+	if not is_inside_tree():
+		return false
+	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
+		var slice := node as SliceLayout
+		if slice != null and slice.enabled:
+			return true
+	return false
+
+
 func _ready() -> void:
-	# Elites, halves and the Herald do not walk through world walls.
-	collide_walls = true
+	# Stay out of SliceLayout walls when the ribbon is on. Off (or no
+	# layout in the tree): skip the world-layer query; there are no rooms.
+	collide_walls = _ribbon_has_walls()
 	super._ready()
 	if is_half:
 		woken = true
