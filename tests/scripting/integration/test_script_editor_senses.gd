@@ -172,3 +172,11 @@ func test_autocomplete_puts_a_fresh_sense_first_until_it_is_used() -> void:
 	first = _panel.completion_entries()[0]
 	assert_eq(first, ["nearest_enemy", "nearest_enemy", ScriptEditorPanel.COLOR_API], "normal colour, still at the top")
 	assert_lt(_index("nearest_enemy"), _index("spawn_child"))
+
+
+func test_the_nearest_enemy_page_ends_with_the_homing_starter() -> void:
+	# vertical-slice §6.3: the page's snippet is scripting/starters/homing.lua.
+	var page := ScriptEditorPanel.codex_source("nearest_enemy")
+	var starter := FileAccess.get_file_as_string("res://scripting/starters/homing.lua")
+	assert_ne(starter, "")
+	assert_true(page.ends_with(starter), "Codex snippet and Homing starter drifted apart")
