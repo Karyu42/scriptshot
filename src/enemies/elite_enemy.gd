@@ -4,6 +4,9 @@ extends RegularEnemy
 ## body. 75 HP, speed 90, wake 700, contact 1, 3 px outline, common cue.
 ## Splitting and Summoner come from AffixDef. Halves are not elites: 40% HP,
 ## ×1.3 speed, radius 12, already awake, no cue, no shard, no further split.
+## Summoner adds are SummonAdd bodies, spawned on the flanks of the
+## elite-to-player line (issue #81). Per-tier columns on AffixDef: common 2
+## one-hit Swarmers, rare 8, legendary (Hydra) 6 Drifters at 105 HP.
 ## Nothing here fires a bullet. Adds are bodies. Plain shots stay plain.
 
 signal shard_dropped
@@ -16,16 +19,19 @@ const HALF_RADIUS := 12.0
 ## Centre gap so two radius-12 halves do not sit on top of each other.
 const HALF_SEPARATION := 32.0
 ## Same spacing the slice uses for a 1-point escort, so adds clear the body.
+## Summons spawn this far out on a flank: ±90° from the elite-to-player line.
 const SUMMON_OFFSET := 48.0
 
 var affix := StringName()
+## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
+## EncounterSpec for a natural elite (ChunkStream sets it before the body
+## enters the tree); configure_elite can also pass it. The Herald is common.
+## Halves report RARITY_NONE: they are not elites. Summoner uses the same
+## value to pick its per-tier column.
+var rarity := EnemyKinds.RARITY_COMMON
 var is_herald := false
 var is_half := false
 var grants_shard := false
-## EnemyKinds.RARITY_*. From the EncounterSpec for a natural elite (ChunkStream
-## sets it before the body enters the tree); the Herald is common. Halves report
-## RARITY_NONE: they are not elites.
-var rarity := EnemyKinds.RARITY_COMMON
 var cue: EliteCue
 var sting: EliteSting
 
@@ -35,7 +41,9 @@ var _death_handled := false
 var _summon_wait := 6.0
 var _summon_interval := 6.0
 var _summon_batch := 2
-var _summon_cap := 6
+var _summon_cap := 2
+var _summon_hp := 1.0
+var _summon_kind := ARCH_SWARMER
 var _summon_serial := 0
 var _summons: Array[RegularEnemy] = []
 var _glyph := EliteCue.GLYPH_CIRCLE
@@ -51,7 +59,9 @@ func configure_elite(
 	p_half: bool = false,
 	p_chunk: Vector2i = Vector2i.ZERO,
 	p_encounter: int = -1,
+	p_rarity: int = AffixDef.RARITY_COMMON,
 ) -> void:
+	rarity = p_rarity
 	is_herald = p_herald
 	is_half = p_half
 	# The Herald and a natural elite both drop one shard. A half does not.
@@ -162,10 +172,22 @@ func _apply_stats() -> void:
 	_hurtbox.layer = Layers.ENEMY
 	_hurtbox.active = true
 	if _affix_def != null and affix == AffixCatalog.SUMMONER:
-		_summon_interval = _affix_def.interval
-		_summon_batch = _affix_def.count
-		_summon_cap = _affix_def.max_alive
+		_summon_interval = _affix_def.summon_interval(rarity)
+		_summon_batch = _affix_def.summon_count(rarity)
+		_summon_cap = _affix_def.summon_cap(rarity)
+		_summon_hp = _affix_def.summon_hp_for(rarity)
+		_summon_kind = _affix_def.summon_kind(rarity)
 		_summon_wait = _summon_interval
+
+
+## Living summons this elite may have at once (its tier's column).
+func summon_cap() -> int:
+	return _summon_cap
+
+
+## Seconds between two summon waves (its tier's column).
+func summon_interval() -> float:
+	return _summon_interval
 
 
 func _on_died() -> void:
@@ -221,20 +243,45 @@ func _spawn_one_summon() -> void:
 	var parent := get_parent()
 	if parent == null:
 		return
-	var packed := load("res://scenes/regular_enemy.tscn") as PackedScene
+	var packed := load("res://scenes/summon_add.tscn") as PackedScene
 	if packed == null:
 		return
-	var body := packed.instantiate() as RegularEnemy
+	var body := packed.instantiate() as SummonAdd
 	if body == null:
 		return
-	var offset := Vector2.from_angle(TAU * float(_summon_serial) / 8.0) * SUMMON_OFFSET
-	var pos := RegularEnemy.push_centre_outside(global_position + offset, RegularEnemy.SWARMER_RADIUS)
+	# Alternate flanks: even serials left of the elite-to-player line, odd right.
+	var side := 1.0 if _summon_serial % 2 == 0 else -1.0
+	var pos := RegularEnemy.push_centre_outside(
+		summon_spawn_point(side), RegularEnemy.radius_of(_summon_kind)
+	)
 	body.name = "HeraldSummon%d" % _summon_serial
-	body.configure(ARCH_SWARMER, pos, pos, world_seed, chunk, -1, _summon_serial, player)
+	body.summoner = self
+	body.side = side
+	body.summon_hp = _summon_hp
+	# Swarmer adds hold their flank; legendary (Hydra) Drifter adds chase as
+	# plain Drifters (vertical-slice §4).
+	body.holds_flank = _summon_kind == ARCH_SWARMER
+	body.configure(_summon_kind, pos, pos, world_seed, chunk, -1, _summon_serial, player)
 	body.woken = woken
 	_summon_serial += 1
 	parent.add_child(body)
 	_summons.append(body)
+
+
+## Where a summon on `side` (+1 left, -1 right of the elite-to-player line)
+## appears: SUMMON_OFFSET px out at ±90°, never between the elite and the
+## player. With no player the heading stands in for the line.
+func summon_spawn_point(side: float) -> Vector2:
+	var lane := _heading
+	if player != null:
+		var to_player := player.global_position - global_position
+		if to_player.length_squared() > 0.000001:
+			lane = to_player
+	if lane.length_squared() <= 0.000001:
+		lane = Vector2.RIGHT
+	lane = lane.normalized()
+	var normal := Vector2(-lane.y, lane.x)
+	return global_position + normal * side * SUMMON_OFFSET
 
 
 func _spawn_halves() -> void:
