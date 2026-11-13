@@ -196,14 +196,25 @@ return function(host)
 	-- `sense.nearest_enemy and sense.nearest_enemy(...)` is always safe.
 	local sense_fields = {}
 	local real_next = next
+	-- __pairs for a read-only view over `data`. The iterator is a fresh
+	-- closure that keeps its own cursor, and the state value handed to the
+	-- generic for is the view itself.
+	local function ro_pairs(data)
+		return function(view)
+			local key = nil
+			return function()
+				local value
+				key, value = real_next(data, key)
+				return key, value
+			end, view, nil
+		end
+	end
 	env.sense = real_setmetatable({}, {
 		__index = sense_fields,
 		__newindex = function()
 			error("sense is read-only", 2)
 		end,
-		__pairs = function()
-			return real_next, sense_fields, nil
-		end,
+		__pairs = ro_pairs(sense_fields),
 		__metatable = false,
 	})
 
@@ -320,9 +331,7 @@ return function(host)
 		return real_setmetatable({}, {
 			__index = data,
 			__newindex = ro_write,
-			__pairs = function()
-				return real_next, data, nil
-			end,
+			__pairs = ro_pairs(data),
 			__metatable = false,
 		})
 	end
@@ -565,9 +574,20 @@ return function(host)
 	end
 	-- Host only: copies one WorldQuery snapshot (packed columns, 0-based).
 	-- Entity tables from the previous snapshot keep their values; their
-	-- alive() reads the new snapshot.
-	host.sense_sync = function(n, ids, xs, ys, rs, kinds, rars)
+	-- alive() reads the new snapshot. positions_only: the ids, radius, kind
+	-- and rarity columns match the last sync, so only x and y are read.
+	host.sense_sync = function(n, ids, xs, ys, rs, kinds, rars, positions_only)
 		n = math_tointeger(n) or 0
+		if positions_only == true and n == S_n then
+			local nx, ny = {}, {}
+			for row = 1, n do
+				nx[row] = xs[row - 1]
+				ny[row] = ys[row - 1]
+			end
+			S_x, S_y = nx, ny
+			S_ent = {}
+			return
+		end
 		local nid, nx, ny, nr, nk, nrar, live = {}, {}, {}, {}, {}, {}, {}
 		for row = 1, n do
 			local id = ids[row - 1]
