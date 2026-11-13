@@ -81,10 +81,9 @@ func test_the_rare_elite_spawns_in_room_d_with_an_escort() -> void:
 func test_the_room_d_body_does_not_emit_shard_dropped() -> void:
 	var elite := room.elite
 	assert_false(elite.grants_shard)
-	var dropped := [0]
-	elite.shard_dropped.connect(func() -> void: dropped[0] += 1)
+	watch_signals(elite)
 	elite.health.try_damage(10000.0)
-	assert_eq(dropped[0], 0, "Room D must not emit shard_dropped; SliceRoomD adds +3")
+	assert_signal_not_emitted(elite, "shard_dropped")
 	assert_eq(save.shards, 3)
 
 
