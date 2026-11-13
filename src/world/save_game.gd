@@ -18,6 +18,9 @@ var herald_done := false
 var elite_kills: Array = []
 var regular_absent: Array = []
 var shards := 0
+## Once-per-save flag for the Warden tithe line "It feeds." Missing or a
+## non-bool value means false (old slots, type-guarded).
+var seen_it_feeds := false
 var existed := false
 
 
@@ -50,6 +53,7 @@ func save() -> void:
 	cfg.set_value("world", "elite_kills", elite_kills)
 	cfg.set_value("world", "regular_absent", regular_absent)
 	cfg.set_value("world", "shards", shards)
+	cfg.set_value("world", "seen_it_feeds", seen_it_feeds)
 	cfg.save(path)
 
 
@@ -63,6 +67,9 @@ func _read(cfg: ConfigFile) -> void:
 	elite_kills = kills if kills is Array else []
 	var absent: Variant = cfg.get_value("world", "regular_absent", [])
 	regular_absent = absent if absent is Array else []
+	# Missing or a non-bool (e.g. an int) stays false.
+	var feeds: Variant = cfg.get_value("world", "seen_it_feeds", false)
+	seen_it_feeds = feeds is bool and bool(feeds)
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 

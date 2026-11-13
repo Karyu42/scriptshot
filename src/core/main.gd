@@ -153,7 +153,7 @@ func _bind_warden() -> void:
 	_warden = get_node_or_null("Warden") as Warden
 	if _warden == null:
 		return
-	_warden.bind(_player, _bullets, _camera)
+	_warden.bind(_player, _bullets, _camera, _save)
 	if debug_spawn_warden or _has_user_arg("warden-debug"):
 		_player.global_position = Vector2(Warden.AGGRO_X - 200.0, 0.0)
 

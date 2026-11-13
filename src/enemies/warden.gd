@@ -41,6 +41,8 @@ const TITHE_FLASH := 0.35
 const FEEDS_SECONDS := 1.5
 const LANCE_PERIOD := 2.4
 const LANCE_WINDUP := 0.6
+## First Lance windup after aggro (GD #96): shorter than the steady period.
+const LANCE_FIRST_WAIT := 1.0
 const LANCE_SPEED := 320.0
 const LANCE_RADIUS := 6.0
 const LANCE_LIFETIME := 3.0
@@ -71,6 +73,7 @@ var _alive := true
 var _aggro := false
 var _gap_angle := 0.0
 var _husk_lock_angle := 0.0
+var _husk_lock_slot := -1
 var _husks: Array[WardenHusk] = []
 var _respawn_left: PackedFloat32Array = PackedFloat32Array()
 var _lance_wait := 0.0
@@ -81,12 +84,15 @@ var _flash_left := 0.0
 var _tithe_left := 0.0
 var _tithe_from := Vector2.ZERO
 var _feeds_left := 0.0
-var _feeds_shown := false
+## Set when "It feeds." has been shown or the save already has seen_it_feeds.
+## Survives death resets; only the save flag is the long-term source.
+var _feeds_recorded := false
 var _warp_id := 0
 var _death_emitted := false
 var _bound := false
 ## Last Lance request, for tests. Null until the first shot.
 var last_lance: ShotRequest
+var save: SaveGame
 
 
 func _ready() -> void:
@@ -146,11 +152,21 @@ func _make_hurtbox(node_name: String, radius: float) -> Hurtbox:
 	return box
 
 
-## Player, bullets and optional camera. Safe to call more than once.
-func bind(p_player: Player, bullets: BulletManager, camera: FollowCamera = null) -> void:
+## Player, bullets, optional camera, and the slot used for seen_it_feeds.
+## Safe to call more than once.
+func bind(
+	p_player: Player,
+	bullets: BulletManager,
+	camera: FollowCamera = null,
+	p_save: SaveGame = null
+) -> void:
 	player = p_player
 	_bullets = bullets
 	_camera = camera
+	if p_save != null:
+		save = p_save
+	if save != null and save.seen_it_feeds:
+		_feeds_recorded = true
 	_bound = true
 	if is_inside_tree():
 		_register_query()
@@ -169,8 +185,8 @@ func reset_fight() -> void:
 	_lance_wait = 0.0
 	_lance_windup = 0.0
 	_feeds_left = 0.0
-	_feeds_shown = false
 	_tithe_left = 0.0
+	_husk_lock_slot = -1
 	_flash_left = 0.0
 	if health != null and health.is_dead():
 		health.reset()
@@ -276,7 +292,7 @@ func _enter_aggro() -> void:
 	_aggro = true
 	_set_hurtboxes_active(true)
 	_spawn_husks()
-	_lance_wait = LANCE_PERIOD
+	_lance_wait = LANCE_FIRST_WAIT
 	_lance_winding = false
 	aggroed.emit()
 	_register_query()
@@ -310,21 +326,27 @@ func _spawn_husks() -> void:
 	_husks.resize(HUSK_COUNT)
 	_respawn_left = PackedFloat32Array()
 	_respawn_left.resize(HUSK_COUNT)
-	if player != null and is_instance_valid(player):
-		var to_player: Vector2 = player.global_position - global_position
-		if to_player.length_squared() > 0.0001:
-			_husk_lock_angle = to_player.angle()
+	var bearing := _player_bearing()
+	if is_finite(bearing):
+		_husk_lock_angle = bearing
 	for i in HUSK_COUNT:
-		_spawn_husk_at(i, _slot_angle(i))
+		_spawn_husk_at(i, _husk_lock_angle + TAU * float(i) / float(HUSK_COUNT))
 		_respawn_left[i] = 0.0
+	_husk_lock_slot = 0 if HUSK_COUNT > 0 else -1
 
 
 func _spawn_husk_at(slot: int, angle: float) -> void:
 	var husk := WardenHusk.new()
 	husk.setup(self, slot)
+	husk.orbit_angle = angle
 	husk.position = Vector2.from_angle(angle) * HUSK_ORBIT
 	add_child(husk)
 	_husks[slot] = husk
+	# A respawned husk takes the lock only when no other husk is alive.
+	# Then it appears on the far side and turns toward the player at 90°/s.
+	if _living_husk_count() == 1:
+		_husk_lock_slot = slot
+		_husk_lock_angle = angle
 
 
 func _despawn_husks() -> void:
@@ -333,35 +355,151 @@ func _despawn_husks() -> void:
 			husk.despawn()
 	_husks.clear()
 	_respawn_left = PackedFloat32Array()
+	_husk_lock_slot = -1
 
 
 func _step_husks(delta: float) -> void:
-	if player != null and is_instance_valid(player):
-		var to_player: Vector2 = player.global_position - global_position
-		if to_player.length_squared() > 0.0001:
-			var desired := to_player.angle()
-			var diff := angle_difference(_husk_lock_angle, desired)
-			_husk_lock_angle += clampf(diff, -HUSK_TURN * delta, HUSK_TURN * delta)
+	_steer_lock(delta)
+	_steer_husk_spacing(delta)
+	_apply_husk_positions()
+	_step_husk_respawns(delta)
+
+
+func _steer_lock(delta: float) -> void:
+	var husk := lock_husk()
+	if husk == null:
+		return
+	var desired := _player_bearing()
+	if is_finite(desired):
+		var diff := angle_difference(_husk_lock_angle, desired)
+		_husk_lock_angle += clampf(diff, -HUSK_TURN * delta, HUSK_TURN * delta)
+	husk.orbit_angle = _husk_lock_angle
+
+
+func _steer_husk_spacing(delta: float) -> void:
+	var lock := lock_husk()
+	var others: Array[WardenHusk] = []
+	for husk in _husks:
+		if husk != null and is_instance_valid(husk) and husk.is_alive() and husk != lock:
+			others.append(husk)
+	var living := others.size() + (1 if lock != null else 0)
+	if living <= 1 or others.is_empty():
+		return
+	var origin := _husk_lock_angle if lock != null else others[0].orbit_angle
+	var targets: Array[float] = []
+	for i in range(1, living):
+		targets.append(origin + TAU * float(i) / float(living))
+	var assigned := _assign_orbit_targets(others, targets)
+	for i in others.size():
+		var husk := others[i]
+		var diff := angle_difference(husk.orbit_angle, assigned[i])
+		husk.orbit_angle += clampf(diff, -HUSK_TURN * delta, HUSK_TURN * delta)
+
+
+func _assign_orbit_targets(husks: Array[WardenHusk], targets: Array[float]) -> Array[float]:
+	var pairs: Array[Vector3] = []
+	for hi in husks.size():
+		for ti in targets.size():
+			var dist := absf(angle_difference(husks[hi].orbit_angle, targets[ti]))
+			pairs.append(Vector3(dist, float(hi), float(ti)))
+	pairs.sort_custom(func(a: Vector3, b: Vector3) -> bool: return a.x < b.x)
+	var husk_used: Array[bool] = []
+	var target_used: Array[bool] = []
+	husk_used.resize(husks.size())
+	target_used.resize(targets.size())
+	var out: Array[float] = []
+	out.resize(husks.size())
+	for pair in pairs:
+		var hi := int(pair.y)
+		var ti := int(pair.z)
+		if husk_used[hi] or target_used[ti]:
+			continue
+		husk_used[hi] = true
+		target_used[ti] = true
+		out[hi] = targets[ti]
+	return out
+
+
+func _apply_husk_positions() -> void:
+	for husk in _husks:
+		if husk != null and is_instance_valid(husk) and husk.is_alive():
+			husk.position = Vector2.from_angle(husk.orbit_angle) * HUSK_ORBIT
+
+
+func _step_husk_respawns(delta: float) -> void:
 	for i in _husks.size():
 		var husk := _husks[i]
 		if husk != null and is_instance_valid(husk) and husk.is_alive():
-			husk.position = Vector2.from_angle(_slot_angle(i)) * HUSK_ORBIT
 			continue
-		if _respawn_left.size() <= i:
-			continue
-		if _respawn_left[i] <= 0.0:
+		if _respawn_left.size() <= i or _respawn_left[i] <= 0.0:
 			continue
 		_respawn_left[i] = maxf(_respawn_left[i] - delta, 0.0)
 		if _respawn_left[i] <= 0.0:
-			# Respawn on the far side of the circle (opposite the player).
-			var far := _husk_lock_angle + PI
+			# Far side of the circle (opposite the player). Takes the lock
+			# only if it is the only living husk (handled in _spawn_husk_at).
+			var far := _player_bearing()
+			if is_finite(far):
+				far += PI
+			else:
+				far = _husk_lock_angle + PI
 			_spawn_husk_at(i, far)
-			if i == 0:
-				_husk_lock_angle = far
 
 
-func _slot_angle(slot: int) -> float:
-	return _husk_lock_angle + TAU * float(slot) / float(HUSK_COUNT)
+func _player_bearing() -> float:
+	if player == null or not is_instance_valid(player):
+		return NAN
+	var to_player: Vector2 = player.global_position - global_position
+	if to_player.length_squared() <= 0.0001:
+		return NAN
+	return to_player.angle()
+
+
+func _living_husk_count() -> int:
+	var n := 0
+	for husk in _husks:
+		if husk != null and is_instance_valid(husk) and husk.is_alive():
+			n += 1
+	return n
+
+
+func lock_angle() -> float:
+	return _husk_lock_angle
+
+
+func lock_slot() -> int:
+	return _husk_lock_slot
+
+
+func lock_husk() -> WardenHusk:
+	if _husk_lock_slot < 0 or _husk_lock_slot >= _husks.size():
+		return null
+	var husk := _husks[_husk_lock_slot]
+	if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+		return null
+	return husk
+
+
+func feeds_line_visible() -> bool:
+	return _feeds_left > 0.0
+
+
+func _reassign_lock() -> void:
+	var bearing := _player_bearing()
+	var best := -1
+	var best_diff := INF
+	for i in _husks.size():
+		var husk := _husks[i]
+		if husk == null or not is_instance_valid(husk) or not husk.is_alive():
+			continue
+		var diff := 0.0
+		if is_finite(bearing):
+			diff = absf(angle_difference(husk.orbit_angle, bearing))
+		if diff < best_diff or (is_equal_approx(diff, best_diff) and (best < 0 or i < best)):
+			best_diff = diff
+			best = i
+	_husk_lock_slot = best
+	if best >= 0:
+		_husk_lock_angle = _husks[best].orbit_angle
 
 
 func notify_husk_died(slot: int, at: Vector2) -> void:
@@ -370,15 +508,29 @@ func notify_husk_died(slot: int, at: Vector2) -> void:
 	_husks[slot] = null
 	if _respawn_left.size() == _husks.size():
 		_respawn_left[slot] = HUSK_RESPAWN
+	if slot == _husk_lock_slot:
+		_reassign_lock()
 	# Same-tick core kill is not healed: if the core already hit 0, skip.
 	if _alive and health != null and health.hp > 0.0 and not health.is_dead():
 		health.heal(TITHE_HP)
 		_tithe_from = at
 		_tithe_left = TITHE_FLASH
-		if not _feeds_shown:
-			_feeds_shown = true
-			_feeds_left = FEEDS_SECONDS
+		_maybe_show_feeds()
 		queue_redraw()
+
+
+func _maybe_show_feeds() -> void:
+	# Once per save, not per fight and not after a death reset (GD #96).
+	if _feeds_recorded:
+		return
+	if save != null and save.seen_it_feeds:
+		_feeds_recorded = true
+		return
+	_feeds_recorded = true
+	_feeds_left = FEEDS_SECONDS
+	if save != null:
+		save.seen_it_feeds = true
+		save.save()
 
 
 func _step_lance(delta: float) -> void:

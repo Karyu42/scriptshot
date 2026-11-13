@@ -17,6 +17,8 @@ var _core: Warden
 var _slot := 0
 var _alive := true
 var _flash_left := 0.0
+## Current angle on the orbit circle, driven by the core.
+var orbit_angle := 0.0
 
 
 func setup(core: Warden, slot: int) -> void:
