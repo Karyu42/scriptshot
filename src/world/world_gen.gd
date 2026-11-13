@@ -35,6 +35,14 @@ const HERALD_AHEAD := 1200.0
 const HERALD_EDGE_MARGIN := 64.0
 ## Heading uses velocity only when it is at least this fast; otherwise aim.
 const HERALD_MIN_HEADING_SPEED := 20.0
+## No encounter anchor (pack or natural elite) within this many px of a Herald
+## spawn point, so the Herald reads as its own encounter (issue #81, GD rule).
+const HERALD_PACK_CLEARANCE := 800.0
+## Herald point search: the heading first, then turned by this step either way
+## (+step, -step, +2·step, ...) up to 180°, all at HERALD_AHEAD; then the same
+## turns at the other HERALD_RINGS distances.
+const HERALD_TURN_STEP_DEG := 15.0
+const HERALD_RINGS: Array[float] = [1200.0, 1000.0, 1400.0, 1600.0, 1800.0]
 
 # FNV-1a 64 offset basis 14695981039346656037 (0xCBF29CE484222325) and prime.
 # The offset's high bit is set; GDScript has no unsigned literal, so this is
@@ -234,18 +242,18 @@ static func herald_heading(velocity: Vector2, aim: Vector2) -> Vector2:
 	return Vector2.RIGHT
 
 
-## Point 1,200 px along `heading`. Outside the tier-0 square (half-extent
+## Point `ahead` (default 1,200) px along `heading`. Outside the tier-0 square (half-extent
 ## 16384 - 64) it is scaled toward the origin onto that square. Inside the
 ## 512 px disk it is pushed back out along its own radius to 512. The body
 ## radius is not applied here: the spawner then keeps the whole circle outside
 ## the disk, the same rule as every other hostile.
-static func clamp_herald_point(player_pos: Vector2, heading: Vector2) -> Vector2:
+static func clamp_herald_point(player_pos: Vector2, heading: Vector2, ahead: float = HERALD_AHEAD) -> Vector2:
 	var dir := heading
 	if dir.length_squared() <= 0.000001:
 		dir = Vector2.RIGHT
 	else:
 		dir = dir.normalized()
-	var point := player_pos + dir * HERALD_AHEAD
+	var point := player_pos + dir * ahead
 	var limit := float(TIER_PX) - HERALD_EDGE_MARGIN
 	var chebyshev := maxf(absf(point.x), absf(point.y))
 	if chebyshev > limit and chebyshev > 0.0:
@@ -256,6 +264,99 @@ static func clamp_herald_point(player_pos: Vector2, heading: Vector2) -> Vector2
 			radial = dir
 		point = radial.normalized() * SAFE_RADIUS
 	return point
+
+
+## Herald spawn point (issue #81 rule): the first candidate in
+## herald_candidates() order with no encounter anchor within
+## HERALD_PACK_CLEARANCE. The heading's own point wins whenever it is clear,
+## so most spawns are unchanged. Pure function of the seed, the player's
+## position and heading: anchors are WorldGen rolls, not live bodies, so the
+## answer does not depend on what is streamed in or cleared, and no pack is
+## moved, hidden or held asleep.
+static func herald_point(seed: int, player_pos: Vector2, heading: Vector2, body_radius: float = 0.0) -> Vector2:
+	return pick_herald_point(seed, herald_candidates(player_pos, heading, body_radius))
+
+
+## Candidate points in preference order, each through clamp_herald_point() and
+## pushed out of the safe disk by `body_radius`. See HERALD_TURN_STEP_DEG.
+static func herald_candidates(player_pos: Vector2, heading: Vector2, body_radius: float = 0.0) -> Array[Vector2]:
+	var dir := heading
+	if dir.length_squared() <= 0.000001:
+		dir = Vector2.RIGHT
+	dir = dir.normalized()
+	var turns: Array[float] = [0.0]
+	var steps := roundi(180.0 / HERALD_TURN_STEP_DEG)
+	for k in range(1, steps + 1):
+		turns.append(HERALD_TURN_STEP_DEG * float(k))
+		if k < steps:
+			turns.append(-HERALD_TURN_STEP_DEG * float(k))
+	var out: Array[Vector2] = []
+	for ring: float in HERALD_RINGS:
+		for turn: float in turns:
+			var d := dir.rotated(deg_to_rad(turn))
+			var point := clamp_herald_point(player_pos, d, ring)
+			var limit := SAFE_RADIUS + body_radius
+			if point.length() < limit:
+				point = point.normalized() * limit
+			out.append(point)
+	return out
+
+
+## First candidate with no anchor within HERALD_PACK_CLEARANCE. Reusable by any
+## placement that brings its own candidates (the vertical-slice room C
+## redirect, row 6, can pass its point or list). When none is clear, the
+## candidate whose nearest anchor is farthest; ties keep the earlier one.
+static func pick_herald_point(seed: int, candidates: Array[Vector2]) -> Vector2:
+	if candidates.is_empty():
+		return Vector2.ZERO
+	var cache: Dictionary[Vector2i, PackedVector2Array] = {}
+	var best := candidates[0]
+	var best_gap := -1.0
+	for point: Vector2 in candidates:
+		var gap := nearest_anchor_distance(seed, point, HERALD_PACK_CLEARANCE, cache)
+		if gap >= HERALD_PACK_CLEARANCE:
+			return point
+		if gap > best_gap:
+			best = point
+			best_gap = gap
+	return best
+
+
+## True when no encounter anchor is within `clearance` px of `point`.
+static func herald_point_is_clear(seed: int, point: Vector2, clearance: float = HERALD_PACK_CLEARANCE) -> bool:
+	return nearest_anchor_distance(seed, point, clearance) >= clearance
+
+
+## Distance from `point` to the nearest encounter anchor (regular pack or
+## natural elite, from chunk_encounters) closer than `radius`, else `radius`.
+## `cache` holds per-chunk anchors across calls.
+static func nearest_anchor_distance(
+	seed: int,
+	point: Vector2,
+	radius: float,
+	cache: Dictionary[Vector2i, PackedVector2Array] = {},
+) -> float:
+	var best := radius
+	var lo := chunk_of(point - Vector2(radius, radius))
+	var hi := chunk_of(point + Vector2(radius, radius))
+	for cy in range(lo.y, hi.y + 1):
+		for cx in range(lo.x, hi.x + 1):
+			var key := Vector2i(cx, cy)
+			if not cache.has(key):
+				cache[key] = chunk_anchors(seed, cx, cy)
+			for anchor: Vector2 in cache[key]:
+				var d := anchor.distance_to(point)
+				if d < best:
+					best = d
+	return best
+
+
+## Anchors of every encounter chunk_encounters() plans for the chunk.
+static func chunk_anchors(seed: int, cx: int, cy: int) -> PackedVector2Array:
+	var out := PackedVector2Array()
+	for spec: EncounterSpec in chunk_encounters(seed, cx, cy):
+		out.append(spec.anchor)
+	return out
 
 
 static func _elite_pack(seed: int, cx: int, cy: int, index: int) -> EncounterSpec:
