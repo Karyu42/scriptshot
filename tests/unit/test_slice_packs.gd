@@ -128,6 +128,50 @@ func test_the_sniper_waits_0_8s_then_fires_a_locked_line() -> void:
 	assert_true(sniper.is_winding())
 
 
+func test_the_sniper_starts_windup_on_the_first_tick_back_in_range() -> void:
+	var sniper := _members(SlicePacks.PACK_SNIPER)[0] as Sniper
+	# Out of range: a windup must not start, even after several seconds.
+	player.global_position = sniper.global_position + Vector2(Sniper.RANGE + 50.0, 0)
+	sniper._physics_process(3.0)
+	assert_false(sniper.is_winding())
+	assert_eq(sniper.last_shot, null)
+	# No extra first delay: the first tick in range starts it.
+	player.global_position = sniper.global_position + Vector2(300, 0)
+	sniper._physics_process(DT)
+	assert_true(sniper.is_winding())
+	# Finish that first shot, then be out of range when the next start is due.
+	sniper._physics_process(Sniper.WINDUP)
+	assert_not_null(sniper.last_shot)
+	assert_false(sniper.is_winding())
+	player.global_position = sniper.global_position + Vector2(Sniper.RANGE + 50.0, 0)
+	sniper._physics_process(Sniper.PERIOD - Sniper.WINDUP + 0.2)
+	assert_false(sniper.is_winding(), "due, but still out of range")
+	# The first tick back in range starts it.
+	player.global_position = sniper.global_position + Vector2(300, 0)
+	sniper._physics_process(DT)
+	assert_true(sniper.is_winding())
+
+
+func test_a_deferred_sniper_windup_waits_2_4s_after_the_last_start() -> void:
+	var sniper := _members(SlicePacks.PACK_SNIPER)[0] as Sniper
+	player.global_position = sniper.global_position + Vector2(300, 0)
+	sniper._physics_process(DT)
+	assert_true(sniper.is_winding())
+	sniper._physics_process(Sniper.WINDUP)
+	assert_not_null(sniper.last_shot)
+	# Leave, then re-enter 1.1 s after the shot (2.0 s after the last start).
+	player.global_position = sniper.global_position + Vector2(Sniper.RANGE + 50.0, 0)
+	sniper._physics_process(1.1)
+	player.global_position = sniper.global_position + Vector2(300, 0)
+	sniper._physics_process(DT)
+	assert_false(sniper.is_winding(), "still inside the 2.4 s start-to-start floor")
+	# 0.5 s of cooldown remains after the 1.1 s wait, minus the re-enter tick.
+	sniper._physics_process(0.48)
+	assert_false(sniper.is_winding())
+	sniper._physics_process(0.04)
+	assert_true(sniper.is_winding())
+
+
 func test_drifter_contact_is_one_pip_and_blocked_during_iframes() -> void:
 	var drifter := _members(SlicePacks.PACK_DRIFTERS)[0] as RegularEnemy
 	player.global_position = drifter.global_position

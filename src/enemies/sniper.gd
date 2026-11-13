@@ -1,9 +1,12 @@
 class_name Sniper
 extends RegularEnemy
 ## Room-C Sniper (vertical-slice §3): 20 HP, still, no contact. Every 2.4 s
-## (start to start), if the player is within 600 px, a 0.8 s telegraph locks
-## a line to the player's position at windup start; the bullet then travels
-## that line at 600 px/s for 1 pip. It does not home.
+## start-to-start, a 0.8 s telegraph locks a line to the player's position
+## at windup start; the bullet then travels that line at 600 px/s for 1 pip.
+## A windup starts only while the player is within 600 px. If one is due
+## while they are out of range, it starts on the first tick they are back,
+## and never sooner than 2.4 s after the last start. There is no extra
+## first delay. It does not home.
 
 const SNIPER_HP := 20.0
 const SNIPER_RADIUS := 14.0
