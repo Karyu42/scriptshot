@@ -1,0 +1,21 @@
+[gd_scene load_steps=4 format=3]
+
+[ext_resource type="Script" path="res://src/enemies/shieldbearer.gd" id="1_enemy"]
+[ext_resource type="Script" path="res://src/bullets/hurtbox.gd" id="2_hurtbox"]
+[ext_resource type="Script" path="res://src/core/health.gd" id="3_health"]
+
+[node name="Shieldbearer" type="Node2D"]
+script = ExtResource("1_enemy")
+
+[node name="Hurtbox" type="Node2D" parent="."]
+script = ExtResource("2_hurtbox")
+radius = 20.0
+layer = 2
+response = 1
+arc_deg = 120.0
+
+[node name="Health" type="Node" parent="."]
+script = ExtResource("3_health")
+max_hp = 60.0
+invulnerability_time = 0.0
+regen_enabled = false

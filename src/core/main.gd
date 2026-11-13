@@ -36,6 +36,7 @@ var _save: SaveGame
 var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
+var _packs: SlicePacks
 var _warden: Warden
 
 
@@ -61,6 +62,7 @@ func _ready() -> void:
 	_bind_open_world()
 	_bind_slice_progress()
 	_bind_slice_hud()
+	_bind_slice_packs()
 	WorldQuery.bind_bullets(_bullets)
 	_bind_warden()
 	_player.died.connect(_on_player_died)
@@ -138,6 +140,13 @@ func _bind_slice_hud() -> void:
 	if _slice_hud == null:
 		return
 	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+
+
+func _bind_slice_packs() -> void:
+	_packs = get_node_or_null("SlicePacks") as SlicePacks
+	if _packs == null:
+		return
+	_packs.bind(_player, _progress, _bullets, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:
