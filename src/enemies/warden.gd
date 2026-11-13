@@ -88,6 +88,8 @@ const PHASE_TRAUMA := 0.40824829
 const TIER := RarityCue.TIER_BOSS_COMMON
 ## §5.6: ring shrinks to 0 over this many seconds (time scale stays 1).
 const DEATH_ANIM := 1.2
+## Enemy shots fade and deal no damage over this many seconds at the kill tick.
+const SHOT_FADE := 0.2
 ## Common-boss shard drop (spawning §7.2).
 const SHARDS := 5
 
@@ -1142,7 +1144,7 @@ func _on_core_died() -> void:
 	_cancel_ring()
 	_set_hurtboxes_active(false)
 	_despawn_husks()
-	_clear_own_shots()
+	_fade_enemy_shots()
 	_remove_warp()
 	WorldQuery.unregister_enemy(self)
 	var pos := global_position
@@ -1154,15 +1156,13 @@ func _on_core_died() -> void:
 		EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, TIER, pos
 	)
 	# Quiet grant now so SenseBook.boss_down's queued grant (next process_frame)
-	# is a no-op. The toast and Codex wait until the card is dismissed.
-	# The field and the save int are 1 from this moment (§5.6 step 2).
+	# is a no-op. The toast and Codex wait until the card is dismissed (or
+	# the next load, if the Codex-once flag was never set).
 	SenseBook.grant(SenseBook.ENEMIES_IN, 1, true)
 	_grant_ux_pending = true
-	# A trade kill during the 1.2 s shrink or the card still respawns here.
-	RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	_persist_kill_clear()
 	_death_animating = true
 	_death_left = DEATH_ANIM
-	# G0 waits until the shrink finishes (and the card is dismissed, if any).
 	defeated.emit()
 	queue_redraw()
 
@@ -1191,30 +1191,48 @@ func _begin_victory() -> void:
 	if _rewards_applied:
 		return
 	_rewards_applied = true
-	# The field is already 1 when listen() was on; this covers a bare test
-	# that never subscribed, and is a no-op otherwise.
-	SenseBook.grant(SenseBook.ENEMIES_IN, 1, true)
-	if save != null:
-		save.shards += SHARDS
-		save.warden_dead = true
-		save.starter_consumed = true
-		# Grant may have run before bind_save (unit tests); still persist the int.
-		if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
-			save.sense_enemies_in = maxi(save.sense_enemies_in, 1)
-		save.save()
 	var hud := _find_hud()
 	if hud != null and hud.has_method("present_victory_card"):
-		# G0 unlocks under the freeze so a mid-card quit still loads with the
-		# gate open and the arena respawn. The player can walk it after dismiss.
+		# The G0 bit is already saved. The wall lifts on dismiss.
 		hud.call("present_victory_card", _on_victory_card_dismissed)
-		_notify_progress()
 		return
-	_notify_progress()
+	_reveal_g0()
 	_emit_grant_ux()
 
 
 func _on_victory_card_dismissed() -> void:
+	_reveal_g0()
 	_emit_grant_ux()
+
+
+func _persist_kill_clear() -> void:
+	# One slot write at the kill: shards, flags, G0 bit, and the sense int.
+	# The card is presentation only; the wall still waits for dismiss.
+	if save != null:
+		save.shards += SHARDS
+		save.warden_dead = true
+		save.starter_consumed = true
+		if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
+			save.sense_enemies_in = maxi(save.sense_enemies_in, 1)
+		var bit := SliceLayout.GATE_IDS.find(SliceLayout.GATE_G0)
+		if bit >= 0:
+			save.slice_gates |= 1 << bit
+	var progress := _find_progress()
+	if progress != null and progress.has_method("persist_warden_cleared"):
+		progress.call("persist_warden_cleared")
+	elif save != null:
+		save.save()
+		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	else:
+		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+
+
+func _reveal_g0() -> void:
+	var progress := _find_progress()
+	if progress != null and progress.has_method("reveal_g0"):
+		progress.call("reveal_g0")
+	elif progress != null and progress.has_method("notify_warden_defeated"):
+		progress.call("notify_warden_defeated")
 
 
 func _emit_grant_ux() -> void:
@@ -1223,29 +1241,36 @@ func _emit_grant_ux() -> void:
 	_grant_ux_pending = false
 	if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
 		SenseBook.events.granted.emit(SenseBook.ENEMIES_IN, 1)
+	if save != null and not save.enemies_in_announced:
+		save.enemies_in_announced = true
+		save.save()
 
 
 func _find_hud() -> Node:
+	return _find_named_or_group("SliceHud", &"slice_hud")
+
+
+func _find_progress() -> Node:
+	return _find_named_or_group("SliceProgress", &"slice_progress")
+
+
+func _find_named_or_group(node_name: String, group: StringName) -> Node:
 	var tree := get_tree()
 	if tree == null:
 		return null
-	var named := tree.root.find_child("SliceHud", true, false)
+	var named := tree.root.find_child(node_name, true, false)
 	if named != null:
 		return named
-	for n in tree.get_nodes_in_group(&"slice_hud"):
+	for n in tree.get_nodes_in_group(group):
 		if n != null and is_instance_valid(n):
 			return n
 	return null
 
 
 func _notify_progress() -> void:
-	# Marked hook: SLICE_PROGRESS_HOOK
-	var tree := get_tree()
-	if tree == null:
-		return
-	var node := tree.root.find_child("SliceProgress", true, false)
-	if node != null and node.has_method("notify_warden_defeated"):
-		node.call("notify_warden_defeated")
+	# Kept for the row-8 hook test: after the shrink, lift G0 (the bit was
+	# already saved at the kill). Marked hook: SLICE_PROGRESS_HOOK
+	_reveal_g0()
 
 
 func _notify_hud_phase() -> void:
@@ -1306,6 +1331,52 @@ func _clear_own_shots() -> void:
 	# in-flight enemy shots during the fight are the Warden's.
 	if _bullets != null and is_instance_valid(_bullets):
 		_bullets.despawn_owned(Layers.ENEMY)
+
+
+## Kill tick (GD on #103): enemy bullets deal no damage immediately, then a
+## 0.2 s fade visual plays off the bullet step. despawn_owned removes them
+## from both backends first so a shot already overlapping the player cannot
+## hit during the ring shrink.
+func _fade_enemy_shots() -> void:
+	var shots: Array[Dictionary] = []
+	if _bullets != null and is_instance_valid(_bullets):
+		shots = _snapshot_enemy_shots(_bullets)
+		_bullets.despawn_owned(Layers.ENEMY)
+	if shots.is_empty():
+		return
+	var fade := _EnemyShotFade.new()
+	fade.name = "EnemyShotFade"
+	add_child(fade)
+	fade.start(shots)
+
+
+static func _snapshot_enemy_shots(bullets: BulletManager) -> Array[Dictionary]:
+	var shots: Array[Dictionary] = []
+	var pool := bullets.pool
+	if pool != null:
+		for i in pool.count:
+			if (pool.owner_layer[i] & Layers.ENEMY) == 0:
+				continue
+			shots.append({
+				"pos": pool.pos[i],
+				"vel": pool.vel[i],
+				"radius": pool.radius[i],
+				"color": pool.color[i],
+			})
+	var native := bullets.native
+	if native != null:
+		for s in native.count():
+			if not native.is_slot_alive(s):
+				continue
+			if (native.owner_at(s) & Layers.ENEMY) == 0:
+				continue
+			shots.append({
+				"pos": native.position_at(s),
+				"vel": native.velocity_at(s),
+				"radius": LANCE_RADIUS,
+				"color": Layers.bullet_color(Layers.ENEMY),
+			})
+	return shots
 
 
 func _redraw_if_pose_changed() -> void:
@@ -1397,3 +1468,42 @@ func _draw() -> void:
 				size,
 				Color(1, 1, 1, 0.95)
 			)
+
+
+## Visual-only leftover of despawned enemy shots. Not on the bullet step,
+## and never deals damage.
+class _EnemyShotFade:
+	extends Node2D
+
+	var _left := 0.0
+	var _items: Array[Dictionary] = []
+
+	func start(items: Array[Dictionary]) -> void:
+		_items = items
+		_left = Warden.SHOT_FADE
+		z_index = 6
+		set_physics_process(true)
+		queue_redraw()
+
+	func _physics_process(delta: float) -> void:
+		if _left <= 0.0:
+			return
+		_left = maxf(_left - maxf(delta, 0.0), 0.0)
+		for it in _items:
+			var vel: Vector2 = it["vel"]
+			it["pos"] = it["pos"] + vel * delta
+		queue_redraw()
+		if _left <= 0.0:
+			queue_free()
+
+	func _draw() -> void:
+		if _left <= 0.0:
+			return
+		var a := clampf(_left / Warden.SHOT_FADE, 0.0, 1.0)
+		for it in _items:
+			var col: Color = it["color"]
+			col.a *= a
+			var pos: Vector2 = it["pos"]
+			var rad: float = it["radius"]
+			draw_circle(to_local(pos), maxf(rad, 1.0), col)
+

@@ -138,6 +138,9 @@ func _bind_slice_hud() -> void:
 	if _slice_hud == null:
 		return
 	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+	# Mid-card quit: toast and Codex fire on the next load if they were
+	# never shown (the Codex-once flag is still clear).
+	SliceHud.announce_pending_grant(_save)
 
 
 func current_save_path() -> String:

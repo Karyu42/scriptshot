@@ -63,53 +63,53 @@ func test_grant_is_quiet_at_the_kill_and_the_save_int_is_1() -> void:
 	assert_eq(SenseBook.level(SenseBook.ENEMIES_IN), 1)
 	assert_eq(save.sense_enemies_in, 1)
 	assert_eq(_granted, [], "toast / Codex wait for the card")
-	# SE's queued boss_down grant must not emit on the next frame either.
+	assert_false(save.enemies_in_announced)
 	SenseBook.flush_pending()
 	assert_eq(_granted, [])
-	assert_eq(SenseBook.level(SenseBook.ENEMIES_IN), 1)
 	assert_eq(SenseBook.level(SenseBook.ENEMIES_IN), 1, "Level II is not granted")
 
 
-func test_rewards_and_g0_wait_for_the_shrink_when_there_is_no_card() -> void:
+func test_g0_bit_and_flags_are_saved_at_the_kill_but_the_wall_waits() -> void:
 	var save := _save()
 	var progress := _progress(save)
+	var layout := _layout_of(progress)
 	var warden := _warden()
 	warden.bind(_player(), null, null, save)
-	assert_eq(RespawnPoints.get_respawn_position(), Vector2.ZERO)
 	warden.health.set_hp(0.0)
 	assert_eq(RespawnPoints.get_respawn_position(), ARENA)
-	assert_false(progress.is_gate_unlocked(SliceLayout.GATE_G0))
-	assert_eq(save.shards, 0)
-	assert_false(save.warden_dead)
-	assert_false(save.starter_consumed)
+	assert_true(save.warden_dead)
+	assert_true(save.starter_consumed)
+	assert_eq(save.shards, 5)
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0), "G0 bit is saved at the kill")
+	assert_false(layout.gate_flag(SliceLayout.GATE_G0), "the wall still waits")
 	assert_eq(_granted, [])
 	assert_almost_eq(warden.death_ring_scale(), 1.0, 0.001)
 	warden._physics_process(0.6)
 	assert_almost_eq(warden.death_ring_scale(), 0.5, 0.02)
-	assert_false(progress.is_gate_unlocked(SliceLayout.GATE_G0))
+	assert_false(layout.gate_flag(SliceLayout.GATE_G0))
 	warden._physics_process(0.6)
 	assert_almost_eq(warden.death_ring_scale(), 0.0, 0.001)
-	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0))
-	assert_eq(save.shards, 5)
-	assert_true(save.warden_dead)
-	assert_true(save.starter_consumed)
-	assert_eq(save.sense_enemies_in, 1)
+	assert_true(layout.gate_flag(SliceLayout.GATE_G0), "no card: the wall lifts after the shrink")
 	assert_eq(_granted, ["enemies_in:1"])
+	assert_true(save.enemies_in_announced)
 	var reloaded := SaveGame.load_from(_SAVE)
 	assert_true(reloaded.warden_dead)
 	assert_true(reloaded.starter_consumed)
 	assert_eq(reloaded.shards, 5)
 	assert_eq(reloaded.sense_enemies_in, 1)
+	assert_true((reloaded.slice_gates & 1) != 0)
 
 
-func test_card_freezes_the_world_and_opens_g0_on_dismiss() -> void:
+func test_card_is_presentation_only_and_the_wall_lifts_on_dismiss() -> void:
 	var save := _save()
 	var progress := _progress(save)
+	var layout := _layout_of(progress)
 	var hud := _hud()
 	var warden := _warden()
 	warden.bind(_player(), null, null, save)
 	warden.health.set_hp(0.0)
-	assert_false(hud.is_victory_card_up())
+	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0))
+	assert_false(layout.gate_flag(SliceLayout.GATE_G0))
 	assert_eq(Engine.time_scale, 1.0)
 	warden.debug_finish_death_anim()
 	assert_true(hud.is_victory_card_up())
@@ -118,36 +118,141 @@ func test_card_freezes_the_world_and_opens_g0_on_dismiss() -> void:
 		"The Warden is down.",
 		"sense.enemies_in",
 	]))
-	# Rewards are written when the card appears so a mid-card quit stays cleared.
-	assert_eq(save.shards, 5)
-	assert_true(save.warden_dead)
-	assert_true(save.starter_consumed)
-	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0), "G0 unlocks under the freeze")
+	assert_eq(hud.victory_line_separation(), 8)
+	assert_false(layout.gate_flag(SliceLayout.GATE_G0), "wall still shut during the card")
 	assert_eq(_granted, [])
-	var ev := InputEventAction.new()
-	ev.action = "fire"
-	ev.pressed = true
-	hud._input(ev)
+	assert_false(save.enemies_in_announced)
+	hud.debug_unlock_victory_input()
+	_press(hud, "fire")
 	assert_false(hud.is_victory_card_up())
 	assert_eq(Engine.time_scale, 1.0)
-	assert_true(progress.is_gate_unlocked(SliceLayout.GATE_G0))
-	assert_eq(RespawnPoints.get_respawn_position(), ARENA)
+	assert_true(layout.gate_flag(SliceLayout.GATE_G0))
 	assert_eq(_granted, ["enemies_in:1"])
+	assert_true(save.enemies_in_announced)
 
 
-func test_e_dismisses_the_card_and_does_not_open_the_editor() -> void:
+func test_quit_mid_card_then_load_opens_g0() -> void:
+	var save := _save()
+	var progress := _progress(save)
+	var hud := _hud()
+	var warden := _warden()
+	warden.bind(_player(), null, null, save)
+	warden.health.set_hp(0.0)
+	warden.debug_finish_death_anim()
+	assert_true(hud.is_victory_card_up())
+	assert_true(save.warden_dead)
+	assert_false(save.enemies_in_announced)
+	assert_false(_layout_of(progress).gate_flag(SliceLayout.GATE_G0))
+
+	# Quit: the card is never dismissed. A new load restores the slot.
+	Engine.time_scale = 1.0
+	SenseBook.reset()
+	_granted.clear()
+	var loaded := SaveGame.load_from(_SAVE)
+	assert_true(loaded.warden_dead)
+	assert_false(loaded.enemies_in_announced)
+	SenseBook.bind_save(loaded)
+	assert_eq(_granted, [], "restore is quiet")
+	var progress2 := _progress(loaded)
+	assert_true(progress2.is_gate_unlocked(SliceLayout.GATE_G0))
+	assert_true(_layout_of(progress2).gate_flag(SliceLayout.GATE_G0), "on load, warden_dead means G0 is open")
+	assert_eq(RespawnPoints.get_respawn_position(), ARENA)
+
+
+func test_quit_before_dismiss_fires_toast_and_codex_on_the_next_load() -> void:
+	var save := _save()
+	var warden := _warden()
+	var hud := _hud()
+	warden.bind(_player(), null, null, save)
+	warden.health.set_hp(0.0)
+	warden.debug_finish_death_anim()
+	assert_true(hud.is_victory_card_up())
+	assert_false(save.enemies_in_announced)
+
+	Engine.time_scale = 1.0
+	SenseBook.reset()
+	_granted.clear()
+	var loaded := SaveGame.load_from(_SAVE)
+	SenseBook.bind_save(loaded)
+	var editor := ScriptEditorPanel.new()
+	add_child_autofree(editor)
+	assert_eq(editor.toast_text(), "")
+	assert_true(SliceHud.announce_pending_grant(loaded))
+	assert_eq(_granted, ["enemies_in:1"])
+	assert_true(loaded.enemies_in_announced)
+	assert_eq(editor.toast_text(), "sense.enemies_in")
+	assert_true("enemies_in" in editor.codex_unread())
+
+	# The Codex-once flag is now set: a later load does not announce again.
+	SenseBook.reset()
+	_granted.clear()
+	var again := SaveGame.load_from(_SAVE)
+	SenseBook.bind_save(again)
+	assert_false(SliceHud.announce_pending_grant(again))
+	assert_eq(_granted, [])
+
+
+func test_holding_fire_through_the_kill_does_not_dismiss_the_card() -> void:
+	var hud := _hud()
+	hud.present_victory_card()
+	assert_eq(hud.victory_line_separation(), 8)
+	# The 0.4 s lockout swallows a press that arrives with the card.
+	_press(hud, "fire")
+	assert_true(hud.is_victory_card_up())
+	hud.debug_unlock_victory_input()
+	# A hold that started before the card still does not dismiss it.
+	hud.debug_set_victory_held(true, false)
+	_press(hud, "fire")
+	assert_true(hud.is_victory_card_up())
+	_release(hud, "fire")
+	_press(hud, "fire")
+	assert_false(hud.is_victory_card_up())
+	assert_eq(Engine.time_scale, 1.0)
+
+
+func test_e_dismisses_with_a_fresh_press_after_the_lockout() -> void:
 	var hud := _hud()
 	var editor := ScriptEditorPanel.new()
 	add_child_autofree(editor)
 	hud.present_victory_card()
-	assert_true(hud.is_victory_card_up())
-	var ev := InputEventAction.new()
-	ev.action = "script_editor"
-	ev.pressed = true
-	hud._input(ev)
+	_press(hud, "script_editor")
+	assert_true(hud.is_victory_card_up(), "lockout ignores E")
+	assert_false(editor.is_open())
+	hud.debug_unlock_victory_input()
+	_press(hud, "script_editor")
 	assert_false(hud.is_victory_card_up())
 	assert_eq(Engine.time_scale, 1.0)
 	assert_false(editor.is_open())
+
+
+func test_enemy_bullets_deal_no_damage_after_the_kill() -> void:
+	var manager := BulletManager.new()
+	manager.backend_preference = "gdscript"
+	manager.capacity = 64
+	manager.world_bounds = Rect2(8000, -2000, 4000, 4000)
+	manager.render_enabled = false
+	manager.auto_step = false
+	add_child_autofree(manager)
+	var player := _player()
+	player.health.reset()
+	player.health.clear_engine_invulnerability()
+	var before := player.health.hp
+	var warden := _warden()
+	warden.bind(player, manager)
+	var req := ShotRequest.with_velocity(player.global_position, Vector2.ZERO)
+	req.radius = 16.0
+	req.damage = 1.0
+	req.hit_mask = Layers.PLAYER
+	req.owner_layer = Layers.ENEMY
+	req.lifetime = 2.0
+	manager.spawn(req)
+	warden.health.set_hp(0.0)
+	manager.step(DT)
+	assert_eq(player.health.hp, before, "a shot overlapping the player deals no damage after the kill")
+	var fade := warden.get_node_or_null("EnemyShotFade")
+	assert_not_null(fade)
+	fade._physics_process(Warden.SHOT_FADE)
+	assert_true(fade.is_queued_for_deletion())
 
 
 func test_a_cleared_slot_does_not_place_the_warden() -> void:
@@ -163,9 +268,31 @@ func test_shard_award_is_idempotent_across_the_debug_finish() -> void:
 	var warden := _warden()
 	warden.bind(_player(), null, null, save)
 	warden.health.set_hp(0.0)
+	assert_eq(save.shards, 5)
 	warden.debug_finish_death_anim()
 	warden.debug_finish_death_anim()
 	assert_eq(save.shards, 5)
+
+
+func _press(hud: SliceHud, action: String) -> void:
+	var ev := InputEventAction.new()
+	ev.action = action
+	ev.pressed = true
+	hud._input(ev)
+
+
+func _release(hud: SliceHud, action: String) -> void:
+	var ev := InputEventAction.new()
+	ev.action = action
+	ev.pressed = false
+	hud._input(ev)
+
+
+func _layout_of(progress: SliceProgress) -> SliceLayout:
+	var node: Variant = progress.get_meta("slice_layout")
+	if node is SliceLayout:
+		return node
+	return null
 
 
 func _progress(save: SaveGame) -> SliceProgress:
@@ -175,6 +302,7 @@ func _progress(save: SaveGame) -> SliceProgress:
 	var progress := SliceProgress.new()
 	progress.name = "SliceProgress"
 	add_child_autofree(progress)
+	progress.set_meta("slice_layout", layout)
 	var player := _player()
 	progress.bind(player, null, layout, save)
 	return progress

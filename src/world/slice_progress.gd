@@ -200,10 +200,32 @@ func notify_room_d_elite_died() -> void:
 ## the respawn point. Main chooses the point when the respawn timer fires, so
 ## a trade kill during the 1.5 s window still comes back at the arena centre.
 func notify_warden_defeated() -> void:
-	var already := is_gate_unlocked(SliceLayout.GATE_G0)
-	_unlock_gate(SliceLayout.GATE_G0)
-	if not already:
-		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	persist_warden_cleared()
+	reveal_g0()
+
+
+## Writes the G0 bit (and the arena respawn) without lifting the gate wall.
+## Row 10 saves this at the kill, in the same slot write as warden_dead, so a
+## mid-card quit cannot softlock. The wall still waits for reveal_g0().
+func persist_warden_cleared() -> void:
+	if _save != null:
+		_save.warden_dead = true
+		_save.starter_consumed = true
+	var bit := _gate_bit(SliceLayout.GATE_G0)
+	if bit < 0:
+		return
+	_gates |= 1 << bit
+	RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	_persist()
+
+
+## Lifts the G0 wall. The save bit is already set by persist_warden_cleared().
+func reveal_g0() -> void:
+	if not is_gate_unlocked(SliceLayout.GATE_G0):
+		persist_warden_cleared()
+	if _layout != null and not _layout.gate_flag(SliceLayout.GATE_G0):
+		_layout.open_gate(SliceLayout.GATE_G0)
+		gate_opened.emit(SliceLayout.GATE_G0)
 
 
 ## Test / debug: treat the fire button as held for `held_time` seconds (or not
@@ -500,7 +522,7 @@ func _unlock_gate(id: StringName) -> void:
 ## A loaded slot that already has G0 open must respawn in the arena, even
 ## though notify_warden_defeated() will not run again this session.
 func _restore_warden_respawn() -> void:
-	if is_gate_unlocked(SliceLayout.GATE_G0):
+	if is_gate_unlocked(SliceLayout.GATE_G0) or (_save != null and _save.warden_dead):
 		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
 
 
@@ -518,6 +540,12 @@ func _load_from_save() -> void:
 	_lessons = _save.slice_lessons & _lesson_mask_all()
 	_gates = _save.slice_gates & _gate_mask_all()
 	_packs = _save.slice_packs & ((1 << PACK_COUNT) - 1)
+	# On load, warden_dead means G0 is open (GD on #103): quitting mid-card
+	# cannot leave the core gone and the gate shut.
+	if _save.warden_dead:
+		var bit := _gate_bit(SliceLayout.GATE_G0)
+		if bit >= 0:
+			_gates |= 1 << bit
 
 
 func _persist() -> void:

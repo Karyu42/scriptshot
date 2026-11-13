@@ -52,6 +52,10 @@ var field_sniper := 0.0
 ## place a second starter. Missing or a non-bool value means false.
 var warden_dead := false
 var starter_consumed := false
+## Set when the enemies_in toast and Codex page have actually been shown.
+## Missing or a non-bool means false, so a mid-card quit still announces on
+## the next load.
+var enemies_in_announced := false
 var existed := false
 
 
@@ -96,6 +100,7 @@ func save() -> void:
 	cfg.set_value("world", "field_sniper", field_sniper)
 	cfg.set_value("world", "warden_dead", warden_dead)
 	cfg.set_value("world", "starter_consumed", starter_consumed)
+	cfg.set_value("senses", "enemies_in_announced", enemies_in_announced)
 	cfg.save(path)
 
 
@@ -126,6 +131,8 @@ func _read(cfg: ConfigFile) -> void:
 	warden_dead = dead is bool and bool(dead)
 	var consumed: Variant = cfg.get_value("world", "starter_consumed", false)
 	starter_consumed = consumed is bool and bool(consumed)
+	var announced: Variant = cfg.get_value("senses", "enemies_in_announced", false)
+	enemies_in_announced = announced is bool and bool(announced)
 	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
 
 
