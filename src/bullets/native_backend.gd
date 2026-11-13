@@ -571,6 +571,11 @@ func kill(id: int) -> bool:
 	return killed
 
 
+## Swap-remove every slot already marked dead and refresh owner counts.
+func compact() -> void:
+	sim.compact()
+
+
 func clear() -> void:
 	sim.clear()
 

@@ -1426,6 +1426,9 @@ func despawn_owned(layer: int) -> int:
 			if native.kill(id):
 				n += 1
 		if not to_kill.is_empty():
+			# kill() only marks dead; compact frees the slots and drops owner counts,
+			# same as pool.flush_dead() on the GD side.
+			native.compact()
 			_sync_pool_external()
 	if n > 0:
 		if _renderer != null:
