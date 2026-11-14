@@ -120,9 +120,10 @@ func load_source(
 	chunk_name: String = "weapon.lua",
 	manager: BulletManager = null,
 	behavior_id: int = -1,
-	fresh_env: bool = false
+	fresh_env: bool = false,
+	state_blob: String = ""
 ) -> ScriptHost.RunResult:
-	var result := host.load_string(code, chunk_name, fresh_env)
+	var result := host.load_string(code, chunk_name, fresh_env, state_blob)
 	_apply_mask(result, manager, behavior_id)
 	return result
 
@@ -215,13 +216,16 @@ func _dispatch(
 	arg: Variant,
 	pass_arg: bool
 ) -> ScriptHost.RunResult:
-	_dispatches[count_name] = _count_of(count_name) + 1
+	# Same order as on_update_batch and can_hit: a released, skipped or
+	# suspended behaviour, or a hook the script does not define, is not
+	# counted as a dispatch.
 	if released or lua_name == "" or not host.has_callback(lua_name) or _skipped.has(lua_name) or guard_stops >= SUSPEND_AFTER_STOPS:
 		var skipped := ScriptHost.RunResult.new()
 		skipped.ok = true
 		skipped.chunk_name = count_name
 		last_result = skipped
 		return skipped
+	_dispatches[count_name] = _count_of(count_name) + 1
 	var p := pool.pos[index]
 	var v := pool.vel[index]
 	var result := host.call_hook(lua_name, pool.id_of(index), p.x, p.y, arg, pass_arg, v.x, v.y)

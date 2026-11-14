@@ -267,6 +267,29 @@ func test_spread_fires_five() -> void:
 		assert_eq(manager.alive_count(), 5, "spread: five shots in a fan (%s)" % pref)
 
 
+## The spiral keeps its angle in `state.t`, so saving it again (or a tweak)
+## carries on turning from where it was instead of snapping back to 0.
+func test_the_spiral_angle_survives_a_save() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		var src := ScriptLibrary.starter("spiral").source
+		assert_string_contains(src, "state.t = state.t or 0")
+		_apply(shot, src)
+		_fire(manager, shot, 3)
+		_apply(shot, src)
+		manager.clear_bullets()
+		_fire(manager, shot)
+		_steps(manager, 1)
+		var vel: PackedVector2Array = manager.snapshot()["vel"]
+		assert_eq(vel.size(), 3, "three arms (%s)" % pref)
+		for v in vel:
+			# Every arm sits at state.t plus a multiple of TAU / 3.
+			assert_almost_eq(fposmod(v.angle(), TAU / 3.0), 0.22 * 4, 0.001, "the fourth shot turns on from the third, not from 0 (%s)" % pref)
+
+
 func test_split_pieces_spawn_at_the_hit_point_and_fly_back_out() -> void:
 	for pref in BACKENDS:
 		if _skip(pref):
