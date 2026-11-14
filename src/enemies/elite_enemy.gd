@@ -34,6 +34,8 @@ var is_half := false
 var grants_shard := false
 var cue: EliteCue
 var sting: EliteSting
+## Legendary name line (2 s on wake). The alcove Hydra sets this to "Hydra".
+var signature_name := ""
 
 var _affix_def: AffixDef
 var _speed := RegularEnemy.DRIFTER_SPEED
@@ -93,6 +95,15 @@ func enemy_rarity() -> int:
 	return EnemyKinds.RARITY_NONE if is_half else rarity
 
 
+## RarityCue tier for this body's rarity. Halves have no cue.
+func cue_tier() -> int:
+	if rarity == EnemyKinds.RARITY_RARE:
+		return RarityCue.TIER_ELITE_RARE
+	if rarity == EnemyKinds.RARITY_LEGENDARY:
+		return RarityCue.TIER_ELITE_LEGENDARY
+	return RarityCue.TIER_ELITE_COMMON
+
+
 func summon_alive() -> int:
 	var kept: Array[RegularEnemy] = []
 	for body: RegularEnemy in _summons:
@@ -111,11 +122,15 @@ func _ready() -> void:
 		return
 	add_to_group(GROUP_ELITE)
 	cue = EliteCue.new()
+	cue.setup(cue_tier())
 	cue.glyph = _glyph
+	if signature_name != "":
+		cue.signature_name = signature_name
 	cue.try_acquire()
 	cue.attach(self)
 	sting = EliteSting.new()
 	sting.name = "EliteSting"
+	sting.tier = cue.tier
 	add_child(sting)
 
 

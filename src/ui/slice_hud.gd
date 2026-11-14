@@ -3,7 +3,7 @@ extends Node
 ## Vertical-slice HUD (vertical-slice.md §14 / §10 row 11). Pips, dash arc and
 ## Sense marks are drawn on the player; the boss arc is drawn on a bound boss
 ## node (the Warden is not built here). The 70° weak-point gap belongs to the
-## Warden's armor ring (row 8), not this bar. The victory card is row 10.
+## Warden's armor ring (row 8), not this bar. The victory card is row 10. The boss edge-of-screen tick is row 13.
 ## Hints, the Sense toast and the death overlay are screen labels that keep
 ## to the left of the script editor.
 
@@ -36,6 +36,11 @@ const COLOR_FILL := Color("F2F2F2")
 const COLOR_HINT := Color("C9D2E0")
 const COLOR_OVERHEAL := Color("C9A7FF")
 const COLOR_BOSS := Color("3D7EFF")
+## Beacon sits this far inside the viewport edge.
+const BEACON_INSET := 16.0
+## Hide the tick once the boss centre is this far inside the view.
+const BEACON_ONSCREEN_MARGIN := 32.0
+const BEACON_CHUNK_RANGE := 5
 const COLOR_DEATH := Color(0.02, 0.03, 0.05, 0.45)
 const PROMPT_KB := "E edits."
 const PROMPT_PAD := "X edits."
@@ -61,6 +66,8 @@ var _shots: ShotScripts
 
 var _ring: _PlayerRing
 var _boss: _BossArc
+var _boss_host: Node2D
+var _beacon: _BeaconTick
 var _layer: CanvasLayer
 var _prompt: Label
 var _hint: Label
@@ -188,10 +195,14 @@ func bind_boss(host: Node, health: Health = null) -> void:
 			health = (host as Player).health
 	boss.bind_health(health)
 	boss.queue_redraw()
+	_boss_host = host as Node2D
+	_refresh_beacon()
 
 
 func unbind_boss() -> void:
 	var boss := _living_boss()
+	_boss_host = null
+	_refresh_beacon()
 	if boss == null:
 		return
 	boss.unbind_health()
@@ -330,6 +341,7 @@ func _process(delta: float) -> void:
 	var boss := _living_boss()
 	if boss != null:
 		boss.tick(delta)
+	_refresh_beacon()
 
 
 func _tick_dash() -> void:
@@ -555,6 +567,10 @@ func _build() -> void:
 	_layer.layer = 40
 	_layer.name = "SliceHudLayer"
 	add_child(_layer)
+	_beacon = _BeaconTick.new()
+	_beacon.name = "BossBeacon"
+	_beacon.visible = false
+	_layer.add_child(_beacon)
 	_death = ColorRect.new()
 	_death.name = "DeathOverlay"
 	_death.color = COLOR_DEATH
@@ -722,3 +738,127 @@ class _BossArc:
 		var start := SliceHud.BOSS_START
 		var points := maxi(roundi(64.0 * frac), 8)
 		draw_arc(Vector2.ZERO, SliceHud.BOSS_ARC_RADIUS, start, start + TAU * frac, points, color, SliceHud.BOSS_STROKE, true)
+
+
+func is_boss_beacon_visible() -> bool:
+	return _beacon != null and _beacon.visible
+
+
+## Screen-space origin of the edge tick, or INF if it is hidden.
+func boss_beacon_origin() -> Vector2:
+	if not is_boss_beacon_visible():
+		return Vector2.INF
+	return _beacon.origin
+
+
+## The bound boss, if it is still a living Warden. Check validity before the
+## `as` cast: a freed Object errors on `as` in Godot 4.
+func _living_warden_host() -> Warden:
+	if _boss_host == null or not is_instance_valid(_boss_host):
+		return null
+	return _boss_host as Warden
+
+
+func _boss_cue() -> RarityCue:
+	var host := _living_warden_host()
+	if host == null:
+		return null
+	return host.cue
+
+
+func _beacon_should_show() -> bool:
+	var host := _living_warden_host()
+	if host == null:
+		return false
+	if not host.is_alive():
+		return false
+	var cue := host.cue
+	if cue == null or cue.beacon_tick_count() <= 0:
+		return false
+	if _player == null or not is_instance_valid(_player):
+		return false
+	var here := _player.global_position
+	if SliceLayout.in_footprint(here):
+		return true
+	var a := WorldGen.chunk_of(here)
+	var b := WorldGen.chunk_of(host.global_position)
+	return maxi(absi(a.x - b.x), absi(a.y - b.y)) <= BEACON_CHUNK_RANGE
+
+
+func _canvas_of(world: Vector2) -> Vector2:
+	var vp := get_viewport()
+	if vp == null:
+		return world
+	return vp.get_canvas_transform() * world
+
+
+func _beacon_edge_point() -> Vector2:
+	var vp := get_viewport()
+	var host := _boss_host
+	if vp == null or host == null or not is_instance_valid(host):
+		return Vector2.INF
+	var size := vp.get_visible_rect().size
+	var boss := _canvas_of(host.global_position)
+	var inner := Rect2(
+		Vector2(BEACON_ONSCREEN_MARGIN, BEACON_ONSCREEN_MARGIN),
+		size - Vector2(BEACON_ONSCREEN_MARGIN, BEACON_ONSCREEN_MARGIN) * 2.0
+	)
+	if inner.has_point(boss):
+		return Vector2.INF
+	var centre := size * 0.5
+	var dir := boss - centre
+	if dir.length_squared() < 0.000001:
+		return Vector2.INF
+	dir = dir.normalized()
+	var t := INF
+	if dir.x > 0.000001:
+		t = minf(t, (size.x - BEACON_INSET - centre.x) / dir.x)
+	elif dir.x < -0.000001:
+		t = minf(t, (BEACON_INSET - centre.x) / dir.x)
+	if dir.y > 0.000001:
+		t = minf(t, (size.y - BEACON_INSET - centre.y) / dir.y)
+	elif dir.y < -0.000001:
+		t = minf(t, (BEACON_INSET - centre.y) / dir.y)
+	if not is_finite(t) or t < 0.0:
+		return Vector2.INF
+	return centre + dir * t
+
+
+func _refresh_beacon() -> void:
+	if _beacon == null:
+		return
+	if not _beacon_should_show():
+		_beacon.visible = false
+		return
+	var origin := _beacon_edge_point()
+	if origin.x == INF:
+		_beacon.visible = false
+		return
+	var host := _boss_host
+	if host == null or not is_instance_valid(host):
+		_beacon.visible = false
+		return
+	var boss := _canvas_of(host.global_position)
+	var heading := boss - origin
+	if heading.length_squared() <= 0.000001:
+		_beacon.visible = false
+		return
+	_beacon.origin = origin
+	_beacon.direction = heading.normalized()
+	_beacon.cue = _boss_cue()
+	_beacon.visible = true
+	_beacon.queue_redraw()
+
+
+## Screen-space edge tick for a bound boss (vertical-slice §8.2). Lives on the
+## HUD canvas layer, not in the bullet step.
+class _BeaconTick:
+	extends Node2D
+	var origin := Vector2.ZERO
+	var direction := Vector2.RIGHT
+	var cue: RarityCue
+
+	func _draw() -> void:
+		if cue == null:
+			return
+		cue.draw_beacon(self, origin, direction)
