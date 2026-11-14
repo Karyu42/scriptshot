@@ -1,6 +1,6 @@
 class_name EliteSting
 extends RaritySting
-## Common-elite wake sting. The phrase, the generator, and the ogg fallback
+## Common-elite wake sting. The phrase, the baked WAV, and the ogg fallback
 ## are RaritySting / RarityPhrases at TIER_ELITE_COMMON. This node is what
 ## EliteEnemy adds, so existing call sites keep the same type.
 

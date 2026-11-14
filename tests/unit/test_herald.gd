@@ -365,7 +365,7 @@ func test_main_scene_spawns_a_fightable_herald_and_a_reload_does_not() -> void:
 	assert_true(herald.sting.requested)
 	herald.queue_redraw()
 	await wait_process_frames(1)
-	assert_true(herald.sting.used_generator or herald.sting.used_fallback)
+	assert_true(herald.sting.used_wav or herald.sting.used_fallback)
 	main.free()
 	_mains.clear()
 	var reloaded := _open_main(path)
