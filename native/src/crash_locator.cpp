@@ -4,11 +4,15 @@
 #include <cstdio>
 #include <cstdlib>
 
-#ifdef _WIN32
+#if defined(_WIN32)
 #include <windows.h>
-#else
-#include <execinfo.h>
+#elif defined(__EMSCRIPTEN__)
+// No process-signal backtrace on web.
+#elif defined(__has_include) && __has_include(<execinfo.h>)
+#define SCRIPTSHOT_CRASH_LOCATOR_POSIX 1
 #include <csignal>
+#include <signal.h>
+#include <execinfo.h>
 #include <unistd.h>
 #endif
 
@@ -62,17 +66,28 @@ LONG CALLBACK scriptshot_vectored_handler(EXCEPTION_POINTERS *info) {
 	return EXCEPTION_CONTINUE_SEARCH;
 }
 
-#else
+#elif defined(SCRIPTSHOT_CRASH_LOCATOR_POSIX)
 
-void scriptshot_sigsegv_handler(int sig) {
+struct sigaction previous_segv;
+
+void scriptshot_sigsegv_handler(int sig, siginfo_t *info, void *ucontext) {
 	std::fprintf(stderr, "scriptshot crash locator: signal %d\n", sig);
 	std::fflush(stderr);
 	void *frames[16] = {};
 	const int n = backtrace(frames, 16);
 	backtrace_symbols_fd(frames, n, STDERR_FILENO);
 	std::fflush(stderr);
-	std::signal(sig, SIG_DFL);
-	std::raise(sig);
+	if (previous_segv.sa_flags & SA_SIGINFO) {
+		if (previous_segv.sa_sigaction != nullptr) {
+			previous_segv.sa_sigaction(sig, info, ucontext);
+		}
+	} else if (previous_segv.sa_handler == SIG_DFL || previous_segv.sa_handler == SIG_ERR) {
+		previous_segv.sa_handler = SIG_DFL;
+		sigaction(sig, &previous_segv, nullptr);
+		raise(sig);
+	} else if (previous_segv.sa_handler != SIG_IGN && previous_segv.sa_handler != nullptr) {
+		previous_segv.sa_handler(sig);
+	}
 }
 
 #endif
@@ -89,12 +104,20 @@ void scriptshot_install_crash_locator() {
 		std::fflush(stderr);
 		return;
 	}
-#else
-	if (std::signal(SIGSEGV, scriptshot_sigsegv_handler) == SIG_ERR) {
-		std::fprintf(stderr, "scriptshot crash locator: signal(SIGSEGV) failed\n");
+#elif defined(SCRIPTSHOT_CRASH_LOCATOR_POSIX)
+	struct sigaction sa = {};
+	sa.sa_sigaction = scriptshot_sigsegv_handler;
+	sa.sa_flags = SA_SIGINFO;
+	sigemptyset(&sa.sa_mask);
+	if (sigaction(SIGSEGV, &sa, &previous_segv) != 0) {
+		std::fprintf(stderr, "scriptshot crash locator: sigaction(SIGSEGV) failed\n");
 		std::fflush(stderr);
 		return;
 	}
+#else
+	std::fprintf(stderr, "scriptshot crash locator: not supported on this platform\n");
+	std::fflush(stderr);
+	return;
 #endif
 	std::fprintf(stderr, "scriptshot crash locator: enabled\n");
 	std::fflush(stderr);

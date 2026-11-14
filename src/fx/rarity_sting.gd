@@ -148,13 +148,7 @@ func _input(event: InputEvent) -> void:
 
 
 func _exit_tree() -> void:
-	_running = false
-	_release_duck()
-	_playback = null
-	if _player != null and is_instance_valid(_player):
-		_player.stream = null
-	_player = null
-	_shut = true
+	shutdown()
 
 
 func player_node() -> AudioStreamPlayer:
@@ -171,6 +165,11 @@ func shutdown() -> void:
 	_shut = true
 	_running = false
 	_release_duck()
+	# Stop before dropping the stream so the audio server is not left
+	# mixing a generator that is about to be freed.
+	if _player != null and is_instance_valid(_player):
+		if _player.playing:
+			_player.stop()
 	_playback = null
 	if _player != null and is_instance_valid(_player):
 		_player.stream = null
@@ -207,6 +206,7 @@ func _start() -> void:
 		_play_ogg()
 		return
 	var gen := AudioStreamGenerator.new()
+	gen.mix_rate_mode = AudioStreamGenerator.MIX_RATE_CUSTOM
 	gen.mix_rate = RarityPhrases.SAMPLE_RATE
 	gen.buffer_length = BUFFER_LENGTH
 	_player.stream = gen
