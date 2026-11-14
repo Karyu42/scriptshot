@@ -36,9 +36,9 @@
 #    GET_MODULE_HANDLE_EX_FLAG_PIN) so the .so stays mapped until exit.
 #    The pin requires reloadable = false in scriptshot_native.gdextension.
 #    The process then reclaims that memory; nothing is leaked across runs.
-#    Generated operator= still calls _method_bindings.destructor(&opaque)
-#    unguarded. That only matters after CORE deinitialize, when we no
-#    longer assign builtins; shutdown hits ~Type(), which is guarded.
+#    Generated copy operator= also destroys and reconstructs the builtin.
+#    After CORE deinitialize that is as unsafe as ~Type(), so the same
+#    binding hook makes copy operator= a no-op when the flag is off.
 def scriptshot_patch_godot_cpp_shutdown():
     from pathlib import Path
 
@@ -129,9 +129,13 @@ if str(_native_root) not in sys.path:
     sys.path.insert(0, str(_native_root))
 from scriptshot_binding_hooks import (  # noqa: E402
     ScriptshotBindingHooks,
+    apply_handwritten_shutdown_guards,
     assert_destructor_guards,
+    guarded_assign_sources,
     guarded_builtin_sources,
 )
+
+apply_handwritten_shutdown_guards(_native_root)
 
 env = SConscript(
     "godot-cpp/SConstruct",
@@ -140,6 +144,9 @@ env = SConscript(
 
 if env["platform"] in ("linux", "android"):
     env.Append(LIBS=["dl"])
+if env["platform"] == "linux":
+    # So an opt-in crash locator can print function names from a backtrace.
+    env.Append(LINKFLAGS=["-rdynamic"])
 
 # MinGW-on-Windows clears SHLIBPREFIX and MSVC's tool leaves it empty, while a
 # Linux MinGW cross keeps the POSIX "lib" prefix. One prefix so both toolchains
@@ -164,7 +171,7 @@ env.NoCache(library)
 # it here, without editing the submodule: when the hooks change, the generated
 # builtin sources are out of date and the bindings action runs again.
 _hooks_file = File("scriptshot_binding_hooks.py")
-_variant_nodes = [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_builtin_sources(_native_root)]
+_variant_nodes = [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_assign_sources(_native_root)]
 env.Depends(_variant_nodes, _hooks_file)
 
 
