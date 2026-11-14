@@ -38,8 +38,9 @@ const COLOR_OVERHEAL := Color("C9A7FF")
 const COLOR_BOSS := Color("3D7EFF")
 ## Beacon sits this far inside the viewport edge.
 const BEACON_INSET := 16.0
-## Hide the tick once the boss centre is this far inside the view.
-const BEACON_ONSCREEN_MARGIN := 32.0
+## Hide while the r=48 core body intersects the viewport; show once it is
+## fully outside. Fade both ways in this many seconds (GD on #110).
+const BEACON_FADE_SEC := 0.15
 const BEACON_CHUNK_RANGE := 5
 const COLOR_DEATH := Color(0.02, 0.03, 0.05, 0.45)
 const PROMPT_KB := "E edits."
@@ -68,6 +69,7 @@ var _ring: _PlayerRing
 var _boss: _BossArc
 var _boss_host: Node2D
 var _beacon: _BeaconTick
+var _beacon_alpha := 0.0
 var _layer: CanvasLayer
 var _prompt: Label
 var _hint: Label
@@ -341,7 +343,7 @@ func _process(delta: float) -> void:
 	var boss := _living_boss()
 	if boss != null:
 		boss.tick(delta)
-	_refresh_beacon()
+	_refresh_beacon(delta)
 
 
 func _tick_dash() -> void:
@@ -741,7 +743,12 @@ class _BossArc:
 
 
 func is_boss_beacon_visible() -> bool:
-	return _beacon != null and _beacon.visible
+	return _beacon != null and _beacon_alpha > 0.0
+
+
+## 0..1 fade of the edge tick (0.15 s both ways).
+func boss_beacon_alpha() -> float:
+	return _beacon_alpha
 
 
 ## Screen-space origin of the edge tick, or INF if it is hidden.
@@ -778,11 +785,28 @@ func _beacon_should_show() -> bool:
 	if _player == null or not is_instance_valid(_player):
 		return false
 	var here := _player.global_position
-	if SliceLayout.in_footprint(here):
+	if not SliceLayout.in_footprint(here):
+		var a := WorldGen.chunk_of(here)
+		var b := WorldGen.chunk_of(host.global_position)
+		if maxi(absi(a.x - b.x), absi(a.y - b.y)) > BEACON_CHUNK_RANGE:
+			return false
+	# Hide while the core circle intersects the view; show only once it is fully outside.
+	return not _boss_body_intersects_view(host)
+
+
+func _boss_body_intersects_view(host: Node2D) -> bool:
+	var vp := get_viewport()
+	if vp == null:
 		return true
-	var a := WorldGen.chunk_of(here)
-	var b := WorldGen.chunk_of(host.global_position)
-	return maxi(absi(a.x - b.x), absi(a.y - b.y)) <= BEACON_CHUNK_RANGE
+	var xform := vp.get_canvas_transform()
+	var centre := xform * host.global_position
+	var radius := xform.basis_xform(Vector2(Warden.BODY_RADIUS, 0.0)).length()
+	var rect := vp.get_visible_rect()
+	var closest := Vector2(
+		clampf(centre.x, rect.position.x, rect.end.x),
+		clampf(centre.y, rect.position.y, rect.end.y)
+	)
+	return closest.distance_squared_to(centre) <= radius * radius
 
 
 func _canvas_of(world: Vector2) -> Vector2:
@@ -799,12 +823,6 @@ func _beacon_edge_point() -> Vector2:
 		return Vector2.INF
 	var size := vp.get_visible_rect().size
 	var boss := _canvas_of(host.global_position)
-	var inner := Rect2(
-		Vector2(BEACON_ONSCREEN_MARGIN, BEACON_ONSCREEN_MARGIN),
-		size - Vector2(BEACON_ONSCREEN_MARGIN, BEACON_ONSCREEN_MARGIN) * 2.0
-	)
-	if inner.has_point(boss):
-		return Vector2.INF
 	var centre := size * 0.5
 	var dir := boss - centre
 	if dir.length_squared() < 0.000001:
@@ -824,30 +842,38 @@ func _beacon_edge_point() -> Vector2:
 	return centre + dir * t
 
 
-func _refresh_beacon() -> void:
+func _refresh_beacon(delta: float = 0.0) -> void:
 	if _beacon == null:
 		return
-	if not _beacon_should_show():
-		_beacon.visible = false
-		return
-	var origin := _beacon_edge_point()
-	if origin.x == INF:
-		_beacon.visible = false
-		return
-	var host := _boss_host
-	if host == null or not is_instance_valid(host):
-		_beacon.visible = false
-		return
-	var boss := _canvas_of(host.global_position)
-	var heading := boss - origin
-	if heading.length_squared() <= 0.000001:
-		_beacon.visible = false
-		return
-	_beacon.origin = origin
-	_beacon.direction = heading.normalized()
-	_beacon.cue = _boss_cue()
-	_beacon.visible = true
-	_beacon.queue_redraw()
+	var want := _beacon_should_show()
+	if want:
+		var origin := _beacon_edge_point()
+		if origin.x == INF:
+			want = false
+		else:
+			var host := _boss_host
+			if host == null or not is_instance_valid(host):
+				want = false
+			else:
+				var boss := _canvas_of(host.global_position)
+				var heading := boss - origin
+				if heading.length_squared() <= 0.000001:
+					want = false
+				else:
+					_beacon.origin = origin
+					_beacon.direction = heading.normalized()
+					_beacon.cue = _boss_cue()
+	var target := 1.0 if want else 0.0
+	if delta > 0.0 and BEACON_FADE_SEC > 0.0:
+		var step := delta / BEACON_FADE_SEC
+		if _beacon_alpha < target:
+			_beacon_alpha = minf(target, _beacon_alpha + step)
+		elif _beacon_alpha > target:
+			_beacon_alpha = maxf(target, _beacon_alpha - step)
+	_beacon.modulate = Color(1.0, 1.0, 1.0, _beacon_alpha)
+	_beacon.visible = _beacon_alpha > 0.0
+	if _beacon.visible:
+		_beacon.queue_redraw()
 
 
 ## Screen-space edge tick for a bound boss (vertical-slice §8.2). Lives on the

@@ -84,6 +84,89 @@ func test_forced_mix_halo_still_reads_on_the_legendary_and_the_warden() -> void:
 
 
 func test_the_warden_edge_tick_shows_in_the_ribbon_and_hides_when_it_should() -> void:
+	var setup := await _setup_beacon()
+	var hud: SliceHud = setup.hud
+	var player: Player = setup.player
+	var warden: Warden = setup.warden
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_true(SliceLayout.in_footprint(player.global_position))
+	assert_true(hud.is_boss_beacon_visible(), "the slice Warden qualifies in the ribbon")
+	assert_almost_eq(hud.boss_beacon_alpha(), 1.0, 0.001)
+	var at := hud.boss_beacon_origin()
+	assert_ne(at, Vector2.INF)
+	var vp := hud.get_viewport()
+	assert_not_null(vp)
+	var size := vp.get_visible_rect().size
+	assert_gt(at.x, size.x * 0.5, "the tick sits on the arena side of the screen")
+	assert_lt(at.x, size.x)
+	assert_gte(at.x, size.x - SliceHud.BEACON_INSET - 1.0)
+	player.global_position = Vector2(-20000, 0)
+	assert_false(SliceLayout.in_footprint(player.global_position))
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_false(hud.is_boss_beacon_visible(), "outside the ribbon and farther than 5 chunks")
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.0, 0.001)
+	player.global_position = Vector2.ZERO
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_true(hud.is_boss_beacon_visible())
+	assert_almost_eq(hud.boss_beacon_alpha(), 1.0, 0.001)
+	warden.health.set_hp(0.0)
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_false(hud.is_boss_beacon_visible(), "no tick after the Warden dies")
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.0, 0.001)
+
+
+func test_the_edge_tick_hides_while_the_core_body_intersects_the_view() -> void:
+	var setup := await _setup_beacon()
+	var hud: SliceHud = setup.hud
+	var warden: Warden = setup.warden
+	var rect := hud.get_viewport().get_visible_rect()
+	_set_warden_canvas_pos(hud, warden, Vector2(rect.end.x - 10.0, rect.get_center().y))
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_false(hud.is_boss_beacon_visible(), "partially visible body means hidden")
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.0, 0.001)
+
+
+func test_the_edge_tick_shows_once_the_core_body_is_fully_outside() -> void:
+	var setup := await _setup_beacon()
+	var hud: SliceHud = setup.hud
+	var warden: Warden = setup.warden
+	var vp := hud.get_viewport()
+	var rect := vp.get_visible_rect()
+	var radius := vp.get_canvas_transform().basis_xform(Vector2(Warden.BODY_RADIUS, 0.0)).length()
+	_set_warden_canvas_pos(hud, warden, Vector2(rect.end.x + radius + 4.0, rect.get_center().y))
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_true(hud.is_boss_beacon_visible(), "fully outside means shown")
+	assert_almost_eq(hud.boss_beacon_alpha(), 1.0, 0.001)
+
+
+func test_the_edge_tick_fades_in_and_out_in_point_one_five_seconds() -> void:
+	var setup := await _setup_beacon()
+	var hud: SliceHud = setup.hud
+	var warden: Warden = setup.warden
+	var vp := hud.get_viewport()
+	var rect := vp.get_visible_rect()
+	var mid := rect.get_center()
+	var radius := vp.get_canvas_transform().basis_xform(Vector2(Warden.BODY_RADIUS, 0.0)).length()
+	_set_warden_canvas_pos(hud, warden, Vector2(rect.end.x - 10.0, mid.y))
+	hud._process(SliceHud.BEACON_FADE_SEC)
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.0, 0.001)
+	_set_warden_canvas_pos(hud, warden, Vector2(rect.end.x + radius + 4.0, mid.y))
+	var half := SliceHud.BEACON_FADE_SEC * 0.5
+	hud._process(half)
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.5, 0.001)
+	assert_true(hud.is_boss_beacon_visible())
+	hud._process(half)
+	assert_almost_eq(hud.boss_beacon_alpha(), 1.0, 0.001)
+	_set_warden_canvas_pos(hud, warden, Vector2(rect.end.x - 10.0, mid.y))
+	hud._process(half)
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.5, 0.001)
+	assert_true(hud.is_boss_beacon_visible(), "still fading out")
+	hud._process(half)
+	assert_almost_eq(hud.boss_beacon_alpha(), 0.0, 0.001)
+	assert_false(hud.is_boss_beacon_visible())
+
+
+func _setup_beacon() -> Dictionary:
 	var hud := SliceHud.new()
 	add_child_autofree(hud)
 	var progress := SliceProgress.new()
@@ -99,27 +182,12 @@ func test_the_warden_edge_tick_shows_in_the_ribbon_and_hides_when_it_should() ->
 	hud.bind(player, progress)
 	var warden := _warden()
 	hud.bind_boss(warden, warden.health)
-	hud._process(DT)
-	assert_true(SliceLayout.in_footprint(player.global_position))
-	assert_true(hud.is_boss_beacon_visible(), "the slice Warden qualifies in the ribbon")
-	var at := hud.boss_beacon_origin()
-	assert_ne(at, Vector2.INF)
+	return {hud = hud, player = player, warden = warden}
+
+
+func _set_warden_canvas_pos(hud: SliceHud, warden: Warden, canvas: Vector2) -> void:
 	var vp := hud.get_viewport()
-	assert_not_null(vp)
-	var size := vp.get_visible_rect().size
-	assert_gt(at.x, size.x * 0.5, "the tick sits on the arena side of the screen")
-	assert_lt(at.x, size.x)
-	assert_gte(at.x, size.x - SliceHud.BEACON_INSET - 1.0)
-	player.global_position = Vector2(-20000, 0)
-	assert_false(SliceLayout.in_footprint(player.global_position))
-	hud._process(DT)
-	assert_false(hud.is_boss_beacon_visible(), "outside the ribbon and farther than 5 chunks")
-	player.global_position = Vector2.ZERO
-	hud._process(DT)
-	assert_true(hud.is_boss_beacon_visible())
-	warden.health.set_hp(0.0)
-	hud._process(DT)
-	assert_false(hud.is_boss_beacon_visible(), "no tick after the Warden dies")
+	warden.global_position = vp.get_canvas_transform().affine_inverse() * canvas
 
 
 func _elite(at: Vector2, rarity: int, affix: StringName, name := "") -> EliteEnemy:
