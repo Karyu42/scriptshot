@@ -80,6 +80,12 @@ func _spawn() -> void:
 	body.grants_shard = false
 	body.add_to_group(GROUP)
 	add_child(body)
+	# DIAG: drop the authored room-D wake sting so CI can tell whether
+	# that subtree is what trips Windows shutdown.
+	if body.sting != null:
+		body.sting.shutdown()
+		body.sting.free()
+		body.sting = null
 	body.died.connect(_on_elite_died)
 	elite = body
 	_spawn_escort()
