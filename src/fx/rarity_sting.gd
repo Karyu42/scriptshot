@@ -39,6 +39,10 @@ static var gesture_seen := false
 static var _duck_depth := 0
 static var _duck_bus := -1
 static var _duck_original_db := 0.0
+## Tests only. When not -2, duck_bus_index() returns this and skips AudioServer.
+static var stub_duck_bus := -2
+## Tests only. When non-empty, duck volume get/set uses this map, not AudioServer.
+static var stub_bus_volumes: Dictionary[int, float] = {}
 
 var tier := RarityCue.TIER_ELITE_COMMON
 ## When true, skip the speaker. The visual brighten does not wait on this.
@@ -68,6 +72,8 @@ var _duck_left := 0.0
 static func reset_session() -> void:
 	gesture_required = false
 	gesture_seen = false
+	stub_duck_bus = -2
+	stub_bus_volumes = {}
 	_end_duck_static()
 	RarityPhrases.clear()
 
@@ -93,6 +99,8 @@ static func output_bus() -> StringName:
 
 
 static func duck_bus_index() -> int:
+	if stub_duck_bus != -2:
+		return stub_duck_bus
 	for bus_name in DUCK_BUS_NAMES:
 		var idx := AudioServer.get_bus_index(bus_name)
 		if idx >= 0:
@@ -100,9 +108,22 @@ static func duck_bus_index() -> int:
 	return -1
 
 
+static func _bus_volume_db(idx: int) -> float:
+	if not stub_bus_volumes.is_empty():
+		return stub_bus_volumes.get(idx, 0.0)
+	return AudioServer.get_bus_volume_db(idx)
+
+
+static func _set_bus_volume_db(idx: int, db: float) -> void:
+	if not stub_bus_volumes.is_empty():
+		stub_bus_volumes[idx] = db
+		return
+	AudioServer.set_bus_volume_db(idx, db)
+
+
 static func _end_duck_static() -> void:
 	if _duck_bus >= 0:
-		AudioServer.set_bus_volume_db(_duck_bus, _duck_original_db)
+		_set_bus_volume_db(_duck_bus, _duck_original_db)
 	_duck_bus = -1
 	_duck_depth = 0
 	_duck_original_db = 0.0
@@ -267,8 +288,8 @@ func _begin_duck() -> void:
 		return
 	if _duck_depth == 0:
 		_duck_bus = bus
-		_duck_original_db = AudioServer.get_bus_volume_db(bus)
-		AudioServer.set_bus_volume_db(bus, _duck_original_db + DUCK_DB)
+		_duck_original_db = _bus_volume_db(bus)
+		_set_bus_volume_db(bus, _duck_original_db + DUCK_DB)
 	_duck_depth += 1
 	_holding_duck = true
 	_duck_left = DUCK_SECONDS
