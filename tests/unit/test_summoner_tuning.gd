@@ -140,8 +140,8 @@ func test_legendary_column_is_six_drifters_at_105_hp() -> void:
 	add._physics_process(1.0)
 	assert_almost_eq(add.global_position.x - x0, RegularEnemy.DRIFTER_SPEED, 0.5)
 	assert_almost_eq(add.global_position.y, player.global_position.y, 0.5)
-	# 105 HP: a 1-damage stream needs 105 hits. Waves stack on the same two
-	# flank points, so clear the other adds out of the line first.
+	# 105 HP: a 1-damage stream needs 105 hits. Later waves jitter off the
+	# first flank points, but still clear the other adds out of the line first.
 	for other: SummonAdd in adds:
 		if other != add:
 			other.health.damage(other.health.max_hp)
@@ -181,6 +181,7 @@ func test_each_summon_dies_to_one_hit() -> void:
 func test_summons_spawn_on_both_flanks_at_ninety_degrees() -> void:
 	var player := _node_player(FAR + Vector2(300, 0))
 	var elite := _elite(FAR, player)
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
 	for dir: Vector2 in [Vector2.RIGHT, Vector2(0.6, 0.8), Vector2.LEFT, Vector2(-0.28, -0.96)]:
 		player.global_position = elite.global_position + dir * 300.0
 		_kill_all(elite.get_parent())
@@ -192,10 +193,212 @@ func test_summons_spawn_on_both_flanks_at_ninety_degrees() -> void:
 			var off := add.global_position - elite.global_position
 			assert_almost_eq(off.length(), EliteEnemy.SUMMON_OFFSET, 0.01)
 			var angle := rad_to_deg(dir.angle_to(off))
-			assert_almost_eq(absf(angle), 90.0, 0.5, "summon at %.1f° from the elite-to-player line" % angle)
+			assert_gte(absf(angle), 90.0 - half_arc - 0.01, "summon at %.1f° from the elite-to-player line" % angle)
+			assert_lte(absf(angle), 90.0 + half_arc + 0.01, "summon at %.1f° from the elite-to-player line" % angle)
 			sides.append(signf(angle))
 			assert_eq(add.summoner, elite)
 		assert_ne(sides[0], sides[1], "one summon on each flank")
+
+
+## vertical-slice §4 / §10 row 12: a wave jitters across the flank arc, and
+## the roll is WorldGen.hash_u so a test can recompute it from the seed.
+func test_summon_wave_jitter_stays_within_the_flank_arc() -> void:
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	var dir := Vector2.RIGHT
+	player.global_position = hydra.global_position + dir * 3000.0
+	# Tick the summoner only, so idle drift does not walk the body off the spawn.
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	var adds := _adds(hydra.get_parent())
+	assert_eq(adds.size(), 6)
+	var half := EliteEnemy.SUMMON_FLANK_ARC * 0.5
+	for i in adds.size():
+		var add: SummonAdd = hydra._summons[i]
+		var expected_jitter := EliteEnemy.summon_flank_jitter_for(
+			hydra.world_seed, hydra.chunk, hydra.encounter_index, add.member_index
+		)
+		assert_eq(add.member_index, i)
+		assert_almost_eq(hydra.summon_flank_jitter(i), expected_jitter, 0.0000001)
+		assert_gte(expected_jitter, -half)
+		assert_lte(expected_jitter, half)
+		var expected := hydra.summon_spawn_point(
+			1.0 if i % 2 == 0 else -1.0, expected_jitter
+		)
+		assert_almost_eq(add.global_position.x, expected.x, 0.01)
+		assert_almost_eq(add.global_position.y, expected.y, 0.01)
+		var angle := dir.angle_to(add.global_position - hydra.global_position)
+		assert_gte(absf(angle), PI * 0.5 - half - 0.001)
+		assert_lte(absf(angle), PI * 0.5 + half + 0.001)
+		assert_almost_eq(
+			(add.global_position - hydra.global_position).length(),
+			EliteEnemy.SUMMON_OFFSET,
+			0.01
+		)
+
+
+func test_summon_wave_jitter_differs_between_waves_and_is_seedable() -> void:
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2.RIGHT * 3000.0
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	assert_eq(hydra.summon_alive(), 6)
+	# Same flank, later wave: not the same point.
+	for side_index in 2:
+		var a: Vector2 = hydra._summons[side_index].global_position
+		var b: Vector2 = hydra._summons[side_index + 2].global_position
+		var c: Vector2 = hydra._summons[side_index + 4].global_position
+		assert_gt(a.distance_to(b), 0.01, "wave 1 and 2 share a flank point")
+		assert_gt(a.distance_to(c), 0.01, "wave 1 and 3 share a flank point")
+		assert_gt(b.distance_to(c), 0.01, "wave 2 and 3 share a flank point")
+	# Same seed, chunk, encounter, and serial: same offset.
+	var again := EliteEnemy.summon_flank_jitter_for(
+		hydra.world_seed, hydra.chunk, hydra.encounter_index, 0
+	)
+	assert_almost_eq(again, hydra.summon_flank_jitter(0), 0.0000001)
+	# A second Hydra with the same seed lands on the same points.
+	# Same spawn point so chunk_of matches (encounter_index is -1, so chunk is from spawn).
+	var twin := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	twin.set_physics_process(false)
+	player.global_position = twin.global_position + Vector2.RIGHT * 3000.0
+	twin._summon_wait = 0.0
+	twin._tick_summon(0.0)
+	for i in 2:
+		var first: Vector2 = hydra._summons[i].global_position - hydra.global_position
+		var copy: Vector2 = twin._summons[i].global_position - twin.global_position
+		assert_almost_eq(first.x, copy.x, 0.01)
+		assert_almost_eq(first.y, copy.y, 0.01)
+	# A different seed must be able to move the first spawn (hash_u is not
+	# constant across seeds).
+	var other := EliteEnemy.summon_flank_jitter_for(2, Vector2i.ZERO, -1, 0)
+	assert_true(
+		other != hydra.summon_flank_jitter(0)
+		or EliteEnemy.summon_flank_jitter_for(3, Vector2i.ZERO, -1, 0)
+		!= hydra.summon_flank_jitter(0)
+	)
+
+
+func test_the_same_seed_gives_identical_summon_angles_across_two_runs() -> void:
+	# The jitter is WorldGen.hash_u(world_seed, chunk, encounter, serial),
+	# not the runtime RNG, so two independent runs with the same seed match.
+	var seed := 1
+	var chunk := Vector2i(3, -2)
+	var encounter := 4
+	var player := _node_player(FAR + Vector2(3000, 0))
+	var first := _summon_angles_for_seed(seed, chunk, encounter, player)
+	var second := _summon_angles_for_seed(seed, chunk, encounter, player)
+	assert_eq(first.size(), 6)
+	assert_eq(second.size(), 6)
+	for i in first.size():
+		assert_almost_eq(first[i], second[i], 0.0000001, "serial %d angle" % i)
+
+
+func test_a_wall_on_the_flank_slides_the_summon_inward_without_rerolling_the_angle() -> void:
+	# Alcove east wall inner face is at x = 8128 - 16 = 8112. Stand 48 px
+	# west of that face so the unobstructed east spawn sits in the wall.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	var at := Vector2(8112.0 - EliteEnemy.SUMMON_OFFSET, 1152.0)
+	var player := _node_player(at + Vector2(0, 3000))
+	var hydra := _elite(at, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2(0, 3000)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_DRIFTER)
+	# Odd serial is the right/east flank, which hits the wall. Even stays clear.
+	var east_jitter := hydra.summon_flank_jitter(1)
+	var dir := hydra.summon_flank_dir(-1.0, east_jitter)
+	var unobstructed := hydra.global_position + dir * EliteEnemy.SUMMON_OFFSET
+	assert_true(
+		layout.touches_wall(unobstructed, add_radius),
+		"the 48 px flank point overlaps the wall"
+	)
+	var slid := hydra.summon_spawn_point(-1.0, east_jitter)
+	var off := slid - hydra.global_position
+	assert_almost_eq(off.angle(), dir.angle(), 0.0001, "the angle is not re-rolled")
+	assert_gt(unobstructed.distance_to(slid), 0.01, "the spawn slid inward")
+	assert_lt(off.length(), EliteEnemy.SUMMON_OFFSET - 0.01)
+	assert_gte(off.length(), hydra.body_radius - 0.01, "not closer than the elite edge")
+	assert_false(layout.touches_wall(slid, add_radius), "the slid point is clear")
+	var west := hydra.summon_spawn_point(1.0, hydra.summon_flank_jitter(0))
+	assert_almost_eq(
+		(west - hydra.global_position).length(),
+		EliteEnemy.SUMMON_OFFSET,
+		0.01,
+		"a clear flank stays at 48 px"
+	)
+	# A live spawn must land on the slid point (the alcove is far from the
+	# safe disk, so push_centre_outside does not move it). Spawn one add
+	# so the legendary batch of 2 does not also drop the clear flank.
+	hydra._summon_serial = 1
+	hydra._spawn_one_summon()
+	assert_eq(hydra.summon_alive(), 1)
+	var add: SummonAdd = hydra._summons[0]
+	assert_almost_eq(add.global_position.x, slid.x, 0.01)
+	assert_almost_eq(add.global_position.y, slid.y, 0.01)
+
+
+func test_a_thin_wall_on_the_ray_does_not_leave_the_summon_on_the_far_side() -> void:
+	# QA probe: elite at (8104, 1152). The alcove east wall is 16 px thick
+	# (inner face 8112, outer 8128). The unslid east 48 px point (8152,
+	# 1152) is clear — a r=16 circle starts at 8136, past the wall — but
+	# the ray crosses the wall. The spawn must stay on the near side, at
+	# the same angle, and must not accept the far-side point. The elite
+	# edge itself sits in the wall, so the near-side result is the edge.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	var at := Vector2(8104.0, 1152.0)
+	var player := _node_player(at + Vector2(0, 3000))
+	var hydra := _elite(at, player, AffixDef.RARITY_LEGENDARY)
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2(0, 3000)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_DRIFTER)
+	var dir := Vector2.RIGHT
+	var unobstructed := hydra.global_position + dir * EliteEnemy.SUMMON_OFFSET
+	assert_almost_eq(unobstructed.x, 8152.0, 0.01)
+	assert_almost_eq(unobstructed.y, 1152.0, 0.01)
+	assert_false(
+		layout.touches_wall(unobstructed, add_radius),
+		"the far-side 48 px point is clear of the wall"
+	)
+	assert_true(
+		layout.touches_wall(hydra.global_position + dir * 24.0, add_radius),
+		"the ray itself crosses the wall"
+	)
+	var slid := hydra._slide_summon_inward(unobstructed, dir)
+	var off := slid - hydra.global_position
+	assert_almost_eq(off.angle(), dir.angle(), 0.0001, "the angle is not re-rolled")
+	assert_gt(unobstructed.distance_to(slid), 0.01, "the spawn did not stay on the far side")
+	assert_lte(slid.x, 8128.0, "the spawn did not tunnel past the east wall")
+	assert_gte(off.length(), hydra.body_radius - 0.01, "not closer than the elite edge")
+	# The elite edge (8104+16=8120) is inside the wall, so the near side
+	# has no clear point: return the edge rather than the far side.
+	assert_almost_eq(off.length(), hydra.body_radius, 0.01)
+	assert_almost_eq(slid.x, 8120.0, 0.01)
+	assert_almost_eq(slid.y, 1152.0, 0.01)
+
+
+func _summon_angles_for_seed(
+	seed: int, chunk: Vector2i, encounter: int, player: Node2D
+) -> Array[float]:
+	var hydra := _elite(FAR, player, AffixDef.RARITY_LEGENDARY)
+	hydra.world_seed = seed
+	hydra.chunk = chunk
+	hydra.encounter_index = encounter
+	hydra.set_physics_process(false)
+	player.global_position = hydra.global_position + Vector2.RIGHT * 3000.0
+	for _wave in 3:
+		hydra._summon_wait = 0.0
+		hydra._tick_summon(0.0)
+	var out: Array[float] = []
+	var dir := Vector2.RIGHT
+	for add: SummonAdd in hydra._summons:
+		out.append(dir.angle_to(add.global_position - hydra.global_position))
+	return out
 
 
 func test_cooldown_is_at_least_four_seconds() -> void:
@@ -225,6 +428,9 @@ func test_cooldown_is_at_least_four_seconds() -> void:
 
 
 func test_summons_drift_to_the_player_and_stay_out_of_the_lane() -> void:
+	# Common Swarmers drift to a contact hold around the player: their
+	# side plus hashed arc offset, at player radius + add radius + 20,
+	# and stay out of the firing lane.
 	var player := _node_player(FAR + Vector2(STANDOFF, 0))
 	var elite := _elite(FAR, player)
 	elite.woken = true
@@ -236,16 +442,170 @@ func test_summons_drift_to_the_player_and_stay_out_of_the_lane() -> void:
 	for add: SummonAdd in adds:
 		add.set_physics_process(false)
 		start.append(add.global_position.distance_to(player.global_position))
+		assert_almost_eq(add.flank_jitter, elite.summon_flank_jitter(add.member_index), 0.0000001)
 	for frame in 300:
 		for add: SummonAdd in adds:
 			add._physics_process(DT)
 			var muzzle := player.global_position + (elite.global_position - player.global_position).normalized() * MUZZLE
 			var lane := _segment_distance(add.global_position, muzzle, elite.global_position)
 			assert_gt(lane, add.body_radius + 4.0, "frame %d: %s is in the firing lane" % [frame, add.name])
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
+	var lane_dir := elite.global_position - player.global_position
+	var angles: Array[float] = []
 	for i in adds.size():
-		var d := adds[i].global_position.distance_to(player.global_position)
-		assert_lt(d, start[i], "%s drifted toward the player" % adds[i].name)
-		assert_lte(d, RegularEnemy.PLAYER_RADIUS + adds[i].body_radius, "%s reached contact range" % adds[i].name)
+		var add: SummonAdd = adds[i]
+		var d := add.global_position.distance_to(player.global_position)
+		assert_lt(d, start[i], "%s drifted toward the player" % add.name)
+		assert_almost_eq(d, contact, 0.5, "%s contact distance" % add.name)
+		assert_almost_eq(d, add.contact_offset(), 0.5)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5, "%s left its hold" % add.name)
+		var off := add.global_position - player.global_position
+		var angle := rad_to_deg(lane_dir.angle_to(off))
+		assert_gte(absf(angle), 90.0 - half_arc - 0.5, "hold at %.1f° from the player-to-elite line" % angle)
+		assert_lte(absf(angle), 90.0 + half_arc + 0.5, "hold at %.1f° from the player-to-elite line" % angle)
+		angles.append(angle)
+	assert_ne(angles[0], angles[1], "both adds share a hold angle")
+
+
+func test_rare_flank_adds_keep_distinct_hold_angles_at_the_cap() -> void:
+	# At a rare cap of 8, after 5 s, each Swarmer holds at its own angle
+	# around the player, within the 60° arcs, out of the firing lane, at
+	# player radius + add radius + 20. Overlap of up to about half a
+	# radius is fine; there is no separation steering.
+	var player := _node_player(FAR + Vector2(STANDOFF, 0))
+	var rare := _elite(FAR, player, AffixDef.RARITY_RARE)
+	rare.woken = true
+	rare.set_physics_process(false)
+	player.global_position = rare.global_position + Vector2(STANDOFF, 0)
+	while rare.summon_alive() < rare.summon_cap():
+		rare._summon_wait = 0.0
+		rare._tick_summon(0.0)
+	assert_eq(rare.summon_alive(), 8)
+	var adds := _adds(rare.get_parent())
+	assert_eq(adds.size(), 8)
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+	for frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+			var muzzle := player.global_position + (rare.global_position - player.global_position).normalized() * MUZZLE
+			var lane := _segment_distance(add.global_position, muzzle, rare.global_position)
+			assert_gt(lane, add.body_radius + 4.0, "frame %d: %s is in the firing lane" % [frame, add.name])
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var half_arc := rad_to_deg(EliteEnemy.SUMMON_FLANK_ARC) * 0.5
+	var lane_dir := rare.global_position - player.global_position
+	var left: Array[float] = []
+	var right: Array[float] = []
+	for add: SummonAdd in adds:
+		var off := add.global_position - player.global_position
+		assert_almost_eq(off.length(), contact, 0.5, "%s contact distance" % add.name)
+		assert_almost_eq(off.length(), add.contact_offset(), 0.5)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5, "%s left its hold" % add.name)
+		assert_almost_eq(add.flank_jitter, rare.summon_flank_jitter(add.member_index), 0.0000001)
+		var angle := rad_to_deg(lane_dir.angle_to(off))
+		assert_gte(absf(angle), 90.0 - half_arc - 0.5, "%s hold at %.1f°" % [add.name, angle])
+		assert_lte(absf(angle), 90.0 + half_arc + 0.5, "%s hold at %.1f°" % [add.name, angle])
+		if add.side > 0.0:
+			left.append(angle)
+		else:
+			right.append(angle)
+	assert_eq(left.size(), 4)
+	assert_eq(right.size(), 4)
+	_assert_side_angles_are_distinct(left, "left")
+	_assert_side_angles_are_distinct(right, "right")
+
+
+func _assert_side_angles_are_distinct(angles: Array[float], label: String) -> void:
+	for i in angles.size():
+		for j in range(i + 1, angles.size()):
+			assert_gt(
+				absf(angles[i] - angles[j]),
+				0.01,
+				"%s holds %d and %d share an angle (%.4f, %.4f)" % [label, i, j, angles[i], angles[j]]
+			)
+
+
+func test_contact_holds_in_a_tight_alcove_stay_off_the_walls() -> void:
+	# QA tight-wall probe: player near the alcove's east wall, elite to the
+	# south, so some of the eight contact holds (42 px) land inside that
+	# wall. _chase must wall-correct the hold, not only _slide_outside_disk.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	await wait_physics_frames(2)
+	var player := _node_player(Vector2(8080.0, 1152.0))
+	var elite := _elite(Vector2(8080.0, 1452.0), player, AffixDef.RARITY_RARE)
+	elite.woken = true
+	elite.set_physics_process(false)
+	player.global_position = Vector2(8080.0, 1152.0)
+	while elite.summon_alive() < elite.summon_cap():
+		elite._summon_wait = 0.0
+		elite._tick_summon(0.0)
+	var adds := _adds(elite.get_parent())
+	assert_eq(adds.size(), 8)
+	assert_true(adds[0].collide_walls)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER)
+	var raw_in_wall := 0
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+		if layout.touches_wall(add.flank_point(), add_radius):
+			raw_in_wall += 1
+	assert_gt(raw_in_wall, 0, "the probe should put at least one raw hold in the wall")
+	for _frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	for add: SummonAdd in adds:
+		assert_false(
+			layout.touches_wall(add.global_position, add.body_radius),
+			"%s held inside the alcove wall at %s" % [add.name, add.global_position]
+		)
+		assert_false(
+			layout.touches_wall(add._keep_off_walls(add.flank_point()), add.body_radius),
+			"%s corrected hold is still in a wall" % add.name
+		)
+
+
+func test_adds_keep_their_contact_distance_after_the_elite_is_freed() -> void:
+	# If the elite is freed, _hold_dir must not go ZERO and send every add
+	# onto the player's centre. They keep the last valid lane, at contact
+	# distance.
+	var player := _node_player(FAR + Vector2(STANDOFF, 0))
+	var elite := _elite(FAR, player, AffixDef.RARITY_RARE)
+	elite.woken = true
+	elite.set_physics_process(false)
+	player.global_position = elite.global_position + Vector2(STANDOFF, 0)
+	while elite.summon_alive() < elite.summon_cap():
+		elite._summon_wait = 0.0
+		elite._tick_summon(0.0)
+	var holder := elite.get_parent()
+	var adds := _adds(holder)
+	assert_eq(adds.size(), 8)
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+	for _frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var dirs: Array[Vector2] = []
+	for add: SummonAdd in adds:
+		assert_almost_eq(add.global_position.distance_to(player.global_position), contact, 0.5)
+		dirs.append(add._hold_dir())
+		assert_ne(dirs[-1], Vector2.ZERO)
+	elite.free()
+	assert_false(is_instance_valid(elite))
+	for _frame in 180:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	for i in adds.size():
+		var add: SummonAdd = adds[i]
+		var d := add.global_position.distance_to(player.global_position)
+		assert_almost_eq(d, contact, 0.5, "%s walked off its contact hold after the elite was freed (d=%.2f)" % [add.name, d])
+		assert_gt(d, RegularEnemy.PLAYER_RADIUS + add.body_radius + 1.0, "%s walked onto the player" % add.name)
+		assert_almost_eq(add._hold_dir().angle(), dirs[i].angle(), 0.001, "%s lost its cached hold direction" % add.name)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5)
 
 
 func test_straight_starter_strafing_at_220_kills_the_herald_within_25_s() -> void:
