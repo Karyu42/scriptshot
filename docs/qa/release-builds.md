@@ -128,7 +128,7 @@ build needs none) and loads it in headless Chromium with Playwright (`tools/ci/w
 editor, the `web_dlink_nothreads_*.zip` templates, and `pip install playwright` plus `python -m playwright install chromium`
 (or `CHROME_PATH` pointing at Chrome). `WEB_SMOKE_MODES=release` runs one mode. Exit code is non-zero on any failure.
 
-The smoke scene never ships. `src/qa/` (`web_smoke.tscn`, `web_smoke.gd`, `web_smoke_shot.lua`) is in the `exclude_filter`
+The smoke scene never ships. `src/qa/` (`web_smoke.tscn`, `web_smoke.gd`, `web_smoke_shot.lua.txt`) is in the `exclude_filter`
 of every shipping preset, and there is no autoload. The `Web (smoke)` preset is the Web preset plus the custom feature
 `web_smoke`, without the `src/qa/*` exclude. project.godot's `application/run/main_scene.web_smoke` override makes
 `src/qa/web_smoke.tscn` the main scene only when that feature is set. Release web templates refuse a scene path on the
@@ -145,7 +145,7 @@ every project.binary, pointing at a file that is not exported; without the featu
   feature must be present.
 * **`boot`** (shipping export): the engine starts and the main scene runs for 6 s with no console error. It fails if the
   6 s window does not finish before the scenario timeout.
-* **`lua`** (smoke export): `web_smoke.tscn` instances `scenes/main.tscn` and loads `src/qa/web_smoke_shot.lua` through
+* **`lua`** (smoke export): `web_smoke.tscn` instances `scenes/main.tscn` and loads `src/qa/web_smoke_shot.lua.txt` through
   `ScriptHost` (`LuaBulletBehavior.load_file`). It spawns 8 shots on the main scene's `BulletManager`, and each one
   splits off a child from Lua. It needs exactly one `SMOKE_DONE ok`, `SMOKE_LUA_OK bullets=<n> backend=gdscript`, and
   `SMOKE_BACKEND backend=gdscript ... fallback_warnings=0`. Marker fields are compared exactly, not as substrings.

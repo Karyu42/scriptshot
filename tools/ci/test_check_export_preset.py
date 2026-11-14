@@ -8,7 +8,7 @@ from contextlib import redirect_stdout
 import check_export_preset as c
 
 
-def cfg(platform, name, exclude_filter="src/qa/*", index=0, custom_features="", include_filter="*.lua", **opts):
+def cfg(platform, name, exclude_filter="src/qa/*", index=0, custom_features="", include_filter="*.lua, *.lua.txt", **opts):
     body = "".join(f'{k.replace("__", "/")}={v}\n' for k, v in opts.items())
     return (f'[preset.{index}]\n\nname="{name}"\nplatform="{platform}"\nrunnable=false\n'
             f'custom_features="{custom_features}"\n'
@@ -136,7 +136,14 @@ class CheckExportPresetTest(unittest.TestCase):
             rc, out = run(cfg(platform, name, include_filter=""), name)
             self.assertEqual(rc, 1, out)
             self.assertIn("*.lua", out)
-        self.assertEqual(run(cfg("Linux", "Linux", include_filter="*.json, *.lua"), "Linux")[0], 0)
+            self.assertIn("*.lua.txt", out)
+        rc, out = run(cfg("Linux", "Linux", include_filter="*.lua"), "Linux")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("must list *.lua.txt", out)
+        rc, out = run(cfg("Linux", "Linux", include_filter="*.lua.txt"), "Linux")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("must list *.lua (", out)
+        self.assertEqual(run(cfg("Linux", "Linux", include_filter="*.json, *.lua, *.lua.txt"), "Linux")[0], 0)
 
     def test_qa_glob_alternative_is_accepted(self):
         self.assertEqual(run(cfg("Linux", "Linux", exclude_filter="src/qa/web_smoke*"), "Linux")[0], 0)

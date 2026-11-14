@@ -52,6 +52,9 @@ var equipped := ""
 var selected := ScriptLibrary.DEFAULT_FILE
 ## Why the selected file last failed to load, null when it is running.
 var problem: ScriptProblem = null
+## Non-fatal notes from the last load that went through (Kind.WARNING): what
+## the `state` copy dropped or cut. Empty after a failed load.
+var warnings: Array[ScriptProblem] = []
 ## Watch the equipped file for outside edits (PC builds; tests turn it on).
 var watch_files := OS.has_feature("pc")
 
@@ -145,9 +148,13 @@ func load_now(file_name: String, origin: StringName) -> bool:
 	var result := weapon.apply(text)
 	if not result.ok:
 		problem = ScriptProblem.from_result(result, file_name)
+		warnings.clear()
 		load_failed.emit(file_name, problem, origin)
 		return false
 	problem = null
+	warnings.clear()
+	for w in result.warnings:
+		warnings.append(ScriptProblem.from_warning(LuaShot.STATE_WARNING_KEY, w, 1))
 	equipped = file_name
 	selected = file_name
 	ScriptLibrary.set_equipped_file(file_name)

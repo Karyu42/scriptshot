@@ -48,7 +48,7 @@ SMOKE_PCK.update({
     "src/qa/web_smoke.tscn.remap": b"[remap]",
     "src/qa/web_smoke.gd.remap": b"[remap]",
     "src/qa/web_smoke.gdc": b"x",
-    "src/qa/web_smoke_shot.lua": b"return {}",
+    "src/qa/web_smoke_shot.lua.txt": b"return {}",
 })
 DLINK = ["index.side.wasm", "index.wasm", LUA]
 
@@ -130,7 +130,7 @@ class CheckExportTest(unittest.TestCase):
 GOOD_MARKERS = [
     "SMOKE_START platform=Web feature=true args=",
     "SMOKE_MAIN_OK scene=res://scenes/main.tscn backend=gdscript native_class=false",
-    "SMOKE_LUA_OK bullets=16 backend=gdscript on_spawn=8 chunk=src/qa/web_smoke_shot.lua",
+    "SMOKE_LUA_OK bullets=16 backend=gdscript on_spawn=8 chunk=src/qa/web_smoke_shot.lua.txt",
     "SMOKE_BACKEND backend=gdscript requested=gdscript fallback_warnings=0",
     "SMOKE_DONE ok",
 ]

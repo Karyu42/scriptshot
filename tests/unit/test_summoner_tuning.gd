@@ -16,7 +16,7 @@ const PLAYER_SPEED := 300.0
 const MUZZLE := 20.0
 
 
-## Mirrors scripting/starters/straight.lua (#79): one shot along the aim.
+## Mirrors scripting/starters/straight.lua.txt (#79): one shot along the aim.
 class StraightStarter extends ShotPattern:
 	var _r := ShotRequest.new()
 
@@ -37,7 +37,7 @@ class StraightStarter extends ShotPattern:
 		e.request_shot(_r)
 
 
-## Mirrors scripting/starters/spread.lua (#79): five shots, 0.16 rad apart.
+## Mirrors scripting/starters/spread.lua.txt (#79): five shots, 0.16 rad apart.
 class SpreadStarter extends ShotPattern:
 	var _r := ShotRequest.new()
 

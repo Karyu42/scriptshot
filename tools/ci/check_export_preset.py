@@ -14,8 +14,10 @@ Decisions encoded here (docs/qa/release-builds.md):
     no-dlink 4.7.2 template refuses to start with any GDExtension in the export (issue #40).
     exclude_filter must list scriptshot_native.gdextension, so web runs on the GDScript bullet
     pool and never packages the native bullet wasm (CoS ruling on #36). Threads on is a WARNING.
-  * Every preset lists *.lua in include_filter: scripting/sandbox.lua and the editor starters
-    (scripting/starters/*.lua, which seed shots/default.lua) are read with FileAccess at runtime.
+  * Every preset lists *.lua and *.lua.txt in include_filter: scripting/sandbox.lua, the editor starters
+    (scripting/starters/*.lua.txt, which seed shots/default.lua) and the Codex pages
+    (scripting/codex/*.lua.txt) are read with FileAccess at runtime. Bundled weapon scripts are .lua.txt
+    so the Lua binding never runs them in the editor (ScriptLibrary.BUNDLED_EXT).
   * QA smoke files stay out of normal builds: every preset except "Web (smoke)" must list src/qa/*
     (or src/qa/web_smoke*) in exclude_filter and must not set the web_smoke custom feature.
     "Web (smoke)" (tools/ci/web_smoke.sh) must be the Web preset plus the web_smoke feature: same
@@ -101,11 +103,15 @@ def check(cp, name):
     if meta is None:
         return [f"preset '{name}' not found in export_presets.cfg (names are case-sensitive)"], []
 
-    # Lua sources (scripting/sandbox.lua, the editor starters that seed
-    # shots/default.lua) are read with FileAccess, so they must ship whether or
-    # not the Lua binding registers .lua as a resource type.
-    if "*.lua" not in split_list(meta.get("include_filter", "")):
-        errors.append("include_filter must list *.lua (the sandbox and the script editor starters are read at runtime)")
+    # Lua sources (scripting/sandbox.lua; the editor starters that seed
+    # shots/default.lua and the Codex pages, both .lua.txt) are read with
+    # FileAccess, so they must ship whether or not the Lua binding registers
+    # .lua as a resource type. .lua.txt is plain text to Godot: only
+    # include_filter exports it.
+    includes = split_list(meta.get("include_filter", ""))
+    for pattern, what in (("*.lua", "the sandbox"), ("*.lua.txt", "the script editor starters and Codex pages")):
+        if pattern not in includes:
+            errors.append(f"include_filter must list {pattern} ({what} are read at runtime)")
 
     for k, v in sorted(opts.items()):
         if SECRET_SUFFIX.search(k.split("/")[-1]) and v != "":
