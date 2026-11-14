@@ -1,6 +1,6 @@
 extends GutTest
 ## Common-elite cue: ring, glyph, 0.3 s brighten, sting, and the Q24 fallbacks
-## that apply to this tier (static ring, ogg when the generator misses, web gesture).
+## that apply to this tier (static ring, ogg fallback, web gesture).
 
 
 func before_each() -> void:
@@ -113,7 +113,7 @@ func test_brighten_plays_when_the_sting_is_silent() -> void:
 	elite._physics_process(1.0 / 60.0)
 	assert_true(elite.woken)
 	assert_true(elite.sting.requested)
-	assert_false(elite.sting.used_generator)
+	assert_false(elite.sting.used_wav)
 	assert_false(elite.sting.used_fallback)
 	assert_gt(elite.cue.brighten_left, 0.0)
 	assert_almost_eq(elite.cue.visual_ring_width(), EliteCue.BRIGHTEN_WIDTH, 0.01)
@@ -125,7 +125,7 @@ func test_brighten_plays_when_the_sting_is_silent() -> void:
 	await wait_process_frames(1)
 
 
-func test_generator_or_ogg_plays_and_the_underrun_uses_the_ogg() -> void:
+func test_wav_or_ogg_plays_and_force_fallback_uses_the_ogg() -> void:
 	var elite := _elite(&"splitting", Vector2(3200, 3200))
 	var player := elite.player
 	player.global_position = elite.global_position + Vector2(690, 0)
@@ -133,18 +133,23 @@ func test_generator_or_ogg_plays_and_the_underrun_uses_the_ogg() -> void:
 	await wait_process_frames(2)
 	assert_true(elite.sting.requested)
 	assert_true(
-		elite.sting.used_generator or elite.sting.used_fallback,
-		"wake sting uses the generator or the ogg fallback"
+		elite.sting.used_wav or elite.sting.used_fallback,
+		"wake sting uses the baked WAV or the ogg fallback"
 	)
-	if elite.sting.used_generator:
+	if elite.sting.used_wav:
 		assert_gt(elite.sting.frames_pushed, 0)
 		assert_false(elite.sting.failed)
+		var wav := elite.sting.player_node().stream as AudioStreamWAV
+		assert_not_null(wav)
+		assert_eq(wav.format, AudioStreamWAV.FORMAT_16_BITS)
+		assert_eq(wav.mix_rate, EliteSting.SAMPLE_RATE)
+		assert_eq(wav.data, RarityPhrases.encode_pcm16(EliteSting.render_frames()))
 	var fallback := _elite(&"splitting", Vector2(4200, 3200))
 	fallback.sting.force_fallback = true
 	fallback.player.global_position = fallback.global_position + Vector2(690, 0)
 	fallback._physics_process(1.0 / 60.0)
 	assert_true(fallback.sting.used_fallback)
-	assert_false(fallback.sting.used_generator)
+	assert_false(fallback.sting.used_wav)
 	var player_node := fallback.sting.get_node("StingPlayer") as AudioStreamPlayer
 	assert_true(player_node.playing)
 	var missed := _elite(&"splitting", Vector2(5200, 3200))
@@ -152,7 +157,7 @@ func test_generator_or_ogg_plays_and_the_underrun_uses_the_ogg() -> void:
 	missed.player.global_position = missed.global_position + Vector2(690, 0)
 	missed._physics_process(1.0 / 60.0)
 	assert_true(missed.sting.used_fallback)
-	assert_false(missed.sting.used_generator)
+	assert_false(missed.sting.used_wav)
 
 
 func test_web_gesture_gate_holds_the_sting_until_a_press() -> void:
@@ -163,7 +168,7 @@ func test_web_gesture_gate_holds_the_sting_until_a_press() -> void:
 	body.global_position = elite.global_position + Vector2(690, 0)
 	elite._physics_process(1.0 / 60.0)
 	assert_true(elite.sting.requested)
-	assert_false(elite.sting.used_generator)
+	assert_false(elite.sting.used_wav)
 	assert_false(elite.sting.used_fallback)
 	# The ring still brightens while audio waits.
 	assert_gt(elite.cue.brighten_left, 0.0)
@@ -171,7 +176,7 @@ func test_web_gesture_gate_holds_the_sting_until_a_press() -> void:
 	press.pressed = true
 	press.keycode = KEY_SPACE
 	elite.sting._input(press)
-	assert_true(elite.sting.used_generator or elite.sting.used_fallback)
+	assert_true(elite.sting.used_wav or elite.sting.used_fallback)
 
 
 func _elite(affix: StringName, at: Vector2) -> EliteEnemy:
