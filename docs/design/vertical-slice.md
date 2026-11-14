@@ -4,7 +4,7 @@
 >
 > **Q25 and Q26 are Decided (CoS call, Karyu may override), 2026-11-12.** The climax is a guaranteed **common Warden** that counts as the save's starter boss, in a compact tier-0 ribbon. The D∞ 8.5 / 9.5 exception applies only inside the slice footprint.
 
-The slice is one save, one seed, about **15–25 minutes** for a new player who follows the hints. It ends when the Warden dies: a short victory card, `sense.enemies_in` at Level I, then the north gate into the existing tier-0 stream. No leaderboards, no in-game script sharing, no Constrained mode, no Shard spending, no Level II.
+The slice is one save, one seed, about **15–25 minutes** for a new player who follows the hints. It ends when the Warden dies: a short victory card, `sense.enemies_in` at Level I, then the north gate into the existing tier-0 stream. No leaderboards, no in-game script sharing, no Constrained mode, no Shard spending, no Level II. The slice has no ability scripting tools and no RPG mode; both come after the slice ([`ability-scripting.md`](ability-scripting.md), [`rpg-modifiers.md`](rpg-modifiers.md)).
 
 Checked against `main` (open-world scene `scenes/main.tscn`: `OpenGround`, `Dummies`, `ChunkStream`, `HeraldArm`, `HeraldDirector`). Player combat already on `main` is not retuned: 5 HP pips, regen +1 pip every 3 s after 5 s without damage, hit i-frames 0.75 s, dash 160 px with 0.2 s i-frames and a 1.5 s cooldown (`Health`, `DashState`), `Main.respawn_delay` 1.5 s, `RespawnPoints`. §14 GE-4 is the canonical restatement.
 
