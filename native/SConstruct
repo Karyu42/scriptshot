@@ -19,7 +19,11 @@
 #
 # These patches are applied here so a fresh submodule checkout (as CI does)
 # still gets them. They are not vendored in git; the godot-cpp submodule
-# stays at 10.0.0-stable. Both replacements are idempotent.
+# stays at 10.0.0-stable. Header / godot.cpp / variant.cpp replacements are
+# idempotent. Generated ~Type() guards are emitted while bindings are
+# generated, via binding_hooks (see scriptshot_binding_hooks.py), not by
+# patching gen/ at SConstruct parse time (gen/ is gitignored and empty
+# until GodotCPPBindings runs).
 #
 # 1. Mark get_class_static() names static (StringName(..., true)), the
 #    supported way to keep a StringName until process exit without
@@ -30,9 +34,12 @@
 #    static destructors become no-ops instead of calling back into Godot.
 #    Combined with pin_library() in register_types.cpp (RTLD_NODELETE /
 #    GET_MODULE_HANDLE_EX_FLAG_PIN) so the .so stays mapped until exit.
+#    The pin requires reloadable = false in scriptshot_native.gdextension.
 #    The process then reclaims that memory; nothing is leaked across runs.
+#    Generated operator= still calls _method_bindings.destructor(&opaque)
+#    unguarded. That only matters after CORE deinitialize, when we no
+#    longer assign builtins; shutdown hits ~Type(), which is guarded.
 def scriptshot_patch_godot_cpp_shutdown():
-    import re
     from pathlib import Path
 
     root = Path(File("SConstruct").abspath).parent
@@ -98,23 +105,6 @@ def scriptshot_patch_godot_cpp_shutdown():
         "}\n",
     )
 
-    guard = (
-        "\tif (!::godot::internal::builtin_destructors_enabled) {\n"
-        "\t\treturn;\n"
-        "\t}\n"
-    )
-    dtor_re = re.compile(
-        r"(~[A-Za-z0-9_]+\(\) \{\n)\t_method_bindings\.destructor\(&opaque\);\n(\})"
-    )
-    variant_dir = root / "godot-cpp/gen/src/variant"
-    for path in sorted(variant_dir.glob("*.cpp")):
-        text = path.read_text()
-        if "builtin_destructors_enabled" in text:
-            continue
-        new_text, count = dtor_re.subn(r"\1" + guard + r"\t_method_bindings.destructor(&opaque);\n\2", text)
-        if count:
-            path.write_text(new_text)
-
     variant_cpp = root / "godot-cpp/src/variant/variant.cpp"
     _replace_once(
         variant_cpp,
@@ -131,9 +121,23 @@ def scriptshot_patch_godot_cpp_shutdown():
 
 scriptshot_patch_godot_cpp_shutdown()
 
-env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
-
 import sys
+from pathlib import Path
+
+_native_root = Path(File("SConstruct").abspath).parent
+if str(_native_root) not in sys.path:
+    sys.path.insert(0, str(_native_root))
+from scriptshot_binding_hooks import (  # noqa: E402
+    ScriptshotBindingHooks,
+    assert_destructor_guards,
+    guarded_builtin_sources,
+)
+
+env = SConscript(
+    "godot-cpp/SConstruct",
+    {"api_version": "4.7", "binding_hooks": ScriptshotBindingHooks()},
+)
+
 if env["platform"] in ("linux", "android"):
     env.Append(LIBS=["dl"])
 
@@ -153,4 +157,19 @@ library = env.SharedLibrary(
     source=sources,
 )
 env.NoCache(library)
+
+
+def _verify_destructor_guards(target, source, env):
+    assert_destructor_guards(_native_root)
+    return None
+
+
+# Post-action on the generated sources: runs after GodotCPPBindings writes
+# them and before those files are treated as built for compilation. Fails
+# the build if the guarded ~Type() count does not match extension_api.
+_verify_action = Action(_verify_destructor_guards, "Checking scriptshot destructor guards...")
+for name in guarded_builtin_sources(_native_root):
+    env.AddPostAction(env.File("godot-cpp/gen/src/variant/" + name), _verify_action)
+env.Depends(library, [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_builtin_sources(_native_root)])
+
 Default(library)

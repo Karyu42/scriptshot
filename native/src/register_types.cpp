@@ -4,6 +4,8 @@
 
 #include <godot_cpp/godot.hpp>
 
+#include <cstdio>
+
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -23,15 +25,39 @@ using namespace godot;
 // own to clear in uninitialize_scriptshot_native, so we pin the module until
 // process exit (late calls land on mapped memory) and SConstruct patches
 // godot-cpp so those destructors do not call into a deinitialized engine.
+//
+// The pin (RTLD_NODELETE / GET_MODULE_HANDLE_EX_FLAG_PIN) requires
+// `reloadable = false` in scriptshot_native.gdextension: a pinned library
+// stays mapped until process exit and cannot be unloaded for a script reload.
 static void pin_library() {
+	static bool logged_failure = false;
 #ifdef _WIN32
 	HMODULE module = nullptr;
-	GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
-			reinterpret_cast<LPCWSTR>(reinterpret_cast<const void *>(&pin_library)), &module);
+	if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+				reinterpret_cast<LPCWSTR>(reinterpret_cast<const void *>(&pin_library)), &module)
+			|| module == nullptr) {
+		if (!logged_failure) {
+			logged_failure = true;
+			std::fprintf(stderr, "scriptshot_native: GetModuleHandleExW(PIN) failed (GetLastError=%lu); the library may unload at shutdown\n",
+					static_cast<unsigned long>(GetLastError()));
+		}
+	}
 #else
 	Dl_info info;
-	if (dladdr(reinterpret_cast<const void *>(&pin_library), &info) && info.dli_fname != nullptr) {
-		(void)dlopen(info.dli_fname, RTLD_NOW | RTLD_NODELETE);
+	if (!dladdr(reinterpret_cast<const void *>(&pin_library), &info) || info.dli_fname == nullptr) {
+		if (!logged_failure) {
+			logged_failure = true;
+			std::fprintf(stderr, "scriptshot_native: dladdr() failed for pin_library; the library may unload at shutdown\n");
+		}
+		return;
+	}
+	if (dlopen(info.dli_fname, RTLD_NOW | RTLD_NODELETE) == nullptr) {
+		if (!logged_failure) {
+			logged_failure = true;
+			const char *err = dlerror();
+			std::fprintf(stderr, "scriptshot_native: dlopen(RTLD_NODELETE) failed (%s); the library may unload at shutdown\n",
+					err != nullptr ? err : "unknown error");
+		}
 	}
 #endif
 }
