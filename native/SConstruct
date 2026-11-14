@@ -6,7 +6,136 @@
 #
 # godot-cpp is a git submodule pinned to the release whose API JSON matches
 # Godot 4.7.2 (tools/check_extension_api.sh verifies that against a godot binary).
+
+# Shutdown SIGSEGV (Windows GUT exit 139 after a green summary; local --quit
+# too). The crash is not in our sources: we have no namespace/class/function
+# statics holding Godot types. It is godot-cpp's own function-local
+# `static const StringName` in GDCLASS::get_class_static() (and any other
+# static String / Variant / Packed*Array the bindings construct), whose
+# destructors run after Godot has deinitialized CORE and dlclosed this
+# library. Interface function pointers and the engine StringName table are
+# then invalid, so a destructor that calls into them SIGSEGVs; if the .so
+# has already been unmapped, RIP lands in a hole.
+#
+# These patches are applied here so a fresh submodule checkout (as CI does)
+# still gets them. They are not vendored in git; the godot-cpp submodule
+# stays at 10.0.0-stable. Both replacements are idempotent.
+#
+# 1. Mark get_class_static() names static (StringName(..., true)), the
+#    supported way to keep a StringName until process exit without
+#    unregistering from the engine table in its destructor.
+#    See https://github.com/godotengine/godot-cpp/issues/1678 and
+#    https://github.com/godotengine/godot-cpp/pull/1964
+# 2. After CORE deinitialize, flip builtin_destructors_enabled so leftover
+#    static destructors become no-ops instead of calling back into Godot.
+#    Combined with pin_library() in register_types.cpp (RTLD_NODELETE /
+#    GET_MODULE_HANDLE_EX_FLAG_PIN) so the .so stays mapped until exit.
+#    The process then reclaims that memory; nothing is leaked across runs.
+def scriptshot_patch_godot_cpp_shutdown():
+    import re
+    from pathlib import Path
+
+    root = Path(File("SConstruct").abspath).parent
+
+    def _replace_once(path: Path, old: str, new: str) -> None:
+        text = path.read_text()
+        if new in text:
+            return
+        if old not in text:
+            raise RuntimeError("scriptshot: pattern not found in %s: %r" % (path, old[:80]))
+        path.write_text(text.replace(old, new, 1))
+
+    wrapped = root / "godot-cpp/include/godot_cpp/classes/wrapped.hpp"
+    _replace_once(
+        wrapped,
+        'static const StringName string_name = StringName("Wrapped");',
+        'static const StringName string_name = StringName("Wrapped", true);',
+    )
+    _replace_once(
+        wrapped,
+        "static const ::godot::StringName string_name = ::godot::StringName(U## #m_class);",
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_class, true);",
+    )
+    _replace_once(
+        wrapped,
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_alias_for);",
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_alias_for, true);",
+    )
+
+    godot_hpp = root / "godot-cpp/include/godot_cpp/godot.hpp"
+    _replace_once(
+        godot_hpp,
+        "namespace internal {\n\nclass DocDataRegistration {",
+        "namespace internal {\n\n"
+        "// Scriptshot: cleared at the end of CORE deinitialize so leftover static\n"
+        "// StringName / Variant / Packed*Array destructors do not call into Godot\n"
+        "// after the engine's type tables are gone (process-exit SIGSEGV).\n"
+        "extern bool builtin_destructors_enabled;\n\n"
+        "class DocDataRegistration {",
+    )
+
+    godot_cpp = root / "godot-cpp/src/godot.cpp"
+    _replace_once(
+        godot_cpp,
+        "void GDExtensionBinding::deinitialize_level(void *p_userdata, GDExtensionInitializationLevel p_level) {",
+        "bool internal::builtin_destructors_enabled = true;\n\n"
+        "void GDExtensionBinding::deinitialize_level(void *p_userdata, GDExtensionInitializationLevel p_level) {",
+    )
+    _replace_once(
+        godot_cpp,
+        "\tif (level_initialized[p_level] == 0) {\n"
+        "\t\tEditorPlugins::deinitialize(p_level);\n"
+        "\t\tClassDB::deinitialize(p_level);\n"
+        "\t}\n"
+        "}\n",
+        "\tif (level_initialized[p_level] == 0) {\n"
+        "\t\tEditorPlugins::deinitialize(p_level);\n"
+        "\t\tClassDB::deinitialize(p_level);\n"
+        "\t}\n"
+        "\tif (p_level == GDEXTENSION_INITIALIZATION_CORE) {\n"
+        "\t\tinternal::builtin_destructors_enabled = false;\n"
+        "\t}\n"
+        "}\n",
+    )
+
+    guard = (
+        "\tif (!::godot::internal::builtin_destructors_enabled) {\n"
+        "\t\treturn;\n"
+        "\t}\n"
+    )
+    dtor_re = re.compile(
+        r"(~[A-Za-z0-9_]+\(\) \{\n)\t_method_bindings\.destructor\(&opaque\);\n(\})"
+    )
+    variant_dir = root / "godot-cpp/gen/src/variant"
+    for path in sorted(variant_dir.glob("*.cpp")):
+        text = path.read_text()
+        if "builtin_destructors_enabled" in text:
+            continue
+        new_text, count = dtor_re.subn(r"\1" + guard + r"\t_method_bindings.destructor(&opaque);\n\2", text)
+        if count:
+            path.write_text(new_text)
+
+    variant_cpp = root / "godot-cpp/src/variant/variant.cpp"
+    _replace_once(
+        variant_cpp,
+        "Variant::~Variant() {\n"
+        "\t::godot::gdextension_interface::variant_destroy(_native_ptr());\n"
+        "}\n",
+        "Variant::~Variant() {\n"
+        "\tif (!::godot::internal::builtin_destructors_enabled) {\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\t::godot::gdextension_interface::variant_destroy(_native_ptr());\n"
+        "}\n",
+    )
+
+scriptshot_patch_godot_cpp_shutdown()
+
 env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
+
+import sys
+if env["platform"] in ("linux", "android"):
+    env.Append(LIBS=["dl"])
 
 # MinGW-on-Windows clears SHLIBPREFIX and MSVC's tool leaves it empty, while a
 # Linux MinGW cross keeps the POSIX "lib" prefix. One prefix so both toolchains
