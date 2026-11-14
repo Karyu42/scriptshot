@@ -680,3 +680,31 @@ func test_a_stale_set_batch_only_is_a_noop_on_the_native_backend() -> void:
 		return
 	_assert_stale_set_batch_only_is_a_noop(_make_manager("native"))
 
+func _grow_owner_table_to_the_slot_limit(m: BulletManager) -> void:
+	# Slot 0 is unused; the packed field can address 1..65535. After that
+	# the next new slot would be 65536, which does not fit.
+	var n := BulletManager.OWNER_SLOT_MASK + 1
+	m._behaviors.resize(n)
+	m._hook_cache.resize(n)
+	m._hook_scripts.resize(n)
+	m._declared_checked.resize(n)
+	m._declared_scripts.resize(n)
+	m._update_override.resize(n)
+	m._owner_gen.resize(n)
+
+
+func test_the_65536th_register_returns_zero_and_a_freed_slot_is_usable_again() -> void:
+	var first := manager.register_behavior(Steer.new())
+	assert_gt(first, 0)
+	_grow_owner_table_to_the_slot_limit(manager)
+	assert_eq(manager._behaviors.size(), BulletManager.OWNER_SLOT_MASK + 1)
+	assert_eq(manager._owner_free.size(), 0)
+	var capped := manager.register_behavior(Steer.new())
+	assert_eq(capped, 0, "the 65,536th slot does not fit in the packed id")
+	assert_push_error("owner slot table is at the 65,536-slot limit")
+	assert_eq(manager.release_behavior(first), 0)
+	var again := manager.register_behavior(Steer.new())
+	assert_gt(again, 0, "a freed slot is usable after the cap is hit")
+	assert_ne(again, 0)
+	assert_eq(again & BulletManager.OWNER_SLOT_MASK, first & BulletManager.OWNER_SLOT_MASK)
+

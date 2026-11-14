@@ -627,6 +627,12 @@ func run_update_hooks(
 	var table_size := behaviors.size()
 	var mask := ((1 << slot_bits) - 1) if slot_bits > 0 else 0
 	var ran := false
+	# The hooked bench (and most weapons) walks many bullets of one owner in a
+	# row. Reuse the last validated packed id and its behaviour so the
+	# generation check and table lookup run once per owner, not once per bullet.
+	var last_id := 0
+	var last_slot := 0
+	var last_behavior: BulletBehavior = null
 	for k in hooked_count:
 		var i := hooked[k]
 		# A hook may have killed a later bullet in the list already, or reflected
@@ -637,29 +643,38 @@ func run_update_hooks(
 		if id == 0:
 			continue
 		var slot := id
-		var stale := false
-		if slot_bits > 0:
-			slot = id & mask
-			stale = (
-				slot <= 0
-				or slot >= table_size
-				or owner_gen[slot] != (id >> slot_bits)
-				or behaviors[slot] == null
-			)
+		var b: BulletBehavior = null
+		if slot_bits > 0 and id == last_id and last_behavior != null:
+			slot = last_slot
+			b = last_behavior
 		else:
-			stale = id >= table_size or id < 0
-		if stale:
-			# Only a hook writing garbage into `behavior`, or a stale released id
-			# that somehow kept its number, gets here: spawning an unknown id
-			# already yields a plain bullet. Drop the script rather than index out of range.
-			set_behavior(i, 0)
-			ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
-			continue
+			var stale := false
+			if slot_bits > 0:
+				slot = id & mask
+				stale = (
+					slot <= 0
+					or slot >= table_size
+					or owner_gen[slot] != (id >> slot_bits)
+					or behaviors[slot] == null
+				)
+			else:
+				stale = id >= table_size or id < 0
+			if stale:
+				# Only a hook writing garbage into `behavior`, or a stale released id
+				# that somehow kept its number, gets here: spawning an unknown id
+				# already yields a plain bullet. Drop the script rather than index out of range.
+				set_behavior(i, 0)
+				ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
+				continue
+			b = behaviors[slot]
+			last_id = id
+			last_slot = slot
+			last_behavior = b
 		var o := owner_layer[i]
 		if hook_owner != o:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
-		behaviors[slot].on_update(self, i, delta)
+		b.on_update(self, i, delta)
 		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot
