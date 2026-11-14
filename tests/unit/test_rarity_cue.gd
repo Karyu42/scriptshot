@@ -262,16 +262,32 @@ func test_cue_lifecycle_frees_halo_and_player() -> void:
 
 func test_legendary_duck_is_deferred_and_does_not_change_a_bus() -> void:
 	# INCOMPLETE / deferred until a music or world bus is part of the mix.
-	# Avoid the live audio server: Godot 4.7.2's headless Dummy driver can stall
-	# the GUT process on lock, bus edits, or play (issue #67). #70's lock did
-	# not fix it.
+	# Avoid lock / add_bus / remove_bus / play: Godot 4.7.2's headless Dummy
+	# driver can stall the GUT process on those calls (issue #67).
 	assert_false(RaritySting.DUCK_ACTIVE)
+	# Point duck I/O at Master through a volume stub so a future DUCK_ACTIVE
+	# flip is observable without writing to the live driver. get_bus_volume_db
+	# is a read of an existing bus, not a bus-list edit.
+	var master_idx := 0
+	var master_db := AudioServer.get_bus_volume_db(master_idx)
+	RaritySting.stub_duck_bus = master_idx
+	RaritySting.stub_bus_volumes = {master_idx: master_db}
 	var sting := RaritySting.new()
 	sting.tier = RarityCue.TIER_ELITE_LEGENDARY
-	# Exercise the duck path without creating a player or calling play().
+	# Check immediately: _process(DUCK_SECONDS) would release a real duck and
+	# restore volumes, hiding a DUCK_ACTIVE flip.
 	sting._begin_duck()
+	assert_false(sting.ducking())
+	assert_eq(RaritySting._duck_bus, -1)
+	assert_eq(RaritySting._duck_depth, 0)
+	assert_almost_eq(RaritySting._bus_volume_db(master_idx), master_db, 0.01)
+	assert_almost_eq(AudioServer.get_bus_volume_db(master_idx), master_db, 0.01)
 	sting._process(RaritySting.DUCK_SECONDS)
 	assert_false(sting.ducking())
+	assert_eq(RaritySting._duck_bus, -1)
+	assert_eq(RaritySting._duck_depth, 0)
+	assert_almost_eq(RaritySting._bus_volume_db(master_idx), master_db, 0.01)
+	assert_almost_eq(AudioServer.get_bus_volume_db(master_idx), master_db, 0.01)
 	sting.free()
 
 
