@@ -22,6 +22,14 @@ GODOT="${GODOT:-godot}"
 # in the import or test output is a hard failure.
 ERROR_PATTERN='SCRIPT ERROR|Parse Error|Failed to load script|Failed loading resource|Failed to instantiate|Failed to load GDExtension'
 
+# Lines lua-gdextension prints when the editor (here: --import) ran a res://*.lua
+# chunk and it raised. The binding runs any .lua that ends in `return { ... }` while
+# scanning, outside the sandbox, so a weapon script saved as .lua would error on its
+# first top-level sandbox global (state, spawn, TAU, sense). Bundled weapon scripts
+# are .lua.txt for that reason (ScriptLibrary.BUNDLED_EXT). Checked only in the
+# import log (tests print Lua errors on purpose) and by content, never by exit code.
+IMPORT_LUA_PATTERN='LuaScript\.cpp|^ERROR: \[string "res://[^"]*"\]'
+
 LOG_DIR="$(mktemp -d)"
 trap 'rm -rf "$LOG_DIR"' EXIT
 
@@ -56,6 +64,11 @@ if [ "$import_status" -ne 0 ]; then
 	failed=1
 fi
 if scan_log "godot --import" "$LOG_DIR/import.log"; then
+	failed=1
+fi
+if grep -a -E "$IMPORT_LUA_PATTERN" "$LOG_DIR/import.log" >"$LOG_DIR/matches.txt"; then
+	echo "::error:: godot --import ran a res:// Lua file and it raised (save weapon scripts as .lua.txt):" >&2
+	cat "$LOG_DIR/matches.txt" >&2
 	failed=1
 fi
 

@@ -3,34 +3,40 @@ extends RegularEnemy
 ## One Summoner add (issue #81). Common and rare: a Swarmer body (radius 8,
 ## `kind` swarmer) with the HP the affix gives it (1: one BasicShot hit).
 ## Legendary (Hydra): a Drifter body (radius 16, `kind` drifter, 90 px/s) with
-## 105 HP that chases like any Drifter (`holds_flank` false). A flank add spawns on a
-## flank of the summoner-to-player line and drifts toward the player on that
-## side, so it never parks in the player's firing lane: it aims at a point
-## FLANK_STANDOFF px off the player on its own side, perpendicular to that
-## line, and once it is near closes to CONTACT_HOLD px on the same side, which
-## is inside contact range (player 14 + add 8) but off the bullet path. No erratic jitter, no drops, no
-## cue, no shard. Contact damage and the safe-disk rules are RegularEnemy's.
+## 105 HP that chases like any Drifter (`holds_flank` false). A flank add
+## spawns on a flank of the summoner-to-player line, jittered across the
+## 60° arc, then drifts in to a contact hold around the player: its side
+## (±90° off the player-to-elite line) plus its hashed arc offset, at
+## player radius + add radius + CONTACT_GAP (20 px of clear air outside
+## the player's edge). Adds stay spread and out of the firing lane. Overlap
+## of up to about half a radius is fine; there is no separation steering.
+## With no live summoner the hold keeps the same contact distance along
+## the last lane. No erratic jitter, no drops, no cue, no shard. Contact
+## damage and the safe-disk rules are RegularEnemy's.
 
-## Drift speed toward the player. Slower than a chunk Swarmer (140).
+## Drift speed toward the hold. Slower than a chunk Swarmer (140).
 const DRIFT_SPEED := 120.0
-## How far off the lane (player-to-summoner line) the add holds while it
-## approaches. 8 px body + 4 px bullet + margin.
-const FLANK_STANDOFF := 40.0
-## Closer than FLANK_STANDOFF + CLOSE_IN to the player, the add heads for the
-## contact point instead.
-const CLOSE_IN := 12.0
-## Contact point offset: under player radius 14 + add radius 8, so contact
-## damage connects, and 20 px off a shot fired along the lane.
-const CONTACT_HOLD := 20.0
+## Clear air between the player's edge and the add's edge at the contact
+## hold, in px. Centre-to-centre distance is player radius + add radius
+## plus this gap.
+const CONTACT_GAP := 20.0
 
-## The elite that spawned this add. Null or freed: plain drift at the player.
+## The elite that spawned this add. Null or freed: hold off the player
+## along the last lane, if any.
 var summoner: Node2D
 ## +1 or -1: which side of the summoner-to-player line this add keeps.
 var side := 1.0
 var summon_hp := 1.0
-## True: drift to the flank point and hold off the lane. False: RegularEnemy
-## movement for its archetype (the Hydra's Drifter adds).
+## True: drift to this add's own contact hold and stay off the lane. False:
+## RegularEnemy movement for its archetype (the Hydra's Drifter adds).
 var holds_flank := true
+## Per-serial hashed flank-arc offset, in radians, copied at spawn so the
+## hold uses the same angle as the spawn.
+var flank_jitter := 0.0
+
+## Last non-zero hold direction, kept so a freed summoner does not drop
+## the lane and send the add onto the player's centre.
+var _cached_hold_dir := Vector2.ZERO
 
 
 func _apply_stats() -> void:
@@ -45,34 +51,67 @@ func _move_speed() -> float:
 	return DRIFT_SPEED
 
 
+## Centre-to-centre contact hold: 20 px outside the player's edge, so
+## the add's circle sits CONTACT_GAP past the player's circle.
+func contact_offset() -> float:
+	return RegularEnemy.PLAYER_RADIUS + body_radius + CONTACT_GAP
+
+
 func _chase(delta: float, to_player: Vector2) -> void:
 	if not holds_flank:
 		super._chase(delta, to_player)
 		return
 	if player == null:
 		return
-	var hold := FLANK_STANDOFF
-	if to_player.length() <= FLANK_STANDOFF + CLOSE_IN:
-		hold = CONTACT_HOLD
-	var to_target := flank_point(hold) - global_position
+	# Wall-correct the hold itself: in a tight alcove the raw contact point
+	# can sit inside a wall. Then slide and keep the body off walls too.
+	var hold := _keep_off_walls(flank_point())
+	var to_target := hold - global_position
 	if to_target.length_squared() > 0.000001:
 		_heading = to_target.normalized()
 	var step := _heading * _move_speed() * delta
 	if step.length_squared() > to_target.length_squared():
 		step = to_target
-	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, player.global_position))
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, hold))
 
 
-## `offset` px off the player, perpendicular to the summoner-to-player line,
-## on this add's side. With no live summoner the lane is gone and the point is
-## the player.
-func flank_point(offset: float = FLANK_STANDOFF) -> Vector2:
+## Unit direction from the player to this add's hold: the add's side
+## (±90° off the player-to-elite / elite-to-player line) plus its hashed
+## arc offset. If the elite is gone, reuse the last valid direction, or
+## the add's own bearing from the player, so the hold is never the player's
+## centre.
+func _hold_dir() -> Vector2:
+	# is_instance_valid first: `as` on a freed summoner is an engine error
+	# and can abort this function, which would return ZERO and send the add
+	# onto the player.
+	if summoner != null and is_instance_valid(summoner):
+		var elite := summoner as EliteEnemy
+		if elite != null:
+			var dir := elite.summon_flank_dir(side, flank_jitter)
+			if dir != Vector2.ZERO:
+				_cached_hold_dir = dir
+				return dir
+	if _cached_hold_dir != Vector2.ZERO:
+		return _cached_hold_dir
+	if player != null:
+		var from_player := global_position - player.global_position
+		if from_player.length_squared() > 0.000001:
+			return from_player.normalized()
+	return Vector2.ZERO
+
+
+## Contact hold around the player at `offset` (defaults to contact_offset)
+## along _hold_dir. The hold stays at contact distance even if the elite
+## has been freed.
+func flank_point(offset: float = -1.0) -> Vector2:
+	if offset < 0.0:
+		offset = contact_offset()
 	if player == null:
 		return global_position
-	var normal := lane_normal()
-	if normal == Vector2.ZERO:
+	var dir := _hold_dir()
+	if dir == Vector2.ZERO:
 		return player.global_position
-	return player.global_position + normal * side * offset
+	return player.global_position + dir * offset
 
 
 ## Unit normal of the summoner-to-player line (left of the direction to the

@@ -28,3 +28,8 @@
 
 # Vendored third-party code: keep out of language stats and diffs
 addons/gut/** linguist-vendored
+
+# Bundled weapon scripts (starters, Codex pages, the web smoke shot) are Lua
+# saved as .lua.txt so the Lua binding never runs them in the editor
+# (scripting/editor/script_library.gd BUNDLED_EXT). Highlight them as Lua.
+*.lua.txt text eol=lf linguist-language=Lua
