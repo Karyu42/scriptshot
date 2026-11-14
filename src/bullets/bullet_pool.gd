@@ -630,8 +630,13 @@ func run_update_hooks(
 	# The hooked bench (and most weapons) walks many bullets of one owner in a
 	# row. Reuse the last validated packed id and its behaviour so the
 	# generation check and table lookup run once per owner, not once per bullet.
+	# last_gen is the slot's owner_gen at that check; a mid-pass release or
+	# re-register bumps it, so a hook that writes the just-released id onto a
+	# later bullet falls through to the stale path instead of reusing the
+	# released behaviour.
 	var last_id := 0
 	var last_slot := 0
+	var last_gen := 0
 	var last_behavior: BulletBehavior = null
 	for k in hooked_count:
 		var i := hooked[k]
@@ -644,7 +649,12 @@ func run_update_hooks(
 			continue
 		var slot := id
 		var b: BulletBehavior = null
-		if slot_bits > 0 and id == last_id and last_behavior != null:
+		if (
+			slot_bits > 0
+			and id == last_id
+			and last_behavior != null
+			and owner_gen[last_slot] == last_gen
+		):
 			slot = last_slot
 			b = last_behavior
 		else:
@@ -660,9 +670,10 @@ func run_update_hooks(
 			else:
 				stale = id >= table_size or id < 0
 			if stale:
-				# Only a hook writing garbage into `behavior`, or a stale released id
-				# that somehow kept its number, gets here: spawning an unknown id
-				# already yields a plain bullet. Drop the script rather than index out of range.
+				# Only a hook writing garbage into `behavior`, or a stale released
+				# id (including one written mid-pass after release), gets here:
+				# spawning an unknown id already yields a plain bullet. Drop the
+				# script rather than index out of range.
 				set_behavior(i, 0)
 				ScriptWarnings.warn("BulletPool.behavior", "BulletPool: a bullet had the unknown behavior id %d, it is now a plain bullet" % id)
 				continue
@@ -670,6 +681,9 @@ func run_update_hooks(
 			last_id = id
 			last_slot = slot
 			last_behavior = b
+			# owner_gen is empty when this is called without packed ids (slot_bits == 0).
+			if slot_bits > 0:
+				last_gen = owner_gen[slot]
 		var o := owner_layer[i]
 		if hook_owner != o:
 			hook_owner = o

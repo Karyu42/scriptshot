@@ -43,6 +43,39 @@ class Batch:
 		calls += 1
 
 
+## Releases its owner from on_update, then writes that packed id onto a later
+## bullet in the same pass (set_behavior or a raw array write).
+class StaleRewriter:
+	extends BulletBehavior
+	var ticks := 0
+	var manager: BulletManager
+	var owner_id := 0
+	var via_set_behavior := true
+	var wrote := false
+
+	func _init() -> void:
+		hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+
+	func on_update(pool: BulletPool, index: int, _delta: float) -> void:
+		ticks += 1
+		if wrote:
+			return
+		var later := -1
+		for k in pool.hooked_count:
+			var i: int = pool.hooked[k]
+			if i != index:
+				later = i
+				break
+		manager.release_behavior(owner_id)
+		if later < 0:
+			return
+		wrote = true
+		if via_set_behavior:
+			pool.set_behavior(later, owner_id)
+		else:
+			pool.behavior[later] = owner_id
+
+
 func before_each() -> void:
 	ScriptWarnings.reset()
 	_drained.clear()
@@ -693,18 +726,64 @@ func _grow_owner_table_to_the_slot_limit(m: BulletManager) -> void:
 	m._owner_gen.resize(n)
 
 
-func test_the_65536th_register_returns_zero_and_a_freed_slot_is_usable_again() -> void:
-	var first := manager.register_behavior(Steer.new())
+func _assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(m: BulletManager) -> void:
+	var first := m.register_behavior(Steer.new())
 	assert_gt(first, 0)
-	_grow_owner_table_to_the_slot_limit(manager)
-	assert_eq(manager._behaviors.size(), BulletManager.OWNER_SLOT_MASK + 1)
-	assert_eq(manager._owner_free.size(), 0)
-	var capped := manager.register_behavior(Steer.new())
+	_grow_owner_table_to_the_slot_limit(m)
+	assert_eq(m._behaviors.size(), BulletManager.OWNER_SLOT_MASK + 1)
+	assert_eq(m._owner_free.size(), 0)
+	var capped := m.register_behavior(Steer.new())
 	assert_eq(capped, 0, "the 65,536th slot does not fit in the packed id")
-	assert_push_error("owner slot table is at the 65,536-slot limit")
-	assert_eq(manager.release_behavior(first), 0)
-	var again := manager.register_behavior(Steer.new())
+	assert_push_error("65,535 usable slots")
+	assert_eq(m.release_behavior(first), 0)
+	var again := m.register_behavior(Steer.new())
 	assert_gt(again, 0, "a freed slot is usable after the cap is hit")
 	assert_ne(again, 0)
 	assert_eq(again & BulletManager.OWNER_SLOT_MASK, first & BulletManager.OWNER_SLOT_MASK)
+
+
+func test_the_65536th_register_returns_zero_and_a_freed_slot_is_usable_again() -> void:
+	_assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(manager)
+
+
+func test_the_65536th_register_returns_zero_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(_make_manager("native"))
+
+
+func _assert_a_released_id_written_mid_pass_is_rejected(m: BulletManager, via_set_behavior: bool) -> void:
+	ScriptWarnings.reset()
+	var writer := StaleRewriter.new()
+	writer.manager = m
+	writer.via_set_behavior = via_set_behavior
+	var owner := m.register_behavior(writer)
+	writer.owner_id = owner
+	var first := m.spawn(_shot(owner))
+	var later := m.spawn(_shot(owner))
+	assert_gte(first, 0)
+	assert_gte(later, 0)
+	assert_ne(first, later)
+	m.step(DT)
+	assert_eq(writer.ticks, 1, "the released behaviour must not run again on the later bullet")
+	assert_eq(m.pool.behavior[later], 0, "the stale id is dropped")
+	assert_eq(m.pool.behavior[first], 0)
+	assert_push_warning("unknown behavior id %d" % owner)
+
+
+func _assert_stale_id_written_after_release_is_rejected(m: BulletManager) -> void:
+	_assert_a_released_id_written_mid_pass_is_rejected(m, true)
+	_assert_a_released_id_written_mid_pass_is_rejected(m, false)
+
+
+func test_a_hook_that_writes_a_just_released_id_is_rejected() -> void:
+	_assert_stale_id_written_after_release_is_rejected(manager)
+
+
+func test_a_hook_that_writes_a_just_released_id_is_rejected_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_stale_id_written_after_release_is_rejected(_make_manager("native"))
 

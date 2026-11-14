@@ -21,9 +21,10 @@ const BATCH_WARN_PB := 4
 ## Owner ids are (generation << OWNER_SLOT_BITS) | slot. Generation 0 is the
 ## first life of a slot, so the first ids are 1, 2, 3, ... until that slot is
 ## reused. Generation is 15 bits so the packed id always fits in a signed
-## 32-bit int (the pool and NativeBulletSim store `behavior` as int32). After
-## 32,767 reuses the generation wraps; release strips all stale shots, so the
-## wrapped id cannot collide with a live one. The sign bit stays clear.
+## 32-bit int (the pool and NativeBulletSim store `behavior` as int32). The
+## sign bit stays clear. Release strips every shot still carrying that packed
+## id, so a stale handle can alias a live one only if it is held across a
+## full 15-bit wrap (32,767 reuses of that slot).
 const OWNER_SLOT_BITS := 16
 const OWNER_SLOT_MASK := (1 << OWNER_SLOT_BITS) - 1
 const OWNER_GEN_MASK := 0x7fff
@@ -321,7 +322,7 @@ func register_behavior(behavior: BulletBehavior) -> int:
 		# Slot 0 is unused; 1..65535 are the packed 16-bit slot field, so a
 		# packed id can never be 0 (0 means a plain bullet).
 		if slot > OWNER_SLOT_MASK:
-			push_error("BulletManager: owner slot table is at the 65,536-slot limit")
+			push_error("BulletManager: owner slot table is at the 65,535 usable slots cap")
 			return 0
 		assert(slot > 0)
 		_behaviors.append(behavior)
