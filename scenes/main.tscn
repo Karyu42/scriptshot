@@ -19,7 +19,6 @@
 [ext_resource type="Script" path="res://src/world/slice_progress.gd" id="16_progress"]
 [ext_resource type="Script" path="res://src/ui/slice_hud.gd" id="17_hud"]
 [ext_resource type="Script" path="res://src/world/slice_packs.gd" id="18_packs"]
-[ext_resource type="Script" path="res://src/world/slice_room_d.gd" id="18_roomd"]
 [ext_resource type="Script" path="res://src/world/lesson_pad.gd" id="17_pad"]
 [ext_resource type="Script" path="res://src/world/lesson_plate.gd" id="18_plate"]
 [ext_resource type="PackedScene" path="res://scenes/warden.tscn" id="16_warden"]
@@ -43,9 +42,6 @@ script = ExtResource("17_hud")
 
 [node name="SlicePacks" type="Node2D" parent="."]
 script = ExtResource("18_packs")
-
-[node name="SliceRoomD" type="Node2D" parent="."]
-script = ExtResource("18_roomd")
 
 [node name="Dummies" type="Node2D" parent="."]
 
