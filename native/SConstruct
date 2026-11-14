@@ -159,17 +159,40 @@ library = env.SharedLibrary(
 env.NoCache(library)
 
 
+# GodotCPPBindings' sources (godotcpp.py) do not include our hooks file, so
+# a change to scriptshot_binding_hooks.py would not regenerate gen/. Attach
+# it here, without editing the submodule: when the hooks change, the generated
+# builtin sources are out of date and the bindings action runs again.
+_hooks_file = File("scriptshot_binding_hooks.py")
+_variant_nodes = [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_builtin_sources(_native_root)]
+env.Depends(_variant_nodes, _hooks_file)
+
+
 def _verify_destructor_guards(target, source, env):
     assert_destructor_guards(_native_root)
+    Path(str(target[0])).write_text("ok\n")
     return None
 
 
-# Post-action on the generated sources: runs after GodotCPPBindings writes
-# them and before those files are treated as built for compilation. Fails
-# the build if the guarded ~Type() count does not match extension_api.
-_verify_action = Action(_verify_destructor_guards, "Checking scriptshot destructor guards...")
-for name in guarded_builtin_sources(_native_root):
-    env.AddPostAction(env.File("godot-cpp/gen/src/variant/" + name), _verify_action)
-env.Depends(library, [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_builtin_sources(_native_root)])
+# Always-run guard count, before linking. Generation post-actions do not run
+# on a plain rerun when gen/ already exists (or when CacheDir restores it),
+# so a failed or stale generation could otherwise be linked. This step sees
+# the current gen/ every build and fails if the count is wrong.
+_guard_stamp = env.Command(
+    "godot-cpp/gen/.scriptshot_dtor_guards_ok",
+    _variant_nodes + [_hooks_file],
+    Action(_verify_destructor_guards, "Checking scriptshot destructor guards..."),
+)
+env.AlwaysBuild(_guard_stamp)
+env.NoCache(_guard_stamp)
+# Requires is order-only: the check always runs first, but a successful
+# stamp (same "ok" content) does not force a relink. Depends alone on the
+# shared library is not enough — with -j, libgodot-cpp.a can archive a
+# just-compiled unguarded .o in parallel with a failing check.
+_godot_cpp_lib = File("godot-cpp/bin/libgodot-cpp" + env["suffix"] + env["LIBSUFFIX"])
+env.Depends(library, _guard_stamp)
+env.Depends(_godot_cpp_lib, _guard_stamp)
+env.Requires(library, _guard_stamp)
+env.Requires(_godot_cpp_lib, _guard_stamp)
 
 Default(library)
