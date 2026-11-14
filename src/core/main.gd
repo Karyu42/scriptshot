@@ -38,6 +38,7 @@ var _progress: SliceProgress
 var _slice_hud: SliceHud
 var _packs: SlicePacks
 var _room_d: SliceRoomD
+var _hydra_alcove: SliceHydraAlcove
 var _warden: Warden
 
 
@@ -65,6 +66,7 @@ func _ready() -> void:
 	_bind_slice_hud()
 	_bind_slice_packs()
 	_bind_slice_room_d()
+	_bind_slice_hydra_alcove()
 	WorldQuery.bind_bullets(_bullets)
 	_bind_warden()
 	_player.died.connect(_on_player_died)
@@ -161,6 +163,13 @@ func _bind_slice_room_d() -> void:
 	if _room_d == null or _slice == null:
 		return
 	_room_d.bind(_player, _progress, _save, _save.world_seed if _save != null else 0)
+
+
+func _bind_slice_hydra_alcove() -> void:
+	_hydra_alcove = get_node_or_null("SliceHydraAlcove") as SliceHydraAlcove
+	if _hydra_alcove == null or _slice == null:
+		return
+	_hydra_alcove.bind(_player, _save, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:

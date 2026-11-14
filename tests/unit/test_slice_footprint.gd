@@ -151,6 +151,11 @@ func test_main_has_the_ribbon_and_keeps_the_cold_start() -> void:
 	assert_not_null(room_d)
 	assert_true(room_d.elite_alive())
 	assert_true(room_d.escort_alive())
+	var alcove := main.get_node("SliceHydraAlcove") as SliceHydraAlcove
+	assert_not_null(alcove)
+	assert_true(alcove.hydra_alive())
+	assert_eq(alcove.hydra.rarity, EnemyKinds.RARITY_LEGENDARY)
+	assert_eq(alcove.hydra.signature_name, SliceHydraAlcove.SIGNATURE)
 	var packs := main.get_node("SlicePacks") as SlicePacks
 	assert_not_null(packs)
 	assert_eq(packs.pack_alive(SlicePacks.PACK_DRIFTERS), 3)
@@ -163,6 +168,10 @@ func test_main_has_the_ribbon_and_keeps_the_cold_start() -> void:
 		if body.is_in_group(SliceRoomD.GROUP):
 			assert_true(SliceLayout.in_footprint(body.anchor), "scripted room D sits in D (%s)" % body.anchor)
 			assert_eq(SliceLayout.room_at(body.anchor), SliceLayout.ROOM_D)
+			continue
+		if body.is_in_group(SliceHydraAlcove.GROUP):
+			assert_true(SliceLayout.in_footprint(body.anchor), "scripted hydra sits in the alcove (%s)" % body.anchor)
+			assert_eq(SliceLayout.room_at(body.anchor), SliceLayout.ROOM_ALCOVE)
 			continue
 		if body.is_in_group(SlicePacks.GROUP):
 			assert_true(SliceLayout.in_footprint(body.anchor), "scripted packs sit in C (%s)" % body.anchor)

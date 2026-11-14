@@ -18,6 +18,10 @@ const GROUP_ELITE := &"elites"
 const ELITE_HP := RegularEnemy.DRIFTER_HP * 1.0 * 2.5
 ## T0 rare: 30 × 1.0 × 4 (room D).
 const RARE_HP := RegularEnemy.DRIFTER_HP * 1.0 * 4.0
+## T0 legendary (Hydra): 30 × 7 = 210, speed 99, wake 800 (vertical-slice §4).
+const LEGENDARY_HP := RegularEnemy.DRIFTER_HP * 7.0
+const LEGENDARY_SPEED := 99.0
+const LEGENDARY_WAKE_RADIUS := 800.0
 const COMMON_SPEED_MUL := 1.0
 ## Rare Bulwark (spawning §3.4 / vertical-slice §4). Common intensity is 120°
 ## with no turn cap; this slice only places the rare intensity.
@@ -56,6 +60,16 @@ var grants_shard := false
 ## Room D sets it to the G4 gate so the body wakes as the player crosses G4,
 ## which is farther than WAKE_RADIUS from the room centre.
 var wake_x := INF
+## When non-empty, also wake once the player's centre is inside this rect.
+## The Hydra uses the alcove room rect (vertical-slice §2 / GD call).
+var wake_rect := Rect2()
+## First-generation Hydra halves keep Splitting so they split once more.
+## Second-generation halves do not. Natural Splitting elites leave this false.
+var halves_resplit := false
+## Base HP / speed a half is 40% / ×1.3 of. Unset (≤ 0) falls back to the
+## common elite numbers so existing Splitting tests stay at 30 HP / 117 px/s.
+var half_base_hp := 0.0
+var half_base_speed := 0.0
 ## When true, the Summoner timer starts on wake and does not tick while
 ## asleep. Room D sets this so the body does not summon from room S. The
 ## Herald and natural elites keep the existing (timer-from-spawn) behaviour.
@@ -77,6 +91,10 @@ var _summon_kind := ARCH_SWARMER
 var _summon_serial := 0
 var _summons: Array[RegularEnemy] = []
 var _glyph := EliteCue.GLYPH_CIRCLE
+## One glyph per affix, for the rare row's two-glyph draw (square = Defensive,
+## circle = Spawn). Built in configure_elite, applied in _ready, off the
+## per-frame path.
+var _glyphs: Array[int] = []
 
 
 func configure_elite(
@@ -118,10 +136,25 @@ func configure_elite(
 		# Prefer Summoner / Splitting for the column and half stats.
 		if _affix_def == null or id == AffixCatalog.SUMMONER or id == AffixCatalog.SPLITTING:
 			_affix_def = def
+	_glyphs = []
+	for id in affixes:
+		var group := StringName()
+		if id == AffixCatalog.BULWARK:
+			group = AffixDef.GROUP_DEFENSIVE
+		else:
+			var def := _load_affix(id)
+			if def == null:
+				continue
+			group = def.group
+		var kind := EliteCue.glyph_kind(group)
+		if not _glyphs.has(kind):
+			_glyphs.append(kind)
 	if has_affix(AffixCatalog.BULWARK):
 		_glyph = EliteCue.glyph_kind(AffixDef.GROUP_DEFENSIVE)
 	elif _affix_def != null:
 		_glyph = EliteCue.glyph_kind(_affix_def.group)
+	elif not _glyphs.is_empty():
+		_glyph = _glyphs[0]
 	var chunk_pos := WorldGen.chunk_of(p_spawn)
 	if p_encounter >= 0:
 		chunk_pos = p_chunk
@@ -152,6 +185,8 @@ func _load_affix(id: StringName) -> AffixDef:
 
 
 func body_hp() -> float:
+	if rarity == EnemyKinds.RARITY_LEGENDARY:
+		return LEGENDARY_HP
 	if rarity == EnemyKinds.RARITY_RARE:
 		return RARE_HP
 	return ELITE_HP
@@ -186,6 +221,8 @@ func _ready() -> void:
 	cue = EliteCue.new()
 	cue.setup(cue_tier())
 	cue.glyph = _glyph
+	if not _glyphs.is_empty():
+		cue.glyphs = _glyphs
 	if signature_name != "":
 		cue.signature_name = signature_name
 	cue.try_acquire()
@@ -208,6 +245,8 @@ func _physics_process(delta: float) -> void:
 	if _alive and player != null and is_instance_valid(player) and not woken:
 		if is_finite(wake_x) and player.global_position.x >= wake_x:
 			woken = true
+		if wake_rect.size != Vector2.ZERO and wake_rect.has_point(player.global_position):
+			woken = true
 	if _alive and player != null and is_instance_valid(player) and has_affix(AffixCatalog.BULWARK) and _hurtbox != null:
 		var turn := BULWARK_RARE_TURN if rarity == EnemyKinds.RARITY_RARE else 0.0
 		_hurtbox.face(player.global_position, turn, delta)
@@ -224,6 +263,12 @@ func _physics_process(delta: float) -> void:
 	queue_redraw()
 
 
+func _wake_radius() -> float:
+	if is_half or rarity != EnemyKinds.RARITY_LEGENDARY:
+		return super._wake_radius()
+	return LEGENDARY_WAKE_RADIUS
+
+
 func _move_speed() -> float:
 	return _speed
 
@@ -236,10 +281,12 @@ func _apply_stats() -> void:
 		if _affix_def != null:
 			fraction = _affix_def.hp_fraction
 			mul = _affix_def.speed_mul
+		var base_hp := half_base_hp if half_base_hp > 0.0 else ELITE_HP
+		var base_speed := half_base_speed if half_base_speed > 0.0 else RegularEnemy.DRIFTER_SPEED
 		body_radius = HALF_RADIUS
-		_speed = RegularEnemy.DRIFTER_SPEED * mul
+		_speed = base_speed * mul
 		_fill = DRIFTER_FILL
-		health.max_hp = ELITE_HP * fraction
+		health.max_hp = base_hp * fraction
 		health.hp = health.max_hp
 		health.invulnerability_time = 0.0
 		health.regen_enabled = false
@@ -247,7 +294,10 @@ func _apply_stats() -> void:
 		_hurtbox.layer = Layers.ENEMY
 		_hurtbox.active = true
 		return
-	_speed = RegularEnemy.DRIFTER_SPEED * COMMON_SPEED_MUL
+	if rarity == EnemyKinds.RARITY_LEGENDARY:
+		_speed = LEGENDARY_SPEED
+	else:
+		_speed = RegularEnemy.DRIFTER_SPEED * COMMON_SPEED_MUL
 	health.max_hp = body_hp()
 	health.hp = health.max_hp
 	health.invulnerability_time = 0.0
@@ -285,7 +335,7 @@ func _on_died() -> void:
 	if _death_handled:
 		return
 	_death_handled = true
-	if not is_half and has_affix(AffixCatalog.SPLITTING):
+	if has_affix(AffixCatalog.SPLITTING):
 		_spawn_halves()
 	if grants_shard:
 		shard_dropped.emit()
@@ -464,17 +514,22 @@ func _summon_ray_blocked(
 
 
 func _spawn_halves() -> void:
-	if is_half:
-		return
 	var n := 2
-	if _affix_def != null:
-		n = maxi(_affix_def.halves, 0)
+	# _affix_def is Summoner on the Hydra (Splitting + Summoner), whose
+	# halves count is 0. Always read the count from the Splitting def.
+	var splitting := _load_affix(AffixCatalog.SPLITTING)
+	if splitting != null:
+		n = maxi(splitting.halves, 0)
 	var parent := get_parent()
 	if parent == null or n <= 0:
 		return
 	var packed := load("res://scenes/elite_enemy.tscn") as PackedScene
 	if packed == null:
 		return
+	# Only the original Hydra (halves_resplit, not itself a half) hands
+	# Splitting to its children so they split once more. Those children
+	# leave halves_resplit false, so the second generation does not.
+	var children_resplit := halves_resplit and not is_half
 	var perp := Vector2(-_heading.y, _heading.x)
 	if perp.length_squared() <= 0.000001:
 		perp = Vector2.UP
@@ -489,6 +544,15 @@ func _spawn_halves() -> void:
 		if half == null:
 			continue
 		half.name = "HeraldHalf%d" % i
+		half.half_base_hp = health.max_hp
+		half.half_base_speed = _speed
 		half.configure_elite(AffixCatalog.SPLITTING, pos, pos, world_seed, player, false, true)
+		if children_resplit:
+			# configure_elite strips affixes on halves (natural Splitting
+			# must not resplit). Restore Splitting only for Hydra's first
+			# generation; they do not get Summoner.
+			half.affixes = [AffixCatalog.SPLITTING]
+			half.affix = AffixCatalog.SPLITTING
 		half.woken = true
+		half.grants_shard = false
 		parent.add_child(half)

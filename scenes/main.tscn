@@ -1,4 +1,4 @@
-[gd_scene load_steps=24 format=3]
+[gd_scene load_steps=25 format=3]
 
 [ext_resource type="Script" path="res://src/core/main.gd" id="1_main"]
 [ext_resource type="Script" path="res://src/world/open_ground.gd" id="2_ground"]
@@ -20,6 +20,7 @@
 [ext_resource type="Script" path="res://src/ui/slice_hud.gd" id="17_hud"]
 [ext_resource type="Script" path="res://src/world/slice_packs.gd" id="18_packs"]
 [ext_resource type="Script" path="res://src/world/slice_room_d.gd" id="18_roomd"]
+[ext_resource type="Script" path="res://src/world/slice_hydra_alcove.gd" id="19_hydra"]
 [ext_resource type="Script" path="res://src/world/lesson_pad.gd" id="17_pad"]
 [ext_resource type="Script" path="res://src/world/lesson_plate.gd" id="18_plate"]
 [ext_resource type="PackedScene" path="res://scenes/warden.tscn" id="16_warden"]
@@ -46,6 +47,9 @@ script = ExtResource("18_packs")
 
 [node name="SliceRoomD" type="Node2D" parent="."]
 script = ExtResource("18_roomd")
+
+[node name="SliceHydraAlcove" type="Node2D" parent="."]
+script = ExtResource("19_hydra")
 
 [node name="Dummies" type="Node2D" parent="."]
 
