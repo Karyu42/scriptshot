@@ -1235,6 +1235,7 @@ jobs:
         timeout-minutes: 8
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SCRIPTSHOT_CRASH_LOCATOR: "1"
         run: |
           mkdir -p reports
           ./tools/run_tests.sh -gjunit_xml_file="res://reports/gut-junit.xml" 2>&1 | tee reports/gut.log
