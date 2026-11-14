@@ -168,8 +168,7 @@ func shutdown() -> void:
 	# Stop before dropping the stream so the audio server is not left
 	# mixing a generator that is about to be freed.
 	if _player != null and is_instance_valid(_player):
-		if _player.playing:
-			_player.stop()
+		_player.stop()
 	_playback = null
 	if _player != null and is_instance_valid(_player):
 		_player.stream = null

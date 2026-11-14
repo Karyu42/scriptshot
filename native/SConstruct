@@ -147,12 +147,6 @@ if env["platform"] in ("linux", "android"):
 if env["platform"] == "linux":
     # So an opt-in crash locator can print function names from a backtrace.
     env.Append(LINKFLAGS=["-rdynamic"])
-# Windows debug builds: write a PDB and a map next to the DLL so a later
-# CI artifact can name an offset. CI currently uploads only the .dll.
-if env["platform"] == "windows" and env["target"] == "template_debug" and env.get("MSVC_VERSION"):
-    env.Append(CCFLAGS=["/Zi"])
-    env.Append(LINKFLAGS=["/DEBUG", "/MAP"])
-
 # MinGW-on-Windows clears SHLIBPREFIX and MSVC's tool leaves it empty, while a
 # Linux MinGW cross keeps the POSIX "lib" prefix. One prefix so both toolchains
 # write the filename scriptshot_native.gdextension lists.
