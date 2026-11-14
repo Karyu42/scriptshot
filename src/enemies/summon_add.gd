@@ -34,6 +34,10 @@ var holds_flank := true
 ## hold uses the same angle as the spawn.
 var flank_jitter := 0.0
 
+## Last non-zero hold direction, kept so a freed summoner does not drop
+## the lane and send the add onto the player's centre.
+var _cached_hold_dir := Vector2.ZERO
+
 
 func _apply_stats() -> void:
 	super._apply_stats()
@@ -59,27 +63,46 @@ func _chase(delta: float, to_player: Vector2) -> void:
 		return
 	if player == null:
 		return
-	var to_target := flank_point() - global_position
+	# Wall-correct the hold itself: in a tight alcove the raw contact point
+	# can sit inside a wall. Then slide and keep the body off walls too.
+	var hold := _keep_off_walls(flank_point())
+	var to_target := hold - global_position
 	if to_target.length_squared() > 0.000001:
 		_heading = to_target.normalized()
 	var step := _heading * _move_speed() * delta
 	if step.length_squared() > to_target.length_squared():
 		step = to_target
-	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, player.global_position))
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, hold))
 
 
 ## Unit direction from the player to this add's hold: the add's side
 ## (±90° off the player-to-elite / elite-to-player line) plus its hashed
-## arc offset. Zero when there is no summoner geometry to hang a lane on.
+## arc offset. If the elite is gone, reuse the last valid direction, or
+## the add's own bearing from the player, so the hold is never the player's
+## centre.
 func _hold_dir() -> Vector2:
-	var elite := summoner as EliteEnemy
-	if elite != null and is_instance_valid(elite):
-		return elite.summon_flank_dir(side, flank_jitter)
+	# is_instance_valid first: `as` on a freed summoner is an engine error
+	# and can abort this function, which would return ZERO and send the add
+	# onto the player.
+	if summoner != null and is_instance_valid(summoner):
+		var elite := summoner as EliteEnemy
+		if elite != null:
+			var dir := elite.summon_flank_dir(side, flank_jitter)
+			if dir != Vector2.ZERO:
+				_cached_hold_dir = dir
+				return dir
+	if _cached_hold_dir != Vector2.ZERO:
+		return _cached_hold_dir
+	if player != null:
+		var from_player := global_position - player.global_position
+		if from_player.length_squared() > 0.000001:
+			return from_player.normalized()
 	return Vector2.ZERO
 
 
 ## Contact hold around the player at `offset` (defaults to contact_offset)
-## along _hold_dir. If the lane is gone, the point is the player.
+## along _hold_dir. The hold stays at contact distance even if the elite
+## has been freed.
 func flank_point(offset: float = -1.0) -> Vector2:
 	if offset < 0.0:
 		offset = contact_offset()

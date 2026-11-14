@@ -527,6 +527,87 @@ func _assert_side_angles_are_distinct(angles: Array[float], label: String) -> vo
 			)
 
 
+func test_contact_holds_in_a_tight_alcove_stay_off_the_walls() -> void:
+	# QA tight-wall probe: player near the alcove's east wall, elite to the
+	# south, so some of the eight contact holds (42 px) land inside that
+	# wall. _chase must wall-correct the hold, not only _slide_outside_disk.
+	var layout := SliceLayout.new()
+	add_child_autofree(layout)
+	await wait_physics_frames(2)
+	var player := _node_player(Vector2(8080.0, 1152.0))
+	var elite := _elite(Vector2(8080.0, 1452.0), player, AffixDef.RARITY_RARE)
+	elite.woken = true
+	elite.set_physics_process(false)
+	player.global_position = Vector2(8080.0, 1152.0)
+	while elite.summon_alive() < elite.summon_cap():
+		elite._summon_wait = 0.0
+		elite._tick_summon(0.0)
+	var adds := _adds(elite.get_parent())
+	assert_eq(adds.size(), 8)
+	assert_true(adds[0].collide_walls)
+	var add_radius := RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER)
+	var raw_in_wall := 0
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+		if layout.touches_wall(add.flank_point(), add_radius):
+			raw_in_wall += 1
+	assert_gt(raw_in_wall, 0, "the probe should put at least one raw hold in the wall")
+	for _frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	for add: SummonAdd in adds:
+		assert_false(
+			layout.touches_wall(add.global_position, add.body_radius),
+			"%s held inside the alcove wall at %s" % [add.name, add.global_position]
+		)
+		assert_false(
+			layout.touches_wall(add._keep_off_walls(add.flank_point()), add.body_radius),
+			"%s corrected hold is still in a wall" % add.name
+		)
+
+
+func test_adds_keep_their_contact_distance_after_the_elite_is_freed() -> void:
+	# If the elite is freed, _hold_dir must not go ZERO and send every add
+	# onto the player's centre. They keep the last valid lane, at contact
+	# distance.
+	var player := _node_player(FAR + Vector2(STANDOFF, 0))
+	var elite := _elite(FAR, player, AffixDef.RARITY_RARE)
+	elite.woken = true
+	elite.set_physics_process(false)
+	player.global_position = elite.global_position + Vector2(STANDOFF, 0)
+	while elite.summon_alive() < elite.summon_cap():
+		elite._summon_wait = 0.0
+		elite._tick_summon(0.0)
+	var holder := elite.get_parent()
+	var adds := _adds(holder)
+	assert_eq(adds.size(), 8)
+	for add: SummonAdd in adds:
+		add.set_physics_process(false)
+		add.woken = true
+	for _frame in 300:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	var contact := RegularEnemy.PLAYER_RADIUS + RegularEnemy.radius_of(RegularEnemy.ARCH_SWARMER) + SummonAdd.CONTACT_GAP
+	var dirs: Array[Vector2] = []
+	for add: SummonAdd in adds:
+		assert_almost_eq(add.global_position.distance_to(player.global_position), contact, 0.5)
+		dirs.append(add._hold_dir())
+		assert_ne(dirs[-1], Vector2.ZERO)
+	elite.free()
+	assert_false(is_instance_valid(elite))
+	for _frame in 180:
+		for add: SummonAdd in adds:
+			add._physics_process(DT)
+	for i in adds.size():
+		var add: SummonAdd = adds[i]
+		var d := add.global_position.distance_to(player.global_position)
+		assert_almost_eq(d, contact, 0.5, "%s walked off its contact hold after the elite was freed (d=%.2f)" % [add.name, d])
+		assert_gt(d, RegularEnemy.PLAYER_RADIUS + add.body_radius + 1.0, "%s walked onto the player" % add.name)
+		assert_almost_eq(add._hold_dir().angle(), dirs[i].angle(), 0.001, "%s lost its cached hold direction" % add.name)
+		assert_lt(add.global_position.distance_to(add.flank_point()), 0.5)
+
+
 func test_straight_starter_strafing_at_220_kills_the_herald_within_25_s() -> void:
 	var result := _timed_kill(StraightStarter.new(), true, 40.0)
 	gut.p("Straight 0.25 s @ 220 px, strafing: %.2f s, %d summons, max %d alive" % [
