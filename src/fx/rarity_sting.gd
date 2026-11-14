@@ -1,13 +1,13 @@
 class_name RaritySting
 extends Node
-## Tier-driven AudioStreamGenerator sting (spawning §8.1–§8.4).
+## Tier-driven AudioStreamWAV sting (spawning §8.1–§8.4).
 ##
-## The buffer is rendered up front (RarityPhrases) and pushed as soon as
-## play() returns, into a short generator buffer, so the sting is not waiting
-## on a long mix queue. Web holds it until the first pressed input.
-## If the generator is missing or reports an underrun, the same tier's
-## pre-rendered ogg plays once. It is not looped: the phrases have a fixed
-## length (0.4 s, 0.8 s, 2 s).
+## The phrase is rendered up front (RarityPhrases) into a 16-bit PCM
+## AudioStreamWAV at the same mix rate, length, and envelope as the old
+## procedural buffer, then played through a plain AudioStreamPlayer.
+## Web holds it until the first pressed input. If the WAV cannot be built,
+## the same tier's pre-rendered ogg plays once. It is not looped: the
+## phrases have a fixed length (0.4 s, 0.8 s, 2 s).
 ##
 ## INCOMPLETE / deferred: the legendary 3 dB ambient duck does not run. It
 ## waits until a music or world bus exists. Boss-tier playback is the 2 s
@@ -16,7 +16,6 @@ extends Node
 ## does not change that bus's volume.
 
 
-const BUFFER_LENGTH := 0.08
 const DUCK_DB := -3.0
 const DUCK_SECONDS := 2.0
 const DUCK_BUS_NAMES: PackedStringArray = ["Ambient", "Music", "World"]
@@ -47,20 +46,18 @@ static var stub_bus_volumes: Dictionary[int, float] = {}
 var tier := RarityCue.TIER_ELITE_COMMON
 ## When true, skip the speaker. The visual brighten does not wait on this.
 var suppress := false
-## Treat the generator as having underrun, so the ogg path is taken.
+## Tests: skip the baked WAV and play the ogg immediately.
 var simulate_underrun := false
-## Skip the generator and play the ogg immediately.
+## Skip the baked WAV and play the ogg immediately.
 var force_fallback := false
 
 var requested := false
-var used_generator := false
+var used_wav := false
 var used_fallback := false
 var failed := false
 var frames_pushed := 0
 
 var _player: AudioStreamPlayer
-var _playback: AudioStreamGeneratorPlayback
-var _cursor := 0
 var _running := false
 var _queued := false
 var _started := false
@@ -151,6 +148,11 @@ func _exit_tree() -> void:
 	shutdown()
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_PREDELETE:
+		shutdown()
+
+
 func player_node() -> AudioStreamPlayer:
 	return _player
 
@@ -166,10 +168,9 @@ func shutdown() -> void:
 	_running = false
 	_release_duck()
 	# Stop before dropping the stream so the audio server is not left
-	# mixing a generator that is about to be freed.
+	# mixing a sting that is about to be freed.
 	if _player != null and is_instance_valid(_player):
 		_player.stop()
-	_playback = null
 	if _player != null and is_instance_valid(_player):
 		_player.stream = null
 		var node := _player
@@ -201,23 +202,18 @@ func _start() -> void:
 	if _player == null:
 		failed = true
 		return
-	if force_fallback:
+	if force_fallback or simulate_underrun:
 		_play_ogg()
 		return
-	var gen := AudioStreamGenerator.new()
-	gen.mix_rate_mode = AudioStreamGenerator.MIX_RATE_CUSTOM
-	gen.mix_rate = RarityPhrases.SAMPLE_RATE
-	gen.buffer_length = BUFFER_LENGTH
-	_player.stream = gen
+	var stream := RarityPhrases.wav_for(tier)
+	if stream == null:
+		_play_ogg()
+		return
+	_player.stream = stream
 	_player.play()
-	var playback := _player.get_stream_playback()
-	_playback = playback as AudioStreamGeneratorPlayback
-	if _playback == null or simulate_underrun:
-		_play_ogg()
-		return
-	used_generator = true
+	used_wav = true
+	frames_pushed = RarityPhrases.render(tier).size()
 	_running = true
-	_fill()
 
 
 func _process(delta: float) -> void:
@@ -225,46 +221,10 @@ func _process(delta: float) -> void:
 		_duck_left -= delta
 		if _duck_left <= 0.0:
 			_release_duck()
-	if not _running or _playback == null:
-		return
-	if _underrun():
-		_play_ogg()
-		return
-	_fill()
-	if _cursor >= _frames().size():
-		# Leave the generator stream in place until shutdown. The last frames
-		# are still in the short playback buffer; dropping the stream here cuts
-		# the tail.
-		_running = false
-
-
-func _frames() -> PackedVector2Array:
-	return RarityPhrases.render(tier)
-
-
-func _underrun() -> bool:
-	if simulate_underrun:
-		return true
-	if _playback == null or frames_pushed <= 0:
-		return false
-	return _playback.get_skips() > 0
-
-
-func _fill() -> void:
-	if _playback == null:
-		return
-	var frames := _frames()
-	var available := _playback.get_frames_available()
-	while available > 0 and _cursor < frames.size():
-		_playback.push_frame(frames[_cursor])
-		_cursor += 1
-		frames_pushed += 1
-		available -= 1
 
 
 func _play_ogg() -> void:
 	_running = false
-	_playback = null
 	_begin_duck()
 	var stream := load_fallback(tier)
 	if stream == null or _player == null:
@@ -274,7 +234,8 @@ func _play_ogg() -> void:
 	_player.stream = stream
 	_player.play()
 	used_fallback = true
-	used_generator = false
+	used_wav = false
+	frames_pushed = 0
 
 
 func _begin_duck() -> void:

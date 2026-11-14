@@ -181,6 +181,26 @@ func test_sting_buffers_have_no_discontinuities_and_sit_near_zero() -> void:
 		assert_almost_eq(stream.get_length(), RarityPhrases.duration_of(tier), 0.08)
 
 
+func test_baked_wav_matches_rendered_frames() -> void:
+	for tier in RarityCue.TIER_COUNT:
+		var frames := RarityPhrases.render(tier)
+		var pcm := RarityPhrases.encode_pcm16(frames)
+		assert_eq(pcm.size(), frames.size() * 4, "tier %d pcm size" % tier)
+		var stream := RarityPhrases.wav_for(tier)
+		assert_not_null(stream, "tier %d wav" % tier)
+		assert_eq(stream.format, AudioStreamWAV.FORMAT_16_BITS)
+		assert_eq(stream.mix_rate, RarityPhrases.SAMPLE_RATE)
+		assert_true(stream.stereo)
+		assert_eq(stream.loop_mode, AudioStreamWAV.LOOP_DISABLED)
+		assert_eq(stream.data, pcm, "tier %d pcm matches the rendered frames" % tier)
+		assert_eq(stream.data, RarityPhrases.pcm16_of(tier))
+		assert_almost_eq(stream.get_length(), RarityPhrases.duration_of(tier), 0.001)
+		# A second wav_for must be a distinct Resource, not a static hold.
+		var again := RarityPhrases.wav_for(tier)
+		assert_true(stream != again)
+		assert_eq(again.data, pcm)
+
+
 func test_fallbacks_never_use_unsupported_features() -> void:
 	var files: PackedStringArray = [
 		"res://src/fx/rarity_cue.gd",
@@ -267,7 +287,13 @@ func test_shutdown_stops_the_player_before_dropping_the_stream() -> void:
 	var player := sting.player_node()
 	assert_true(is_instance_valid(player))
 	var player_id := player.get_instance_id()
-	assert_true(sting.used_generator or sting.used_fallback or sting.failed)
+	assert_true(sting.used_wav or sting.used_fallback or sting.failed)
+	if sting.used_wav:
+		var wav := player.stream as AudioStreamWAV
+		assert_not_null(wav)
+		assert_eq(wav.format, AudioStreamWAV.FORMAT_16_BITS)
+		assert_eq(wav.mix_rate, RarityPhrases.SAMPLE_RATE)
+		assert_eq(wav.data, RarityPhrases.pcm16_of(sting.tier))
 	sting.shutdown()
 	assert_null(sting.player_node())
 	assert_false(is_instance_id_valid(player_id))

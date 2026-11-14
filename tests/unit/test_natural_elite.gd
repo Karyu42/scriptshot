@@ -379,7 +379,7 @@ func test_cue_on_wake() -> void:
 	assert_almost_eq(far.cue.brighten_left, 0.0, 0.001)
 	close.queue_redraw()
 	await wait_process_frames(1)
-	assert_true(close.sting.used_generator or close.sting.used_fallback)
+	assert_true(close.sting.used_wav or close.sting.used_fallback)
 	var arm := main.get_node("HeraldArm") as HeraldArm
 	assert_false(arm.armed, "the player has not left the disk")
 	_discard(path)
