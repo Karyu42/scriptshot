@@ -249,14 +249,18 @@ var collide_walls := false
 var _wall_query: PhysicsShapeQueryParameters2D
 
 
-func _ribbon_has_walls() -> bool:
+func _enabled_slice_layout() -> SliceLayout:
 	if not is_inside_tree():
-		return false
+		return null
 	for node: Node in get_tree().get_nodes_in_group(&"slice_layouts"):
 		var slice := node as SliceLayout
 		if slice != null and slice.enabled:
-			return true
-	return false
+			return slice
+	return null
+
+
+func _ribbon_has_walls() -> bool:
+	return _enabled_slice_layout() != null
 
 
 func _keep_off_walls(p: Vector2) -> Vector2:

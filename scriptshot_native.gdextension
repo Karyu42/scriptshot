@@ -2,6 +2,10 @@
 
 entry_symbol = "scriptshot_native_init"
 compatibility_minimum = "4.7"
+; reloadable = false is required: pin_library() keeps this .so mapped until
+; process exit (RTLD_NODELETE / GET_MODULE_HANDLE_EX_FLAG_PIN) so late
+; godot-cpp static destructors do not jump into unmapped memory. A
+; reloadable library would be unloaded on script reload, defeating the pin.
 reloadable = false
 
 ; Libraries are build output (gitignored) from ./tools/build_native.sh.

@@ -157,12 +157,16 @@ func test_an_idle_version_is_reloaded_in_place_and_generations_are_capped() -> v
 	_apply(shot, "return { name = 'B' }")
 	assert_eq(shot.behavior_id(), first, "no live shots: reloaded in place")
 	assert_eq(shot.generation_count(), 1)
-	for i in 6:
+	for i in LuaShot.MAX_GENERATIONS:
 		_apply(shot, "return { name = 'G%d', lifetime = 9, speed = 1, on_hit = function() end }" % i)
 		_fire(manager, shot)
 		_steps(manager, 1)
-	assert_lte(shot.generation_count(), LuaShot.MAX_GENERATIONS, "Lua states are never freed: generations stay capped")
-	assert_gt(shot.in_place_with_live_shots, 0, "with every generation busy the current one is reloaded in place")
+	_apply(shot, "return { name = 'Fourth', lifetime = 9, speed = 1, on_hit = function() end }")
+	assert_eq(shot.title, "Fourth", "a save is never refused")
+	assert_eq(shot.evicted_count, 1, "the oldest busy generation was stripped")
+	assert_lte(shot.generation_count(), LuaShot.MAX_GENERATIONS)
+	assert_lte(shot.host_count(), LuaShot.MAX_GENERATIONS)
+	assert_eq(shot.in_place_with_live_shots, 0, "shots in flight never switch to new code")
 
 
 func test_a_failing_bullet_callback_is_skipped_until_the_next_load() -> void:
@@ -261,6 +265,29 @@ func test_spread_fires_five() -> void:
 		_fire(manager, shot)
 		_steps(manager, 2)
 		assert_eq(manager.alive_count(), 5, "spread: five shots in a fan (%s)" % pref)
+
+
+## The spiral keeps its angle in `state.t`, so saving it again (or a tweak)
+## carries on turning from where it was instead of snapping back to 0.
+func test_the_spiral_angle_survives_a_save() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		var src := ScriptLibrary.starter("spiral").source
+		assert_string_contains(src, "state.t = state.t or 0")
+		_apply(shot, src)
+		_fire(manager, shot, 3)
+		_apply(shot, src)
+		manager.clear_bullets()
+		_fire(manager, shot)
+		_steps(manager, 1)
+		var vel: PackedVector2Array = manager.snapshot()["vel"]
+		assert_eq(vel.size(), 3, "three arms (%s)" % pref)
+		for v in vel:
+			# Every arm sits at state.t plus a multiple of TAU / 3.
+			assert_almost_eq(fposmod(v.angle(), TAU / 3.0), 0.22 * 4, 0.001, "the fourth shot turns on from the third, not from 0 (%s)" % pref)
 
 
 func test_split_pieces_spawn_at_the_hit_point_and_fly_back_out() -> void:

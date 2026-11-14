@@ -254,6 +254,17 @@ const MAX_WEAPON_KEYS := 256
 const MAX_EXTRA_RESUMES := 4
 
 const SANDBOX_PATH := "res://scripting/sandbox.lua"
+## Trusted encode / decode for the weapon's `state` table (see export_state).
+const STATE_CODEC_PATH := "res://scripting/state_codec.lua"
+## Caps on one `state` copy between versions. Past one of them the rest is
+## dropped with a warning, so the copy is a bounded amount of host work
+## (well inside one frame) whatever the script stored. Depth counts tables:
+## `state` itself is 1.
+const STATE_MAX_DEPTH := 32
+## Key/value pairs looked at, dropped ones included.
+const STATE_MAX_ENTRIES := 8192
+## Encoded size: about the string bytes plus a few per entry.
+const STATE_MAX_BYTES := 256 * 1024
 const LIBS := (
 	LuaState.LUA_BASE
 	| LuaState.LUA_COROUTINE
@@ -288,6 +299,74 @@ return function(t)
 end
 """ % MAX_WEAPON_KEYS
 
+## Trusted. Copies the env's top level as it is now (before any script ran)
+## and returns a function that makes a fresh env from that copy. The two
+## sandbox functions that look themselves up in their env (load's default env,
+## xpcall's pcall) are rebuilt for the new env.
+## Each env also gets its own shallow copies of the plain library tables
+## (string, table, math, utf8, os, coroutine...), made from private copies
+## taken here, so what one version does to them stays in that version's env.
+## Tables with a metatable (host-owned read-only views, like a Senses table)
+## are shared as they are. The string metatable keeps the state's original
+## string table, which no fresh env can reach, so `s:sub(...)` always runs the
+## sandbox's string functions; getmetatable(s).__index is the env's own copy.
+## The copies are made once per load, never per call.
+const _FRESH_ENV := """
+return function(env)
+	local next, rawset, type, getmetatable = next, rawset, type, getmetatable
+	local pack, unpack = table.pack, table.unpack
+	local function plain(v)
+		return type(v) == "table" and getmetatable(v) == nil
+	end
+	local function copy(t)
+		local c = {}
+		for k, v in next, t do
+			rawset(c, k, v)
+		end
+		return c
+	end
+	local base = {}
+	for k, v in next, env do
+		if k ~= "_G" and plain(v) then
+			v = copy(v)
+		end
+		base[k] = v
+	end
+	local base_load, base_getmetatable = base.load, base.getmetatable
+	return function()
+		local e = {}
+		for k, v in next, base do
+			if k ~= "_G" and plain(v) then
+				v = copy(v)
+			end
+			rawset(e, k, v)
+		end
+		rawset(e, "_G", e)
+		rawset(e, "load", function(chunk, name, mode, en)
+			return base_load(chunk, name, mode, en or e)
+		end)
+		rawset(e, "xpcall", function(f, h, ...)
+			local r = pack(e.pcall(f, ...))
+			if r[1] then
+				return unpack(r, 1, r.n)
+			end
+			local handled = pack(e.pcall(h, r[2]))
+			return false, handled[2]
+		end)
+		local str = e.string
+		if type(base_getmetatable) == "function" then
+			rawset(e, "getmetatable", function(x)
+				if type(x) == "string" then
+					return { __index = str }
+				end
+				return base_getmetatable(x)
+			end)
+		end
+		return e
+	end
+end
+"""
+
 ## Per-run tunable copies of the defaults. Tests tighten the budget; the game
 ## leaves them at the values above.
 var instruction_budget: int = INSTRUCTION_BUDGET
@@ -311,6 +390,13 @@ var _make_bullet: LuaFunction
 ## Sandbox entry point for script code (sandbox.lua host.call). See _run_script.
 var _call: LuaFunction
 var _names_of: LuaFunction
+## Makes a fresh sandbox env (snapshot_globals), and the state it belongs to.
+var _fresh_env: LuaFunction
+var _fresh_env_state := 0
+## state_codec.lua's encode / decode for the current state.
+var _state_encode: LuaFunction
+var _state_decode: LuaFunction
+static var _codec_src := ""
 var _ready := false
 var _init_error := ""
 
@@ -319,6 +405,9 @@ var _names := PackedStringArray()
 var _callbacks: Dictionary = {}
 
 var _threads: Array[LuaThread] = []
+## The same threads as `_threads`, as a set, so registration is O(1). The two
+## are always cleared and filled together.
+var _thread_set: Dictionary[LuaThread, bool] = {}
 ## Coroutines the budget stopped. shutdown() does not resume them and does not
 ## free them (lua-gdextension #240).
 var _parked: Array[LuaThread] = []
@@ -376,6 +465,9 @@ var _sense_world_rev := -1
 var _senses_on := false
 var _sense_set: LuaFunction
 var _sense_sync: LuaFunction
+## ids, radius, kind and rarity columns of the last rows sent to sense_sync,
+## [] when the next sync must send everything.
+var _sense_meta: Array = []
 var _sense_notes: LuaTable
 var _sense_notes_seen := 0
 
@@ -393,6 +485,9 @@ class RunResult:
 	## Line in the player's chunk where a watchdog stop landed, or 0 when the
 	## stop was outside it (inside a library wrapper) or there was no stop.
 	var stop_line := 0
+	## Non-fatal notes from the load (a `state` copy that dropped or cut
+	## something). Only set on a load that went through.
+	var warnings := PackedStringArray()
 
 
 ## One Lua state that has already stopped three times, plus the tables and
@@ -406,6 +501,8 @@ class RetiredState:
 	var debug_fns: LuaTable
 	var strip_fn: LuaFunction
 	var threads: Array[LuaThread] = []
+	## Other wrappers into this state (codec, fresh-env maker), kept with it.
+	var extra: Array = []
 
 
 func _init() -> void:
@@ -471,11 +568,38 @@ func _open_state() -> void:
 	_sense_set = _as_function(set_v)
 	_sense_sync = _as_function(sync_v)
 	_sense_notes = _as_table(notes_v)
+	if not _build_state_codec():
+		_init_error = "state codec failed to load"
+		return
 	_sense_book_rev = -1
 	_sense_world_rev = -1
+	_sense_meta = []
 	_senses_on = false
 	_sense_notes_seen = 0
 	_ready = true
+
+
+func _build_state_codec() -> bool:
+	_state_encode = null
+	_state_decode = null
+	if _codec_src.is_empty():
+		_codec_src = FileAccess.get_file_as_string(STATE_CODEC_PATH)
+	if _codec_src.is_empty():
+		return false
+	var built: Variant = _state.do_string(_codec_src, "@scripting/state_codec.lua")
+	if not built is LuaFunction:
+		return false
+	var codec_v: Variant = _as_function(built).invoke(STATE_MAX_DEPTH, STATE_MAX_ENTRIES, STATE_MAX_BYTES)
+	if not codec_v is LuaTable:
+		return false
+	var codec := _as_table(codec_v)
+	var enc: Variant = codec.get("encode")
+	var dec: Variant = codec.get("decode")
+	if not enc is LuaFunction or not dec is LuaFunction:
+		return false
+	_state_encode = _as_function(enc)
+	_state_decode = _as_function(dec)
+	return true
 
 
 ## Opens the debug library and keeps a small loader. The walk chunk is loaded
@@ -521,6 +645,11 @@ func _rotate_state_if_needed() -> void:
 	retired.strip_fn = _strip_fn
 	retired.threads.assign(_parked)
 	retired.threads.append_array(_value_threads)
+	# The running version's `state` goes to the reloaded copy, and a host that
+	# had fresh envs gets them again on the new state.
+	var carried := export_state()
+	var had_fresh := _fresh_env != null and _fresh_env_state == _instance_id(_state)
+	retired.extra = [_fresh_env, _state_encode, _state_decode]
 	_retired.append(retired)
 	_parked = []
 	_value_threads = []
@@ -536,11 +665,16 @@ func _rotate_state_if_needed() -> void:
 	_sense_set = null
 	_sense_sync = null
 	_sense_notes = null
+	_fresh_env = null
+	_state_encode = null
+	_state_decode = null
 	var source := _source
 	var chunk := _chunk_name
 	_open_state()
 	if _ready:
-		load_string(source, chunk)
+		if had_fresh:
+			snapshot_globals()
+		load_string(source, chunk, had_fresh, carried)
 
 
 func _pin() -> void:
@@ -607,6 +741,9 @@ func shutdown() -> void:
 	_ready = false
 	_strip_ok = true
 	_expire_views()
+	# Kept like every other wrapper (see _release_state).
+	_retain(_fresh_env)
+	_fresh_env = null
 	for i in _retired.size():
 		_release_retired(_retired[i])
 	_release_current()
@@ -650,6 +787,9 @@ func _release_retired(retired: RetiredState) -> void:
 	retired.debug_fns = null
 	retired.strip_fn = null
 	retired.threads.clear()
+	for i in retired.extra.size():
+		_retain(retired.extra[i])
+	retired.extra.clear()
 	retired.state = null
 
 
@@ -674,6 +814,8 @@ func _release_current() -> void:
 	_retain(_sense_set)
 	_retain(_sense_sync)
 	_retain(_sense_notes)
+	_retain(_state_encode)
+	_retain(_state_decode)
 	_callbacks.clear()
 	_make_bullet = null
 	_call = null
@@ -681,6 +823,8 @@ func _release_current() -> void:
 	_sense_set = null
 	_sense_sync = null
 	_sense_notes = null
+	_state_encode = null
+	_state_decode = null
 	_host = null
 	_env = null
 	_weapon = null
@@ -688,6 +832,7 @@ func _release_current() -> void:
 	_strip_fn = null
 	_parked.clear()
 	_threads.clear()
+	_thread_set.clear()
 	_value_threads.clear()
 	_state = null
 
@@ -800,6 +945,67 @@ func memory_peak() -> int:
 	return _mem_peak
 
 
+## Lua heap in bytes: the current state plus the retired ones.
+func lua_memory() -> int:
+	var n := int(_state.get_memory_used()) if _state != null else 0
+	for r in _retired:
+		if r.state != null:
+			n += int(r.state.get_memory_used())
+	return n
+
+
+## Lua states this host holds: the current one plus the retired ones.
+func lua_state_count() -> int:
+	return (1 if _state != null else 0) + _retired.size()
+
+
+## Remembers the sandbox globals as they are now, before any script ran, so
+## a later load_string(..., true) or release_weapon() can start from a fresh
+## env with only those. LuaShot calls it on a new host. A state rotated after
+## three guard stops has a new env and gets no fresh env (the snapshot
+## belongs to the old state); loads there share the env as before.
+func snapshot_globals() -> void:
+	if not is_ready():
+		return
+	var maker: Variant = _state.do_string(_FRESH_ENV, "@fresh-env.lua")
+	if not maker is LuaFunction:
+		return
+	var fresh_v: Variant = _as_function(maker).invoke(_env)
+	if fresh_v is LuaFunction:
+		_fresh_env = _as_function(fresh_v)
+		_fresh_env_state = _instance_id(_state)
+
+
+## A new env from the snapshot_globals copy, or null when there is none for
+## the current state.
+func _new_env() -> LuaTable:
+	if _fresh_env == null or _fresh_env_state != _instance_id(_state):
+		return null
+	var e: Variant = _fresh_env.invoke()
+	return _as_table(e) if e is LuaTable else null
+
+
+## Drops the weapon table and its callbacks so the chunk that built them can
+## be collected, swaps in a fresh env (see snapshot_globals) so the old
+## globals go too, then runs a full collection. The state and its sandbox stay
+## (states are never freed, see shutdown()); a later load_string reuses them.
+## LuaShot calls this when a generation is released. No-op inside a call.
+func release_weapon() -> void:
+	if _closed or _in_lua or _state == null:
+		return
+	_callbacks.clear()
+	_weapon = null
+	_names = PackedStringArray()
+	_source = ""
+	var fresh := _new_env()
+	if fresh != null:
+		_env = fresh
+	# _value_threads and _parked stay: a wrapper elsewhere may still be tied
+	# to one of those coroutines (see _run).
+	_clear_pending()
+	_state.collect_garbage()
+
+
 func has_weapon() -> bool:
 	return _weapon != null
 
@@ -843,13 +1049,46 @@ func hook_mask() -> int:
 ## Compiles and runs `code`. A returned table becomes the weapon, replacing the
 ## previous one. A compile error, a runtime error or a budget stop leaves the
 ## previous weapon in place. The chunk name is what Lua prints in errors.
-func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
+## With `fresh_env` (and snapshot_globals done) the chunk runs in a new env
+## with only the sandbox globals and its own library tables, which replaces the current env only when the
+## weapon is adopted. Until then the previous weapon, its callbacks and its
+## globals are untouched, so a load that fails leaves them exactly as they were.
+##
+## `state_blob` (an export_state() result, from this host or another one)
+## pre-fills the env's `state` global before the chunk runs; the chunk may
+## still reassign it. Its warnings land on the result of a load that went
+## through. A load that fails leaves the running env's `state` as it was,
+## also when there is no fresh env and the chunk shares it.
+func load_string(code: String, chunk_name: String = "script.lua", fresh_env: bool = false, state_blob: String = "") -> RunResult:
 	if _closed:
 		return _fail("script host shut down", chunk_name)
 	if not _ready:
 		return _fail(_init_error, chunk_name)
 	_sync_senses()
-	var loaded: Variant = _state.load_string(code, "@" + chunk_name, _env)
+	var env := _new_env() if fresh_env else null
+	var shared := env == null
+	if shared:
+		env = _env
+	var warnings := state_warnings(state_blob)
+	var prev_state: Variant = null
+	if state_blob != "":
+		if shared:
+			prev_state = env.rawget("state")
+		var filled: Variant = _state_decode.invoke(env, state_blob) if _state_decode != null else false
+		if not (filled is bool and filled):
+			warnings.append("state could not be copied to the new version; it starts from {}")
+			env.rawset("state", _state.create_table())
+	var result := _load_into_env(code, chunk_name, env)
+	if not result.ok and shared and state_blob != "":
+		env.rawset("state", prev_state)
+	prev_state = null
+	if result.ok:
+		result.warnings = warnings
+	return result
+
+
+func _load_into_env(code: String, chunk_name: String, env: LuaTable) -> RunResult:
+	var loaded: Variant = _state.load_string(code, "@" + chunk_name, env)
 	if loaded is LuaError:
 		return _fail(_lua_error_message(loaded), chunk_name)
 	if not loaded is LuaFunction:
@@ -867,9 +1106,39 @@ func load_string(code: String, chunk_name: String = "script.lua") -> RunResult:
 		if not adopted.ok:
 			return adopted
 		adopted.value = result.value
+		_env = env
 		_source = code
 		_chunk_name = chunk_name
 	return result
+
+
+## The running version's `state` as a blob for load_string(..., state_blob):
+## a copy of its plain data (see state_codec.lua), with a header listing what
+## was dropped or cut. "" when there is no state to carry. Host code only,
+## outside any script call; reads, never changes, the env.
+func export_state() -> String:
+	if _closed or _in_lua or _state_encode == null or _env == null:
+		return ""
+	var v: Variant = _state_encode.invoke(_env)
+	if v is String:
+		return v
+	return ""
+
+
+## The warnings in an export_state() blob's header, one sentence each.
+static func state_warnings(blob: String) -> PackedStringArray:
+	var out := PackedStringArray()
+	if not blob.begins_with("W"):
+		return out
+	var colon := blob.find(":")
+	if colon < 0:
+		return out
+	var n := blob.substr(1, colon - 1).to_int()
+	if n <= 0:
+		return out
+	for line in blob.substr(colon + 1, n).split("\n", false):
+		out.append(line)
+	return out
 
 
 func load_file(path: String) -> RunResult:
@@ -1072,7 +1341,9 @@ func _take_spawns(spawns: LuaTable) -> void:
 ## Brings this state's `sense` table up to date: the fields from SenseBook
 ## (an unearned Sense is nil) and, while any Sense is on, the enemy rows from
 ## WorldQuery. Host code only, between script calls; each part is skipped
-## while its revision has not moved, so a quiet tick costs two int reads.
+## while its revision has not moved. WorldQuery's revision holds across a
+## tick where no enemy moved, changed or left, so such a tick costs two int
+## reads; a tick where enemies move re-syncs the rows once per Lua state.
 func _sync_senses() -> void:
 	if _sense_set == null or _closed:
 		return
@@ -1096,9 +1367,18 @@ func _sync_senses() -> void:
 	_sense_world_rev = world_rev
 	var rows := WorldQuery.live_rows()
 	var ids: PackedInt64Array = rows["ids"]
+	var radius: PackedFloat64Array = rows["radius"]
+	var kinds: PackedStringArray = rows["kind"]
+	var rars: PackedInt32Array = rows["rarity"]
+	# Moving enemies change x and y nearly every tick while the rest holds.
+	# Each element Lua reads from a packed array is a binding call, so when
+	# the other columns match the last sync only x and y are copied.
+	var meta: Array = [ids, radius, kinds, rars]
+	var positions_only := meta == _sense_meta
+	_sense_meta = meta
 	# Read-only use: host.sense_sync copies the columns into its own Lua
-	# tables and never writes back into them.
-	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], rows["radius"], rows["kind"], rows["rarity"])
+	# tables and never writes back into them. `rows` is this call's own copy.
+	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], radius, kinds, rars, positions_only)
 
 
 ## One editor note per enemies_in list the script had cut at 256 (§6.2).
@@ -1259,11 +1539,13 @@ func _reset_watchdog() -> void:
 	_kill_line = 0
 	_t0 = Time.get_ticks_msec()
 	_threads.clear()
+	_thread_set.clear()
 	_output = PackedStringArray()
 
 
 func _arm(co: LuaThread) -> void:
 	_threads.append(co)
+	_thread_set[co] = true
 	co.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, HOOK_STRIDE)
 
 
@@ -1525,9 +1807,9 @@ func _lua_reg_thread(co: Variant) -> void:
 	if not co is LuaThread:
 		return
 	var th := _as_thread(co)
-	for i in _threads.size():
-		if _threads[i] == th:
-			return
+	if _thread_set.has(th):
+		return
+	_thread_set[th] = true
 	_threads.append(th)
 	var stride := 1 if _killed else HOOK_STRIDE
 	th.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, stride)

@@ -6,7 +6,140 @@
 #
 # godot-cpp is a git submodule pinned to the release whose API JSON matches
 # Godot 4.7.2 (tools/check_extension_api.sh verifies that against a godot binary).
-env = SConscript("godot-cpp/SConstruct", {"api_version": "4.7"})
+
+# Shutdown SIGSEGV (Windows GUT exit 139 after a green summary; local --quit
+# too). The crash is not in our sources: we have no namespace/class/function
+# statics holding Godot types. It is godot-cpp's own function-local
+# `static const StringName` in GDCLASS::get_class_static() (and any other
+# static String / Variant / Packed*Array the bindings construct), whose
+# destructors run after Godot has deinitialized CORE and dlclosed this
+# library. Interface function pointers and the engine StringName table are
+# then invalid, so a destructor that calls into them SIGSEGVs; if the .so
+# has already been unmapped, RIP lands in a hole.
+#
+# These patches are applied here so a fresh submodule checkout (as CI does)
+# still gets them. They are not vendored in git; the godot-cpp submodule
+# stays at 10.0.0-stable. Header / godot.cpp / variant.cpp replacements are
+# idempotent. Generated ~Type() guards are emitted while bindings are
+# generated, via binding_hooks (see scriptshot_binding_hooks.py), not by
+# patching gen/ at SConstruct parse time (gen/ is gitignored and empty
+# until GodotCPPBindings runs).
+#
+# 1. Mark get_class_static() names static (StringName(..., true)), the
+#    supported way to keep a StringName until process exit without
+#    unregistering from the engine table in its destructor.
+#    See https://github.com/godotengine/godot-cpp/issues/1678 and
+#    https://github.com/godotengine/godot-cpp/pull/1964
+# 2. After CORE deinitialize, flip builtin_destructors_enabled so leftover
+#    static destructors become no-ops instead of calling back into Godot.
+#    Combined with pin_library() in register_types.cpp (RTLD_NODELETE /
+#    GET_MODULE_HANDLE_EX_FLAG_PIN) so the .so stays mapped until exit.
+#    The pin requires reloadable = false in scriptshot_native.gdextension.
+#    The process then reclaims that memory; nothing is leaked across runs.
+#    Generated operator= still calls _method_bindings.destructor(&opaque)
+#    unguarded. That only matters after CORE deinitialize, when we no
+#    longer assign builtins; shutdown hits ~Type(), which is guarded.
+def scriptshot_patch_godot_cpp_shutdown():
+    from pathlib import Path
+
+    root = Path(File("SConstruct").abspath).parent
+
+    def _replace_once(path: Path, old: str, new: str) -> None:
+        text = path.read_text()
+        if new in text:
+            return
+        if old not in text:
+            raise RuntimeError("scriptshot: pattern not found in %s: %r" % (path, old[:80]))
+        path.write_text(text.replace(old, new, 1))
+
+    wrapped = root / "godot-cpp/include/godot_cpp/classes/wrapped.hpp"
+    _replace_once(
+        wrapped,
+        'static const StringName string_name = StringName("Wrapped");',
+        'static const StringName string_name = StringName("Wrapped", true);',
+    )
+    _replace_once(
+        wrapped,
+        "static const ::godot::StringName string_name = ::godot::StringName(U## #m_class);",
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_class, true);",
+    )
+    _replace_once(
+        wrapped,
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_alias_for);",
+        "static const ::godot::StringName string_name = ::godot::StringName(#m_alias_for, true);",
+    )
+
+    godot_hpp = root / "godot-cpp/include/godot_cpp/godot.hpp"
+    _replace_once(
+        godot_hpp,
+        "namespace internal {\n\nclass DocDataRegistration {",
+        "namespace internal {\n\n"
+        "// Scriptshot: cleared at the end of CORE deinitialize so leftover static\n"
+        "// StringName / Variant / Packed*Array destructors do not call into Godot\n"
+        "// after the engine's type tables are gone (process-exit SIGSEGV).\n"
+        "extern bool builtin_destructors_enabled;\n\n"
+        "class DocDataRegistration {",
+    )
+
+    godot_cpp = root / "godot-cpp/src/godot.cpp"
+    _replace_once(
+        godot_cpp,
+        "void GDExtensionBinding::deinitialize_level(void *p_userdata, GDExtensionInitializationLevel p_level) {",
+        "bool internal::builtin_destructors_enabled = true;\n\n"
+        "void GDExtensionBinding::deinitialize_level(void *p_userdata, GDExtensionInitializationLevel p_level) {",
+    )
+    _replace_once(
+        godot_cpp,
+        "\tif (level_initialized[p_level] == 0) {\n"
+        "\t\tEditorPlugins::deinitialize(p_level);\n"
+        "\t\tClassDB::deinitialize(p_level);\n"
+        "\t}\n"
+        "}\n",
+        "\tif (level_initialized[p_level] == 0) {\n"
+        "\t\tEditorPlugins::deinitialize(p_level);\n"
+        "\t\tClassDB::deinitialize(p_level);\n"
+        "\t}\n"
+        "\tif (p_level == GDEXTENSION_INITIALIZATION_CORE) {\n"
+        "\t\tinternal::builtin_destructors_enabled = false;\n"
+        "\t}\n"
+        "}\n",
+    )
+
+    variant_cpp = root / "godot-cpp/src/variant/variant.cpp"
+    _replace_once(
+        variant_cpp,
+        "Variant::~Variant() {\n"
+        "\t::godot::gdextension_interface::variant_destroy(_native_ptr());\n"
+        "}\n",
+        "Variant::~Variant() {\n"
+        "\tif (!::godot::internal::builtin_destructors_enabled) {\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\t::godot::gdextension_interface::variant_destroy(_native_ptr());\n"
+        "}\n",
+    )
+
+scriptshot_patch_godot_cpp_shutdown()
+
+import sys
+from pathlib import Path
+
+_native_root = Path(File("SConstruct").abspath).parent
+if str(_native_root) not in sys.path:
+    sys.path.insert(0, str(_native_root))
+from scriptshot_binding_hooks import (  # noqa: E402
+    ScriptshotBindingHooks,
+    assert_destructor_guards,
+    guarded_builtin_sources,
+)
+
+env = SConscript(
+    "godot-cpp/SConstruct",
+    {"api_version": "4.7", "binding_hooks": ScriptshotBindingHooks()},
+)
+
+if env["platform"] in ("linux", "android"):
+    env.Append(LIBS=["dl"])
 
 # MinGW-on-Windows clears SHLIBPREFIX and MSVC's tool leaves it empty, while a
 # Linux MinGW cross keeps the POSIX "lib" prefix. One prefix so both toolchains
@@ -24,4 +157,42 @@ library = env.SharedLibrary(
     source=sources,
 )
 env.NoCache(library)
+
+
+# GodotCPPBindings' sources (godotcpp.py) do not include our hooks file, so
+# a change to scriptshot_binding_hooks.py would not regenerate gen/. Attach
+# it here, without editing the submodule: when the hooks change, the generated
+# builtin sources are out of date and the bindings action runs again.
+_hooks_file = File("scriptshot_binding_hooks.py")
+_variant_nodes = [env.File("godot-cpp/gen/src/variant/" + name) for name in guarded_builtin_sources(_native_root)]
+env.Depends(_variant_nodes, _hooks_file)
+
+
+def _verify_destructor_guards(target, source, env):
+    assert_destructor_guards(_native_root)
+    Path(str(target[0])).write_text("ok\n")
+    return None
+
+
+# Always-run guard count, before linking. Generation post-actions do not run
+# on a plain rerun when gen/ already exists (or when CacheDir restores it),
+# so a failed or stale generation could otherwise be linked. This step sees
+# the current gen/ every build and fails if the count is wrong.
+_guard_stamp = env.Command(
+    "godot-cpp/gen/.scriptshot_dtor_guards_ok",
+    _variant_nodes + [_hooks_file],
+    Action(_verify_destructor_guards, "Checking scriptshot destructor guards..."),
+)
+env.AlwaysBuild(_guard_stamp)
+env.NoCache(_guard_stamp)
+# Requires is order-only: the check always runs first, but a successful
+# stamp (same "ok" content) does not force a relink. Depends alone on the
+# shared library is not enough — with -j, libgodot-cpp.a can archive a
+# just-compiled unguarded .o in parallel with a failing check.
+_godot_cpp_lib = File("godot-cpp/bin/libgodot-cpp" + env["suffix"] + env["LIBSUFFIX"])
+env.Depends(library, _guard_stamp)
+env.Depends(_godot_cpp_lib, _guard_stamp)
+env.Requires(library, _guard_stamp)
+env.Requires(_godot_cpp_lib, _guard_stamp)
+
 Default(library)
