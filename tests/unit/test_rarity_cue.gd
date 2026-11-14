@@ -260,6 +260,30 @@ func test_cue_lifecycle_frees_halo_and_player() -> void:
 	assert_false(is_instance_id_valid(player_id))
 
 
+func test_shutdown_stops_the_player_before_dropping_the_stream() -> void:
+	var sting := RaritySting.new()
+	add_child_autofree(sting)
+	sting.play_sting()
+	var player := sting.player_node()
+	assert_true(is_instance_valid(player))
+	var player_id := player.get_instance_id()
+	assert_true(sting.used_generator or sting.used_fallback or sting.failed)
+	sting.shutdown()
+	assert_null(sting.player_node())
+	assert_false(is_instance_id_valid(player_id))
+
+
+func test_freeing_the_sting_stops_the_player() -> void:
+	var host := Node.new()
+	add_child_autofree(host)
+	var sting := RaritySting.new()
+	host.add_child(sting)
+	sting.play_sting()
+	var player_id := sting.player_node().get_instance_id()
+	sting.free()
+	assert_false(is_instance_id_valid(player_id))
+
+
 func test_legendary_duck_is_deferred_and_does_not_change_a_bus() -> void:
 	# INCOMPLETE / deferred until a music or world bus is part of the mix.
 	# Avoid lock / add_bus / remove_bus / play: Godot 4.7.2's headless Dummy

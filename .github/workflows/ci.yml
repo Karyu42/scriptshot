@@ -207,6 +207,8 @@ jobs:
         run: bash tools/ci/fetch_native_libs.sh linux.x86_64
       - name: Unit-test the perf gate (tools/ci/check_perf.py)
         run: python3 -m unittest discover -s tools/ci -p 'test_*.py' -v
+      - name: Unit-test native binding hooks (native/tests)
+        run: python3 -m unittest discover -s native/tests -p 'test_*.py' -v
       - name: Check out the PR base for a same-runner baseline (pull_request only)
         if: github.event_name == 'pull_request'
         env:
