@@ -43,6 +43,39 @@ class Batch:
 		calls += 1
 
 
+## Releases its owner from on_update, then writes that packed id onto a later
+## bullet in the same pass (set_behavior or a raw array write).
+class StaleRewriter:
+	extends BulletBehavior
+	var ticks := 0
+	var manager: BulletManager
+	var owner_id := 0
+	var via_set_behavior := true
+	var wrote := false
+
+	func _init() -> void:
+		hook_mask = BulletBehavior.HOOK_ON_DESPAWN
+
+	func on_update(pool: BulletPool, index: int, _delta: float) -> void:
+		ticks += 1
+		if wrote:
+			return
+		var later := -1
+		for k in pool.hooked_count:
+			var i: int = pool.hooked[k]
+			if i != index:
+				later = i
+				break
+		manager.release_behavior(owner_id)
+		if later < 0:
+			return
+		wrote = true
+		if via_set_behavior:
+			pool.set_behavior(later, owner_id)
+		else:
+			pool.behavior[later] = owner_id
+
+
 func before_each() -> void:
 	ScriptWarnings.reset()
 	_drained.clear()
@@ -225,13 +258,23 @@ func test_release_behavior_lets_the_behavior_go() -> void:
 	assert_eq(manager.release_behavior(owner), 1)
 	assert_true(ref.get_ref() == null, "nothing holds the old generation any more")
 	assert_eq(_drained, [owner] as Array[int])
-	# The id is not reused and a late shot naming it is plain.
+	# A late shot naming the released id is rejected: it becomes a plain bullet.
+	# The slot may be reused, but the packed id is not, so a later script never
+	# sees that stale handle.
 	var late := manager.spawn(_shot(owner))
 	assert_gte(late, 0)
+	assert_eq(manager.pool.behavior[late], 0, "a stale id is rejected")
 	manager.step(DT)
-	assert_eq(manager.pool.hooked_count, 1, "still listed (behavior id kept), but the inert hook does nothing")
-	var fresh := manager.register_behavior(Steer.new())
-	assert_ne(fresh, owner)
+	assert_eq(manager.pool.hooked_count, 0, "the late shot is plain")
+	var fresh_steer := Steer.new()
+	var fresh := manager.register_behavior(fresh_steer)
+	assert_ne(fresh, owner, "a released packed id is not reused")
+	var late2 := manager.spawn(_shot(owner))
+	assert_gte(late2, 0)
+	manager.step(DT)
+	assert_eq(fresh_steer.ticks, 0, "a stale id never runs the new script")
+	assert_eq(manager.hooked_count_for_owner(owner), 0)
+	assert_eq(manager.hooked_count_for_owner(fresh), 0)
 
 
 func test_native_batch_owner_counts_drains_and_strips() -> void:
@@ -343,7 +386,9 @@ func test_native_two_owners_drain_in_one_tick_and_the_listener_releases() -> voi
 	m.spawn(_shot(d, Vector2(10, 0), 0.5 * DT))
 	m.step(DT)
 	_drained.sort()
-	assert_eq(_drained, [c, d] as Array[int])
+	var want_cd: Array[int] = [c, d]
+	want_cd.sort()
+	assert_eq(_drained, want_cd, "each reused owner exactly once")
 
 
 # --- a second drain inside the same emit loop (SE re-review #76, blocker) ---------
@@ -504,3 +549,241 @@ func test_gd_owner_drains_by_hit_and_by_wall() -> void:
 	var want: Array[int] = [by_hit, by_wall]
 	want.sort()
 	assert_eq(_drained, want)
+
+func test_ten_thousand_releases_stay_bounded_and_reject_stale_ids() -> void:
+	const N := 10000
+	var first_id := 0
+	var mid_id := 0
+	var refs: Array[WeakRef] = []
+	var mem_after_warmup := 0
+	for i in N:
+		var steer := Steer.new()
+		var id := manager.register_behavior(steer)
+		if i == 0:
+			first_id = id
+		elif i == N / 2:
+			mid_id = id
+		if i == 200:
+			mem_after_warmup = OS.get_static_memory_usage()
+		if i % 1000 == 0:
+			refs.append(weakref(steer))
+		assert_eq(manager.release_behavior(id), 0)
+		steer = null
+	assert_lte(manager._behaviors.size(), 2, "slots are reused: only slot 0 plus one recycled slot")
+	assert_eq(manager._owner_free.size(), 1)
+	assert_eq(manager._get_behavior(first_id), null, "the first id is stale")
+	assert_eq(manager._get_behavior(mid_id), null, "the mid-run id is stale")
+	var late := manager.spawn(_shot(first_id))
+	assert_gte(late, 0)
+	assert_eq(manager.hooked_count_for_owner(first_id), 0)
+	if manager.is_native_id(late):
+		assert_eq(manager.native.count_with_behavior(first_id), 0, "a stale id is not tagged on the sim")
+	else:
+		assert_eq(manager.pool.behavior[late], 0, "a stale id becomes a plain bullet")
+	var fresh := Steer.new()
+	var fresh_id := manager.register_behavior(fresh)
+	assert_ne(fresh_id, first_id)
+	assert_ne(fresh_id, mid_id)
+	assert_eq(manager._behaviors.size(), 2, "the new register reused the free slot")
+	manager.spawn(_shot(first_id))
+	manager.step(DT)
+	assert_eq(fresh.ticks, 0, "a stale id never runs the new script")
+	manager.spawn(_shot(fresh_id))
+	manager.step(DT)
+	assert_eq(fresh.ticks, 1, "the live id still runs")
+	for r: WeakRef in refs:
+		assert_true(r.get_ref() == null, "released behaviours are freed")
+	var mem := OS.get_static_memory_usage()
+	# 10k inert ~2.4 KiB objects would be ~24 MiB. A few MiB of allocator noise is fine.
+	assert_lt(mem, mem_after_warmup + 8 * 1024 * 1024, "memory stays bounded across 10k releases")
+
+
+func test_ten_thousand_releases_stay_bounded_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	manager = _make_manager("native")
+	test_ten_thousand_releases_stay_bounded_and_reject_stale_ids()
+
+
+# --- SE review #106: 15-bit generation wrap and re-entrant release ---------------
+
+func _preset_generation(m: BulletManager, slot: int, gen: int) -> void:
+	m._owner_gen[slot] = gen
+
+
+func _assert_generation_wraps(m: BulletManager) -> void:
+	var first := m.register_behavior(Steer.new())
+	var slot := first & BulletManager.OWNER_SLOT_MASK
+	assert_eq(m.release_behavior(first), 0)
+	# Last 15-bit generation. The next register packs this; the release after
+	# that wraps (0 is skipped, so the new life is generation 1).
+	_preset_generation(m, slot, BulletManager.OWNER_GEN_MASK)
+	var steer := Steer.new()
+	var owner := m.register_behavior(steer)
+	assert_gt(owner, 0, "the packed id stays positive at generation 32767")
+	assert_eq(owner >> BulletManager.OWNER_SLOT_BITS, BulletManager.OWNER_GEN_MASK)
+	assert_eq(owner & BulletManager.OWNER_SLOT_MASK, slot)
+	assert_gte(m.spawn(_shot(owner)), 0)
+	m.step(DT)
+	assert_eq(steer.ticks, 1, "hooks run at the last 15-bit generation")
+	assert_eq(m.hooked_count_for_owner(owner), 1)
+	assert_eq(m.release_behavior(owner), 1)
+	assert_eq(m.hooked_count_for_owner(owner), 0, "counts drain across the wrap")
+	var wrapped_gen: int = m._owner_gen[slot]
+	assert_eq(wrapped_gen, 1, "generation wraps to 1, skipping 0")
+	assert_eq(m._owner_free, [slot] as Array[int])
+	var next_steer := Steer.new()
+	var wrapped := m.register_behavior(next_steer)
+	assert_gt(wrapped, 0, "the wrapped id stays positive")
+	assert_ne(wrapped, owner)
+	assert_eq(wrapped >> BulletManager.OWNER_SLOT_BITS, 1)
+	assert_gte(m.spawn(_shot(wrapped)), 0)
+	m.step(DT)
+	assert_eq(next_steer.ticks, 1, "hooks run after the wrap")
+	assert_eq(m.hooked_count_for_owner(wrapped), 1)
+
+
+func test_generation_wraps_within_fifteen_bits_and_hooks_keep_running() -> void:
+	_assert_generation_wraps(manager)
+
+
+func test_generation_wraps_within_fifteen_bits_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_generation_wraps(_make_manager("native"))
+
+
+func _assert_reentrant_release_does_not_free_twice(m: BulletManager) -> void:
+	# The outer release strips, which emits hooked_owner_drained, and the
+	# listener releases the same id again. The second call must be a no-op.
+	m.hooked_owner_drained.connect(func(id: int) -> void: m.release_behavior(id))
+	var a := m.register_behavior(Steer.new())
+	assert_gte(m.spawn(_shot(a)), 0)
+	assert_eq(m.release_behavior(a), 1)
+	assert_eq(m._owner_free.size(), 1, "the slot is on the free list once")
+	var b := m.register_behavior(Steer.new())
+	var c := m.register_behavior(Steer.new())
+	assert_ne(b, c, "two registrations after a re-release get distinct ids")
+	assert_ne(b, a)
+	assert_ne(c, a)
+	assert_gt(b, 0)
+	assert_gt(c, 0)
+
+
+func test_a_reentrant_release_is_a_noop_and_later_ids_are_distinct() -> void:
+	_assert_reentrant_release_does_not_free_twice(manager)
+
+
+func test_a_reentrant_release_is_a_noop_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_reentrant_release_does_not_free_twice(_make_manager("native"))
+
+func _assert_stale_set_batch_only_is_a_noop(m: BulletManager) -> void:
+	var stale := m.register_behavior(Batch.new())
+	assert_eq(m.release_behavior(stale), 0)
+	var steer := Steer.new()
+	var fresh := m.register_behavior(steer)
+	assert_eq(fresh & BulletManager.OWNER_SLOT_MASK, stale & BulletManager.OWNER_SLOT_MASK)
+	assert_ne(fresh, stale)
+	assert_gte(m.spawn(_shot(fresh)), 0)
+	m.pool.set_batch_only(stale, true)
+	m.step(DT)
+	assert_eq(steer.ticks, 1, "a stale set_batch_only must not make the new occupant batch-only")
+	# A stale clear must not drop a live batch occupant from the batch path.
+	assert_eq(m.release_behavior(fresh), 1)
+	var live := m.register_behavior(Batch.new())
+	assert_eq(live & BulletManager.OWNER_SLOT_MASK, stale & BulletManager.OWNER_SLOT_MASK)
+	assert_gte(m.spawn(_shot(live)), 0)
+	m.pool.set_batch_only(fresh, false)
+	var flag: int = m.pool.batch_only[live & BulletManager.OWNER_SLOT_MASK]
+	assert_eq(flag, 1, "a stale clear must not drop the live batch-only flag")
+
+
+func test_a_stale_set_batch_only_is_a_noop() -> void:
+	_assert_stale_set_batch_only_is_a_noop(manager)
+
+
+func test_a_stale_set_batch_only_is_a_noop_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_stale_set_batch_only_is_a_noop(_make_manager("native"))
+
+func _grow_owner_table_to_the_slot_limit(m: BulletManager) -> void:
+	# Slot 0 is unused; the packed field can address 1..65535. After that
+	# the next new slot would be 65536, which does not fit.
+	var n := BulletManager.OWNER_SLOT_MASK + 1
+	m._behaviors.resize(n)
+	m._hook_cache.resize(n)
+	m._hook_scripts.resize(n)
+	m._declared_checked.resize(n)
+	m._declared_scripts.resize(n)
+	m._update_override.resize(n)
+	m._owner_gen.resize(n)
+
+
+func _assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(m: BulletManager) -> void:
+	var first := m.register_behavior(Steer.new())
+	assert_gt(first, 0)
+	_grow_owner_table_to_the_slot_limit(m)
+	assert_eq(m._behaviors.size(), BulletManager.OWNER_SLOT_MASK + 1)
+	assert_eq(m._owner_free.size(), 0)
+	var capped := m.register_behavior(Steer.new())
+	assert_eq(capped, 0, "the 65,536th slot does not fit in the packed id")
+	assert_push_error("65,535 usable slots")
+	assert_eq(m.release_behavior(first), 0)
+	var again := m.register_behavior(Steer.new())
+	assert_gt(again, 0, "a freed slot is usable after the cap is hit")
+	assert_ne(again, 0)
+	assert_eq(again & BulletManager.OWNER_SLOT_MASK, first & BulletManager.OWNER_SLOT_MASK)
+
+
+func test_the_65536th_register_returns_zero_and_a_freed_slot_is_usable_again() -> void:
+	_assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(manager)
+
+
+func test_the_65536th_register_returns_zero_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_the_slot_cap_returns_zero_and_a_freed_slot_is_usable_again(_make_manager("native"))
+
+
+func _assert_a_released_id_written_mid_pass_is_rejected(m: BulletManager, via_set_behavior: bool) -> void:
+	ScriptWarnings.reset()
+	var writer := StaleRewriter.new()
+	writer.manager = m
+	writer.via_set_behavior = via_set_behavior
+	var owner := m.register_behavior(writer)
+	writer.owner_id = owner
+	var first := m.spawn(_shot(owner))
+	var later := m.spawn(_shot(owner))
+	assert_gte(first, 0)
+	assert_gte(later, 0)
+	assert_ne(first, later)
+	m.step(DT)
+	assert_eq(writer.ticks, 1, "the released behaviour must not run again on the later bullet")
+	assert_eq(m.pool.behavior[later], 0, "the stale id is dropped")
+	assert_eq(m.pool.behavior[first], 0)
+	assert_push_warning("unknown behavior id %d" % owner)
+
+
+func _assert_stale_id_written_after_release_is_rejected(m: BulletManager) -> void:
+	_assert_a_released_id_written_mid_pass_is_rejected(m, true)
+	_assert_a_released_id_written_mid_pass_is_rejected(m, false)
+
+
+func test_a_hook_that_writes_a_just_released_id_is_rejected() -> void:
+	_assert_stale_id_written_after_release_is_rejected(manager)
+
+
+func test_a_hook_that_writes_a_just_released_id_is_rejected_on_the_native_backend() -> void:
+	if not NativeBackend.is_available():
+		pending("NativeBulletSim extension not built (scons in native/)")
+		return
+	_assert_stale_id_written_after_release_is_rejected(_make_manager("native"))
+
