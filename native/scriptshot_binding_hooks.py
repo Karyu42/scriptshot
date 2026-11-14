@@ -5,9 +5,11 @@ reads env["binding_hooks"] when it emits gen/src/variant/*.cpp, so a clean
 first `scons target=template_debug` gets the guards (unlike a parse-time
 patch of gen/, which is empty until after generation).
 
-Generated operator= still calls `_method_bindings.destructor(&opaque)`
-unguarded. That only matters after CORE deinitialize, when we no longer
-assign builtins; shutdown hits ~Type(), which is what we guard.
+Generated copy operator= also calls `_method_bindings.destructor(&opaque)`
+and then a constructor. After CORE deinitialize those are just as unsafe
+as ~Type(): a leftover static may assign while its destructor runs (MSVC
+static destruction order on Windows GUT exit 139 after #109). The hook
+makes copy operator= a no-op when builtin destructors are disabled.
 """
 from __future__ import annotations
 
@@ -36,6 +38,26 @@ UNGUARDED_DTOR_RE = re.compile(
     r"\t_method_bindings\.destructor\(&opaque\);\n"
     r"\}"
 )
+# Copy operator= that destroys then reconstructs. Move operator= only swaps.
+GUARDED_ASSIGN_RE = re.compile(
+    r"&[A-Za-z0-9_]+::operator=\(const [A-Za-z0-9_]+ &p_other\) \{\n"
+    r"\tif \(!::godot::internal::builtin_destructors_enabled\) \{\n"
+    r"\t\treturn \*this;\n"
+    r"\t\}\n"
+    r"\t_method_bindings\.destructor\(&opaque\);"
+)
+UNGUARDED_ASSIGN_RE = re.compile(
+    r"&[A-Za-z0-9_]+::operator=\(const [A-Za-z0-9_]+ &p_other\) \{\n"
+    r"\t_method_bindings\.destructor\(&opaque\);"
+)
+ASSIGN_OPEN_RE = re.compile(
+    r"^([A-Za-z0-9_]+) &\1::operator=\(const \1 &p_other\) \{$"
+)
+ASSIGN_GUARD_LINES = [
+    "\tif (!::godot::internal::builtin_destructors_enabled) {",
+    "\t\treturn *this;",
+    "\t}",
+]
 
 
 def builtin_classes_with_destructor(native_root: Path) -> list[str]:
@@ -68,6 +90,7 @@ def count_destructor_guards(native_root: Path) -> dict:
     expected = expected_guard_count(native_root)
     expected_files = set(guarded_builtin_sources(native_root))
     guarded = 0
+    guarded_assign = 0
     unguarded: list[str] = []
     missing: list[str] = []
     present: list[str] = []
@@ -79,13 +102,22 @@ def count_destructor_guards(native_root: Path) -> dict:
         text = path.read_text()
         n_ok = len(GUARDED_DTOR_RE.findall(text))
         n_bad = len(UNGUARDED_DTOR_RE.findall(text))
+        n_ok_assign = len(GUARDED_ASSIGN_RE.findall(text))
+        n_bad_assign = len(UNGUARDED_ASSIGN_RE.findall(text))
         present.append(name)
         guarded += n_ok
+        guarded_assign += n_ok_assign
         if n_ok != 1 or n_bad != 0:
             unguarded.append("%s (guarded ~Type()=%d, unguarded ~Type()=%d)" % (name, n_ok, n_bad))
+        if n_ok_assign != 1 or n_bad_assign != 0:
+            unguarded.append(
+                "%s (guarded operator=%d, unguarded operator=%d)"
+                % (name, n_ok_assign, n_bad_assign)
+            )
     return {
         "expected": expected,
         "guarded": guarded,
+        "guarded_assign": guarded_assign,
         "unguarded": unguarded,
         "missing": missing,
         "files": present,
@@ -104,6 +136,11 @@ def assert_destructor_guards(native_root: Path) -> dict:
         errors.append(
             "guarded ~Type() count is %d, expected %d (extension_api has_destructor builtins)"
             % (info["guarded"], info["expected"])
+        )
+    if info["guarded_assign"] != info["expected"]:
+        errors.append(
+            "guarded copy operator= count is %d, expected %d"
+            % (info["guarded_assign"], info["expected"])
         )
     if errors:
         raise RuntimeError("scriptshot: destructor guards failed: " + "; ".join(errors))
@@ -128,6 +165,10 @@ class ScriptshotBindingHooks:
                 and result[i - 1].endswith("() {")
             ):
                 out.extend(GUARD_LINES)
+            elif ASSIGN_OPEN_RE.match(line):
+                out.append(line)
+                out.extend(ASSIGN_GUARD_LINES)
+                continue
             out.append(line)
         return out
 
@@ -155,8 +196,8 @@ def main(argv: list[str]) -> int:
         print(exc, file=sys.stderr)
         return 1
     print(
-        "scriptshot: destructor guards ok: %d/%d ~Type() guarded in %d variant .cpp files"
-        % (info["guarded"], info["expected"], info["variant_cpp"])
+        "scriptshot: destructor guards ok: %d/%d ~Type() and %d/%d copy operator= guarded in %d variant .cpp files"
+        % (info["guarded"], info["expected"], info["guarded_assign"], info["expected"], info["variant_cpp"])
     )
     for name in info["files"]:
         print("  %s" % name)
