@@ -22,6 +22,7 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	save.slice_lessons = 7
 	save.slice_gates = 3
 	save.slice_packs = 1
+	save.slice_rare_dead = true
 	save.field_drifters = 1_710_000_000.5
 	save.field_swarmers = 12.0
 	save.field_shield = 99.25
@@ -36,6 +37,7 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.slice_lessons, 7)
 	assert_eq(loaded.slice_gates, 3)
 	assert_eq(loaded.slice_packs, 1)
+	assert_true(loaded.slice_rare_dead)
 	assert_eq(loaded.field_drifters, 1_710_000_000.5)
 	assert_eq(loaded.field_swarmers, 12.0)
 	assert_eq(loaded.field_shield, 99.25)
@@ -54,6 +56,7 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	cfg.set_value("world", "slice_lessons", 5.9)
 	cfg.set_value("world", "slice_gates", 2)
 	cfg.set_value("world", "slice_packs", 1)
+	cfg.set_value("world", "slice_rare_dead", 1)
 	cfg.set_value("world", "field_drifters", 42)
 	cfg.set_value("world", "field_swarmers", 0)
 	cfg.set_value("world", "field_shield", 0)
@@ -68,6 +71,7 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.slice_lessons, 5, "int() truncates a float")
 	assert_eq(loaded.slice_gates, 2)
 	assert_eq(loaded.slice_packs, 1)
+	assert_false(loaded.slice_rare_dead, "a non-bool stays false (_read_bool)")
 	assert_eq(loaded.field_drifters, 42.0, "float() accepts an int")
 	assert_eq(loaded.field_swarmers, 0.0)
 	assert_eq(loaded.elite_kills, [])
@@ -84,6 +88,7 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.slice_lessons, 0)
 	assert_eq(loaded.slice_gates, 0)
 	assert_eq(loaded.slice_packs, 0)
+	assert_false(loaded.slice_rare_dead)
 	assert_eq(loaded.field_drifters, 0.0)
 	assert_eq(loaded.field_swarmers, 0.0)
 	assert_eq(loaded.field_shield, 0.0)

@@ -37,6 +37,7 @@ var _slice: SliceLayout
 var _progress: SliceProgress
 var _slice_hud: SliceHud
 var _packs: SlicePacks
+var _room_d: SliceRoomD
 var _warden: Warden
 
 
@@ -63,6 +64,7 @@ func _ready() -> void:
 	_bind_slice_progress()
 	_bind_slice_hud()
 	_bind_slice_packs()
+	_bind_slice_room_d()
 	WorldQuery.bind_bullets(_bullets)
 	_bind_warden()
 	_player.died.connect(_on_player_died)
@@ -147,6 +149,15 @@ func _bind_slice_packs() -> void:
 	if _packs == null:
 		return
 	_packs.bind(_player, _progress, _bullets, _save.world_seed if _save != null else 0)
+
+
+func _bind_slice_room_d() -> void:
+	_room_d = get_node_or_null("SliceRoomD") as SliceRoomD
+	# Authored slice placement: skip it when the ribbon is off so the
+	# pre-slice open-world tests (natural elites, Herald) stay unchanged.
+	if _room_d == null or _slice == null:
+		return
+	_room_d.bind(_player, _progress, _save, _save.world_seed if _save != null else 0)
 
 
 func current_save_path() -> String:

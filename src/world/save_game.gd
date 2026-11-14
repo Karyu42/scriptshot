@@ -31,6 +31,10 @@ var seen_it_feeds := false
 var slice_lessons := 0
 var slice_gates := 0
 var slice_packs := 0
+## Room-D rare elite body has died (vertical-slice row 7). Missing key = false.
+## The escort and summons stay gone with it. G5 is the gate bit; this flag
+## is what stops the body from respawning on reload.
+var slice_rare_dead := false
 ## Room-C scripted packs: unix "absent since" times. 0 (or a missing key) means
 ## the pack is present. Each pack returns after FIELD_PACK_RETURN seconds
 ## outside C. Row 2 wires the packs themselves; this slot only stores the keys.
@@ -84,6 +88,7 @@ func save() -> void:
 	cfg.set_value("world", "slice_lessons", slice_lessons)
 	cfg.set_value("world", "slice_gates", slice_gates)
 	cfg.set_value("world", "slice_packs", slice_packs)
+	cfg.set_value("world", "slice_rare_dead", slice_rare_dead)
 	cfg.set_value("world", "field_drifters", field_drifters)
 	cfg.set_value("world", "field_swarmers", field_swarmers)
 	cfg.set_value("world", "field_shield", field_shield)
@@ -108,6 +113,7 @@ func _read(cfg: ConfigFile) -> void:
 	slice_lessons = _read_int(cfg, "slice_lessons", 0)
 	slice_gates = _read_int(cfg, "slice_gates", 0)
 	slice_packs = _read_int(cfg, "slice_packs", 0)
+	slice_rare_dead = _read_bool(cfg, "slice_rare_dead", false)
 	field_drifters = _read_field_time(cfg, "field_drifters")
 	field_swarmers = _read_field_time(cfg, "field_swarmers")
 	field_shield = _read_field_time(cfg, "field_shield")
