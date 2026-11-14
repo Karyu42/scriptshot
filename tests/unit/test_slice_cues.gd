@@ -37,6 +37,28 @@ func test_room_d_elite_uses_the_rare_cue_row() -> void:
 	assert_false(elite.cue.draws_halo(), "rare has no disc")
 	assert_eq(elite.sting.tier, RarityCue.TIER_ELITE_RARE)
 	assert_eq(elite.global_position, ROOM_D)
+	# Single-affix helper below; the authored room D rare is two glyphs.
+
+
+func test_the_room_d_rare_shows_two_glyphs() -> void:
+	var elite := _elite(
+		ROOM_D,
+		AffixDef.RARITY_RARE,
+		AffixCatalog.BULWARK,
+		"",
+		[AffixCatalog.SUMMONER] as Array[StringName],
+	)
+	assert_eq(elite.cue.glyph_slot_count(), 2)
+	var kinds: Array[int] = elite.cue.glyphs
+	assert_eq(kinds.size(), 2)
+	var first := 0
+	var second := 0
+	if kinds.size() >= 1:
+		first = kinds[0]
+	if kinds.size() >= 2:
+		second = kinds[1]
+	assert_eq(first, RarityCue.GLYPH_SQUARE)
+	assert_eq(second, RarityCue.GLYPH_CIRCLE)
 
 
 func test_alcove_hydra_uses_the_legendary_cue_row_with_its_name() -> void:
@@ -190,13 +212,19 @@ func _set_warden_canvas_pos(hud: SliceHud, warden: Warden, canvas: Vector2) -> v
 	warden.global_position = vp.get_canvas_transform().affine_inverse() * canvas
 
 
-func _elite(at: Vector2, rarity: int, affix: StringName, name := "") -> EliteEnemy:
+func _elite(
+	at: Vector2,
+	rarity: int,
+	affix: StringName,
+	name := "",
+	extra: Array[StringName] = [],
+) -> EliteEnemy:
 	var player := Node2D.new()
 	player.position = at + Vector2(300, 0)
 	add_child_autofree(player)
 	var elite := (preload("res://scenes/elite_enemy.tscn") as PackedScene).instantiate() as EliteEnemy
 	elite.signature_name = name
-	elite.configure_elite(affix, at, at, 1, player, true, false, Vector2i.ZERO, -1, rarity)
+	elite.configure_elite(affix, at, at, 1, player, true, false, Vector2i.ZERO, -1, rarity, extra)
 	elite.set_physics_process(false)
 	add_child_autofree(elite)
 	return elite

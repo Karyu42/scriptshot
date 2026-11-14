@@ -180,7 +180,7 @@ func _physics_process(delta: float) -> void:
 	if _alive and player != null:
 		var to_player := player.global_position - global_position
 		var dist := to_player.length()
-		if not woken and dist <= WorldGen.WAKE_RADIUS:
+		if not woken and dist <= _wake_radius():
 			woken = true
 			_erratic_left = 0.0
 		if woken:
@@ -192,6 +192,10 @@ func _physics_process(delta: float) -> void:
 		queue_redraw()
 	last_displacement = global_position - _prev_position
 	_prev_position = global_position
+
+
+func _wake_radius() -> float:
+	return WorldGen.WAKE_RADIUS
 
 
 ## Drifter 90, Swarmer 140. Elites override this (halves run at 117).

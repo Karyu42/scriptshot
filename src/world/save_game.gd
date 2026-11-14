@@ -35,6 +35,10 @@ var slice_packs := 0
 ## The escort and summons stay gone with it. G5 is the gate bit; this flag
 ## is what stops the body from respawning on reload.
 var slice_rare_dead := false
+## Alcove Hydra original body has died (vertical-slice §4 / row 12). Missing
+## key = false. Halves and summons stay gone with it on reload; they are
+## not saved mid-fight.
+var hydra_dead := false
 ## Room-C scripted packs: unix "absent since" times. 0 (or a missing key) means
 ## the pack is present. Each pack returns after FIELD_PACK_RETURN seconds
 ## outside C. Row 2 wires the packs themselves; this slot only stores the keys.
@@ -89,6 +93,7 @@ func save() -> void:
 	cfg.set_value("world", "slice_gates", slice_gates)
 	cfg.set_value("world", "slice_packs", slice_packs)
 	cfg.set_value("world", "slice_rare_dead", slice_rare_dead)
+	cfg.set_value("world", "hydra_dead", hydra_dead)
 	cfg.set_value("world", "field_drifters", field_drifters)
 	cfg.set_value("world", "field_swarmers", field_swarmers)
 	cfg.set_value("world", "field_shield", field_shield)
@@ -114,6 +119,7 @@ func _read(cfg: ConfigFile) -> void:
 	slice_gates = _read_int(cfg, "slice_gates", 0)
 	slice_packs = _read_int(cfg, "slice_packs", 0)
 	slice_rare_dead = _read_bool(cfg, "slice_rare_dead", false)
+	hydra_dead = _read_bool(cfg, "hydra_dead", false)
 	field_drifters = _read_field_time(cfg, "field_drifters")
 	field_swarmers = _read_field_time(cfg, "field_swarmers")
 	field_shield = _read_field_time(cfg, "field_shield")
