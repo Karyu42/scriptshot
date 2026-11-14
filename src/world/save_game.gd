@@ -50,6 +50,16 @@ var field_drifters := 0.0
 var field_swarmers := 0.0
 var field_shield := 0.0
 var field_sniper := 0.0
+## Once the Warden's core hits 0 this slot is cleared: the body does not
+## respawn. The common Warden also counts as the save's starter boss (Q25),
+## so starter_consumed is set with it and a later region-boss pass will not
+## place a second starter. Missing or a non-bool value means false.
+var warden_dead := false
+var starter_consumed := false
+## Set when the enemies_in toast and Codex page have actually been shown.
+## Missing or a non-bool means false, so a mid-card quit still announces on
+## the next load.
+var enemies_in_announced := false
 var existed := false
 
 
@@ -93,6 +103,9 @@ func save() -> void:
 	cfg.set_value("world", "field_swarmers", field_swarmers)
 	cfg.set_value("world", "field_shield", field_shield)
 	cfg.set_value("world", "field_sniper", field_sniper)
+	cfg.set_value("world", "warden_dead", warden_dead)
+	cfg.set_value("world", "starter_consumed", starter_consumed)
+	cfg.set_value("senses", "enemies_in_announced", enemies_in_announced)
 	cfg.save(path)
 
 
@@ -118,6 +131,9 @@ func _read(cfg: ConfigFile) -> void:
 	field_swarmers = _read_field_time(cfg, "field_swarmers")
 	field_shield = _read_field_time(cfg, "field_shield")
 	field_sniper = _read_field_time(cfg, "field_sniper")
+	warden_dead = _read_bool(cfg, "warden_dead", false)
+	starter_consumed = _read_bool(cfg, "starter_consumed", false)
+	enemies_in_announced = _read_bool(cfg, "enemies_in_announced", false, "senses")
 
 
 func _read_int(cfg: ConfigFile, key: String, default: int, section: String = "world") -> int:
