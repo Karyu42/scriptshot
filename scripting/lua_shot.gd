@@ -29,11 +29,18 @@ extends ShotPattern
 ##     nothing.
 ## Shots never switch to another version's callbacks: a released behaviour
 ## runs no callback again, even when it was stripped from inside one of its
-## own hooks. Globals: every new generation (a new or reused slot) starts
-## from fresh sandbox globals and its own copies of the library tables
-## (string, math, table...), so it does not inherit what an older version set
-## or changed. An in-place reload of an idle version keeps that version's env:
-## top-level globals it set stay visible to the new code.
+## own hooks. Globals: every save (in place or a new generation, idle or
+## busy) starts from fresh sandbox globals and its own copies of the library
+## tables (string, math, table...), so it does not inherit what an older
+## version set or changed. Only `state` carries over: before the new file
+## runs, its `state` global is a copy of the running version's plain data
+## (ScriptHost.export_state, state_codec.lua; copied because versions may sit
+## in different Lua states). The file may reassign it (`state = {}` resets).
+## Shots still in flight from older versions keep their own `state`. A
+## failed save leaves the running version's `state` untouched. Respawn keeps
+## the weapon and its `state` (reset() is a no-op). Copy notes (a function
+## dropped, a cycle cut, a cap hit) are on RunResult.warnings and
+## ScriptWarnings (STATE_WARNING_KEY).
 ## Lua states are never freed (lua-gdextension #240), so a weapon keeps at most
 ## MAX_GENERATIONS ScriptHosts (one per slot) for its whole life, however often
 ## it is reloaded. A failed apply never replaces the running version.
@@ -49,6 +56,8 @@ const DEFAULT_RADIUS := 4.0
 const NO_TABLE_ERROR := "the script did not return a table"
 ## RunResult.error of apply() called from a listener while apply() runs.
 const NESTED_APPLY_ERROR := "apply() called while a reload is running"
+## ScriptWarnings key of the `state` copy notes (also on RunResult.warnings).
+const STATE_WARNING_KEY := "LuaShot.state_copy"
 
 var manager: BulletManager
 var chunk_name := "weapon.lua"
@@ -191,11 +200,14 @@ func _load_into(slot: int, code: String, replacing: bool = false) -> ScriptHost.
 	if not in_place:
 		behavior_ref = _new_behavior(_hosts[slot])
 		behavior_ref.skip_failed_callbacks = true
+	# Every version starts from fresh globals; only `state` carries over, as a
+	# copy of the running version's plain data (it may be on another host).
+	var carried := _hosts[_current].export_state() if _current >= 0 else ""
 	var result: ScriptHost.RunResult
 	if in_place:
-		result = behavior_ref.load_source(code, chunk_name, manager, _gen_ids[slot])
+		result = behavior_ref.load_source(code, chunk_name, manager, _gen_ids[slot], true, carried)
 	else:
-		result = behavior_ref.load_source(code, chunk_name, null, -1, true)
+		result = behavior_ref.load_source(code, chunk_name, null, -1, true, carried)
 	var adopted := result.ok and result.value is LuaTable and behavior_ref.host.has_weapon()
 	# Do not keep Lua wrappers on a result the editor may hold.
 	result.value = null
@@ -204,6 +216,8 @@ func _load_into(slot: int, code: String, replacing: bool = false) -> ScriptHost.
 		result.error = NO_TABLE_ERROR
 	if not result.ok:
 		return result
+	for w in result.warnings:
+		ScriptWarnings.warn(STATE_WARNING_KEY, "LuaShot: %s" % w)
 	if replacing:
 		_release_slot(slot, false)
 		evicted_count += 1
@@ -334,6 +348,13 @@ func _read_settings(host: ScriptHost) -> void:
 	bullet_lifetime = clampf(host.weapon_number("lifetime", DEFAULT_LIFETIME), 0.05, 10.0)
 	bullet_damage = clampf(host.weapon_number("damage", DEFAULT_DAMAGE), 0.0, 100.0)
 	bullet_radius = clampf(host.weapon_number("radius", DEFAULT_RADIUS), 1.0, 32.0)
+
+
+## Respawn (Player.respawn). The weapon, its running version and its `state`
+## stay as they are: death keeps `state` (vertical-slice §2). LuaShot has no
+## charge or burst of its own to drop.
+func reset() -> void:
+	pass
 
 
 func fire(context: ShotContext, emitter: ShotEmitter) -> void:

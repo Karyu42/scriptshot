@@ -191,6 +191,10 @@ return function(host)
 		end
 		return deg * math.pi / 180
 	end
+	-- The weapon's persistent table. Each env (fresh_env) gets its own empty
+	-- copy; on a save the host pre-fills it with a copy of the running
+	-- version's plain data before the new file runs (state_codec.lua).
+	env.state = {}
 	-- Senses are filled in by the host when earned (see the Senses block
 	-- below). An unearned Sense is nil, so
 	-- `sense.nearest_enemy and sense.nearest_enemy(...)` is always safe.

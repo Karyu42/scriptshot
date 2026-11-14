@@ -51,7 +51,7 @@ import threading
 import time
 from pathlib import Path
 
-SMOKE_FILES = ("src/qa/web_smoke.tscn", "src/qa/web_smoke.gd", "src/qa/web_smoke_shot.lua")
+SMOKE_FILES = ("src/qa/web_smoke.tscn", "src/qa/web_smoke.gd", "src/qa/web_smoke_shot.lua.txt")
 SMOKE_FEATURE = b"web_smoke"
 NATIVE_MARK = "scriptshot_native"
 LUA_LIB = re.compile(r"^libluagdextension\.web\.template_(debug|release)\.wasm32\.nothreads\.wasm$")
