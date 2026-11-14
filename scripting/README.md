@@ -110,12 +110,22 @@ reused; Lua states are pinned, so a weapon holds at most `MAX_GENERATIONS` (3).
 When all three are busy, the new version loads into a fresh env on the oldest
 one's host; only if that load gives a weapon is the oldest stripped silently
 (its shots fly on as plain bullets). A save that fails to load strips nothing.
-A new generation (a new or reused slot) always starts from fresh sandbox
-globals and its own copies of the library tables (`string`, `math`, `table`,
-...), so it neither sees nor changes what another version set. Method calls on
-strings (`s:sub(...)`) always use the sandbox's string functions. An in-place
-reload of an idle version (no hooked shots in flight) keeps that version's env:
-top-level globals it set stay visible to the new code.
+Every save (in place on an idle version, or a new generation on a new or
+reused slot) starts from fresh sandbox globals and its own copies of the
+library tables (`string`, `math`, `table`, ...), so it neither sees nor
+changes what another version set. Method calls on strings (`s:sub(...)`)
+always use the sandbox's string functions. Only the weapon's `state` global
+carries over: `ScriptHost.export_state()` encodes the running version's
+`state` (plain data, shared references kept, cycles cut, functions dropped,
+capped at `STATE_MAX_DEPTH` / `STATE_MAX_ENTRIES` / `STATE_MAX_BYTES`) with
+the trusted `scripting/state_codec.lua`, and `load_string(..., state_blob)`
+decodes it into the new env before the file runs. The blob is ASCII text, so
+it crosses Lua states through GDScript. A failed load leaves the running env
+and its `state` untouched. What a copy dropped or cut comes back on
+`RunResult.warnings`, `ShotScripts.warnings` (editor Problems list, as
+warnings) and `ScriptWarnings` (`LuaShot.state_copy`). Respawn keeps the
+weapon, so `state` survives death. A state rotated after three guard stops
+reloads with its `state` and, when the host had fresh envs, gets them again.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and
@@ -124,8 +134,26 @@ use; a change on disk to a file that is not equipped only raises
 `unequipped_file_saved`, rate-limited per file, for the editor's toast), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
 error lines) and `SenseBook` (first-death kill counting, the Warden grant,
 grants deferred to the frame boundary, and the save fields). Codex pages are
-`scripting/codex/<sense>.lua`: annotated, runnable weapons. The panel is
+`scripting/codex/<sense>.lua.txt`: annotated, runnable weapons. The panel is
 `src/ui/script_editor_panel.gd`. Player docs: `docs/scripting/editor.md`.
+
+Weapon-shaped Lua in `res://` (the starters in `scripting/starters/`, the Codex
+pages, `src/qa/web_smoke_shot.lua.txt`) is saved as `.lua.txt`
+(`ScriptLibrary.BUNDLED_EXT`), never `.lua`. lua-gdextension 0.8.2 claims every
+`res://*.lua` as a `LuaScript`. When the editor scans or imports the project, it
+runs any such file that ends in `return { ... }` or `return Name` as a plain
+chunk in its own state, outside the sandbox. So a top level that touches a
+sandbox global (`state.t = state.t or 0`, `spawn`, `TAU`, `sense`) raises in
+the import log. The game only ever reads these files as text (`FileAccess`), so
+the extension is the whole fix. Every export preset lists `*.lua.txt` in
+`include_filter` (`check_export_preset.py` enforces it), and `.gitattributes`
+highlights them as Lua. Host files that return a function (`sandbox.lua`,
+`state_codec.lua`) are not run by the binding and stay `.lua`. The player's own
+`shots/*.lua` live in `user://`, which the editor never scans. The long examples
+in `docs/scripting/examples/` keep `.lua` for readers and sit behind a
+`.gdignore` (docs never ship). `tools/run_tests.sh` fails on any Lua error in
+the import log, and `test_bundled_scripts.gd` fails on a weapon-shaped `.lua`
+file anywhere the editor scans.
 
 ## Hook cost
 

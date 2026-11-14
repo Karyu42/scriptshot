@@ -4,7 +4,7 @@ extends GutTest
 ## host is reused, so 50 reloads keep the Lua state count and Lua heap
 ## bounded; shots in flight finish on the code they were fired with; with
 ## every slot busy a save still goes through and the oldest generation's shots
-## fly on as plain bullets; a reused host starts from fresh globals; and a
+## fly on as plain bullets; every save starts from fresh globals; and a
 ## drain that arrives during a reload, inside the emit loop, or after the slot
 ## was released does nothing harmful.
 
@@ -207,7 +207,7 @@ func test_a_drained_generation_is_released_and_its_host_reused() -> void:
 		assert_eq(shot.released_count, 1, "%s: released on hooked_owner_drained" % pref)
 		assert_eq(shot.generation_count(), 1)
 		assert_true(old_ref.get_ref() == null, "%s: the old LuaBulletBehavior is freed" % pref)
-		assert_false(manager._behaviors[old_id] is LuaBulletBehavior, "the manager holds an inert entry")
+		assert_eq(manager._get_behavior(old_id), null, "the released id is stale")
 		assert_false(old_host.has_weapon(), "the slot's host dropped the old weapon table")
 		assert_eq(shot.host_count(), 2)
 		# The current generation still has a shot in flight, so the next reload
@@ -215,7 +215,7 @@ func test_a_drained_generation_is_released_and_its_host_reused() -> void:
 		_apply(shot, HOOKED % [3, "5"])
 		assert_eq(shot.host_count(), 2, "the released host is reused")
 		assert_eq(shot.behavior().host, old_host)
-		assert_ne(shot.behavior_id(), old_id, "a released id is never reused")
+		assert_ne(shot.behavior_id(), old_id, "a released packed id is never reused")
 		assert_ne(shot.behavior_id(), new_id)
 
 
@@ -298,7 +298,7 @@ func test_a_fourth_save_with_every_slot_busy_strips_the_oldest() -> void:
 		assert_eq(shot.host_count(), LuaShot.MAX_GENERATIONS)
 		assert_eq(shot.behavior().host, a_host, "the stripped slot's host runs the new version")
 		assert_eq(manager.hooked_count_for_owner(ids[0]), 0)
-		assert_false(manager._behaviors[ids[0]] is LuaBulletBehavior, "the manager no longer holds version A")
+		assert_eq(manager._get_behavior(ids[0]), null, "version A's id is stale")
 		versions[0] = null
 		assert_true(a_ref.get_ref() == null, "version A's behaviour is freed")
 		assert_eq(ScriptWarnings.revision, warnings, "silent: no warning")
@@ -469,7 +469,7 @@ func test_a_failed_busy_load_leaves_the_oldest_version_untouched() -> void:
 			ids.append(shot.behavior_id())
 			_fire(manager, shot)
 			_steps(manager, 1)
-		var oldest: LuaBulletBehavior = manager._behaviors[ids[0]]
+		var oldest: LuaBulletBehavior = manager._get_behavior(ids[0])
 		var r := shot.apply("tag = 'X'\nleak = 1\nerror('nope')\nreturn {}")
 		assert_false(r.ok, pref)
 		assert_string_contains(r.error, "nope")
@@ -477,7 +477,7 @@ func test_a_failed_busy_load_leaves_the_oldest_version_untouched() -> void:
 		assert_false(r.ok, pref)
 		assert_eq(r.error, LuaShot.NO_TABLE_ERROR)
 		assert_eq(shot.evicted_count, 0, pref)
-		assert_true(manager._behaviors[ids[0]] == oldest, "%s: the manager still holds A" % pref)
+		assert_true(manager._get_behavior(ids[0]) == oldest, "%s: the manager still holds A" % pref)
 		assert_true(oldest.host.has_callback("on_despawn"))
 		_drain_all(manager)
 		assert_eq(oldest.last_result.output, PackedStringArray(["A"]), "%s: A sees its own tag" % pref)
@@ -527,12 +527,13 @@ func test_a_reused_host_starts_from_fresh_globals() -> void:
 		_apply(shot, "return { name = tostring(leftover) .. ',' .. type(print), speed = 1, lifetime = 9 }")
 		assert_eq(shot.behavior().host, host, "%s: the released host is reused" % pref)
 		assert_eq(shot.title, "nil,function", "%s: added globals are gone and replaced ones are back" % pref)
-		# In-place reloads of an idle version keep globals (unchanged).
+		# In-place reloads of an idle version start fresh too; only `state`
+		# carries over (test_lua_state_persist.gd).
 		var manager2 := _mgr(pref)
 		var shot2 := _shot(manager2)
-		_apply(shot2, "kept = 7\nreturn { speed = 1 }")
-		_apply(shot2, "return { name = tostring(kept) }")
-		assert_eq(shot2.title, "7")
+		_apply(shot2, "kept = 7\nstate.kept = 8\nreturn { speed = 1 }")
+		_apply(shot2, "return { name = tostring(kept) .. ',' .. tostring(state.kept) }")
+		assert_eq(shot2.title, "nil,8", "%s: an idle save starts from fresh globals" % pref)
 
 
 func test_drains_during_reload_emit_loop_and_after_release_are_safe() -> void:
@@ -781,7 +782,7 @@ func _strip_from_inside_batch(pref: String, when: String) -> void:
 		_fire(manager, shot)
 		_steps(manager, 1)
 	var probe := shot.probe
-	assert_eq(manager._behaviors[ids[0]], probe, "%s/%s: version A is the probe" % [pref, when])
+	assert_eq(manager._get_behavior(ids[0]), probe, "%s/%s: version A is the probe" % [pref, when])
 	var results: Array[ScriptHost.RunResult] = []
 	probe.trigger_after = when == "after"
 	# D's on_batch would fling every shot it steers far away.
