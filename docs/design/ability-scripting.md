@@ -62,7 +62,7 @@ A scripted dash gets the engine's **0.2 s** i-frames only when it calls `player:
 
 Why: script invulnerability is already unlimited, and Null attacks pierce it. If a script could extend engine i-frames, it could get around the Null counters, which are the main mode's only diegetic answer to god mode (pillars §12). This is not a restriction on movement.
 
-Movement writes emit `script_wrote` and `script_teleported`, so the Rift and Equalizer counters work unchanged.
+Movement writes emit `script_wrote` and `script_teleported`, so the Rift and Equalizer counters work unchanged. RPG move and dash cards do not grant engine i-frames, and a blink adds none ([`rpg-modifiers.md`](rpg-modifiers.md) B9).
 
 ## A4. Editor tools
 
@@ -115,6 +115,7 @@ local SPEED = 260 --@knob 0..800 step 10 "Top speed"
 - It updates on every knob change.
 - It is deterministic and uses the same sim as the game.
 - Ops over budget show as a red trail end with the watchdog message.
+- RPG move and dash cards use this preview as their validation smoke test ([`rpg-modifiers.md`](rpg-modifiers.md) B9). The card must not leave the arena bounds or clip a wall.
 
 ## A5. Fit after the slice
 
