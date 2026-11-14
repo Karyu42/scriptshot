@@ -156,7 +156,7 @@ func _main_with_save(path: String) -> Main:
 func _first_regular(main: Main) -> RegularEnemy:
 	for node: Node in main.get_tree().get_nodes_in_group(RegularEnemy.GROUP):
 		var body := node as RegularEnemy
-		if body == null or not body.is_alive() or body is EliteEnemy:
+		if body == null or not body.is_alive() or body is EliteEnemy or body.is_in_group(SlicePacks.GROUP):
 			continue
 		body.set_physics_process(false)
 		return body
