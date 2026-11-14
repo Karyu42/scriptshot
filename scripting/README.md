@@ -134,8 +134,26 @@ use; a change on disk to a file that is not equipped only raises
 `unequipped_file_saved`, rate-limited per file, for the editor's toast), `ScriptLibrary` (starters and files), `ScriptProblem` (plain-language
 error lines) and `SenseBook` (first-death kill counting, the Warden grant,
 grants deferred to the frame boundary, and the save fields). Codex pages are
-`scripting/codex/<sense>.lua`: annotated, runnable weapons. The panel is
+`scripting/codex/<sense>.lua.txt`: annotated, runnable weapons. The panel is
 `src/ui/script_editor_panel.gd`. Player docs: `docs/scripting/editor.md`.
+
+Weapon-shaped Lua in `res://` (the starters in `scripting/starters/`, the Codex
+pages, `src/qa/web_smoke_shot.lua.txt`) is saved as `.lua.txt`
+(`ScriptLibrary.BUNDLED_EXT`), never `.lua`. lua-gdextension 0.8.2 claims every
+`res://*.lua` as a `LuaScript`. When the editor scans or imports the project, it
+runs any such file that ends in `return { ... }` or `return Name` as a plain
+chunk in its own state, outside the sandbox. So a top level that touches a
+sandbox global (`state.t = state.t or 0`, `spawn`, `TAU`, `sense`) raises in
+the import log. The game only ever reads these files as text (`FileAccess`), so
+the extension is the whole fix. Every export preset lists `*.lua.txt` in
+`include_filter` (`check_export_preset.py` enforces it), and `.gitattributes`
+highlights them as Lua. Host files that return a function (`sandbox.lua`,
+`state_codec.lua`) are not run by the binding and stay `.lua`. The player's own
+`shots/*.lua` live in `user://`, which the editor never scans. The long examples
+in `docs/scripting/examples/` keep `.lua` for readers and sit behind a
+`.gdignore` (docs never ship). `tools/run_tests.sh` fails on any Lua error in
+the import log, and `test_bundled_scripts.gd` fails on a weapon-shaped `.lua`
+file anywhere the editor scans.
 
 ## Hook cost
 

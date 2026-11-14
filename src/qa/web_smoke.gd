@@ -16,7 +16,7 @@ extends Node
 ## (for example `--bullet-backend=native`) reach BulletManager as usual.
 
 const MAIN_SCENE := "res://scenes/main.tscn"
-const SHOT_PATH := "res://src/qa/web_smoke_shot.lua"
+const SHOT_PATH := "res://src/qa/web_smoke_shot.lua.txt"
 const SHOTS := 8
 ## Physics ticks to run after spawning, so the shots move and stay alive.
 const TICKS := 10

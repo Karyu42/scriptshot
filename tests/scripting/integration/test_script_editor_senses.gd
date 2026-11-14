@@ -175,8 +175,8 @@ func test_autocomplete_puts_a_fresh_sense_first_until_it_is_used() -> void:
 
 
 func test_the_nearest_enemy_page_ends_with_the_homing_starter() -> void:
-	# vertical-slice §6.3: the page's snippet is scripting/starters/homing.lua.
+	# vertical-slice §6.3: the page's snippet is scripting/starters/homing.lua.txt.
 	var page := ScriptEditorPanel.codex_source("nearest_enemy")
-	var starter := FileAccess.get_file_as_string("res://scripting/starters/homing.lua")
+	var starter := FileAccess.get_file_as_string("res://scripting/starters/homing.lua.txt")
 	assert_ne(starter, "")
 	assert_true(page.ends_with(starter), "Codex snippet and Homing starter drifted apart")

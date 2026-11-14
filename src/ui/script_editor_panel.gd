@@ -66,7 +66,8 @@ const API_MEMBERS: PackedStringArray = [
 const SENSE_NAMES: PackedStringArray = ["nearest_enemy", "enemies_in", "enemy_bullets", "terrain", "boss", "world"]
 const SENSE_LOCK_HINTS := {"nearest_enemy": "3 kills"}
 const SENSE_LOCK_HINT_DEFAULT := "found at: ???"
-## Codex pages, one per Sense with a page: res://scripting/codex/<id>.lua.
+## Codex pages, one per Sense with a page: res://scripting/codex/<id>.lua.txt
+## (text, not `.lua`: see ScriptLibrary.BUNDLED_EXT).
 const CODEX_DIR := "res://scripting/codex"
 const POLL_SEC := 0.25
 ## Errors and warnings shown at once; the rest are summarised in one row.
@@ -471,7 +472,7 @@ static func codex_source(id: String) -> String:
 
 
 static func _codex_path(id: String) -> String:
-	return CODEX_DIR.path_join(id + ".lua")
+	return CODEX_DIR.path_join(id + ScriptLibrary.BUNDLED_EXT)
 
 
 ## Shows the Codex page of Sense `id` in place of the code. False when the
