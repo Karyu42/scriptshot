@@ -1,4 +1,5 @@
 #include "register_types.h"
+#include "crash_locator.h"
 
 #include "native_bullet_sim.h"
 
@@ -67,6 +68,7 @@ void initialize_scriptshot_native(ModuleInitializationLevel p_level) {
 		return;
 	}
 	pin_library();
+	scriptshot_install_crash_locator();
 	GDREGISTER_CLASS(scriptshot::NativeBulletSim);
 }
 
