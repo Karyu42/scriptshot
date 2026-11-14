@@ -19,8 +19,15 @@ const HALF_RADIUS := 12.0
 ## Centre gap so two radius-12 halves do not sit on top of each other.
 const HALF_SEPARATION := 32.0
 ## Same spacing the slice uses for a 1-point escort, so adds clear the body.
-## Summons spawn this far out on a flank: ±90° from the elite-to-player line.
+## Summons spawn this far out on a flank: ±90° from the elite-to-player line,
+## jittered across SUMMON_FLANK_ARC so a later wave does not stack on the
+## same two points (vertical-slice §4 / §10 row 12).
 const SUMMON_OFFSET := 48.0
+## Total width of the flank arc, centred on ±90° (±30°, so 60–120° off the
+## lane). Spawn and hold both use this. Each spawn is a deterministic hash_u
+## roll in ± half of this, so tests can recompute the offset from the elite's
+## world_seed, chunk, encounter_index, and summon serial.
+const SUMMON_FLANK_ARC := deg_to_rad(60.0)
 
 var affix := StringName()
 ## EnemyKinds.RARITY_* (same numbers as AffixDef.RARITY_*). From the
@@ -251,13 +258,18 @@ func _spawn_one_summon() -> void:
 		return
 	# Alternate flanks: even serials left of the elite-to-player line, odd right.
 	var side := 1.0 if _summon_serial % 2 == 0 else -1.0
+	var jitter := summon_flank_jitter(_summon_serial)
+	var slid := summon_spawn_point(side, jitter)
 	var pos := RegularEnemy.push_centre_outside(
-		summon_spawn_point(side), RegularEnemy.radius_of(_summon_kind)
+		slid,
+		RegularEnemy.radius_of(_summon_kind)
 	)
 	body.name = "HeraldSummon%d" % _summon_serial
 	body.summoner = self
 	body.side = side
 	body.summon_hp = _summon_hp
+	# The hashed angle is reused for this add's contact hold around the player.
+	body.flank_jitter = jitter
 	# Swarmer adds hold their flank; legendary (Hydra) Drifter adds chase as
 	# plain Drifters (vertical-slice §4).
 	body.holds_flank = _summon_kind == ARCH_SWARMER
@@ -268,10 +280,27 @@ func _spawn_one_summon() -> void:
 	_summons.append(body)
 
 
-## Where a summon on `side` (+1 left, -1 right of the elite-to-player line)
-## appears: SUMMON_OFFSET px out at ±90°, never between the elite and the
-## player. With no player the heading stands in for the line.
-func summon_spawn_point(side: float) -> Vector2:
+## Deterministic flank-arc offset in radians for summon `serial`, in
+## ± SUMMON_FLANK_ARC / 2. Uses WorldGen.hash_u so the same seed, chunk,
+## encounter, and serial always land on the same point (row 12).
+func summon_flank_jitter(serial: int) -> float:
+	return summon_flank_jitter_for(world_seed, chunk, encounter_index, serial)
+
+
+static func summon_flank_jitter_for(
+	p_seed: int, p_chunk: Vector2i, p_encounter: int, serial: int
+) -> float:
+	var u := WorldGen.hash_u(
+		p_seed, p_chunk.x, p_chunk.y, p_encounter, serial, "summon", "arc"
+	)
+	return (u - 0.5) * SUMMON_FLANK_ARC
+
+
+## Unit direction from this body to a summon on `side` (+1 left, -1 right
+## of the elite-to-player line), at ±90° plus `flank_jitter`. With no player
+## the heading stands in for the line. The angle is fixed: a wall never
+## re-rolls it (row 12).
+func summon_flank_dir(side: float, flank_jitter: float) -> Vector2:
 	var lane := _heading
 	if player != null:
 		var to_player := player.global_position - global_position
@@ -281,7 +310,67 @@ func summon_spawn_point(side: float) -> Vector2:
 		lane = Vector2.RIGHT
 	lane = lane.normalized()
 	var normal := Vector2(-lane.y, lane.x)
-	return global_position + normal * side * SUMMON_OFFSET
+	var half := SUMMON_FLANK_ARC * 0.5
+	var jitter := clampf(flank_jitter, -half, half)
+	if absf(jitter) > 0.000001:
+		normal = normal.rotated(jitter)
+	return normal * side
+
+
+## Where a summon on `side` appears: SUMMON_OFFSET px out along
+## summon_flank_dir. If the add's circle along that ray overlaps a ribbon
+## wall, the spawn slides inward along the same ray until the circle and
+## the segment from this body's edge are clear, down to 0 px from the
+## edge. A far-side clear point past a thin wall is not accepted: if the
+## near side has no clear point, the elite-edge point is used. The angle
+## is never re-rolled (row 12).
+func summon_spawn_point(side: float, flank_jitter: float = 0.0) -> Vector2:
+	var dir := summon_flank_dir(side, flank_jitter)
+	return _slide_summon_inward(global_position + dir * SUMMON_OFFSET, dir)
+
+
+func _slide_summon_inward(pos: Vector2, dir: Vector2) -> Vector2:
+	var layout := _enabled_slice_layout()
+	if layout == null:
+		return pos
+	var radius := RegularEnemy.radius_of(_summon_kind)
+	var min_dist := body_radius
+	var inner := global_position + dir * min_dist
+	# Check the add's circle along the ray, not just the 48 px endpoint, so
+	# a thin wall between the elite and a far-side clear point still slides.
+	if not _summon_ray_blocked(layout, dir, min_dist, SUMMON_OFFSET, radius):
+		return pos
+	if layout.touches_wall(inner, radius):
+		# Near side has no clear point down to the elite edge: stay there
+		# rather than tunneling to the far side.
+		return inner
+	var lo := min_dist
+	var hi := SUMMON_OFFSET
+	for _i in 24:
+		var mid := (lo + hi) * 0.5
+		if _summon_ray_blocked(layout, dir, min_dist, mid, radius):
+			hi = mid
+		else:
+			lo = mid
+	return global_position + dir * lo
+
+
+## True when the add's circle overlaps a wall at any sample on the ray
+## segment from `d0` to `d1` (distances from this body, inclusive).
+func _summon_ray_blocked(
+	layout: SliceLayout, dir: Vector2, d0: float, d1: float, radius: float
+) -> bool:
+	var start := minf(d0, d1)
+	var end := maxf(d0, d1)
+	# Step small enough that a WALL_PX wall cannot be skipped between
+	# samples of a circle of `radius`.
+	var step := minf(maxf(radius, 1.0), SliceLayout.WALL_PX * 0.5)
+	var d := start
+	while d < end:
+		if layout.touches_wall(global_position + dir * d, radius):
+			return true
+		d += step
+	return layout.touches_wall(global_position + dir * end, radius)
 
 
 func _spawn_halves() -> void:
