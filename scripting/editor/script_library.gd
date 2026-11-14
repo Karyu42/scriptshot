@@ -1,6 +1,6 @@
 class_name ScriptLibrary
 extends RefCounted
-## Starter scripts (res://scripting/starters, the editor's palette) and the
+## Starter scripts (res://scripting/starters/*.lua.txt, the editor's palette) and the
 ## player's `shots/` folder on disk.
 ##
 ## `shots/` sits next to the save file (SaveGame.resolved_path()), so the
@@ -10,6 +10,16 @@ extends RefCounted
 ## equipped on a fresh save, seeded once from the straight starter.
 
 const STARTER_DIR := "res://scripting/starters"
+## Extension of the weapon scripts bundled in res:// (starters, Codex pages).
+## Not `.lua`: lua-gdextension claims every res://*.lua as a LuaScript and, in
+## the editor (import, file scan, global class names), runs any file that ends
+## in `return { ... }` as a plain Lua chunk, outside the sandbox. A top level
+## that reads a sandbox global (`state`, `spawn`, `TAU`, `sense`) then errors
+## in the import log. `.lua.txt` is an ordinary text file to Godot: listed and
+## editable in the editor, never run by it, and exported through
+## include_filter. The player's own files under shots/ stay `.lua` (user:// is
+## never scanned). These files are only ever read as text (FileAccess).
+const BUNDLED_EXT := ".lua.txt"
 ## Shown in this order. Listed here because exported builds cannot always list
 ## res:// folders.
 const STARTERS: PackedStringArray = ["straight", "spread", "spiral", "split_on_hit", "homing"]
@@ -40,7 +50,7 @@ class Starter:
 
 
 static func starter(id: String) -> Starter:
-	var path := STARTER_DIR.path_join(id + ".lua")
+	var path := STARTER_DIR.path_join(id + BUNDLED_EXT)
 	if not FileAccess.file_exists(path):
 		return null
 	var s := Starter.new()

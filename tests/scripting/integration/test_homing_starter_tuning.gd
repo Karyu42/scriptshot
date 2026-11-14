@@ -1,5 +1,5 @@
 extends GutTest
-## Acceptance harness for the Homing starter (scripting/starters/homing.lua),
+## Acceptance harness for the Homing starter (scripting/starters/homing.lua.txt),
 ## GD's bars on #92. Deterministic and headless: a fixed 1/60 s tick, a fixed
 ## aim pattern, the real LuaShot + BulletManager + Hurtbox path, both backends.
 ##

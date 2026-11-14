@@ -4,7 +4,7 @@ extends GutTest
 ## host is reused, so 50 reloads keep the Lua state count and Lua heap
 ## bounded; shots in flight finish on the code they were fired with; with
 ## every slot busy a save still goes through and the oldest generation's shots
-## fly on as plain bullets; a reused host starts from fresh globals; and a
+## fly on as plain bullets; every save starts from fresh globals; and a
 ## drain that arrives during a reload, inside the emit loop, or after the slot
 ## was released does nothing harmful.
 
@@ -527,12 +527,13 @@ func test_a_reused_host_starts_from_fresh_globals() -> void:
 		_apply(shot, "return { name = tostring(leftover) .. ',' .. type(print), speed = 1, lifetime = 9 }")
 		assert_eq(shot.behavior().host, host, "%s: the released host is reused" % pref)
 		assert_eq(shot.title, "nil,function", "%s: added globals are gone and replaced ones are back" % pref)
-		# In-place reloads of an idle version keep globals (unchanged).
+		# In-place reloads of an idle version start fresh too; only `state`
+		# carries over (test_lua_state_persist.gd).
 		var manager2 := _mgr(pref)
 		var shot2 := _shot(manager2)
-		_apply(shot2, "kept = 7\nreturn { speed = 1 }")
-		_apply(shot2, "return { name = tostring(kept) }")
-		assert_eq(shot2.title, "7")
+		_apply(shot2, "kept = 7\nstate.kept = 8\nreturn { speed = 1 }")
+		_apply(shot2, "return { name = tostring(kept) .. ',' .. tostring(state.kept) }")
+		assert_eq(shot2.title, "nil,8", "%s: an idle save starts from fresh globals" % pref)
 
 
 func test_drains_during_reload_emit_loop_and_after_release_are_safe() -> void:
