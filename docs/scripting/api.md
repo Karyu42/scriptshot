@@ -417,9 +417,11 @@ Each shot owns a private table `b.state`, initialised from the `state` spawn fie
 spawn { state = { hits = 0 }, on_hit = function(b, hit) b.state.hits = b.state.hits + 1 end }
 ```
 
-Closures work too, but `state` is cheaper and survives hot reload (see below).
-Weapon-level persistent state: the table `weapon.state` (shared across all fires).
-Run-wide and weapon-level state are the same persistent table, `state` (PR #1: always available, survives respawn, saved in the save file). **[OI-7] answered.**
+Closures work too, but `state` is cheaper and survives a save (below).
+
+**Game Designer call (SE, `state` follow-up to #95).** `state` is a per-weapon sandbox global that starts as `{}`. On every save, idle or with shots in flight, the new version gets a copy of the plain data in `state` (numbers, strings, booleans, nested tables). Within one copy, a table referenced twice stays shared. A cycle is cut at the back-reference with a warning. Functions and userdata are dropped with a warning in the editor's problems list. `state` is filled in before the new file runs. If the file's top level reassigns `state` (for example `state = {}`), that wins, and that is how a player resets it. Idiom: `state.n = state.n or 0`. A failed save leaves the running version's `state` untouched. Shots still in flight from older versions keep their own `state`. `state` survives death and respawn. It is not written to the save file in the slice. Cross-session persistence is open (pillars **Q28**). Until SE's follow-up lands, only idle in-place reloads keep `state` and globals (what #95 shipped).
+
+**Game Designer call (SE PR #102).** Only string, number, and boolean keys are copied. Table keys are dropped with a warning. Caps: at most **32** nested tables, **8,192** entries, and **256 KiB** encoded. Past a cap, the rest is cut, with one editor warning. Metatables are not copied. `state` belongs to the weapon, so equipping a different `shots/` file carries it over too. The `x = state.x or default` idiom handles keys from another script, and `state = {}` resets.
 
 ## Timers and sequences
 
@@ -577,18 +579,18 @@ rectangle `x, y, w, h`), and reads of your own shots (`b.*`, `shots_in(pos, rang
 
 | Sense | Unlocked by | Level I (any boss kill) | Level II (rare or legendary kill of that boss, or 25 Shards) |
 |---|---|---|---|
-| `sense.nearest_enemy(pos, range?, opts?)` | free after the first 3 kills | nearest enemy within `range` (default 600; Level I clamps to 600) or `nil`; `opts.exclude` (set keyed by `e.id` or by the entity), `opts.filter(e)` | same |
+| `sense.nearest_enemy(pos, range?, opts?)` | free after the first 3 kills | nearest enemy within `range` (default 600; Level I clamps to 600) or `nil`; `opts.exclude` (set keyed by `e.id` or by the entity), `opts.filter(e)` | same return and opts; the 600 px range clamp is lifted |
 | `sense.enemies_in(pos, r, opts?)` | Warden (pool A, tier 0-1) | positions within 600 px (capped, see limits) | positions, velocities and hp in any radius |
 | `sense.enemy_bullets` | Sower (pool A, tier 0-1) | handles of enemy shots in range (for `reflect`, bullet-eating) | + velocity/damage |
 | `sense.terrain` (`:raycast(from, to)` -> `{ pos, normal }` or `nil`) | Prism (pool A, tier 0-1) | walls near a point | full raycast |
 | `sense.boss` | Lattice (pool B, tier 2-3) | phase, weak point | + telegraphs |
 | `sense.world` (seed, chunk coords) | Archivist (pool C, tier 4+) | | |
 
-**Level II is not a clean kill.** Q15/Q16 dropped clean-kill gating, tags, and leaderboards. Per Q19 and pillars §12.4, Level II of a boss's Sense comes from a **rare or legendary kill of that boss type**, or from **Shards at 25 per token** (Mantle, which has no Sense, gives a token). `nearest_enemy` does not grow at Level II (the cell stays "same"). The vertical slice ([`../design/vertical-slice.md`](../design/vertical-slice.md)) ships Level I only: `nearest_enemy` after 3 kills, `enemies_in` from the common Warden. Level II fields stay absent there.
+**Level II is not a clean kill.** Q15/Q16 dropped clean-kill gating, tags, and leaderboards. Per Q19 and pillars §12.4, Level II of a boss's Sense comes from a **rare or legendary kill of that boss type**, or from **Shards at 25 per token** (Mantle, which has no Sense, gives a token). `nearest_enemy` Level II lifts the 600 px range clamp the same way `enemies_in` stops clamping `r`. It does not add `vel`, `hp`, or speed. The vertical slice ([`../design/vertical-slice.md`](../design/vertical-slice.md)) ships Level I only: `nearest_enemy` after 3 kills, `enemies_in` from the common Warden. Level II fields stay absent there.
 
 Gating is a *data* gate in the facade (the entry is `nil` / the query is absent), enforced by the host
-(the sandbox's `sense` table is read-only); no script can read an ungranted sense. Entity (enemy) fields: `e.id` (int, stable for the life of that body), `e.pos`, `e.radius`, `e.kind`, `e.rarity`, `e:alive()`;
-`e.vel`, `e.hp`, `e.hp_max` at Level II. `opts.exclude` is a set keyed by `e.id` or by an entity table from this tick (the same table `nearest_enemy` and `enemies_in` return). Players cannot modify enemies directly; shots affect them through
+(the sandbox's `sense` table is read-only); no script can read an ungranted sense. Entity (enemy) fields at Level I: `e.id` (int, stable for the life of that body), `e.pos`, `e.radius`, `e.kind`, `e.rarity`, `e:alive()`. `e.rarity` is `""` for regulars, husks, and dummies, and otherwise `"common"`, `"rare"`, or `"legendary"`.
+`e.vel`, `e.hp`, `e.hp_max` at Level II (`enemies_in`). `hp` and speed stay `nil` on a Level I read. `opts.exclude` is a set keyed by `e.id` or by an entity table from this tick (the same table `nearest_enemy` and `enemies_in` return). Players cannot modify enemies directly; shots affect them through
 hits.
 
 ### Senses in this build (vertical slice)
@@ -606,14 +608,14 @@ Only `nearest_enemy` and `enemies_in` exist, at Level I. The other four fields s
   A non-finite `x`/`y` finds nothing.
 - **`sense.nearest_enemy(pos, range?, opts?)`** returns the living enemy whose centre is closest to `pos`, or `nil`.
   `range` defaults to **600** and is inclusive; ties go to the lower `e.id`. At Level I a `range` above **600** counts as
-  600 (no error), the same reach as `enemies_in`.
+  600 (no error), the same reach as `enemies_in`. Level II lifts that clamp the same way `enemies_in` does. It still does not add `vel`, `hp`, or speed.
 - **`sense.enemies_in(pos, r?, opts?)`** returns a list (a plain table you own), nearest first. At Level I `r` above
   **600** counts as 600 (no error), and `r` defaults to 600. At most **256** entries: past that the nearest 256 are
   kept and the editor shows `sense list truncated`.
 - **Entities are read-only snapshots**: `e.id`, `e.pos.x`, `e.pos.y`, `e.radius`, `e.kind` (a string: `drifter`,
   `swarmer`, `shieldbearer`, `sniper`, `husk`, `warden`, `dummy`), `e.rarity` (a string: `""` for a regular, a husk
   or a dummy, otherwise `common`, `rare` or `legendary`, matching the rarity cue on screen) and `e:alive()`. `e.vel`,
-  `e.hp`, `e.hp_max` and speed are Level II and `nil` here. Writing a field is an error (`sense results are read-only`). Positions are where
+  `e.hp`, `e.hp_max` and speed are Level II and `nil` here. Writing a field is an error (`sense results are read-only`); `pairs(e)` lists the fields and stays read-only. Positions are where
   the body was at the start of this tick. Within one tick the same body is always the same table, so asking for it
   per bullet allocates nothing; `e:alive()` turns `false` once that body dies (or leaves the view), even on a table you kept.
 - **`opts.exclude`**: a table keyed by `e.id`, or by an entity table from this tick. **`opts.filter(e)`**: return
@@ -1134,11 +1136,12 @@ Save the file and the game reloads it, no restart needed.
   Row order in the next `on_batch` stays unspecified. If the pool has no physical room for one of those bullets, that
   bullet is dropped and `BulletManager.migrate` warns.
 - Shots **already in flight** keep running their old callbacks until they die (default),
-  because mixing versions mid-flight would be surprising. Option: `reload = "migrate"`
+  because mixing versions mid-flight would be surprising. At most **3** script versions stay alive. **Game Designer call (vertical slice, SE PR #95):** a save is never refused. When a 4th version arrives while all 3 kept versions still have hooked shots in flight, the oldest version's in-flight shots drop their script hooks and fly on as plain bullets. They keep their speed, damage, lifetime, and look. They get no more steering, `on_hit`, or `on_batch`. The drop is silent, with no toast. `script_saved` still fires. Option: `reload = "migrate"`
   at the top of the weapon table to make in-flight shots switch to the new callbacks,
   matched by callback name, keeping `state`.
 - Timers and coroutines of old shots finish with the old code.
-- Weapon-level `state` is preserved if the new table declares the same keys.
+- **Game Designer call (SE, `state` follow-up to #95).** Every save, idle or with shots in flight, copies the plain data in `state` into the new version before the new file runs. The copy rules, the `state.n = state.n or 0` idiom, and what a failed save keeps are in *Per-shot state*. A failed save leaves the running version's `state` untouched. Shots still in flight from older versions keep their own `state`. Until SE's follow-up lands, only idle in-place reloads keep `state` and globals (what #95 shipped). **Game Designer call (SE PR #102):** only string, number, and boolean keys are copied (table keys are dropped with a warning); caps are 32 nested tables, 8,192 entries, and 256 KiB encoded, and past a cap the rest is cut with one editor warning; metatables are not copied; `state` stays with the weapon when a different `shots/` file is equipped.
+- **Game Designer call (SE PR #95):** every save starts the new script version with fresh top-level globals, whether or not shots are in flight. Nothing at file scope carries over. Data meant to survive a save goes in `state`.
 - Reload errors never discard the working version (see above).
 - **Grants are re-checked before the swap.** The new code is loaded into a fresh environment built from the grants that
   apply to its content hash and `needs`; an edit that adds a capability prompts for just that capability, and until the
@@ -1152,7 +1155,7 @@ Refreshed against PR #1 (f0fe292) and `main` (1f3be32, which includes PR #2 and 
 **Answered**
 
 - **[OI-1]** Coordinates: y down, radians, 0 = +x, clockwise, `NAN` angle faces velocity, 60 Hz.
-- **[OI-7]** Persistence: `state` is persistent, always available, survives respawn, saved (PR #1).
+- **[OI-7]** Persistence: `state` is persistent, always available, and survives respawn (PR #1). The slice does not write it to the save file (Game Designer call, SE follow-up to #95, *Per-shot state*). Cross-session persistence is pillars Q28.
 - **[OI-11]** Sandbox policy (PR #1 f0fe292): full Lua for every script, capabilities via `needs` behind a **capability prompt for any script that requests `os`/`io`/`debug`/`package`/`native`, with per-content-hash grants** (see *The capability prompt*, *Grants*); only the in-game **import flow and its stronger warning are deferred** (sharing is out of scope for now); limited mode later (PR #1 Q2).
 - **[OI-12]** Fixed 60 Hz; the native motion subset is `acceleration`, `turn_rate`, `pierce`, `collide_world`, `param_a/b`
   (see the mapping table for what is missing).

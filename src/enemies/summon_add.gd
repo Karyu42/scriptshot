@@ -65,7 +65,7 @@ func _chase(delta: float, to_player: Vector2) -> void:
 	var step := _heading * _move_speed() * delta
 	if step.length_squared() > to_target.length_squared():
 		step = to_target
-	global_position = _slide_outside_disk(global_position, step, player.global_position)
+	global_position = _keep_off_walls(_slide_outside_disk(global_position, step, player.global_position))
 
 
 ## Unit direction from the player to this add's hold: the add's side

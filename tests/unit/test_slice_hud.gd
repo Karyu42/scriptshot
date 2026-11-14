@@ -227,8 +227,22 @@ func test_boss_bar_can_be_driven_without_a_node() -> void:
 func test_boss_bar_is_a_plain_arc_from_noon_with_no_gap() -> void:
 	# The 70° weak-point gap is the Warden armor ring (row 8), not this bar.
 	assert_eq(SliceHud.BOSS_START, -PI * 0.5)
+	assert_eq(SliceHud.BOSS_ARC_RADIUS, 78.0)
+	assert_eq(SliceHud.BOSS_STROKE, 2.0)
 	hud.set_boss_health(450.0, 900.0)
 	assert_almost_eq(hud.boss_fraction(), 0.5, 0.001)
+	var geo := hud.boss_arc_geometry()
+	assert_almost_eq(geo.radius, 78.0, 0.0001)
+	assert_almost_eq(geo.stroke, 2.0, 0.0001)
+	assert_almost_eq(geo.start, -PI * 0.5, 0.0001)
+	assert_almost_eq(geo.end, -PI * 0.5 + TAU * 0.5, 0.0001)
+	assert_almost_eq(geo.end - geo.start, TAU * hud.boss_fraction(), 0.0001)
+	assert_eq(geo.gap, 0.0)
+	# Full health is a closed ring from noon, still with no gap.
+	hud.set_boss_health(900.0, 900.0)
+	geo = hud.boss_arc_geometry()
+	assert_almost_eq(geo.end - geo.start, TAU, 0.0001)
+	assert_eq(geo.gap, 0.0)
 
 
 func test_boss_bar_survives_the_host_being_freed() -> void:

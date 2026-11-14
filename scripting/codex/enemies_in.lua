@@ -19,16 +19,16 @@ return {
   end,
   on_batch = function(v, dt)
     local query = sense.enemies_in  -- nil until you earn it
-    if not query then return end
+    if not query or v.n == 0 then return end
+    -- One look per batch (from the first shot), not one per shot.
+    local core = nil
+    for _, e in ipairs(query({ x = v.px[0], y = v.py[0] }, 600)) do
+      if e.kind == "warden" then core = e break end
+    end
+    if not core then return end
     for i = 0, v.n - 1 do
-      local core = nil
-      for _, e in ipairs(query({ x = v.px[i], y = v.py[i] }, 600)) do
-        if e.kind == "warden" then core = e end
-      end
-      if core then
-        local dx, dy = core.pos.x - v.px[i], core.pos.y - v.py[i]
-        v.vx[i], v.vy[i] = v.vx[i] + dx * dt, v.vy[i] + dy * dt  -- <- tweak me: dt * 2 turns harder
-      end
+      local dx, dy = core.pos.x - v.px[i], core.pos.y - v.py[i]
+      v.vx[i], v.vy[i] = v.vx[i] + dx * dt, v.vy[i] + dy * dt  -- <- tweak me: dt * 2 turns harder
     end
   end,
 }
