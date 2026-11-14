@@ -1,6 +1,6 @@
 # Scriptshot — Design Pillars
 
-> Status: **design doc (PR #1 merged), revision 7 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Companions: [`spawning-and-rarity.md`](spawning-and-rarity.md) (elites and rarity; §6.5 summarises it) and [`first-playable-elites.md`](first-playable-elites.md) (build-order slice for the first playable minutes). [`vertical-slice.md`](vertical-slice.md) is the first-run content spec (rooms, the common Warden, `enemies_in`). **Repo note (2026-11-06, `main` @ `aa83001`, through merged PR #15):** engineering is currently on hybrid C++ bullets + M1 Lua. Release targets are Windows, macOS, Linux, Web and Android arm64 (iOS dropped). When this doc names code it means `main`, and anything not there is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8–Q13 and Q16–Q26 are resolved and absent from the open list; Q15 is narrowed to aim assist and sync). Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12 and live in the decisions log. Q27 is open.
+> Status: **design doc (PR #1 merged), revision 7 (owner decisions of 2026-10-30 folded in, incl. combat, writable player state, Constrained-mode shape and elites/rarity; QA & Build review items applied).** Companions: [`spawning-and-rarity.md`](spawning-and-rarity.md) (elites and rarity; §6.5 summarises it) and [`first-playable-elites.md`](first-playable-elites.md) (build-order slice for the first playable minutes). [`vertical-slice.md`](vertical-slice.md) is the first-run content spec (rooms, the common Warden, `enemies_in`). **Repo note (2026-11-06, `main` @ `aa83001`, through merged PR #15):** engineering is currently on hybrid C++ bullets + M1 Lua. Release targets are Windows, macOS, Linux, Web and Android arm64 (iOS dropped). When this doc names code it means `main`, and anything not there is a proposal. Every number is a **starting value to be playtested**, not a law. Resolved questions live in the **Decisions log** below; the questions still open are at the end of the doc (question IDs are stable, so Q1–Q4, Q8–Q13 and Q16–Q26 are resolved and absent from the open list; Q15 is narrowed to aim assist and sync). Q25 and Q26 are **Decided (CoS call, Karyu may override)** on 2026-11-12 and live in the decisions log. Q27 and Q28 are open.
 
 Scriptshot is a top-down, minimalist, twin-stick shooter (Godot 4 + Lua, MIT) where **you write the shot**. Your Lua script *is* your weapon, and nothing in the language is taken away from you. It ships on PC (mouse + keyboard), controller, web and mobile. The world grows into an open world of regular enemies in which, rarely, a boss spawns instead. Bosses are the only points of interest.
 
@@ -148,7 +148,7 @@ return {
 | `player.dash(angle)` | The same action as the dash button (0.2 s i-frames, 1.5 s cooldown, §5.4); returns `false` while on cooldown. A script dashing is **not** a state write: it obeys the same rules as the button. |
 | `on_hurt = function(ctx, dmg, src) return dmg end` (optional script callback) | Called before damage is applied; the return value replaces the damage (`0` = ignore). Returning less than `dmg` is an advantage write the world can answer (§12.1, §12.2). |
 | `b.owner` on bullets (`"player"` / `"enemy"`) | Read-only; changes only through reflection (§5.1). |
-| Persistent per-script `state` table | **Always available from the start** (not a Sense, not an unlock). Survives respawn (Q4: death keeps everything) and is saved in the save file. Not the same as `player` state. Corresponds to `weapon.state` / `run.state` in the scripting draft (its [OI-7], decided here: persistent). |
+| Persistent per-script `state` table | **Always available from the start** (not a Sense, not an unlock). Survives respawn (Q4: death keeps everything). The vertical slice does not write it to the save file (vertical-slice §7.3). Cross-session persistence is open (Q28). Not the same as `player` state. Corresponds to the sandbox global `state` in the scripting draft (its [OI-7]: persistent inside a session). |
 
 | Granted by Fragments (§4) | Examples |
 |---|---|
@@ -664,7 +664,7 @@ The world fights back **diegetically**: Null attacks from Tier 2 on every boss, 
 
 ## Biggest open design questions
 
-Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q12 (closed as moot: no in-game script sharing or import), Q16 (Karyu: no leaderboards, tags or clean-kill gating; diegetic counters), the leaderboard part of Q15**, **Q9 (replaced by elites and rarity tiers), Q10 (D), Q11 (B), Q13 (B)**; **Q17–Q26 decided by the Chief of Staff under Karyu's delegation (Karyu can override; see the log; Q25 and Q26 on 2026-11-12)**; and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision. Q5, Q6, Q7, Q14, Q15, and Q27 are the open ones. Q25 and Q26 are absent from this list.
+Question IDs are stable. **Resolved on 2026-10-30:** Q1, Q2, Q3, Q4, Q8, **Q12 (closed as moot: no in-game script sharing or import), Q16 (Karyu: no leaderboards, tags or clean-kill gating; diegetic counters), the leaderboard part of Q15**, **Q9 (replaced by elites and rarity tiers), Q10 (D), Q11 (B), Q13 (B)**; **Q17–Q26 decided by the Chief of Staff under Karyu's delegation (Karyu can override; see the log; Q25 and Q26 on 2026-11-12)**; and the combat decisions Health 1A / I-frames 2B / Friendly fire 3C / Death 4A / writable player state (see the Decisions log at the top). Open questions below each have options and a recommendation; **[Karyu]** marks the ones that need the project owner's decision. Q5, Q6, Q7, Q14, Q15, Q27, and Q28 are the open ones. Q25 and Q26 are absent from this list.
 
 ### Q5. Editing while the world is hostile (and the guard-rail numbers)
 - **A. Time slows to ~15% while the editor is open** (recommended start).
@@ -707,3 +707,11 @@ Regular packs that wake and join a Herald fight are intended pressure. The 800 p
 GE measured a leash alone at **27.6–33.8 s**.
 
 **Recommendation:** decide after the slice playtest.
+
+### Q28. Should `state` persist in the save file across sessions?
+
+Inside a session, `state` survives death and respawn and is copied into the next script version on save (vertical-slice §7.3). The slice does not write it to the save file.
+
+- **A. Persist it across sessions**, with a size cap of **64 KiB** (starting proposal).
+- **B. Leave it session-only.** A new session starts from `{}`.
+- **Recommendation: A**, cap 64 KiB, as the starting proposal.
