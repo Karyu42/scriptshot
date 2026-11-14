@@ -144,6 +144,9 @@ func _bind_slice_hud() -> void:
 	if _slice_hud == null:
 		return
 	_slice_hud.bind(_player, _progress, editor, shot_scripts)
+	# Mid-card quit: toast and Codex fire on the next load if they were
+	# never shown (the Codex-once flag is still clear).
+	SliceHud.announce_pending_grant(_save)
 
 
 func _bind_slice_packs() -> void:
@@ -205,6 +208,11 @@ func _on_natural_shard() -> void:
 func _bind_warden() -> void:
 	_warden = get_node_or_null("Warden") as Warden
 	if _warden == null:
+		return
+	# The core does not respawn once the slot is cleared (§5.6).
+	if not Warden.appears_in_slot(_save):
+		_warden.queue_free()
+		_warden = null
 		return
 	_warden.bind(_player, _bullets, _camera, _save)
 	if _slice_hud != null:

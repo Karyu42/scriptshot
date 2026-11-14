@@ -8,6 +8,9 @@ const ARENA := SliceLayout.ARENA_CENTRE
 
 func after_each() -> void:
 	WorldQuery.reset()
+	SenseBook.reset()
+	RespawnPoints.reset()
+	Engine.time_scale = 1.0
 
 
 func test_starts_at_900_in_phase_1_inside_the_arena() -> void:
@@ -214,7 +217,11 @@ func test_notify_warden_defeated_hook_runs_when_slice_progress_exists() -> void:
 	add_child_autofree(progress)
 	var warden := _warden()
 	warden.health.set_hp(0.0)
+	assert_eq(progress.calls, 0, "G0 waits until the 1.2 s shrink finishes")
+	assert_almost_eq(warden.death_ring_scale(), 1.0, 0.001)
+	warden._physics_process(Warden.DEATH_ANIM)
 	assert_eq(progress.calls, 1)
+	assert_almost_eq(warden.death_ring_scale(), 0.0, 0.001)
 
 
 func test_player_death_resets_a_living_boss() -> void:

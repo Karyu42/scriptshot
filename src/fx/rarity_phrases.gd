@@ -50,10 +50,14 @@ const BOSS_FIFTH_HZ := 165.0
 const BOSS_FIFTH_AMP := 0.1
 
 static var _cache: Array[PackedVector2Array] = []
+## 16-bit stereo PCM for each tier. PackedByteArray is not a Resource, so
+## this can live in a static until reset_session / clear at exit.
+static var _pcm_cache: Array[PackedByteArray] = []
 
 
 static func clear() -> void:
 	_cache.clear()
+	_pcm_cache.clear()
 
 
 static func render(tier: int) -> PackedVector2Array:
@@ -80,6 +84,53 @@ static func duration_of(tier: int) -> float:
 			return LEGENDARY_DURATION
 		_:
 			return BOSS_DURATION
+
+
+## Little-endian 16-bit stereo PCM of the rendered phrase.
+static func encode_pcm16(frames: PackedVector2Array) -> PackedByteArray:
+	var data := PackedByteArray()
+	data.resize(frames.size() * 4)
+	var o := 0
+	for sample in frames:
+		var left := _s16(sample.x)
+		var right := _s16(sample.y)
+		data[o] = left & 0xFF
+		data[o + 1] = (left >> 8) & 0xFF
+		data[o + 2] = right & 0xFF
+		data[o + 3] = (right >> 8) & 0xFF
+		o += 4
+	return data
+
+
+static func _s16(x: float) -> int:
+	return clampi(roundi(clampf(x, -1.0, 1.0) * 32767.0), -32768, 32767)
+
+
+static func pcm16_of(tier: int) -> PackedByteArray:
+	if _pcm_cache.is_empty():
+		_pcm_cache.resize(RarityCue.TIER_COUNT)
+		for i in RarityCue.TIER_COUNT:
+			_pcm_cache[i] = PackedByteArray()
+	if tier < 0 or tier >= _pcm_cache.size():
+		return PackedByteArray()
+	if _pcm_cache[tier].is_empty():
+		_pcm_cache[tier] = encode_pcm16(render(tier))
+	return _pcm_cache[tier]
+
+
+## A new AudioStreamWAV each call, filled from the cached PCM. Do not store
+## the Resource in a GDScript static — callers own it for the player's life.
+static func wav_for(tier: int) -> AudioStreamWAV:
+	var pcm := pcm16_of(tier)
+	if pcm.is_empty():
+		return null
+	var stream := AudioStreamWAV.new()
+	stream.format = AudioStreamWAV.FORMAT_16_BITS
+	stream.mix_rate = SAMPLE_RATE
+	stream.stereo = true
+	stream.loop_mode = AudioStreamWAV.LOOP_DISABLED
+	stream.data = pcm
+	return stream
 
 
 static func common_frequency_at(t: float) -> float:

@@ -6,6 +6,10 @@ extends Node2D
 ## husks, and Phasing on the two closest to the player. Phase 3 (HP ≤ 360) is
 ## the Broken ring and two husks. Habituation is on behind boss_habituation.
 ##
+## Row 10: when the core hits 0 the husks are already gone, the ring scales
+## to 0 over 1.2 s, then the victory card, G0, the arena respawn, shards +5,
+## and SenseBook.grant(&"enemies_in", 1) fire as in §5.6.
+##
 ## #85's Hurtbox ABSORB is not on main. ARMOR_ABSORBS is an easy local switch:
 ## false (default, per §5 / GD #96) applies ×0.1 to the body; true makes body
 ## hits vanish. The 70° gap is the armor *ring* (tracks facing, never shrinks
@@ -82,6 +86,12 @@ const PLAYER_RADIUS := 13.0
 ## Trauma that caps FollowCamera shake at 3 px on the default 18 px x-axis.
 const PHASE_TRAUMA := 0.40824829
 const TIER := RarityCue.TIER_BOSS_COMMON
+## §5.6: ring shrinks to 0 over this many seconds (time scale stays 1).
+const DEATH_ANIM := 1.2
+## Enemy shots fade and deal no damage over this many seconds at the kill tick.
+const SHOT_FADE := 0.2
+## Common-boss shard drop (spawning §7.2).
+const SHARDS := 5
 
 
 var player: Player
@@ -114,6 +124,14 @@ var _feeds_recorded := false
 var _warp_id := 0
 var _death_emitted := false
 var _bound := false
+## Seconds left on the 1.2 s ring shrink. 0 when the shrink is done or unused.
+var _death_left := 0.0
+var _death_animating := false
+## Rewards (shards, flags) have been written; the card may still be up.
+var _rewards_applied := false
+## Toast / Codex `granted` is held until the card is dismissed (or, with no
+## HUD, until the shrink finishes).
+var _grant_ux_pending := false
 ## Last Lance request, for tests. Null until the first shot. Only set when
 ## spawn() returns a live id (>= 0).
 var last_lance: ShotRequest
@@ -279,6 +297,23 @@ func is_alive() -> bool:
 	return _alive
 
 
+## False once this slot has cleared the core: Main frees the authored body
+## on load and the core does not come back.
+static func appears_in_slot(save: SaveGame) -> bool:
+	return save == null or not save.warden_dead
+
+
+## 1 at full size, 0 when the death ring has finished shrinking.
+func death_ring_scale() -> float:
+	if _alive:
+		return 1.0
+	if _death_animating:
+		return clampf(_death_left / DEATH_ANIM, 0.0, 1.0)
+	if _death_emitted:
+		return 0.0
+	return 1.0
+
+
 func is_aggroed() -> bool:
 	return _aggro
 
@@ -323,6 +358,7 @@ func apply_debug_hit(
 
 func _physics_process(delta: float) -> void:
 	if not _alive:
+		_step_death(delta)
 		return
 	_core_hit_ids = PackedInt64Array()
 	if _flash_left > 0.0:
@@ -1108,7 +1144,7 @@ func _on_core_died() -> void:
 	_cancel_ring()
 	_set_hurtboxes_active(false)
 	_despawn_husks()
-	_clear_own_shots()
+	_fade_enemy_shots()
 	_remove_warp()
 	WorldQuery.unregister_enemy(self)
 	var pos := global_position
@@ -1119,23 +1155,130 @@ func _on_core_died() -> void:
 	GameEvents.boss_defeated.emit(
 		EnemyKinds.WARDEN, EnemyKinds.RARITY_COMMON, TIER, pos
 	)
-	_notify_progress()
-	# ROW 10 (not this PR): SenseBook.grant, victory card, register_arena_cleared,
-	# starter_consumed. Leave them for the ending beat.
+	# Quiet grant now so SenseBook.boss_down's queued grant (next process_frame)
+	# is a no-op. The toast and Codex wait until the card is dismissed (or
+	# the next load, if the Codex-once flag was never set).
+	SenseBook.grant(SenseBook.ENEMIES_IN, 1, true)
+	_grant_ux_pending = true
+	_persist_kill_clear()
+	_death_animating = true
+	_death_left = DEATH_ANIM
 	defeated.emit()
 	queue_redraw()
 
 
-func _notify_progress() -> void:
-	# SliceProgress is not on main yet (PR #91). When it lands, call
-	# notify_warden_defeated if the method exists. Marked hook:
-	# SLICE_PROGRESS_HOOK
+func _step_death(delta: float) -> void:
+	if not _death_animating:
+		return
+	_death_left = maxf(_death_left - maxf(delta, 0.0), 0.0)
+	queue_redraw()
+	if _death_left > 0.0:
+		return
+	_death_animating = false
+	_begin_victory()
+
+
+## Tests: radii of the kill-tick enemy-shot fade, empty if none is running.
+func debug_fade_radii() -> PackedFloat32Array:
+	var fade := get_node_or_null("EnemyShotFade") as _EnemyShotFade
+	if fade == null:
+		return PackedFloat32Array()
+	return fade.radii()
+
+
+## Tests: skip the 1.2 s shrink and start the victory beat immediately.
+func debug_finish_death_anim() -> void:
+	if not _death_emitted:
+		return
+	_death_left = 0.0
+	_death_animating = false
+	_begin_victory()
+
+
+func _begin_victory() -> void:
+	if _rewards_applied:
+		return
+	_rewards_applied = true
+	var hud := _find_hud()
+	if hud != null and hud.has_method("present_victory_card"):
+		# The G0 bit is already saved. The wall lifts on dismiss.
+		hud.call("present_victory_card", _on_victory_card_dismissed)
+		return
+	_reveal_g0()
+	_emit_grant_ux()
+
+
+func _on_victory_card_dismissed() -> void:
+	_reveal_g0()
+	_emit_grant_ux()
+
+
+func _persist_kill_clear() -> void:
+	# One slot write at the kill: shards, flags, G0 bit, and the sense int.
+	# The card is presentation only; the wall still waits for dismiss.
+	if save != null:
+		save.shards += SHARDS
+		save.warden_dead = true
+		save.starter_consumed = true
+		if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
+			save.sense_enemies_in = maxi(save.sense_enemies_in, 1)
+		var bit := SliceLayout.GATE_IDS.find(SliceLayout.GATE_G0)
+		if bit >= 0:
+			save.slice_gates |= 1 << bit
+	var progress := _find_progress()
+	if progress != null and progress.has_method("persist_warden_cleared"):
+		progress.call("persist_warden_cleared")
+	elif save != null:
+		save.save()
+		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+	else:
+		RespawnPoints.register_arena_cleared(SliceLayout.ARENA_CENTRE)
+
+
+func _reveal_g0() -> void:
+	var progress := _find_progress()
+	if progress != null and progress.has_method("reveal_g0"):
+		progress.call("reveal_g0")
+	elif progress != null and progress.has_method("notify_warden_defeated"):
+		progress.call("notify_warden_defeated")
+
+
+func _emit_grant_ux() -> void:
+	if not _grant_ux_pending:
+		return
+	_grant_ux_pending = false
+	if SenseBook.level(SenseBook.ENEMIES_IN) >= 1:
+		SenseBook.events.granted.emit(SenseBook.ENEMIES_IN, 1)
+	if save != null and not save.enemies_in_announced:
+		save.enemies_in_announced = true
+		save.save()
+
+
+func _find_hud() -> Node:
+	return _find_named_or_group("SliceHud", &"slice_hud")
+
+
+func _find_progress() -> Node:
+	return _find_named_or_group("SliceProgress", &"slice_progress")
+
+
+func _find_named_or_group(node_name: String, group: StringName) -> Node:
 	var tree := get_tree()
 	if tree == null:
-		return
-	var node := tree.root.find_child("SliceProgress", true, false)
-	if node != null and node.has_method("notify_warden_defeated"):
-		node.call("notify_warden_defeated")
+		return null
+	var named := tree.root.find_child(node_name, true, false)
+	if named != null:
+		return named
+	for n in tree.get_nodes_in_group(group):
+		if n != null and is_instance_valid(n):
+			return n
+	return null
+
+
+func _notify_progress() -> void:
+	# Kept for the row-8 hook test: after the shrink, lift G0 (the bit was
+	# already saved at the kill). Marked hook: SLICE_PROGRESS_HOOK
+	_reveal_g0()
 
 
 func _notify_hud_phase() -> void:
@@ -1198,6 +1341,56 @@ func _clear_own_shots() -> void:
 		_bullets.despawn_owned(Layers.ENEMY)
 
 
+## Kill tick (GD on #103): enemy bullets deal no damage immediately, then a
+## 0.2 s fade visual plays off the bullet step. despawn_owned removes them
+## from both backends first so a shot already overlapping the player cannot
+## hit during the ring shrink.
+func _fade_enemy_shots() -> void:
+	var shots: Array[Dictionary] = []
+	if _bullets != null and is_instance_valid(_bullets):
+		shots = _snapshot_enemy_shots(_bullets)
+		_bullets.despawn_owned(Layers.ENEMY)
+	if shots.is_empty():
+		return
+	var fade := _EnemyShotFade.new()
+	fade.name = "EnemyShotFade"
+	add_child(fade)
+	fade.start(shots)
+
+
+static func _snapshot_enemy_shots(bullets: BulletManager) -> Array[Dictionary]:
+	var shots: Array[Dictionary] = []
+	var pool := bullets.pool
+	if pool != null:
+		for i in pool.count:
+			if (pool.owner_layer[i] & Layers.ENEMY) == 0:
+				continue
+			shots.append({
+				"pos": pool.pos[i],
+				"vel": pool.vel[i],
+				"radius": pool.radius[i],
+				"color": pool.color[i],
+			})
+	var native := bullets.native
+	if native != null:
+		# snapshot() is the existing way to read per-slot radius; pos/vel/owner
+		# come from the accessors. Do not use LANCE_RADIUS for every shot.
+		var snap: Dictionary = native.snapshot()
+		var rads: PackedFloat32Array = snap.get("radius", PackedFloat32Array())
+		for s in native.count():
+			if not native.is_slot_alive(s):
+				continue
+			if (native.owner_at(s) & Layers.ENEMY) == 0:
+				continue
+			shots.append({
+				"pos": native.position_at(s),
+				"vel": native.velocity_at(s),
+				"radius": rads[s] if s < rads.size() else 0.0,
+				"color": Layers.bullet_color(Layers.ENEMY),
+			})
+	return shots
+
+
 func _redraw_if_pose_changed() -> void:
 	var q := snappedf(_gap_angle, deg_to_rad(1.0))
 	var ring_q := snappedf(_ring_gap, deg_to_rad(1.0))
@@ -1227,22 +1420,26 @@ func _in_body(world_pos: Vector2) -> bool:
 
 
 func _draw() -> void:
+	var ring_s := death_ring_scale()
+	if ring_s <= 0.0:
+		return
 	var fill := Color.WHITE if _flash_left > 0.0 else COLOR_FILL
 	if not _alive:
 		fill = fill.darkened(0.45)
-	draw_circle(Vector2.ZERO, BODY_RADIUS, fill)
-	draw_arc(Vector2.ZERO, BODY_RADIUS, 0.0, TAU, 64, COLOR_OUTLINE, OUTLINE_WIDTH, true)
+	var body := BODY_RADIUS * ring_s
+	draw_circle(Vector2.ZERO, body, fill)
+	draw_arc(Vector2.ZERO, body, 0.0, TAU, 64, COLOR_OUTLINE, OUTLINE_WIDTH, true)
 	# Armor ring: a 70° missing arc that tracks facing and never shrinks with HP.
 	var half := deg_to_rad(GAP_DEGREES * 0.5)
 	var start := _gap_angle + half
 	var sweep_end := _gap_angle + TAU - half
 	draw_arc(
-		Vector2.ZERO, ARMOR_RING_RADIUS, start, sweep_end, 72, COLOR_OUTLINE, 2.5, true
+		Vector2.ZERO, ARMOR_RING_RADIUS * ring_s, start, sweep_end, 72, COLOR_OUTLINE, 2.5, true
 	)
-	var tick := Vector2.from_angle(_gap_angle) * GAP_OFFSET
-	draw_circle(tick, 3.0, COLOR_TICK)
+	var tick := Vector2.from_angle(_gap_angle) * GAP_OFFSET * ring_s
+	draw_circle(tick, 3.0 * ring_s, COLOR_TICK)
 	if cue.drawing_full:
-		cue.draw_on(self, BODY_RADIUS)
+		cue.draw_on(self, body)
 	if _lance_winding:
 		draw_line(Vector2.ZERO, to_local(_lance_aim), Color(LANCE_COLOR, 0.85), 2.0, true)
 	if _fan_winding:
@@ -1283,3 +1480,50 @@ func _draw() -> void:
 				size,
 				Color(1, 1, 1, 0.95)
 			)
+
+
+## Visual-only leftover of despawned enemy shots. Not on the bullet step,
+## and never deals damage.
+class _EnemyShotFade:
+	extends Node2D
+
+	var _left := 0.0
+	var _items: Array[Dictionary] = []
+
+	func start(items: Array[Dictionary]) -> void:
+		_items = items
+		_left = Warden.SHOT_FADE
+		z_index = 6
+		set_physics_process(true)
+		queue_redraw()
+
+	func radii() -> PackedFloat32Array:
+		var out := PackedFloat32Array()
+		out.resize(_items.size())
+		for i in _items.size():
+			var r: float = _items[i]["radius"]
+			out[i] = r
+		return out
+
+	func _physics_process(delta: float) -> void:
+		if _left <= 0.0:
+			return
+		_left = maxf(_left - maxf(delta, 0.0), 0.0)
+		for it in _items:
+			var vel: Vector2 = it["vel"]
+			it["pos"] = it["pos"] + vel * delta
+		queue_redraw()
+		if _left <= 0.0:
+			queue_free()
+
+	func _draw() -> void:
+		if _left <= 0.0:
+			return
+		var a := clampf(_left / Warden.SHOT_FADE, 0.0, 1.0)
+		for it in _items:
+			var col: Color = it["color"]
+			col.a *= a
+			var pos: Vector2 = it["pos"]
+			var rad: float = it["radius"]
+			draw_circle(to_local(pos), maxf(rad, 1.0), col)
+
