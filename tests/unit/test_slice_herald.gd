@@ -255,10 +255,17 @@ func test_the_herald_spawned_in_c_stays_in_c() -> void:
 	assert_eq(SliceLayout.room_at(herald.global_position), &"C", "still in C at %s" % herald.global_position)
 
 
-func test_regulars_do_not_collide_yet() -> void:
+func test_regulars_collide_when_the_ribbon_is_on() -> void:
+	var loose := (preload("res://scenes/regular_enemy.tscn") as PackedScene).instantiate() as RegularEnemy
+	assert_false(loose.collide_walls, "default stays off until _ready sees a ribbon")
+	loose.free()
+	var layout := SliceLayout.new()
+	layout.enabled = true
+	add_child_autofree(layout)
 	var body := (preload("res://scenes/regular_enemy.tscn") as PackedScene).instantiate() as RegularEnemy
-	assert_false(body.collide_walls, "row 2 decides the regular wall rule")
-	body.free()
+	add_child_autofree(body)
+	await wait_physics_frames(1)
+	assert_true(body.collide_walls, "row 2: regulars use the world-layer walls")
 
 
 func test_main_scene_redirects_the_herald_into_c() -> void:

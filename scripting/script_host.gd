@@ -390,6 +390,9 @@ var _names := PackedStringArray()
 var _callbacks: Dictionary = {}
 
 var _threads: Array[LuaThread] = []
+## The same threads as `_threads`, as a set, so registration is O(1). The two
+## are always cleared and filled together.
+var _thread_set: Dictionary[LuaThread, bool] = {}
 ## Coroutines the budget stopped. shutdown() does not resume them and does not
 ## free them (lua-gdextension #240).
 var _parked: Array[LuaThread] = []
@@ -447,6 +450,9 @@ var _sense_world_rev := -1
 var _senses_on := false
 var _sense_set: LuaFunction
 var _sense_sync: LuaFunction
+## ids, radius, kind and rarity columns of the last rows sent to sense_sync,
+## [] when the next sync must send everything.
+var _sense_meta: Array = []
 var _sense_notes: LuaTable
 var _sense_notes_seen := 0
 
@@ -544,6 +550,7 @@ func _open_state() -> void:
 	_sense_notes = _as_table(notes_v)
 	_sense_book_rev = -1
 	_sense_world_rev = -1
+	_sense_meta = []
 	_senses_on = false
 	_sense_notes_seen = 0
 	_ready = true
@@ -762,6 +769,7 @@ func _release_current() -> void:
 	_strip_fn = null
 	_parked.clear()
 	_threads.clear()
+	_thread_set.clear()
 	_value_threads.clear()
 	_state = null
 
@@ -1215,7 +1223,9 @@ func _take_spawns(spawns: LuaTable) -> void:
 ## Brings this state's `sense` table up to date: the fields from SenseBook
 ## (an unearned Sense is nil) and, while any Sense is on, the enemy rows from
 ## WorldQuery. Host code only, between script calls; each part is skipped
-## while its revision has not moved, so a quiet tick costs two int reads.
+## while its revision has not moved. WorldQuery's revision holds across a
+## tick where no enemy moved, changed or left, so such a tick costs two int
+## reads; a tick where enemies move re-syncs the rows once per Lua state.
 func _sync_senses() -> void:
 	if _sense_set == null or _closed:
 		return
@@ -1239,9 +1249,18 @@ func _sync_senses() -> void:
 	_sense_world_rev = world_rev
 	var rows := WorldQuery.live_rows()
 	var ids: PackedInt64Array = rows["ids"]
+	var radius: PackedFloat64Array = rows["radius"]
+	var kinds: PackedStringArray = rows["kind"]
+	var rars: PackedInt32Array = rows["rarity"]
+	# Moving enemies change x and y nearly every tick while the rest holds.
+	# Each element Lua reads from a packed array is a binding call, so when
+	# the other columns match the last sync only x and y are copied.
+	var meta: Array = [ids, radius, kinds, rars]
+	var positions_only := meta == _sense_meta
+	_sense_meta = meta
 	# Read-only use: host.sense_sync copies the columns into its own Lua
-	# tables and never writes back into them.
-	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], rows["radius"], rows["kind"], rows["rarity"])
+	# tables and never writes back into them. `rows` is this call's own copy.
+	_sense_sync.invoke(ids.size(), ids, rows["x"], rows["y"], radius, kinds, rars, positions_only)
 
 
 ## One editor note per enemies_in list the script had cut at 256 (§6.2).
@@ -1402,11 +1421,13 @@ func _reset_watchdog() -> void:
 	_kill_line = 0
 	_t0 = Time.get_ticks_msec()
 	_threads.clear()
+	_thread_set.clear()
 	_output = PackedStringArray()
 
 
 func _arm(co: LuaThread) -> void:
 	_threads.append(co)
+	_thread_set[co] = true
 	co.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, HOOK_STRIDE)
 
 
@@ -1668,9 +1689,9 @@ func _lua_reg_thread(co: Variant) -> void:
 	if not co is LuaThread:
 		return
 	var th := _as_thread(co)
-	for i in _threads.size():
-		if _threads[i] == th:
-			return
+	if _thread_set.has(th):
+		return
+	_thread_set[th] = true
 	_threads.append(th)
 	var stride := 1 if _killed else HOOK_STRIDE
 	th.set_hook(Callable(self, "_hook"), LuaThread.HOOK_MASK_COUNT, stride)

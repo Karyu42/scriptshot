@@ -250,6 +250,89 @@ func test_results_are_read_only_snapshots() -> void:
 	assert_eq(out, "false\tfalse\nalive,id,kind,pos,radius,rarity\n0\tdrifter")
 
 
+func test_sense_results_iteration_returns_the_read_only_view() -> void:
+	SenseBook.grant(&"nearest_enemy", 1)
+	SenseBook.grant(&"enemies_in", 1)
+	var b := _body(Vector2(10, 0))
+	WorldQuery.refresh()
+	var host := _host("""
+		return { on_fire = function(ctx)
+			local e = sense.nearest_enemy({ x = 0, y = 0 })
+			local _, s1 = pairs(e)
+			local _, s2 = pairs(e.pos)
+			local _, s3 = pairs(sense)
+			print(rawequal(s1, e), rawequal(s2, e.pos), rawequal(s3, sense))
+			local got = {}
+			for k, v in pairs(e) do got[#got + 1] = k .. "=" .. type(v) end
+			table.sort(got)
+			print(table.concat(got, ","))
+			local xs = {}
+			for k, v in pairs(e.pos) do xs[#xs + 1] = k .. "=" .. tostring(v) end
+			table.sort(xs)
+			print(table.concat(xs, ","))
+			local names = {}
+			for k, v in pairs(sense) do names[#names + 1] = k .. "=" .. type(v) end
+			table.sort(names)
+			print(table.concat(names, ","))
+			-- The iterator ignores what it is called with.
+			local f = pairs(e)
+			local k1 = f({}, nil)
+			local k2 = f({}, nil)
+			print(k1 ~= nil, k2 ~= nil, k1 ~= k2)
+		end }
+	""".dedent())
+	assert_eq(_out(_fire(host)), "true\ttrue\ttrue\n"
+		+ "alive=function,id=number,kind=string,pos=table,radius=number,rarity=string\n"
+		+ "x=10.0,y=0.0\n"
+		+ "enemies_in=function,nearest_enemy=function\n"
+		+ "true\ttrue\ttrue")
+	var writes := [
+		"local e = sense.nearest_enemy({ x = 0, y = 0 })\nlocal _, t = pairs(e)\nt.id = 1",
+		"local e = sense.nearest_enemy({ x = 0, y = 0 })\nlocal _, t = pairs(e.pos)\nt.x = 1",
+	]
+	for code: String in writes:
+		var r := _run(code)
+		assert_false(r.ok, code)
+		assert_string_contains(r.error, "sense results are read-only", code)
+	var r2 := _run("local _, t = pairs(sense)\nt.nearest_enemy = print")
+	assert_false(r2.ok)
+	assert_string_contains(r2.error, "sense is read-only")
+	var r3 := _run("local _, t = pairs(sense.nearest_enemy({ x = 0, y = 0 }))\nrawset(t, 'id', 1)")
+	assert_false(r3.ok)
+	assert_string_contains(r3.error, "protected table")
+	# Nothing above reached the cached results or the sense table.
+	var out := _out(_run("""
+		local e = sense.nearest_enemy({ x = 0, y = 0 })
+		print(e.id, e.pos.x, sense.nearest_enemy == print, sense.enemies_in ~= nil)
+	""".dedent()))
+	assert_eq(out, "%d\t10.0\tfalse\ttrue" % b.get_instance_id())
+
+
+func test_moving_enemies_resync_positions_and_a_changed_body_resyncs_everything() -> void:
+	SenseBook.grant(&"nearest_enemy", 1)
+	var a := _body(Vector2(10, 0))
+	var b := _body(Vector2(100, 0))
+	WorldQuery.refresh()
+	var host := _host("""
+		return { on_fire = function(ctx)
+			local e = sense.nearest_enemy({ x = 0, y = 0 })
+			print(e.id, e.pos.x, e.pos.y, e.kind, "[" .. e.rarity .. "]", e.radius, e:alive())
+		end }
+	""".dedent())
+	assert_eq(_out(_fire(host)), "%d\t10.0\t0.0\tdrifter\t[]\t16.0\ttrue" % a.get_instance_id())
+	a.global_position = Vector2(300, 5)
+	b.global_position = Vector2(50, 7)
+	WorldQuery.refresh()
+	assert_eq(_out(_fire(host)), "%d\t50.0\t7.0\tdrifter\t[]\t16.0\ttrue" % b.get_instance_id(), "same bodies, new positions")
+	WorldQuery.register_enemy(b, EnemyKinds.HUSK, EnemyKinds.RARITY_RARE, 0, 20.0)
+	WorldQuery.refresh()
+	assert_eq(_out(_fire(host)), "%d\t50.0\t7.0\thusk\t[rare]\t20.0\ttrue" % b.get_instance_id(), "a re-registered body")
+	WorldQuery.unregister_enemy(b)
+	b.global_position = Vector2(51, 7)
+	WorldQuery.refresh()
+	assert_eq(_out(_fire(host)), "%d\t300.0\t5.0\tdrifter\t[]\t16.0\ttrue" % a.get_instance_id(), "a body left the set")
+
+
 func test_the_same_body_is_the_same_table_within_a_snapshot() -> void:
 	SenseBook.grant(&"nearest_enemy", 1)
 	SenseBook.grant(&"enemies_in", 1)
@@ -267,6 +350,9 @@ func test_the_same_body_is_the_same_table_within_a_snapshot() -> void:
 	""".dedent())
 	assert_eq(_out(_fire(host)), "true\ttrue\tfalse")
 	assert_eq(_out(_fire(host)), "true\ttrue\ttrue", "no new snapshot: same table")
+	WorldQuery.refresh()
+	assert_eq(_out(_fire(host)), "true\ttrue\ttrue", "a snapshot where nothing moved: same table")
+	_bodies[0].global_position = Vector2(12, 0)
 	WorldQuery.refresh()
 	assert_eq(_out(_fire(host)), "true\ttrue\tfalse", "a new snapshot builds new tables")
 
@@ -509,3 +595,31 @@ func test_the_enemies_in_codex_snippet_picks_the_warden_over_a_nearer_husk() -> 
 		assert_lt(nearest.y, -5.0, "nearest_enemy follows the husk (%s)" % pref)
 		var warden := _homing_flight(pref, 20, seeker)
 		assert_gt(warden.y, 5.0, "enemies_in + kind picks the Warden (%s)" % pref)
+
+
+func test_the_enemies_in_codex_snippet_stays_in_budget_with_a_full_room() -> void:
+	# One query per batch: 64 shots near 40 husks and the Warden run without a
+	# budget stop.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 6
+	for i in 40:
+		_body(Vector2(rng.randf_range(-300, 300), rng.randf_range(-300, 300)), EnemyKinds.HUSK, 16.0)
+	_body(Vector2(320, 160), EnemyKinds.WARDEN, 48.0, EnemyKinds.RARITY_COMMON)
+	SenseBook.grant(&"enemies_in", 1)
+	WorldQuery.refresh(DT)
+	var manager := _manager("gdscript")
+	var behavior := LuaBulletBehavior.new()
+	behavior.host.wall_msec = 5000
+	var loaded := behavior.load_source(ScriptEditorPanel.codex_source("enemies_in"), "seeker.lua", manager, -1)
+	assert_true(loaded.ok, loaded.error)
+	var id := manager.register_behavior(behavior)
+	for i in 64:
+		var req := ShotRequest.with_velocity(Vector2.ZERO, Vector2(280.0, 0.0).rotated(TAU * i / 64.0))
+		req.lifetime = 2.5
+		behavior.apply_to_request(req, id)
+		assert_gte(manager.spawn(req), 0)
+	for i in 10:
+		WorldQuery.refresh(DT)
+		manager.step(DT)
+	assert_eq(behavior.error_total, 0, "no budget stop or error")
+	assert_eq(manager.gather_batch(id, DT).n, 64)

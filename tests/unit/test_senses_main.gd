@@ -56,7 +56,7 @@ func test_the_origin_dummies_grant_nearest_enemy_and_the_slot_keeps_it() -> void
 	_kill(d2)
 	assert_eq(SenseBook.kill_count(), 3)
 	assert_false(SenseBook.unlocked(&"nearest_enemy"), "deferred to the frame boundary")
-	await wait_process_frames(2)
+	await get_tree().process_frame
 	assert_true(SenseBook.unlocked(&"nearest_enemy"))
 	assert_eq(main.editor.toast_text(), "sense.nearest_enemy")
 	assert_false(main.editor.starter_locked("homing"))
