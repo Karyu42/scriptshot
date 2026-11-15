@@ -40,6 +40,12 @@ var _packs: SlicePacks
 var _room_d: SliceRoomD
 var _hydra_alcove: SliceHydraAlcove
 var _warden: Warden
+## Real-time delay after the last size change before the slot is written.
+## Unaffected by Engine.time_scale and TimeControl. Quit, scene change, run end,
+## and any normal save (_write_save) flush a pending size immediately.
+const SIZE_SAVE_DEBOUNCE := 1.0
+var _size_save_dirty := false
+var _size_save_due_usec := 0
 
 
 func _ready() -> void:
@@ -74,6 +80,11 @@ func _ready() -> void:
 	GameEvents.run_started.emit()
 	_restore_player_size()
 	_bind_player_size_persist()
+	if not GameEvents.run_ended.is_connected(_on_run_ended_flush_size):
+		GameEvents.run_ended.connect(_on_run_ended_flush_size)
+	var win := get_window()
+	if win != null and not win.close_requested.is_connected(_flush_player_size_save):
+		win.close_requested.connect(_flush_player_size_save)
 
 
 ## Equips shots/<saved file> (shots/default.lua on a fresh save) through
@@ -189,10 +200,14 @@ func _slot_path() -> String:
 func _restore_player_size() -> void:
 	if _player == null or _save == null:
 		return
+	# Same reachable push-out and largest-size-that-fits path as set_size
+	# (apply_size), so a ship saved at 4.0 next to a wall cannot load stuck.
 	var applied := _player.apply_size(_save.player_size)
 	if not is_equal_approx(applied, _save.player_size):
 		_save.player_size = applied
 		_save.save()
+		_size_save_dirty = false
+		_size_save_due_usec = 0
 	else:
 		_save.player_size = applied
 
@@ -216,6 +231,8 @@ func _on_player_size_maybe_changed(_at: Vector2 = Vector2.ZERO) -> void:
 	_persist_player_size()
 
 
+## Stamp the in-memory slot and start (or restart) the debounce. Does not write
+## the file; a pulsing script would otherwise save once per tick.
 func _persist_player_size() -> void:
 	if _save == null or _player == null:
 		return
@@ -223,7 +240,25 @@ func _persist_player_size() -> void:
 	if is_equal_approx(_save.player_size, size):
 		return
 	_save.player_size = size
+	_size_save_dirty = true
+	_size_save_due_usec = Time.get_ticks_usec() + int(SIZE_SAVE_DEBOUNCE * 1_000_000.0)
+
+
+func _flush_player_size_save() -> void:
+	if not _size_save_dirty or _save == null:
+		return
+	if _player != null:
+		_save.player_size = _player.get_size()
 	_save.save()
+	_size_save_dirty = false
+	_size_save_due_usec = 0
+
+
+func _tick_size_save_debounce() -> void:
+	if not _size_save_dirty:
+		return
+	if Time.get_ticks_usec() >= _size_save_due_usec:
+		_flush_player_size_save()
 
 
 func _write_save() -> void:
@@ -232,6 +267,12 @@ func _write_save() -> void:
 	if _player != null:
 		_save.player_size = _player.get_size()
 	_save.save()
+	_size_save_dirty = false
+	_size_save_due_usec = 0
+
+
+func _on_run_ended_flush_size(_victory: bool) -> void:
+	_flush_player_size_save()
 
 
 func _on_absent_changed() -> void:
@@ -284,16 +325,28 @@ func _on_player_died() -> void:
 		_warden.on_player_died()
 
 
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST:
+		_flush_player_size_save()
+
+
 func _exit_tree() -> void:
+	if GameEvents.run_ended.is_connected(_on_run_ended_flush_size):
+		GameEvents.run_ended.disconnect(_on_run_ended_flush_size)
+	var win := get_window()
+	if win != null and win.close_requested.is_connected(_flush_player_size_save):
+		win.close_requested.disconnect(_flush_player_size_save)
 	WorldQuery.unbind_bullets(_bullets)
 	SenseBook.unlisten()
 	SenseBook.bind_save(null)
 	_on_absent_changed()
+	_flush_player_size_save()
 	if TimeControl != null:
 		TimeControl.cancel()
 
 
 func _process(delta: float) -> void:
+	_tick_size_save_debounce()
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:

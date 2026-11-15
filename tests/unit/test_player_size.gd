@@ -11,6 +11,7 @@ func before_each() -> void:
 
 func after_each() -> void:
 	TimeControl.cancel()
+	Engine.time_scale = 1.0
 
 
 func _player_at(at: Vector2) -> Player:
@@ -175,25 +176,173 @@ func test_respawn_at_a_tight_spot_does_not_overlap_walls() -> void:
 
 func test_main_restores_and_persists_player_size() -> void:
 	const SAVE := "user://gut_player_size_main.cfg"
-	if FileAccess.file_exists(SAVE):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE))
+	_rm_save(SAVE)
 	var save := SaveGame.new()
 	save.path = SAVE
 	save.world_seed = 7
 	save.player_size = 2.0
 	save.save()
-	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
-	main.save_path = SAVE
-	(main.get_node("BulletManager") as BulletManager).backend_preference = "gdscript"
+	var main := _main_with_save(SAVE)
 	add_child_autofree(main)
 	await wait_physics_frames(2)
 	var player := main.get_node("Player") as Player
 	assert_almost_eq(player.get_size(), 2.0, 0.0001)
 	player.state.set_size(3.0)
+	assert_almost_eq(main._save.player_size, 3.0, 0.0001, "in-memory size updates immediately")
+	var pending := SaveGame.load_from(SAVE)
+	assert_almost_eq(pending.player_size, 2.0, 0.0001, "debounce has not written the file yet")
+	main._write_save()
 	var reloaded := SaveGame.load_from(SAVE)
 	assert_almost_eq(reloaded.player_size, 3.0, 0.0001)
-	if FileAccess.file_exists(SAVE):
-		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE))
+	_rm_save(SAVE)
+
+
+func test_sixty_size_changes_write_once_after_debounce() -> void:
+	const SAVE := "user://gut_player_size_debounce.cfg"
+	_rm_save(SAVE)
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 1.0
+	save.save()
+	var main := _main_with_save(SAVE)
+	add_child_autofree(main)
+	await wait_physics_frames(3)
+	var player := main.get_node("Player") as Player
+	var writes := main._save.write_count
+	for i in 60:
+		player.state.set_size(2.0 if (i % 2) == 0 else 3.0)
+	assert_eq(main._save.write_count, writes, "no disk write during the pulse")
+	assert_almost_eq(main._save.player_size, 3.0, 0.0001)
+	var pending := SaveGame.load_from(SAVE)
+	assert_almost_eq(pending.player_size, 1.0, 0.0001)
+	# Real-time debounce, not Engine.time_scale or TimeControl.
+	Engine.time_scale = 0.25
+	await get_tree().create_timer(Main.SIZE_SAVE_DEBOUNCE + 0.25, true, true).timeout
+	Engine.time_scale = 1.0
+	assert_eq(main._save.write_count, writes + 1, "exactly one write after debounce")
+	var reloaded := SaveGame.load_from(SAVE)
+	assert_almost_eq(reloaded.player_size, 3.0, 0.0001)
+	_rm_save(SAVE)
+
+
+func test_exit_tree_flushes_a_pending_size_save() -> void:
+	const SAVE := "user://gut_player_size_exit.cfg"
+	_rm_save(SAVE)
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 1.0
+	save.save()
+	var main := _main_with_save(SAVE)
+	add_child(main)
+	await wait_physics_frames(3)
+	var player := main.get_node("Player") as Player
+	var writes := main._save.write_count
+	player.state.set_size(2.5)
+	assert_eq(main._save.write_count, writes, "still pending")
+	var pending := SaveGame.load_from(SAVE)
+	assert_almost_eq(pending.player_size, 1.0, 0.0001)
+	remove_child(main)
+	main.free()
+	var reloaded := SaveGame.load_from(SAVE)
+	assert_almost_eq(reloaded.player_size, 2.5, 0.0001, "exit_tree flushes the pending size")
+	_rm_save(SAVE)
+
+
+func test_unchanged_size_does_not_write() -> void:
+	const SAVE := "user://gut_player_size_unchanged.cfg"
+	_rm_save(SAVE)
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 1.0
+	save.save()
+	var main := _main_with_save(SAVE)
+	add_child_autofree(main)
+	await wait_physics_frames(3)
+	var player := main.get_node("Player") as Player
+	var writes := main._save.write_count
+	assert_almost_eq(player.get_size(), 1.0, 0.0001)
+	player.state.set_size(1.0)
+	main._persist_player_size()
+	assert_eq(main._save.write_count, writes, "no write when the size is unchanged")
+	await wait_physics_frames(2)
+	assert_eq(main._save.write_count, writes)
+	_rm_save(SAVE)
+
+
+func test_saved_size_four_next_to_a_wall_reloads_without_getting_stuck() -> void:
+	# Persist 4.0, then apply it at a position next to a wall, the same way
+	# Main._restore_player_size does (apply_size: reachable push-out, or the
+	# largest size that fits). The ship must not load stuck in the wall.
+	const SAVE := "user://gut_player_size_reload_wall.cfg"
+	_rm_save(SAVE)
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 4.0
+	save.save()
+	var loaded := SaveGame.load_from(SAVE)
+	assert_almost_eq(loaded.player_size, 4.0, 0.0001)
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(370, 400))
+	await wait_physics_frames(2)
+	var start := player.global_position
+	var applied := player.apply_size(loaded.player_size)
+	if not is_equal_approx(applied, loaded.player_size):
+		loaded.player_size = applied
+		loaded.save()
+	assert_eq(applied, 4.0, "a free reachable spot keeps the saved size")
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_almost_eq(body.radius, 52.0, 0.05)
+	assert_gte(player.global_position.x, 380.0 + 52.0 - 0.05)
+	assert_gt(player.global_position.x - body.radius, 380.0 - 0.05, "not overlapping the wall")
+	assert_lt(player.global_position.x, start.x + Player.SIZE_RESOLVE_RADIUS + 0.05)
+	assert_almost_eq(player.global_position.y, start.y, 0.05)
+	_rm_save(SAVE)
+
+
+func test_saved_size_four_in_a_narrow_spot_reloads_to_what_fits() -> void:
+	const SAVE := "user://gut_player_size_reload_narrow.cfg"
+	_rm_save(SAVE)
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 4.0
+	save.save()
+	var loaded := SaveGame.load_from(SAVE)
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(370, 400))
+	_wall(Vector2(20, 800), Vector2(430, 400))
+	_wall(Vector2(800, 20), Vector2(400, 370))
+	_wall(Vector2(800, 20), Vector2(400, 430))
+	await wait_physics_frames(2)
+	var applied := player.apply_size(loaded.player_size)
+	if not is_equal_approx(applied, loaded.player_size):
+		loaded.player_size = applied
+		loaded.save()
+	assert_lt(applied, 4.0, "largest size that fits, not the saved 4.0")
+	assert_gt(applied, 1.0 - 0.0001)
+	assert_almost_eq(player.global_position.x, 400.0, 0.05)
+	assert_almost_eq(player.global_position.y, 400.0, 0.05)
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_lt(body.radius, 20.0)
+	var rel := SaveGame.load_from(SAVE)
+	assert_almost_eq(rel.player_size, applied, 0.0001, "fitted size is what later loads use")
+	_rm_save(SAVE)
+
+
+func _main_with_save(path: String) -> Main:
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = path
+	(main.get_node("BulletManager") as BulletManager).backend_preference = "gdscript"
+	return main
+
+
+func _rm_save(path: String) -> void:
+	if FileAccess.file_exists(path):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 func _wall(size: Vector2, at: Vector2) -> void:

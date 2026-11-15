@@ -68,6 +68,9 @@ var existed := false
 ## Last applied player size (Player.MIN_SIZE..MAX_SIZE). Missing, non-finite,
 ## or out-of-range values in an older slot load as 1.0.
 var player_size := 1.0
+## Times save() has written this slot this session. Tests use it to count
+## disk writes; production ignores it.
+var write_count := 0
 
 
 static func resolved_path() -> String:
@@ -116,6 +119,7 @@ func save() -> void:
 	cfg.set_value("senses", "enemies_in_announced", enemies_in_announced)
 	cfg.set_value("player", "size", player_size)
 	cfg.save(path)
+	write_count += 1
 
 
 ## ConfigFile hands every value back as a Variant. Each key is type-guarded

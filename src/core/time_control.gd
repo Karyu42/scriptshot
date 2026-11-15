@@ -60,6 +60,9 @@ func _on_run_ended(_victory: bool) -> void:
 ## +INF duration is clamped to MAX_STOP_SECONDS, like other out-of-range values.
 ## When rejected as "active", cooldown_left is the remaining effect time, not
 ## the wait until a retry would succeed; use retry_in() for that.
+## A call from inside the sim step (a bullet hook during advance) updates the
+## control immediately but applies to the next integration step: class dts
+## already computed for this tick stay unchanged, and nothing is re-simulated.
 func request(scale: float, seconds: float) -> Dictionary:
 	if not is_finite(scale):
 		return _result(false, "invalid", cooldown_left())

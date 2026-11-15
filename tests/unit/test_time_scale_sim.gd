@@ -388,3 +388,142 @@ func _first_live_id(mgr: BulletManager) -> int:
 		return mgr.native.id_of_slot(0)
 	return -1
 
+
+class _MidStepRequester:
+	extends BulletBehavior
+	var dts: Array[float] = []
+	var requested := false
+
+	func on_update(_pool: BulletPool, _i: int, d: float) -> void:
+		dts.append(d)
+		if not requested:
+			requested = true
+			TimeControl.request(0.0, 2.0)
+
+
+class _MidStepObserver:
+	extends BulletBehavior
+	var dts: Array[float] = []
+
+	func on_update(_pool: BulletPool, _i: int, d: float) -> void:
+		dts.append(d)
+
+
+class _MidStepBatchRequester:
+	extends BulletBehavior
+	var dts: Array[float] = []
+	var requested := false
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+
+	func on_update_batch(batch: BatchView) -> void:
+		dts.append(batch.dt)
+		if not requested:
+			requested = true
+			TimeControl.request(0.0, 2.0)
+
+
+class _MidStepBatchObserver:
+	extends BulletBehavior
+	var dts: Array[float] = []
+
+	func _init() -> void:
+		update_mode = UpdateMode.BATCH
+
+	func on_update_batch(batch: BatchView) -> void:
+		dts.append(batch.dt)
+
+
+func test_gdscript_mid_step_request_in_hook_applies_next_tick() -> void:
+	_assert_mid_step_hook("gdscript")
+
+
+func test_native_mid_step_request_in_hook_applies_next_tick() -> void:
+	var probe := _manager("native")
+	if probe.backend != "native":
+		pending("native backend is not available in this tree")
+		return
+	_assert_mid_step_hook("native")
+
+
+func _assert_mid_step_hook(preference: String) -> void:
+	var mgr := _manager(preference)
+	var requester := _MidStepRequester.new()
+	var observer := _MidStepObserver.new()
+	var req_id := mgr.register_behavior(requester)
+	var obs_id := mgr.register_behavior(observer)
+	_fire_hooked(mgr, req_id, Layers.ENEMY, Vector2(0, 0), Vector2(600, 0), false)
+	_fire_hooked(mgr, obs_id, Layers.ENEMY, Vector2(0, 40), Vector2(600, 0), false)
+	assert_false(TimeControl.is_active())
+	mgr.step(DT)
+	assert_true(TimeControl.is_active(), "%s request in the first hook took effect" % preference)
+	assert_eq(requester.dts.size(), 1)
+	assert_eq(observer.dts.size(), 1)
+	assert_almost_eq(requester.dts[0], DT, 0.0001, "%s requesting hook still saw the precomputed dt" % preference)
+	assert_almost_eq(observer.dts[0], DT, 0.0001, "%s later hook this tick kept the old dt" % preference)
+	var xs := _snapshot_xs(mgr)
+	assert_eq(xs.size(), 2, "%s two live shots after the request tick" % preference)
+	assert_almost_eq(xs[0], 10.0, 0.05, "%s requester already integrated with the old dt" % preference)
+	assert_almost_eq(xs[1], 10.0, 0.05, "%s observer already integrated with the old dt" % preference)
+	mgr.step(DT)
+	assert_eq(requester.dts.size(), 2)
+	assert_eq(observer.dts.size(), 2)
+	assert_almost_eq(requester.dts[1], 0.0, 0.0001, "%s next tick uses the new dt" % preference)
+	assert_almost_eq(observer.dts[1], 0.0, 0.0001, "%s next tick observer uses the new dt" % preference)
+	xs = _snapshot_xs(mgr)
+	assert_almost_eq(xs[0], 10.0, 0.05, "%s no further move on the next tick" % preference)
+	assert_almost_eq(xs[1], 10.0, 0.05, "%s observer frozen on the next tick" % preference)
+
+
+func test_gdscript_mid_step_request_in_batch_hook_applies_next_tick() -> void:
+	_assert_mid_step_batch("gdscript")
+
+
+func test_native_mid_step_request_in_batch_hook_applies_next_tick() -> void:
+	var probe := _manager("native")
+	if probe.backend != "native":
+		pending("native backend is not available in this tree")
+		return
+	_assert_mid_step_batch("native")
+
+
+func _assert_mid_step_batch(preference: String) -> void:
+	var mgr := _manager(preference)
+	var requester := _MidStepBatchRequester.new()
+	var observer := _MidStepBatchObserver.new()
+	var req_id := mgr.register_behavior(requester)
+	var obs_id := mgr.register_behavior(observer)
+	_fire_hooked(mgr, req_id, Layers.ENEMY, Vector2(0, 0), Vector2(600, 0), false)
+	_fire_hooked(mgr, obs_id, Layers.ENEMY, Vector2(0, 40), Vector2(600, 0), false)
+	assert_false(TimeControl.is_active())
+	mgr.step(DT)
+	assert_true(TimeControl.is_active(), "%s request in the first batch hook took effect" % preference)
+	assert_eq(requester.dts.size(), 1)
+	assert_eq(observer.dts.size(), 1)
+	assert_almost_eq(requester.dts[0], DT, 0.0001, "%s requesting batch still saw the precomputed dt" % preference)
+	assert_almost_eq(observer.dts[0], DT, 0.0001, "%s later batch this tick kept the old dt" % preference)
+	var xs := _snapshot_xs(mgr)
+	assert_eq(xs.size(), 2, "%s two live shots after the request tick" % preference)
+	assert_almost_eq(xs[0], 10.0, 0.05, "%s requester already integrated with the old dt" % preference)
+	assert_almost_eq(xs[1], 10.0, 0.05, "%s observer already integrated with the old dt" % preference)
+	mgr.step(DT)
+	assert_eq(requester.dts.size(), 2)
+	assert_eq(observer.dts.size(), 2)
+	assert_almost_eq(requester.dts[1], 0.0, 0.0001, "%s next tick uses the new dt" % preference)
+	assert_almost_eq(observer.dts[1], 0.0, 0.0001, "%s next tick observer uses the new dt" % preference)
+	xs = _snapshot_xs(mgr)
+	assert_almost_eq(xs[0], 10.0, 0.05, "%s no further move on the next tick" % preference)
+	assert_almost_eq(xs[1], 10.0, 0.05, "%s observer frozen on the next tick" % preference)
+
+
+func _snapshot_xs(mgr: BulletManager) -> PackedFloat32Array:
+	@warning_ignore_start("unsafe_cast")
+	var positions: PackedVector2Array = mgr.snapshot()["pos"]
+	@warning_ignore_restore("unsafe_cast")
+	var xs := PackedFloat32Array()
+	xs.resize(positions.size())
+	for i in positions.size():
+		xs[i] = positions[i].x
+	return xs
+
