@@ -716,6 +716,20 @@ return function(host)
 			end
 			return r == true
 		end,
+		dash_cooldown_left = function(self)
+			if type(self) ~= "table" then
+				error("player:dash_cooldown_left: call it with a colon, like player:dash_cooldown_left()", 2)
+			end
+			local f = host.player_cooldown_left
+			if f == nil then
+				error("player:dash_cooldown_left: not available", 2)
+			end
+			local r = f()
+			if type(r) == "string" then
+				error(r, 2)
+			end
+			return r
+		end,
 	}
 
 	-- Host code, called from GDScript outside the watchdog: it must not reach

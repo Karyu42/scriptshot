@@ -241,7 +241,7 @@ return function(t)
 	for _, k in ipairs({
 		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
 		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired", "_spawns", "make_ctx",
-		"sense_set", "sense_sync", "_sense_notes", "player_dash",
+		"sense_set", "sense_sync", "_sense_notes", "player_dash", "player_cooldown_left",
 	}) do
 		rawset(t, k, nil)
 	end
@@ -474,6 +474,10 @@ var _sense_notes_seen := 0
 ## (LuaDashAbility passes the player's built-in dash). Empty otherwise, so
 ## the call errors outside an ability hook.
 var _player_dash := Callable()
+## Set by an ability adapter: () -> float, the Dash slot's cooldown left.
+## Lua player:dash_cooldown_left() reads it anywhere in that host's files;
+## other hosts leave it unset and the call raises an error.
+var player_cooldown_left := Callable()
 ## An ability hook that yielded (call_ability), resumed by resume_ability().
 var _ability_co: LuaCoroutine = null
 
@@ -542,6 +546,7 @@ func _open_state() -> void:
 	_host.set("reg_thread", Callable(self, "_lua_reg_thread"))
 	_host.set("dead", Callable(self, "_lua_dead"))
 	_host.set("player_dash", Callable(self, "_lua_player_dash"))
+	_host.set("player_cooldown_left", Callable(self, "_lua_player_cooldown_left"))
 	_host.set("batch_token", -1)
 	var buf := _state.create_table()
 	buf.set("n", 0)
@@ -2022,6 +2027,18 @@ func _lua_player_dash(angle: Variant) -> Variant:
 		return false
 	var started: Variant = _player_dash.call(_number)
 	return started is bool and started
+
+
+func _lua_player_cooldown_left() -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	if not player_cooldown_left.is_valid():
+		return "player:dash_cooldown_left: only works in an ability file in this version"
+	var left: Variant = player_cooldown_left.call()
+	if _read_number(left) and is_finite(_number) and _number > 0.0:
+		return _number
+	return 0.0
 
 
 func _token_matches(token: Variant) -> bool:

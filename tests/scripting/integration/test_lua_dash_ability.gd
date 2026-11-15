@@ -19,6 +19,10 @@ class FakePlayer:
 	var dashes: Array[Vector2] = []
 	var refreshes := 0
 	var on_builtin := Callable()
+	var slot_left := 0.0
+
+	func get_ability_cooldown_left() -> float:
+		return slot_left
 
 	func perform_builtin_dash(dir: Vector2) -> bool:
 		if on_builtin.is_valid():
@@ -329,3 +333,40 @@ func test_a_reload_drops_a_running_hook() -> void:
 	assert_false(_a.is_running())
 	_a.tick()
 	assert_eq(_p.dashes.size(), 0, "the old hook never resumes")
+
+
+func test_a_raw_move_input_reaches_the_hook_normalized() -> void:
+	_apply_ok("return { on_dash = function(ctx, dir) state.x, state.y = dir.x, dir.y end }")
+	assert_true(_a.on_dash(_p, Vector2(0.3, 0.4)), "an analog stick half way")
+	_apply_ok("return { name = string.format('%.4f,%.4f', state.x, state.y) }")
+	assert_eq(_a.title, "0.6000,0.8000")
+
+
+func test_a_tiny_or_broken_direction_uses_the_aim_like_the_engine() -> void:
+	_apply_ok(FileAccess.get_file_as_string(DEFAULT_PATH))
+	assert_true(_a.on_dash(_p, Vector2(0.0001, 0.0)))
+	assert_true(_a.on_dash(_p, Vector2(NAN, 1.0)))
+	assert_eq(_p.dashes.size(), 2)
+	for d: Vector2 in _p.dashes:
+		assert_almost_eq(d.y, -1.0, 0.000001, "aim is up")
+
+
+func test_dash_cooldown_left_reads_the_slot_cooldown() -> void:
+	_p.slot_left = 0.75
+	_apply_ok("state.top = player:dash_cooldown_left() return { on_dash = function(ctx, dir) state.hook = player:dash_cooldown_left() end }")
+	_p.slot_left = 0.0
+	assert_true(_a.on_dash(_p, Vector2.RIGHT))
+	_apply_ok("return { name = state.top .. ',' .. state.hook }")
+	assert_eq(_a.title, "0.75,0.0")
+
+
+func test_dash_cooldown_left_needs_a_colon_and_an_ability_file() -> void:
+	_apply_ok("return { on_dash = function(ctx, dir) player.dash_cooldown_left() end }")
+	assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_string_contains(_a.last_error.error, "colon")
+	var host := ScriptHost.new()
+	var r := host.load_string("return { on_fire = function(ctx) player:dash_cooldown_left() end }", "w.lua")
+	assert_true(r.ok)
+	var fire := host.call_fire(ShotContext.new())
+	assert_false(fire.ok)
+	assert_string_contains(fire.error, "only works in an ability file")

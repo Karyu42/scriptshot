@@ -161,7 +161,13 @@ file anywhere the editor scans.
 (`Player.set_dash_ability`, `on_dash(player, dir) -> bool`,
 `get_cooldown()`). It runs the ability file's `on_dash(ctx, dir)` through one
 `ScriptHost` (`call_ability`) under the on_fire budget; `player:dash(angle)` in
-Lua is `Player.perform_builtin_dash` and only works during that call.
+Lua is `Player.perform_builtin_dash` and only works during that call, and
+`player:dash_cooldown_left()` reads `Player.get_ability_cooldown_left`
+(`ScriptHost.player_cooldown_left`). The player hands over its raw move input;
+the adapter normalizes it (aim direction when it is near zero, as the engine
+dash does). The player needs a synchronous bool, so a top-level yield in
+`on_dash` is settled here: the hook returns true and `AbilityScripts` resumes
+the coroutine once per physics tick (`tick()`), with a fresh budget per slice.
 `AbilityScripts` owns it and the `abilities/` files (`AbilityLibrary`), seeds
 `abilities/dash.lua` from `scripting/abilities/default_dash.lua.txt`, hot
 reloads it like `ShotScripts`, and gives the player back the built-in dash

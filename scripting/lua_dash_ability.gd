@@ -124,6 +124,7 @@ func apply(code: String) -> ScriptHost.RunResult:
 		return nested
 	if _host == null:
 		_host = ScriptHost.new()
+		_host.player_cooldown_left = _cooldown_left
 		_host.snapshot_globals()
 	var carried := _host.export_state() if _has_script else ""
 	var result := _host.load_string(code, chunk_name, true, carried)
@@ -218,6 +219,19 @@ func _note_failure(result: ScriptHost.RunResult) -> void:
 	if error_backoff_msec > 0:
 		_rest_until_msec = Time.get_ticks_msec() + error_backoff_msec
 	ScriptWarnings.warn(ERROR_KEY, "LuaDashAbility: on_dash: %s" % result.error)
+
+
+## Lua player:dash_cooldown_left(): the player's Dash slot cooldown
+## (Player.get_ability_cooldown_left, #126), 0 without a player.
+func _cooldown_left() -> float:
+	if _player == null or not is_instance_valid(_player) or not _player.has_method("get_ability_cooldown_left"):
+		return 0.0
+	var v: Variant = _player.call("get_ability_cooldown_left")
+	if typeof(v) != TYPE_FLOAT and typeof(v) != TYPE_INT:
+		return 0.0
+	@warning_ignore("unsafe_cast")
+	var left := v as float
+	return left
 
 
 ## Lua player:dash(angle).
