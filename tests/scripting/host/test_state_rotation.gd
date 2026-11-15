@@ -28,3 +28,27 @@ func test_a_rotated_state_keeps_the_weapon_state_and_fresh_envs() -> void:
 	assert_true(probe.ok, probe.error)
 	assert_eq(host.weapon_string("name", ""), "7,kept,nil", "state carried through the rotation")
 	host.shutdown()
+
+
+## The reload after a rotation reruns the top level (a counter bumped there
+## counts it) and sends its `state` copy notes to ScriptWarnings, since no
+## save result is there to carry them.
+func test_a_rotation_reports_its_copy_warnings() -> void:
+	ScriptWarnings.reset()
+	var host := ScriptHost.new()
+	host.wall_msec = 5000
+	host.instruction_budget = 2000
+	host.snapshot_globals()
+	var code := "state.loads = (state.loads or 0) + 1\nstate.fn = function() end\nreturn { name = 'R', on_spawn = function(b) end, on_hit = function(b, h) while true do end end }"
+	var r := host.load_string(code, "rot.lua", true)
+	assert_true(r.ok, r.error)
+	for i in 3:
+		assert_eq(host.call_hook("on_hit", 1, 0.0, 0.0, null, true).stopped, "instruction budget")
+	assert_true(host.call_hook("on_spawn", 1, 0.0, 0.0).ok)
+	assert_eq(host._retired.size(), 1, "rotated")
+	assert_gt(ScriptWarnings.count(ScriptHost.ROTATION_STATE_WARNING_KEY), 0)
+	assert_string_contains(ScriptWarnings.last_message(ScriptHost.ROTATION_STATE_WARNING_KEY), "rot.lua: restarted after guard stops: state.fn is a function")
+	var probe := host.load_string("return { name = tostring(state.loads) }", "probe.lua", true, host.export_state())
+	assert_true(probe.ok, probe.error)
+	assert_eq(host.weapon_string("name", ""), "2", "the rotation ran the top level again")
+	host.shutdown()

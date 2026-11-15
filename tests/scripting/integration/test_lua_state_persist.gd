@@ -192,13 +192,15 @@ func test_a_cycle_is_cut_with_a_warning() -> void:
 		ScriptWarnings.reset()
 		var manager := _mgr(pref)
 		var shot := _shot(manager)
-		_apply(shot, "state.self = state\nstate.x = { y = {} }\nstate.x.y.up = state.x\nstate.x.y.k = 3\nreturn { speed = 30 }")
+		var first := _apply(shot, "state.self = state\nstate.x = { y = {} }\nstate.x.y.up = state.x\nstate.x.y.k = 3\nreturn { speed = 30 }")
+		assert_eq(first.warnings.size(), 1, _joined(first))
+		assert_string_contains(_joined(first), "the loop will be cut there by the next save (2 places)", "%s: told on the save that makes the cycle" % pref)
 		var r := _apply(shot, "return { name = tostring(state.self) .. ',' .. tostring(state.x.y.up) .. ',' .. state.x.y.k, speed = 30 }")
 		assert_eq(shot.title, "nil,nil,3", "%s: back-references are cut, the rest is copied" % pref)
 		assert_eq(r.warnings.size(), 1, _joined(r))
 		assert_string_contains(_joined(r), "points back to a table that contains it; the loop was cut there (2 places)")
 		assert_true(_joined(r).begins_with("state.self ") or _joined(r).begins_with("state.x.y.up "), "the first place is named: %s" % _joined(r))
-		assert_eq(ScriptWarnings.count(LuaShot.STATE_WARNING_KEY), 1, "%s: also on ScriptWarnings" % pref)
+		assert_eq(ScriptWarnings.count(LuaShot.STATE_WARNING_KEY), 2, "%s: both saves also on ScriptWarnings" % pref)
 
 
 func test_functions_and_other_non_plain_values_are_dropped_with_a_warning() -> void:
@@ -215,6 +217,29 @@ func test_functions_and_other_non_plain_values_are_dropped_with_a_warning() -> v
 		assert_string_contains(text, "is a thread")
 		assert_string_contains(text, "has a key that is not a string, number or boolean")
 		assert_string_contains(text, "(2 places)", "fn and list[2]")
+
+
+## A function the top level stores in `state` is reported on the save that
+## stores it (as what the next copy will drop), and a later save that drops
+## it reports it once, not twice.
+func test_a_dropped_value_is_reported_on_the_save_that_adds_it() -> void:
+	for pref in BACKENDS:
+		if _skip(pref):
+			continue
+		var manager := _mgr(pref)
+		var shot := _shot(manager)
+		var code := "state.k = 1\nstate.fn = function() end\nreturn { speed = 30 }"
+		var first := _apply(shot, code)
+		assert_eq(first.warnings.size(), 1, "%s: %s" % [pref, _joined(first)])
+		assert_string_contains(_joined(first), "state.fn is a function; state keeps only plain data (nil, booleans, numbers, strings, tables), so it will not be copied by the next save")
+		var again := _apply(shot, code)
+		assert_eq(again.warnings.size(), 1, "%s: one note per place: %s" % [pref, _joined(again)])
+		assert_string_contains(_joined(again), "state.fn is a function; state keeps only plain data (nil, booleans, numbers, strings, tables), so it was not copied")
+		var plain := _apply(shot, "state.k = 2\nreturn { speed = 30 }")
+		assert_string_contains(_joined(plain), "was not copied", "%s: the copy into this save still drops it" % pref)
+		assert_false(_joined(plain).contains("next save"), pref)
+		var clean := _apply(shot, "return { speed = 30 }")
+		assert_eq(clean.warnings.size(), 0, "%s: %s" % [pref, _joined(clean)])
 
 
 ## A huge or deep `state` is capped, warned about, and copied quickly; the

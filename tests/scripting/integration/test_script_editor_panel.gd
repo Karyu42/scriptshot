@@ -141,13 +141,19 @@ func test_a_runtime_error_from_play_is_listed_with_its_line() -> void:
 	assert_string_ends_with(_panel.status_text(), "Still running the last good script.")
 
 
-## What a save's `state` copy dropped is listed as a warning; the save still
-## goes through, and the next clean save clears it.
+## What a save's `state` copy will drop is listed as a warning on the save
+## that stores it, again on the save that drops it; the save still goes
+## through, and the next clean save clears it.
 func test_a_state_copy_note_is_listed_as_a_warning() -> void:
 	_panel.set_text("state.cb = function() end\nstate.n = 1\nreturn { name = 'A' }")
 	_panel.request_save()
 	_scripts.flush_pending()
-	assert_eq(_panel.problems().size(), 0, "nothing to copy on the first save")
+	var first := _panel.problems()
+	assert_eq(first.size(), 1, "told on the save that stores it")
+	if first.size() == 1:
+		assert_eq(first[0].kind, ScriptProblem.Kind.WARNING)
+		assert_string_contains(first[0].text(), "state.cb is a function; state keeps only plain data")
+		assert_string_contains(first[0].text(), "will not be copied by the next save")
 	_panel.set_text("return { name = 'B' .. state.n }")
 	_panel.request_save()
 	_scripts.flush_pending()

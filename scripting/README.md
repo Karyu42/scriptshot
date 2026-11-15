@@ -123,9 +123,15 @@ decodes it into the new env before the file runs. The blob is ASCII text, so
 it crosses Lua states through GDScript. A failed load leaves the running env
 and its `state` untouched. What a copy dropped or cut comes back on
 `RunResult.warnings`, `ShotScripts.warnings` (editor Problems list, as
-warnings) and `ScriptWarnings` (`LuaShot.state_copy`). Respawn keeps the
-weapon, so `state` survives death. A state rotated after three guard stops
-reloads with its `state` and, when the host had fresh envs, gets them again.
+warnings) and `ScriptWarnings` (`LuaShot.state_copy`). After a load is
+adopted, the host also encodes the new version's `state` once with `ahead`
+set, so what the next copy will drop (a function the top level stored) is
+reported on this save; a note the copy in already made for the same place is
+not repeated. Respawn keeps the weapon, so `state` survives death. A state
+rotated after three guard stops reloads with its `state` and, when the host
+had fresh envs, gets them again. That reload reruns the top level like a save
+and sends its copy notes to `ScriptWarnings`
+(`ScriptHost.rotation_state_copy`); nobody holds its `RunResult`.
 
 `scripting/editor/` holds the player-facing side: `ShotScripts` (the `shots/`
 folder, start-up equip with a `BasicShot` fallback, the PC file watcher, and

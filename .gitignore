@@ -1,5 +1,10 @@
 # Godot 4
 .godot/
+# lua-gdextension makes Godot give every .lua file a .uid on import. Nothing
+# loads a .lua file by uid (the host files go by path, player files are
+# .lua.txt), and stale ones outlive renamed files, so keep them out. .gd.uid
+# files are committed.
+*.lua.uid
 
 # Stock lua-gdextension 0.8.2 binaries. tools/ci/fetch_native_libs.sh downloads
 # them and checks the SHA256 pin. Never commit the addon.
