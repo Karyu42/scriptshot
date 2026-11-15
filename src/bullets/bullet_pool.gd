@@ -575,16 +575,25 @@ func advance(delta: float, bounds: Rect2) -> void:
 ## advance() has already walked the old count: those bullets still need this
 ## tick's step, and only this one. Does not touch the hooked list (a migrated
 ## bullet is hook-free; the list was built for the bullets that already advanced).
+func _class_dt(i: int, player_dt: float, enemy_dt: float, null_dt: float) -> float:
+	if (owner_layer[i] & Layers.PLAYER) != 0:
+		return player_dt
+	if pierces_script_invuln[i] != 0:
+		return null_dt
+	return enemy_dt
+
+
 func _bullet_dt(i: int, delta: float) -> float:
-	return TimeControl.bullet_delta(
-		delta,
-		owner_slot(owner_layer[i]) == OWNER_PLAYER,
-		pierces_script_invuln[i] != 0,
-	)
+	if TimeControl == null or not TimeControl.is_active():
+		return delta
+	var scale := TimeControl.world_scale()
+	return _class_dt(i, delta, delta * scale, delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR))
 
 
 ## Same as advance() when TimeControl is active: each bullet gets its own delta
 ## (player shots unscaled, Null attacks floored, other enemy shots scaled).
+## The three class deltas are computed once; the loop only picks among them
+## with a layer bit test, no autoload or helper call per bullet.
 func _advance_scaled(delta: float, bounds: Rect2) -> void:
 	if log_despawns:
 		despawn_log_reason.clear()
@@ -593,12 +602,21 @@ func _advance_scaled(delta: float, bounds: Rect2) -> void:
 	var min_y := bounds.position.y
 	var max_x := bounds.end.x
 	var max_y := bounds.end.y
+	var player_dt := delta
+	var scale := TimeControl.world_scale()
+	var enemy_dt := delta * scale
+	var null_dt := delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
+	var player_bit := Layers.PLAYER
 	var n := count
 	hooked_count = 0
 	for i in n:
 		if dead_reason[i] != 0:
 			continue
-		var dt := _bullet_dt(i, delta)
+		var dt := player_dt
+		if (owner_layer[i] & player_bit) == 0:
+			dt = enemy_dt
+			if pierces_script_invuln[i] != 0:
+				dt = null_dt
 		prev_pos[i] = pos[i]
 		var a := age[i] + dt
 		age[i] = a
@@ -700,6 +718,14 @@ func run_update_hooks(
 	var last_slot := 0
 	var last_gen := 0
 	var last_behavior: BulletBehavior = null
+	var hook_scaled := TimeControl != null and TimeControl.is_active()
+	var hook_player_dt := delta
+	var hook_enemy_dt := delta
+	var hook_null_dt := delta
+	if hook_scaled:
+		var scale := TimeControl.world_scale()
+		hook_enemy_dt = delta * scale
+		hook_null_dt = delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
 	for k in hooked_count:
 		var i := hooked[k]
 		# A hook may have killed a later bullet in the list already, or reflected
@@ -750,7 +776,7 @@ func run_update_hooks(
 		if hook_owner != o:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
-		b.on_update(self, i, _bullet_dt(i, delta))
+		b.on_update(self, i, _class_dt(i, hook_player_dt, hook_enemy_dt, hook_null_dt) if hook_scaled else delta)
 		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot

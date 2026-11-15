@@ -1350,22 +1350,6 @@ void NativeBulletSim::set_world_time_scale(double p_scale, double p_null_floor) 
 	null_time_floor = (float)p_null_floor;
 }
 
-double NativeBulletSim::bullet_time_delta(int i, double p_delta) const {
-	if (world_time_scale >= 1.0f) {
-		return p_delta;
-	}
-	if (owner_slot_of(owner_layer[i]) == OWNER_PLAYER) {
-		return p_delta;
-	}
-	float s = world_time_scale;
-	if ((source_flags[i] & 1) != 0) {
-		if (s < null_time_floor) {
-			s = null_time_floor;
-		}
-	}
-	return p_delta * (double)s;
-}
-
 int NativeBulletSim::step(double delta) {
 	begin_step();
 	const float min_x = bounds.position.x, min_y = bounds.position.y;
@@ -1374,8 +1358,12 @@ int NativeBulletSim::step(double delta) {
 	const bool have_targets = target_count > 0;
 	const bool scale_time = world_time_scale < 1.0f;
 	const float fdelta = (float)delta;
+	const double player_dt = delta;
+	const double enemy_dt = delta * (double)world_time_scale;
+	const float null_s = world_time_scale < null_time_floor ? null_time_floor : world_time_scale;
+	const double null_dt = delta * (double)null_s;
 	for (int i = 0; i < count; i++) {
-		const double dt = scale_time ? bullet_time_delta(i, delta) : delta;
+		const double dt = scale_time ? class_time_delta(i, player_dt, enemy_dt, null_dt) : delta;
 		const float fdt = scale_time ? (float)dt : fdelta;
 		if (!integrate_one(i, dt, fdt, min_x, min_y, max_x, max_y)) {
 			continue;
@@ -1393,12 +1381,16 @@ void NativeBulletSim::integrate(double delta) {
 	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
 	const bool scale_time = world_time_scale < 1.0f;
 	const float fdelta = (float)delta;
+	const double player_dt = delta;
+	const double enemy_dt = delta * (double)world_time_scale;
+	const float null_s = world_time_scale < null_time_floor ? null_time_floor : world_time_scale;
+	const double null_dt = delta * (double)null_s;
 	const int n = count;
 	if ((int)collide_mark.size() < n) {
 		collide_mark.resize(n);
 	}
 	for (int i = 0; i < n; i++) {
-		const double dt = scale_time ? bullet_time_delta(i, delta) : delta;
+		const double dt = scale_time ? class_time_delta(i, player_dt, enemy_dt, null_dt) : delta;
 		const float fdt = scale_time ? (float)dt : fdelta;
 		collide_mark[i] = integrate_one(i, dt, fdt, min_x, min_y, max_x, max_y) ? 1 : 0;
 	}
