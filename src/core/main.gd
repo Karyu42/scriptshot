@@ -27,6 +27,8 @@ extends Node2D
 ## the in-game editor.
 var weapon: LuaShot
 var shot_scripts: ShotScripts
+## The Dash slot's ability file (abilities/, ability-scripting.md A1).
+var ability_scripts: AbilityScripts
 var editor: ScriptEditorPanel
 var _respawn_timer := 0.0
 var _herald: HeraldArm
@@ -96,10 +98,15 @@ func _bind_script_weapon() -> void:
 	shot_scripts.setup(_bullets, _player)
 	shot_scripts.start()
 	weapon = shot_scripts.weapon
+	ability_scripts = AbilityScripts.new()
+	add_child(ability_scripts)
+	ability_scripts.setup(_player)
+	ability_scripts.start()
 	editor = get_node_or_null("ScriptEditor") as ScriptEditorPanel
 	if editor != null:
 		editor.shards_source = func() -> int: return _save.shards if _save != null else 0
 		editor.bind(shot_scripts)
+		editor.bind_abilities(ability_scripts)
 
 
 func _bind_open_world() -> void:

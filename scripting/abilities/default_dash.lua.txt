@@ -1,0 +1,21 @@
+-- Dash: the Dash button runs this file.
+-- This one is the game's built-in dash, exactly: a quick burst with 0.2 s of
+-- invulnerability. Change it, save, and your next dash runs the new code.
+return {
+  name = "Dash",
+  -- Seconds between dashes. Leave it out to use the game's (1.5 s).
+  -- cooldown = 1.5,
+
+  -- Runs when you press Dash and the cooldown is over.
+  -- dir is the way you are moving ({x, y}, length 1), or where you aim when
+  -- standing still. Return false to say "no dash happened".
+  on_dash = function(ctx, dir)
+    -- Abilities go here, before or after the dash. For example, once the
+    -- world API lands:
+    --   world.time_stop(1.0)
+
+    -- The built-in dash. Only player:dash() gives the 0.2 s invulnerability,
+    -- and only when the game's own dash cooldown allows it.
+    return player:dash(math.atan(dir.y, dir.x))
+  end,
+}

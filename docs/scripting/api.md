@@ -447,14 +447,23 @@ How it carries over (in this build):
 - Functions, coroutines (threads) and userdata, and entries with other keys, are **not copied**. Metatables are not
   copied either: the copy is plain tables, and copying never runs a metamethod.
 - Each drop or cut is a non-fatal **warning** in the editor's Problems list after the save ("state.f is a function;
-  ... it was not copied"). The save itself goes through.
+  ... it was not copied"). The save itself goes through. A save also warns about what the **next** copy will drop
+  from the new version's `state` ("... it will not be copied by the next save"), so a function the top level puts in
+  `state` is reported on the save that adds it, not one save later. Something stored from a callback during play is
+  reported on the next save.
 - Caps, so a huge `state` cannot stall a save: at most 32 nested tables (`state` is the first), 8192 entries looked at,
   and 256 KiB of encoded data (about the bytes of its strings plus a few per entry). Past a cap the rest is not copied,
-  with a warning. A copy at the caps takes a few milliseconds.
+  with a warning. A `state` near the caps makes that save hitch for roughly one frame (about 15–25 ms on a busy
+  machine, counting the copy out, the copy in, and the check for the next copy); a few small tables cost next to
+  nothing.
 - A save that fails (compile error, error at the top level, no weapon table, a table the host rejects) leaves the
   running version and its `state` exactly as they were; the next good save copies from it.
 - Shots still in flight from an older version keep running that version's code against **that version's** `state`.
   Only the new version gets the copy, so what old shots write after the save does not reach the new version.
+- If guard stops (runaway or memory-hog callbacks) pile up, the host restarts the running file on a fresh Lua state.
+  That restart works like a save: the top level runs again with a copy of `state`, so a counter bumped at the top
+  level (`state.n = state.n + 1`) counts it, and its copy warnings show as script warnings. Use the
+  `state.n = state.n or 0` idiom at the top level and change `state` from callbacks.
 - `state` belongs to the weapon, not the file: equipping another file in the editor is a save too, and carries it.
 
 The Game Designer calls this section implements (recorded in #93):
@@ -916,6 +925,38 @@ engine layer (hit i-frames, the dash) lets bullets pass through unconsumed. The 
 - **Interface still needed from the Gameplay Engineer (OI-16):** a `Health` hook for `on_hurt`
   (e.g. a `damage_modifier: Callable`) and a `player_changed` signal for the UI. Everything else this section uses
   (`set_speed`, the regen setters, `dash(angle)`, the script/engine invulnerability layers) **exists on `main`** (PR #4).
+
+## Ability hooks
+
+Ability files script the player's abilities, not shots ([`../design/ability-scripting.md`](../design/ability-scripting.md)). This build has the **Dash** slot; Move and Utility come later.
+
+- **Files.** The Dash slot equips one file from the player's `abilities/` folder (next to `shots/`). A fresh save gets `abilities/dash.lua`, a copy of the bundled default (`scripting/abilities/default_dash.lua.txt`), which is today's engine dash. The in-game editor lists it in the file picker as *Dash: abilities/dash.lua*; saving there writes the file and reloads the Dash slot. On PC an outside edit to the equipped file reloads it too.
+- **Shape.** Same as a weapon file: the chunk returns a table. `name` is shown in the editor. `cooldown` (seconds, clamped to `[0.05, 30]`) is the Dash button's cooldown for this file; leave it out to use the engine's dash cooldown (1.5 s).
+
+```lua
+return {
+  name = "Dash",
+  -- cooldown = 1.5,
+  on_dash = function(ctx, dir)
+    -- world.time_stop(1.0)   -- once the world API lands
+    return player:dash(math.atan(dir.y, dir.x))
+  end,
+}
+```
+
+### `on_dash(ctx, dir)`
+
+- Runs when the Dash button is pressed (or a buffered press fires) and the file's cooldown is over. Input, the press buffer, death and that cooldown stay in the engine.
+- It runs like `on_fire`: the same budget and guard (instructions, wall clock, memory), coroutines inside it work the same way, and `ctx` has the same fields, except that `ctx.pos` / `ctx.x` / `ctx.y` are the player's position (not the muzzle) and the trigger fields are `false` / `0`. `dir` is a unit `{x, y}`: the move direction normalized (a half-tilted stick still gives length 1), or the aim direction when standing still, as the engine dash does.
+- **Return value.** `nil` (no `return`) or any value other than `false` counts as a dash: the file's cooldown starts. `false` means "no dash happened": no cooldown, and a buffered press keeps waiting. An error or a guard stop counts as `false`, shows in the editor's Problems list with its line (callback `on_dash`), and the hook rests for 0.25 s so a buffered press does not rerun a broken file every tick. Each distinct error is shown once (editor and console): the same message again is not repeated until you save the file or a different error comes in between.
+- **Yielding.** `coroutine.yield()` at the top level of `on_dash` (not inside a coroutine or `pcall` of your own) pauses the hook until the next physics tick. The dash counts as started (`true`) at the first yield, so the file's cooldown starts at the press, not when the run ends: a long run gets no extra cooldown on top. Each resumed tick gets a fresh budget, `player:dash()` and `spawn{}` keep working, and the hook pauses with the game. While it runs, a new press counts as `false` (the buffer keeps it). An error in a later tick is reported as above but cannot undo the dash. A hook still running after 600 ticks (10 s) is dropped with a warning; saving the file again, the player dying, or respawning drops it too (what it already did, such as a `player:dash()`, stands).
+- **`player:dash(angle)`** (radians, `0` = right) is the engine dash: the burst, the **0.2 s engine i-frames**, gated by the engine's own dash cooldown (1.5 s). It returns `true` if the dash started, `false` while dashing, on the engine cooldown, or dead (and for a NaN angle). It takes effect immediately, like the `PlayerState` setters, so an error later in the same `on_dash` does not undo it. It only works inside `on_dash`; elsewhere it raises an error. Call it with a colon.
+- **`player:dash_cooldown_left()`** is the seconds until the Dash slot may run `on_dash` again (`0` = ready): the file's `cooldown`, or the engine one without a file. It works anywhere in an ability file (inside `on_dash` it is `0`, since the cooldown starts when the hook returns) and raises an error in weapon files.
+- **Engine i-frames** come only from `player:dash()`, and only at the engine dash cooldown (design A3). A shorter `cooldown` lets `on_dash` run more often, but `player:dash()` returns `false` until the engine cooldown is over. Teleports and speed bursts grant no engine i-frames.
+- **`spawn{}`** works inside `on_dash` as in `on_fire` (same fields, same 256-per-call cap). The shots are plain player bullets from the player's bullet share; the file's `speed`, `lifetime`, `damage` and `radius` are their defaults, and they carry no callbacks.
+- **`state`** works as in *Weapon state*: copied on every save, one per Dash slot.
+- **Hot reload and errors.** A save that does not load keeps the last good version running. If no version has loaded yet (the file is missing or broken at start), the button is the engine's built-in dash until a save loads.
+- **Not yet:** the rest of the `player` proxy (*Writing player state*: `player.pos`, `player.vel`, ...), `world.time_stop` / `world.time_scale`, and `player.size`. They come with the next ability PRs; the default file marks where a time stop goes.
 
 ## Capabilities
 

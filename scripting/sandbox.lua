@@ -663,7 +663,7 @@ return function(host)
 	env.spawn = function(def)
 		local spawns = host._spawns
 		if type(spawns) ~= "table" or not spawns.open then
-			error("spawn: only works inside on_fire in this version", 2)
+			error("spawn: only works inside on_fire (or an ability's on_dash) in this version", 2)
 		end
 		if type(def) ~= "table" then
 			error("spawn: expected a table, like spawn { angle = ctx.aim }", 2)
@@ -693,6 +693,44 @@ return function(host)
 		spawns[spawns.n] = rec
 		return true
 	end
+
+	-- `player` (ability files). Only player:dash(angle) so far: the engine's
+	-- built-in dash, run right away by the host (ScriptHost.call_ability)
+	-- and only inside an ability hook such as on_dash. Elsewhere it raises.
+	-- The rest of the player proxy (api.md, Writing player state) comes later.
+	env.player = {
+		dash = function(self, angle)
+			if type(self) ~= "table" then
+				error("player:dash: call it with a colon, like player:dash(angle)", 2)
+			end
+			if type(angle) ~= "number" then
+				error("player:dash: expected an angle in radians", 2)
+			end
+			local f = host.player_dash
+			if f == nil then
+				error("player:dash: not available", 2)
+			end
+			local r = f(angle)
+			if type(r) == "string" then
+				error(r, 2)
+			end
+			return r == true
+		end,
+		dash_cooldown_left = function(self)
+			if type(self) ~= "table" then
+				error("player:dash_cooldown_left: call it with a colon, like player:dash_cooldown_left()", 2)
+			end
+			local f = host.player_cooldown_left
+			if f == nil then
+				error("player:dash_cooldown_left: not available", 2)
+			end
+			local r = f()
+			if type(r) == "string" then
+				error(r, 2)
+			end
+			return r
+		end,
+	}
 
 	-- Host code, called from GDScript outside the watchdog: it must not reach
 	-- anything a script can replace (see math_cos / math_sin above).

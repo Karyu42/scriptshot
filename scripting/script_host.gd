@@ -241,7 +241,7 @@ return function(t)
 	for _, k in ipairs({
 		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
 		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired", "_spawns", "make_ctx",
-		"sense_set", "sense_sync", "_sense_notes",
+		"sense_set", "sense_sync", "_sense_notes", "player_dash", "player_cooldown_left",
 	}) do
 		rawset(t, k, nil)
 	end
@@ -258,13 +258,19 @@ const SANDBOX_PATH := "res://scripting/sandbox.lua"
 const STATE_CODEC_PATH := "res://scripting/state_codec.lua"
 ## Caps on one `state` copy between versions. Past one of them the rest is
 ## dropped with a warning, so the copy is a bounded amount of host work
-## (well inside one frame) whatever the script stored. Depth counts tables:
+## whatever the script stored: at the caps, a save (copy out, copy in, and the
+## check for the next copy) costs roughly one frame. Depth counts tables:
 ## `state` itself is 1.
 const STATE_MAX_DEPTH := 32
 ## Key/value pairs looked at, dropped ones included.
 const STATE_MAX_ENTRIES := 8192
 ## Encoded size: about the string bytes plus a few per entry.
 const STATE_MAX_BYTES := 256 * 1024
+## ScriptWarnings key for the reload after a state rotation.
+const ROTATION_STATE_WARNING_KEY := "ScriptHost.rotation_state_copy"
+## How state_codec.lua words a note about the next copy (encode with `ahead`).
+const STATE_AHEAD_DROPPED := "will not be copied by the next save"
+const STATE_AHEAD_CUT := "will be cut there by the next save"
 const LIBS := (
 	LuaState.LUA_BASE
 	| LuaState.LUA_COROUTINE
@@ -470,6 +476,16 @@ var _sense_sync: LuaFunction
 var _sense_meta: Array = []
 var _sense_notes: LuaTable
 var _sense_notes_seen := 0
+## Set only while call_ability runs: what Lua `player:dash(angle)` calls
+## (LuaDashAbility passes the player's built-in dash). Empty otherwise, so
+## the call errors outside an ability hook.
+var _player_dash := Callable()
+## Set by an ability adapter: () -> float, the Dash slot's cooldown left.
+## Lua player:dash_cooldown_left() reads it anywhere in that host's files;
+## other hosts leave it unset and the call raises an error.
+var player_cooldown_left := Callable()
+## An ability hook that yielded (call_ability), resumed by resume_ability().
+var _ability_co: LuaCoroutine = null
 
 
 class RunResult:
@@ -488,6 +504,9 @@ class RunResult:
 	## Non-fatal notes from the load (a `state` copy that dropped or cut
 	## something). Only set on a load that went through.
 	var warnings := PackedStringArray()
+	## call_ability / resume_ability only: the hook yielded and is waiting to
+	## be resumed on a later tick (ok is true, value is null).
+	var suspended := false
 
 
 ## One Lua state that has already stopped three times, plus the tables and
@@ -532,6 +551,8 @@ func _open_state() -> void:
 	_host.set("_lock", Callable(self, "_lua_print"))
 	_host.set("reg_thread", Callable(self, "_lua_reg_thread"))
 	_host.set("dead", Callable(self, "_lua_dead"))
+	_host.set("player_dash", Callable(self, "_lua_player_dash"))
+	_host.set("player_cooldown_left", Callable(self, "_lua_player_cooldown_left"))
 	_host.set("batch_token", -1)
 	var buf := _state.create_table()
 	buf.set("n", 0)
@@ -636,6 +657,7 @@ func _capture_debug() -> void:
 func _rotate_state_if_needed() -> void:
 	if _closed or _parked.size() < 3 or _source.is_empty():
 		return
+	cancel_ability()
 	var retired := RetiredState.new()
 	retired.state = _state
 	retired.host_table = _host
@@ -674,7 +696,15 @@ func _rotate_state_if_needed() -> void:
 	if _ready:
 		if had_fresh:
 			snapshot_globals()
-		load_string(source, chunk, had_fresh, carried)
+		# The file's top level runs again here, as on a save (a counter it
+		# bumps at the top level counts this), and `state` is copied the same
+		# way. Nobody holds this load's result, so its copy notes go to
+		# ScriptWarnings instead of the editor's save problems.
+		var reloaded := load_string(source, chunk, had_fresh, carried)
+		for w: String in reloaded.warnings:
+			ScriptWarnings.warn(ROTATION_STATE_WARNING_KEY, "%s: restarted after guard stops: %s" % [chunk, w])
+		if not reloaded.ok:
+			ScriptWarnings.warn(ROTATION_STATE_WARNING_KEY, "%s: restarted after guard stops but did not load: %s" % [chunk, reloaded.error])
 
 
 func _pin() -> void:
@@ -794,6 +824,7 @@ func _release_retired(retired: RetiredState) -> void:
 
 
 func _release_current() -> void:
+	cancel_ability()
 	var threads: Array[LuaThread] = []
 	threads.assign(_parked)
 	for i in _threads.size():
@@ -1083,8 +1114,28 @@ func load_string(code: String, chunk_name: String = "script.lua", fresh_env: boo
 		env.rawset("state", prev_state)
 	prev_state = null
 	if result.ok:
+		if _env == env:
+			_append_ahead_warnings(warnings)
 		result.warnings = warnings
 	return result
+
+
+## Notes, on the save that adopts a version, what its `state` holds that the
+## next copy will drop (a function its top level stored, say), so the warning
+## does not wait for the next save. A note the copy into this version already
+## made for the same place is not repeated.
+func _append_ahead_warnings(warnings: PackedStringArray) -> void:
+	if _closed or _in_lua or _state_encode == null or _env == null:
+		return
+	var v: Variant = _state_encode.invoke(_env, true)
+	if not v is String:
+		return
+	@warning_ignore("unsafe_cast")
+	var blob := v as String
+	for w: String in state_warnings(blob):
+		var as_done := w.replace(STATE_AHEAD_DROPPED, "was not copied").replace(STATE_AHEAD_CUT, "was cut there")
+		if not warnings.has(as_done):
+			warnings.append(w)
 
 
 func _load_into_env(code: String, chunk_name: String, env: LuaTable) -> RunResult:
@@ -1311,6 +1362,112 @@ func call_fire(context: ShotContext, dt: float = 1.0 / 60.0) -> RunResult:
 	return result
 
 
+## Calls an ability hook, `name(ctx, dir)` (the Dash slot's on_dash), under
+## the same budget as on_fire and with the same `ctx` (its `pos` is the
+## player's position here, not the muzzle) and spawn{} records. `dir` is a
+## plain {x, y} table. While it runs, Lua `player:dash(angle)` calls
+## `player_dash` (angle in radians -> bool) right away, like the PlayerState
+## setters; nothing else reaches the engine. On a clean return `value` is
+## what the hook returned (a bool, or null for nil; tables and functions are
+## dropped). On an error or a stop nothing is spawned.
+func call_ability(name: String, context: ShotContext, dir: Vector2, player_dash: Callable, dt: float = 1.0 / 60.0) -> RunResult:
+	if _closed:
+		return _fail("script host shut down", name)
+	_rotate_state_if_needed()
+	_clear_pending()
+	if not _ready:
+		return _fail(_init_error, name)
+	if not _callbacks.has(name):
+		var missing := RunResult.new()
+		missing.ok = true
+		missing.chunk_name = name
+		return missing
+	var fn: Variant = _callbacks[name]
+	var maker: Variant = _host.get("make_ctx")
+	if not fn is LuaFunction or not maker is LuaFunction:
+		return _fail("%s is not a function" % name, name)
+	_sync_senses()
+	var p := context.muzzle_position
+	var ctx_v: Variant = _as_function(maker).invoke(
+		p.x, p.y, context.aim_angle, context.time, context.shot_index,
+		context.trigger_pressed, context.trigger_just_pressed, context.trigger_just_released,
+		context.trigger_held_time, dt, FIRE_SPAWN_CAP
+	)
+	if not ctx_v is LuaTable:
+		return _fail(_lua_error_message(ctx_v) if ctx_v is LuaError else "make_ctx did not return a table", name)
+	var dir_t := _state.create_table()
+	dir_t.set("x", dir.x)
+	dir_t.set("y", dir.y)
+	cancel_ability()
+	_player_dash = player_dash
+	var result := _run(_call, [fn, ctx_v, dir_t], false, true)
+	_player_dash = Callable()
+	_note_sense_notes()
+	ctx_v = null
+	dir_t = null
+	return _end_ability(result, name)
+
+
+## True while an ability hook is suspended (it yielded) and waits for
+## resume_ability().
+func ability_pending() -> bool:
+	return _ability_co != null
+
+
+## Resumes the suspended ability hook for one more slice with a fresh budget
+## (one call per tick). Same result rules as call_ability; spawn{} works in
+## every slice. ok with nothing to do when no hook is suspended.
+func resume_ability(name: String, player_dash: Callable) -> RunResult:
+	if _closed:
+		_ability_co = null
+		return _fail("script host shut down", name)
+	if _ability_co == null or _host == null:
+		var idle := RunResult.new()
+		idle.ok = true
+		idle.chunk_name = name
+		return idle
+	_clear_pending()
+	var spawns_v: Variant = _host.get("_spawns")
+	if spawns_v is LuaTable:
+		var sp := _as_table(spawns_v)
+		sp.set("n", 0)
+		sp.set("dropped", 0)
+		sp.set("open", true)
+	_sync_senses()
+	var co := _ability_co
+	_ability_co = null
+	_player_dash = player_dash
+	var result := _resume_run(co, true)
+	_player_dash = Callable()
+	_note_sense_notes()
+	return _end_ability(result, name)
+
+
+## Drops a suspended ability hook without running it again (a new dash, a
+## reload). Its coroutine stays with the state like other kept threads.
+func cancel_ability() -> void:
+	if _ability_co == null:
+		return
+	if not _value_threads.has(_ability_co):
+		_value_threads.append(_ability_co)
+	_ability_co = null
+
+
+func _end_ability(result: RunResult, name: String) -> RunResult:
+	result.chunk_name = name
+	var spawns_v: Variant = _host.get("_spawns") if _host != null else null
+	if spawns_v is LuaTable:
+		_as_table(spawns_v).set("open", false)
+		if result.ok:
+			_take_spawns(_as_table(spawns_v))
+	if not result.ok:
+		_clear_pending()
+		result.value = null
+	elif result.value is Object:
+		result.value = null
+	return result
+
+
 func take_pending_spawns() -> Array[Dictionary]:
 	var out: Array[Dictionary] = []
 	out.assign(_pending_spawns)
@@ -1477,22 +1634,32 @@ func _run_script(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunR
 ## `keep_value` is true only for runs whose returned table the host keeps (the
 ## weapon and the names list). Other runs drop a returned table or function.
 ## Script code runs through _call (see _run_script); _names_of is host code.
-func _run(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
+## `suspend_ok` (ability hooks): a yield that the watchdog did not cause is
+## not resumed here and is not an error; the coroutine is kept on
+## _ability_co for resume_ability() and the result is `suspended`.
+func _run(fn: LuaFunction, args: Array, keep_value: bool = false, suspend_ok: bool = false) -> RunResult:
 	if _closed:
 		return _fail("script host shut down", "")
+	var co: LuaCoroutine = LuaCoroutine.create(fn)
+	return _resume_run(co, suspend_ok, args, keep_value)
+
+
+func _resume_run(co: LuaCoroutine, suspend_ok: bool, args: Array = [], keep_value: bool = false) -> RunResult:
 	var result := RunResult.new()
 	_reset_watchdog()
 	_reset_print_buffer()
-	var co: LuaCoroutine = LuaCoroutine.create(fn)
 	_arm(co)
 	_in_lua = true
 	var resumed: Variant = co.resumev(args)
 	var extra := 0
-	while co.status == LuaThread.STATUS_YIELD and not _killed and not _shutdown_after and extra < MAX_EXTRA_RESUMES:
+	while not suspend_ok and co.status == LuaThread.STATUS_YIELD and not _killed and not _shutdown_after and extra < MAX_EXTRA_RESUMES:
 		resumed = co.resumev([])
 		extra += 1
 	var yielded := co.status == LuaThread.STATUS_YIELD
-	if yielded:
+	var suspended := yielded and suspend_ok and not _killed and not _shutdown_after and not _closed
+	if suspended:
+		_ability_co = co
+	elif yielded:
 		_parked.append(co)
 	_in_lua = false
 	# lua-gdextension 0.8.2 ties each LuaTable / LuaFunction wrapper to the Lua
@@ -1519,6 +1686,9 @@ func _run(fn: LuaFunction, args: Array, keep_value: bool = false) -> RunResult:
 		result.stopped = _kill_reason
 		result.stop_line = _kill_line
 		result.error = "script timeout (%s)" % _kill_reason
+	elif suspended:
+		result.ok = true
+		result.suspended = true
 	elif yielded:
 		result.error = "script yielded (wait() is not in this slice)"
 	elif resumed is LuaError:
@@ -1875,6 +2045,34 @@ func _lua_set_velocity(x: Variant, y: Variant) -> Variant:
 	_pending_velocity_set = true
 	_pending_velocity = Vector2(vx, _number)
 	return null
+
+
+## Lua `player:dash(angle)` (sandbox.lua). Returns the built-in dash's bool,
+## or an error string the Lua side raises. A NaN or inf angle is false.
+func _lua_player_dash(angle: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	if not _player_dash.is_valid():
+		return "player:dash: only works inside an ability's on_dash in this version"
+	if not _read_number(angle):
+		return "player:dash: expected an angle in radians"
+	if not is_finite(_number):
+		return false
+	var started: Variant = _player_dash.call(_number)
+	return started is bool and started
+
+
+func _lua_player_cooldown_left() -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	if not player_cooldown_left.is_valid():
+		return "player:dash_cooldown_left: only works in an ability file in this version"
+	var left: Variant = player_cooldown_left.call()
+	if _read_number(left) and is_finite(_number) and _number > 0.0:
+		return _number
+	return 0.0
 
 
 func _token_matches(token: Variant) -> bool:

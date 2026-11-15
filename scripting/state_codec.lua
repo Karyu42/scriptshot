@@ -50,7 +50,9 @@ return function(MAX_DEPTH, MAX_ENTRIES, MAX_BYTES)
 		return concat(parts)
 	end
 
-	local function encode(env)
+	-- `ahead`: the notes describe what the next copy will drop (a check right
+	-- after a load) instead of what this copy dropped.
+	local function encode(env, ahead)
 		if type(env) ~= "table" then
 			return ""
 		end
@@ -210,18 +212,20 @@ return function(MAX_DEPTH, MAX_ENTRIES, MAX_BYTES)
 			local where, times = wwhere[kind], wcount[kind]
 			local more = times > 1 and format(" (%d places)", times) or ""
 			local msg
+			local dropped = ahead and "will not be copied by the next save" or "was not copied"
+			local cut = ahead and "will be cut there by the next save" or "was cut there"
 			if kind == "function" or kind == "userdata" or kind == "thread" then
-				msg = format("%s is a %s; state keeps only plain data (nil, booleans, numbers, strings, tables), so it was not copied%s", where, kind, more)
+				msg = format("%s is a %s; state keeps only plain data (nil, booleans, numbers, strings, tables), so it %s%s", where, kind, dropped, more)
 			elseif kind == "key" then
-				msg = format("%s has a key that is not a string, number or boolean; that entry was not copied%s", where, more)
+				msg = format("%s has a key that is not a string, number or boolean; that entry %s%s", where, dropped, more)
 			elseif kind == "cycle" then
-				msg = format("%s points back to a table that contains it; the loop was cut there%s", where, more)
+				msg = format("%s points back to a table that contains it; the loop %s%s", where, cut, more)
 			elseif kind == "depth" then
-				msg = format("%s is nested more than %d tables deep; the deeper part was not copied%s", where, MAX_DEPTH, more)
+				msg = format("%s is nested more than %d tables deep; the deeper part %s%s", where, MAX_DEPTH, dropped, more)
 			elseif kind == "entries" then
-				msg = format("state has more than %d entries; the rest was not copied (from %s on)", MAX_ENTRIES, where)
+				msg = format("state has more than %d entries; the rest %s (from %s on)", MAX_ENTRIES, dropped, where)
 			else
-				msg = format("state is larger than %d KiB; the rest was not copied (from %s on)", MAX_BYTES // 1024, where)
+				msg = format("state is larger than %d KiB; the rest %s (from %s on)", MAX_BYTES // 1024, dropped, where)
 			end
 			w[#w + 1] = msg
 		end
