@@ -1233,37 +1233,43 @@ func _invoke_batch_hook(b: BulletBehavior, view: BatchView) -> void:
 		commit_batch(view)
 
 
-## One batch callback per distinct hook dt so view.dt matches every row.
+## One batch callback per time-scale class so view.dt matches every row.
+## Class dts are computed once; rows are tagged 0/1/2 (player / enemy / Null).
 func _run_scaled_batch_hook(b: BulletBehavior, view: BatchView, delta: float) -> void:
-	var dts := PackedFloat32Array()
-	dts.resize(view.n)
-	var unique: Array[float] = []
+	var scale := TimeControl.world_scale() if TimeControl != null else 1.0
+	var player_dt := delta
+	var enemy_dt := delta * scale
+	var null_dt := delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
+	var classes := PackedInt32Array()
+	classes.resize(view.n)
+	var seen := 0
+	var player_bit := Layers.PLAYER
 	for i in view.n:
-		var dt := _batch_row_dt(view, i, delta)
-		dts[i] = dt
-		var seen := false
-		for existing in unique:
-			if is_equal_approx(existing, dt):
-				seen = true
-				break
-		if not seen:
-			unique.append(dt)
-	if unique.size() <= 1:
-		if not unique.is_empty():
-			view.dt = unique[0]
+		var c := 0
+		if (view.owner[i] & player_bit) == 0:
+			c = 2 if _id_is_null_attack(view, i) else 1
+		classes[i] = c
+		seen |= 1 << c
+	if seen == 1 or seen == 2 or seen == 4:
+		view.dt = _dt_for_time_class(classes[0], player_dt, enemy_dt, null_dt)
 		_invoke_batch_hook(b, view)
 		return
-	for scale_dt in unique:
-		var sub := _slice_batch_view(view, dts, scale_dt)
+	for c in 3:
+		if (seen & (1 << c)) == 0:
+			continue
+		var sub := _slice_batch_view_by_class(view, classes, c)
 		if sub.n == 0:
 			continue
-		sub.dt = scale_dt
+		sub.dt = _dt_for_time_class(c, player_dt, enemy_dt, null_dt)
 		_invoke_batch_hook(b, sub)
 
 
-func _batch_row_dt(view: BatchView, i: int, delta: float) -> float:
-	var player_shot := BulletPool.owner_slot(view.owner[i]) == BulletPool.OWNER_PLAYER
-	return TimeControl.bullet_delta(delta, player_shot, _id_is_null_attack(view, i))
+func _dt_for_time_class(c: int, player_dt: float, enemy_dt: float, null_dt: float) -> float:
+	if c == 0:
+		return player_dt
+	if c == 2:
+		return null_dt
+	return enemy_dt
 
 
 func _id_is_null_attack(view: BatchView, i: int) -> bool:
@@ -1276,11 +1282,11 @@ func _id_is_null_attack(view: BatchView, i: int) -> bool:
 	return pool.pierces_script_invuln[slot] != 0
 
 
-func _slice_batch_view(view: BatchView, dts: PackedFloat32Array, want: float) -> BatchView:
+func _slice_batch_view_by_class(view: BatchView, classes: PackedInt32Array, want: int) -> BatchView:
 	var sub := BatchView.new()
 	var native_kept := 0
 	for i in view.n:
-		if not is_equal_approx(dts[i], want):
+		if classes[i] != want:
 			continue
 		sub.id.append(view.id[i])
 		sub.px.append(view.px[i])

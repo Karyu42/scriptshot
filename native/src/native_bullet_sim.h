@@ -319,7 +319,30 @@ private:
 	float max_speed = 0.0f;
 	float world_time_scale = 1.0f;
 	float null_time_floor = 0.5f;
-	double bullet_time_delta(int i, double p_delta) const;
+	// Class dts are computed once per integrate/step; this pick is a layer bit
+	// test, not a per-bullet scale multiply or virtual call.
+	inline double class_time_delta(int i, double player_dt, double enemy_dt, double null_dt) const {
+		if ((owner_layer[i] & LAYER_PLAYER) != 0) {
+			return player_dt;
+		}
+		if ((source_flags[i] & 1) != 0) {
+			return null_dt;
+		}
+		return enemy_dt;
+	}
+	inline double bullet_time_delta(int i, double p_delta) const {
+		if (world_time_scale >= 1.0f) {
+			return p_delta;
+		}
+		float s = world_time_scale;
+		if ((source_flags[i] & 1) != 0 && s < null_time_floor) {
+			s = null_time_floor;
+		}
+		if ((owner_layer[i] & LAYER_PLAYER) != 0) {
+			return p_delta;
+		}
+		return p_delta * (double)s;
+	}
 	float inv_cell = 1.0f / 64.0f;
 	int cols = 1, rows = 1;
 
