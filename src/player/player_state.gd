@@ -217,14 +217,15 @@ func get_aim_direction() -> Vector2:
 
 # --- dash --------------------------------------------------------------------
 
-## The same action as the dash button, along `angle` (radians, 0 = right): starts a
-## dash and returns true, or returns false while dashing, on cooldown or dead. It
-## obeys the button's rules (cooldown, invulnerability) and is not buffered; a
-## script dashing is not a state write. NaN angle: false.
+## The engine dash along `angle` (radians, 0 = right): motion, engine cooldown,
+## and engine i-frames. Returns false while dashing, on the engine cooldown, or
+## dead. A scripted dash ability calls this (not try_dash) so it cannot recurse
+## and cannot grant i-frames faster than dash_cooldown. Not buffered; not a
+## state write. NaN angle: false.
 func dash(angle: float) -> bool:
 	if not _ok() or not is_finite(angle):
 		return false
-	return _player.try_dash(Vector2.from_angle(angle))
+	return _player.perform_builtin_dash(Vector2.from_angle(angle))
 
 
 func is_dashing() -> bool:
