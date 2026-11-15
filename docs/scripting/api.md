@@ -938,7 +938,7 @@ return {
   name = "Dash",
   -- cooldown = 1.5,
   on_dash = function(ctx, dir)
-    -- world.time_stop(1.0)   -- once the world API lands
+    -- world.time_stop(1.0)   -- freeze the world for 1 s (see *Player size and world time*)
     return player:dash(math.atan(dir.y, dir.x))
   end,
 }
@@ -956,7 +956,60 @@ return {
 - **`spawn{}`** works inside `on_dash` as in `on_fire` (same fields, same 256-per-call cap). The shots are plain player bullets from the player's bullet share; the file's `speed`, `lifetime`, `damage` and `radius` are their defaults, and they carry no callbacks.
 - **`state`** works as in *Weapon state*: copied on every save, one per Dash slot.
 - **Hot reload and errors.** A save that does not load keeps the last good version running. If no version has loaded yet (the file is missing or broken at start), the button is the engine's built-in dash until a save loads.
-- **Not yet:** the rest of the `player` proxy (*Writing player state*: `player.pos`, `player.vel`, ...), `world.time_stop` / `world.time_scale`, and `player.size`. They come with the next ability PRs; the default file marks where a time stop goes.
+- **Starters.** The editor's *Insert starter…* menu has *Dash: Dash (built-in)* and *Dash: Time-stop dash* (`scripting/abilities/time_stop_dash.lua.txt`: `world.time_stop(1.0)` plus `player:dash()`, commented for a first-time coder). Picking one opens the Dash file and puts the starter in it; save to use it.
+- **Not yet:** the rest of the `player` proxy (*Writing player state*: `player.pos`, `player.vel`, ...). `player.size` and `world.time_*` are below.
+
+## Player size and world time
+
+Weapon files and ability files have the same `player.size` and `world` calls, and they act on the one player and the one world clock. They are safe in any callback, bullet callbacks included. The numbers are Game Designer calls (main mode; RPG mode has its own caps).
+
+### `player.size`
+
+```lua
+-- Tiny ship: a smaller body is harder to hit.
+player.size = 0.4      -- 1 is normal size; 0.25 is the smallest, 4 the biggest
+print(player.size)     -- 0.4 (or less, if a wall was in the way of growing)
+```
+
+- **Reading** gives the size in effect now (1 by default).
+- **Writing** asks the engine for that size (`PlayerState.set_size`). The engine applies it and returns the size it actually used, and a later read gives that value back.
+- **Range.** The size is clamped to **0.25 to 4.0**. `math.huge` becomes 4 and `-math.huge` becomes 0.25.
+- **Bad values.** NaN is ignored with a warning. A value that isn't a number is a Lua error.
+- **What scales.** One body scales together: the hurtbox, the sprite and the wall-collision radius. The muzzle offset scales too, so your shots always start outside your body. The pickup radius is its base value plus the change in body radius.
+- **What doesn't scale.** Move speed and the engine dash distance stay the same at every size.
+- **Growing into a wall.** The engine pushes you out to a free spot. If there's no free spot within 64 px, you grow only as far as fits, and that smaller size is what `player.size` reads back. Being too big for a door is not a soft-lock: edit the script.
+- **One change per tick.** The engine applies at most one size write per physics tick. If you write again in the same tick, that write is held and applied on a later tick, and the last held write wins. Until then, reads give the size in effect.
+  - A write from a bullet callback (`on_hit`, `on_death`, `on_tick`, `on_batch`) is always held for a later tick, so your body never changes size while collisions are running.
+- **It sticks.** The size is saved, so it persists across a reload, a respawn and your next session. Write `player.size = 1` to go back to normal.
+- **Events.** A size change emits `PlayerState.script_wrote("size", old, new)`. No launch boss reacts to size.
+
+### `world.time_scale(scale, seconds)` and `world.time_stop(seconds)`
+
+```lua
+local ok, why, wait = world.time_stop(1.0)   -- same as world.time_scale(0, 1.0)
+if not ok then
+  -- why is "active", "cooldown" or "invalid"; wait is seconds until a call can work
+end
+```
+
+- **What slows.** Enemies, enemy bullets, telegraphs, boss phase timers, spawn and Herald timers, and habituation decay all run at `scale`.
+- **What doesn't.** Your ship's movement, regeneration and engine i-frames run at normal speed. **Your own shots keep moving** and deal damage normally: stop time, unload, and watch the wall land.
+- **No protection.** **A time stop grants no i-frames.** Only `player:dash()` does (A3).
+- **Null attacks.** **Null attacks still move at least half speed.** These are the white-violet attacks that pierce script invulnerability: bullets with `null_pierce` (`pierces_script_invuln`) and their telegraphs, the Null-shot affix, and legendary Null rings. They move at `max(scale, 0.5)`. The bodies of Null enemies and casters still freeze.
+- **Bosses that ignore it.** The Equalizer and the Eater don't react to a time stop. The Rift reads only your position.
+- **Scale.** Clamped to **0 to 1**, so there's no speed-up. `world.time_stop(s)` is scale 0, a full freeze.
+- **Duration.** At most **3 s** per call. A longer value, `math.huge` included, becomes 3 s and the call **still returns `true`**, just as `player.size` clamps. The engine clamps it too; the Lua clamp is a second check.
+- **Bad numbers.** A NaN scale, a NaN duration, or a duration of 0 or less (`-math.huge` included) returns `false, "invalid"` plus the wait, and changes nothing. Only an argument that isn't a number at all (a string, a table, `nil`, or a missing duration) raises a Lua error.
+- **From a bullet callback.** A call from `on_hit`, `on_death`, `on_tick` or `on_batch` is decided right away, so you get `ok` or the refusal immediately. The new scale applies from the **next** integration step: the step that is running finishes at the speed it started with and is never re-simulated. A later bullet callback in the same step still gets that step's `dt`, and everything slows from the next step on.
+- **Cooldown.** The cooldown starts when the effect ends and lasts **1.5 × the time it ran, at least 1 s**. A full 3 s stop rests for 4.5 s, which keeps the world slowed at most 40% of the time.
+- **Refusals.** A call while an effect runs or while the cooldown runs returns `false, "active"` or `false, "cooldown"` and the wait. It never extends or stacks an effect.
+  - The wait is `retry_in`, the seconds until a call can work. While an effect runs, that's what is left of it plus the cooldown it will leave behind.
+- **Clocks.** Both timers run on real time and pause while the game is paused (menus, the victory card). The victory card's freeze always wins over a script scale.
+- **Ending early.** The effect ends at once, with no cooldown, on player death, on respawn, on a boss kill, and when a run starts or ends.
+- **There is no cancel.** Scripts can't end an effect early, because that would also skip its cooldown.
+- **Read-only helpers.** `world.time_scale_now()` returns the scale now: 1 when nothing runs, 0 during a full stop. `world.time_retry_in()` returns the seconds until a call can work (0 = now).
+- **In the Dash slot.** Only the time stop's own cooldown applies to the stop. Inside `on_dash`, `world.time_stop` returns `false` while it rests, and the dash still counts. "Dash = time stop" therefore runs at whichever of the two cooldowns is longer; neither adds to the other.
+- **Events.** Each started effect emits `TimeControl.script_time_scaled(scale, seconds)`.
 
 ## Capabilities
 

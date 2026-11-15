@@ -1,0 +1,36 @@
+-- Time-stop dash: pressing Dash freezes the world for a moment, and you
+-- dash too.
+--
+-- How it works:
+--   * on_dash runs every time you press the Dash button (when the button is
+--     ready again; see `cooldown` below).
+--   * world.time_stop(seconds) freezes enemies and their bullets. Your ship
+--     and your own shots keep moving, so you can fire into a frozen wall.
+--     It lasts at most 3 seconds. Afterwards it needs a rest of 1.5 times as
+--     long as it ran (at least 1 second) before it works again.
+--     While it rests it just returns false; nothing breaks.
+--   * player:dash(angle) is the normal dash: the quick burst and the short
+--     moment when bullets cannot hurt you. A time stop on its own does NOT
+--     protect you, so we dash as well.
+--   * Bosses' white-violet "Null" attacks still move at half speed during a
+--     stop. Keep dodging those.
+
+return {
+  name = "Time-stop dash",
+
+  -- Seconds before Dash can be pressed again. Try 2 or 3 to match the
+  -- time stop's own rest.
+  cooldown = 1.5,
+
+  on_dash = function(ctx, dir)
+    -- Freeze the world for 1 second. `stopped` is true if it worked,
+    -- false if the time stop is still resting (`wait` says for how long).
+    -- (`why` is "cooldown" or "active"; you could show `wait` somewhere.)
+    local stopped, why, wait = world.time_stop(1.0)
+
+    -- Dash the way you are moving. math.atan turns a direction into an angle.
+    player:dash(math.atan(dir.y, dir.x))
+
+    -- Returning nothing counts as a dash, so the Dash cooldown starts.
+  end,
+}

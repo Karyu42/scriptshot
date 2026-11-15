@@ -76,6 +76,8 @@ func _init() -> void:
 func setup(manager: BulletManager, target_player: Player) -> void:
 	weapon = LuaShot.new(manager)
 	player = target_player
+	# player.size and world.* in weapon files act on this player.
+	ScriptWorld.bind_player(target_player)
 
 
 ## Seeds default.lua on the first run and equips the saved file.

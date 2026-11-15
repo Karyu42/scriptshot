@@ -119,3 +119,18 @@ func test_switching_back_to_a_weapon_file_saves_to_shots() -> void:
 	assert_true(_panel.request_save())
 	assert_eq(ScriptLibrary.read(ScriptLibrary.DEFAULT_FILE), "return { name = 'W' }")
 	assert_ne(AbilityLibrary.read("dash.lua"), "return { name = 'W' }")
+
+
+func test_the_starter_menu_offers_the_dash_starters_and_saving_one_equips_it() -> void:
+	_panel.open()
+	var labels := _panel.starter_labels()
+	assert_true(labels.has("Dash: Time-stop dash"), str(labels))
+	assert_true(labels.has("Dash: Dash (built-in)"))
+	assert_true(_panel.load_starter("dash:time_stop_dash"))
+	assert_true(_panel.editing_dash, "the Dash file is opened first")
+	assert_string_contains(_panel.text(), "world.time_stop(")
+	_panel.request_save()
+	_abilities.flush_pending()
+	assert_eq(_abilities.ability.title, "Time-stop dash")
+	assert_string_contains(AbilityLibrary.read("dash.lua"), "world.time_stop(")
+	assert_false(_panel.load_starter("dash:nope"))

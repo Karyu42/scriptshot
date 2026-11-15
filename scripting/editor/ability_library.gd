@@ -79,6 +79,23 @@ static func default_dash_source() -> String:
 	return FileAccess.get_file_as_string(path)
 
 
+## Bundled Dash starters: id (file scripting/abilities/<id>.lua.txt) -> title.
+const STARTERS: Dictionary[String, String] = {
+	"default_dash": "Dash (built-in)",
+	"time_stop_dash": "Time-stop dash",
+}
+
+
+## A bundled Dash starter's text ("" when the id is unknown or missing).
+static func starter_source(id: String) -> String:
+	if not STARTERS.has(id):
+		return ""
+	var path := BUNDLED_DIR.path_join(id + ScriptLibrary.BUNDLED_EXT)
+	if not FileAccess.file_exists(path):
+		return ""
+	return FileAccess.get_file_as_string(path)
+
+
 ## First run only: writes dash.lua from the bundled default. A player who
 ## deletes it later gets the engine dash, not a fresh copy. True when written.
 static func seed_default() -> bool:

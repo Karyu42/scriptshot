@@ -698,7 +698,7 @@ return function(host)
 	-- built-in dash, run right away by the host (ScriptHost.call_ability)
 	-- and only inside an ability hook such as on_dash. Elsewhere it raises.
 	-- The rest of the player proxy (api.md, Writing player state) comes later.
-	env.player = {
+	local player_methods = {
 		dash = function(self, angle)
 			if type(self) ~= "table" then
 				error("player:dash: call it with a colon, like player:dash(angle)", 2)
@@ -731,6 +731,91 @@ return function(host)
 			return r
 		end,
 	}
+	-- `player` is a proxy: methods come from player_methods, `size` reads and
+	-- writes go to the host (PlayerState.set_size through ScriptWorld, one
+	-- engine call per physics tick). Shared by every env (it holds no data).
+	local function host_value(name, ...)
+		local f = host[name]
+		if f == nil then
+			error("player: not available", 3)
+		end
+		local r = f(...)
+		if type(r) == "string" then
+			error(r, 3)
+		end
+		return r
+	end
+	env.player = real_setmetatable({}, {
+		__index = function(_, k)
+			local m = player_methods[k]
+			if m ~= nil then
+				return m
+			end
+			if k == "size" then
+				return host_value("player_size_get")
+			end
+			return nil
+		end,
+		__newindex = function(_, k, v)
+			if k == "size" then
+				if type(v) ~= "number" then
+					error("player.size: expected a number (1 = normal size)", 2)
+				end
+				host_value("player_size_set", v)
+				return
+			end
+			error("player." .. tostring(k) .. " cannot be set in this version (only player.size)", 2)
+		end,
+		__metatable = false,
+	})
+
+	-- World time (TimeControl through ScriptWorld). Never extends or stacks a
+	-- stop, and there is no cancel: it would also clear the cooldown.
+	local s_match, s_tonumber = real.string.match, tonumber
+	local function time_request(scale, seconds, who)
+		if type(scale) ~= "number" then
+			error(who .. ": expected a scale from 0 to 1", 3)
+		end
+		if type(seconds) ~= "number" then
+			error(who .. ": expected a duration in seconds", 3)
+		end
+		local f = host.world_time
+		if f == nil then
+			error(who .. ": not available", 3)
+		end
+		local r = f(scale, seconds)
+		if type(r) ~= "string" then
+			error(who .. ": no answer", 3)
+		end
+		if r == "ok" then
+			return true
+		end
+		if s_match(r, "^!") then
+			error((s_match(r, "^!(.*)$")), 3)
+		end
+		local err, retry = s_match(r, "^(%a+) (%S+)$")
+		return false, err or "invalid", s_tonumber(retry) or 0
+	end
+	env.world = real_setmetatable({}, {
+		__index = {
+			time_scale = function(scale, seconds)
+				return time_request(scale, seconds, "world.time_scale")
+			end,
+			time_stop = function(seconds)
+				return time_request(0, seconds, "world.time_stop")
+			end,
+			time_scale_now = function()
+				return host_value("world_time_scale_now")
+			end,
+			time_retry_in = function()
+				return host_value("world_time_retry_in")
+			end,
+		},
+		__newindex = function()
+			error("world is read-only", 2)
+		end,
+		__metatable = false,
+	})
 
 	-- Host code, called from GDScript outside the watchdog: it must not reach
 	-- anything a script can replace (see math_cos / math_sin above).

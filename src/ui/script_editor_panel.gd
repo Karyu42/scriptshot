@@ -39,6 +39,8 @@ const PROMPT_SEC := 8.0
 const NEW_FILE_ITEM := "+ new file"
 ## File picker entry for the equipped Dash file ("Dash: abilities/dash.lua").
 const DASH_ITEM := "Dash: %s"
+## Starter ids for bundled Dash files (AbilityLibrary.STARTERS).
+const DASH_STARTER_PREFIX := "dash:"
 const STILL_DASH := "Still running the last good dash."
 const BUILTIN_DASH := "Using the built-in dash."
 ## How long a toast ("shots/foo.lua saved (not equipped)") stays up.
@@ -50,7 +52,7 @@ const LUA_KEYWORDS: PackedStringArray = [
 ]
 ## Globals of the shot API and the Lua library tables (docs/scripting/api.md).
 const API_GLOBALS: PackedStringArray = [
-	"sense", "spawn", "wait", "player", "ctx", "state", "vec2", "rad", "PI", "TAU", "reflect_bullet",
+	"sense", "spawn", "wait", "player", "world", "ctx", "state", "vec2", "rad", "PI", "TAU", "reflect_bullet",
 	"math", "string", "table", "utf8", "coroutine", "os", "print", "pairs", "ipairs", "type",
 	"tostring", "tonumber", "select", "error", "assert", "pcall", "xpcall", "setmetatable",
 	"getmetatable", "next", "rawget", "rawset", "rawlen", "rawequal", "load", "self",
@@ -60,7 +62,7 @@ const API_GLOBALS: PackedStringArray = [
 const API_MEMBERS: PackedStringArray = [
 	"name", "cooldown", "speed", "lifetime", "damage", "radius", "angle", "spin", "accel", "pos",
 	"on_fire", "on_spawn", "on_hit", "can_hit", "on_death", "on_despawn", "on_expire", "on_wall", "on_batch",
-	"on_tick", "on_dash", "dash", "aim", "aim_dir", "time", "shot_count", "pressed", "just_pressed", "just_released", "held_time",
+	"on_tick", "on_dash", "dash", "dash_cooldown_left", "size", "time_scale", "time_stop", "time_scale_now", "time_retry_in", "aim", "aim_dir", "time", "shot_count", "pressed", "just_pressed", "just_released", "held_time",
 	"id", "x", "y", "vx", "vy", "set_velocity", "spawn_child",
 	"n", "dt", "px", "py", "age", "pa", "pb", "owner", "kill", "teleport", "nearest_enemy", "enemies_in",
 	"kind", "alive",
@@ -450,6 +452,8 @@ func jump_to_line(line: int) -> void:
 ## Palette: puts starter `id` in the editor (one undo step; not saved). False
 ## when it is locked.
 func load_starter(id: String) -> bool:
+	if id.begins_with(DASH_STARTER_PREFIX):
+		return _load_dash_starter(id.trim_prefix(DASH_STARTER_PREFIX))
 	var s := ScriptLibrary.starter(id)
 	if s == null or not s.unlocked():
 		return false
@@ -458,6 +462,21 @@ func load_starter(id: String) -> bool:
 	# point at the wrong lines and linger in the Problems list.
 	load_problems.clear()
 	_status_text("Inserted %s. Save (Ctrl+S) to fire it." % s.title, COLOR_DIM)
+	_refresh_problems()
+	return true
+
+
+## A Dash starter goes into the Dash file's buffer (opened first); saving
+## runs it on the Dash button.
+func _load_dash_starter(id: String) -> bool:
+	var src := AbilityLibrary.starter_source(id)
+	if src == "" or abilities == null:
+		return false
+	if not editing_dash and not open_dash():
+		return false
+	set_text(src)
+	load_problems.clear()
+	_status_text("Inserted %s. Save (Ctrl+S) to dash with it." % AbilityLibrary.STARTERS[id], COLOR_DIM)
 	_refresh_problems()
 	return true
 
@@ -1249,6 +1268,10 @@ func _refresh_starters() -> void:
 		_starters.set_item_disabled(index, not s.unlocked())
 		_starters.set_item_tooltip(index, "" if s.unlocked() else "Unlocks with sense.%s" % s.lock_hint().trim_prefix("needs "))
 		_starter_ids.append(s.id)
+	if abilities != null:
+		for id: String in AbilityLibrary.STARTERS:
+			_starters.add_item(DASH_ITEM % AbilityLibrary.STARTERS[id])
+			_starter_ids.append(DASH_STARTER_PREFIX + id)
 	_starters.select(0)
 
 

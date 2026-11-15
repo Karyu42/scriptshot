@@ -57,6 +57,8 @@ func _exit_tree() -> void:
 func setup(target_player: Object) -> void:
 	player = target_player
 	ability.bind_player(target_player)
+	# player.size and world.* in every script file act on this player.
+	ScriptWorld.bind_player(target_player)
 	# A yielded on_dash does not outlive the life it started in.
 	for sig: String in ["died", "respawned"]:
 		if player != null and player.has_signal(sig):
@@ -160,6 +162,8 @@ func _physics_process(_delta: float) -> void:
 	if is_inside_tree() and get_tree().paused:
 		return
 	ability.tick()
+	# A player.size write held from an earlier tick lands now.
+	ScriptWorld.flush()
 
 
 func _process(_delta: float) -> void:

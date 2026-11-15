@@ -181,6 +181,20 @@ reloads it like `ShotScripts`, and gives the player back the built-in dash
 broken at start leaves the built-in dash in place. Player-facing rules:
 `docs/scripting/api.md`, *Ability hooks*.
 
+## `player.size` and `world.*` (`ScriptWorld`)
+
+`ScriptWorld` (static) is what every `ScriptHost` calls for `player.size` and
+`world.time_scale` / `time_stop` / `time_scale_now` / `time_retry_in`.
+`AbilityScripts.setup` and `ShotScripts.setup` bind the player. Size writes go
+to `PlayerState.set_size` at most once per physics tick; a second write in the
+same tick, or one from a bullet callback (`ScriptHost._in_bullet_hook`), is
+held and applied by `ScriptWorld.flush()`, which `AbilityScripts` calls every
+physics tick and every size read/write calls first. Time requests clamp the
+duration (INF too) to `TimeControl.MAX_STOP_SECONDS` and answer `ok, err,
+retry_in`; `retry_in` is `TimeControl.retry_in()`. Nothing
+binds `TimeControl.cancel()`. In Lua, `player` is a protected proxy (methods
+plus the `size` field) and `world` a read-only table, shared by every env.
+
 ## Hook cost
 
 The CI hooked tier is `./tools/run_benchmark.sh --bullets=5000,10000 --hooked=1.0`.

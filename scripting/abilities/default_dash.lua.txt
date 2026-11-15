@@ -10,9 +10,9 @@ return {
   -- dir is the way you are moving ({x, y}, length 1), or where you aim when
   -- standing still. Return false to say "no dash happened".
   on_dash = function(ctx, dir)
-    -- Abilities go here, before or after the dash. For example, once the
-    -- world API lands:
-    --   world.time_stop(1.0)
+    -- Abilities go here, before or after the dash. For example:
+    --   world.time_stop(1.0)   -- freeze enemies and their bullets for 1 s
+    -- (the "Time-stop dash" starter does exactly that).
 
     -- The built-in dash. Only player:dash() gives the 0.2 s invulnerability,
     -- and only when the game's own dash cooldown allows it.
