@@ -80,6 +80,120 @@ func test_grow_into_a_corridor_is_limited_to_what_fits() -> void:
 	assert_gt(applied, 1.0 - 0.0001)
 	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
 	assert_lt(body.radius, 20.0)
+	assert_almost_eq(player.global_position.x, 400.0, 0.05)
+	assert_almost_eq(player.global_position.y, 400.0, 0.05)
+
+
+func test_grow_against_a_thin_wall_does_not_cross_it() -> void:
+	# 28 px alcove: back wall 366-386, thin 4 px wall 414-418, player at 400
+	# (radius 13 just fits). Size 2 (radius 26) cannot fit here, but a free
+	# centre exists past the thin wall within 64 px. Push-out must not take it.
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(376, 400))
+	_wall(Vector2(4, 800), Vector2(416, 400))
+	await wait_physics_frames(2)
+	var start := player.global_position
+	var applied := player.state.set_size(2.0)
+	assert_lt(applied, 2.0, "no reachable free centre at size 2")
+	assert_gt(applied, 1.0 - 0.0001)
+	assert_lt(player.global_position.x, 414.0, "must stay on this side of the thin wall")
+	assert_almost_eq(player.global_position.x, start.x, 0.05)
+	assert_almost_eq(player.global_position.y, start.y, 0.05)
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_lt(body.radius, 14.0 + 0.05)
+
+
+func test_grow_at_a_closed_gate_does_not_cross_it() -> void:
+	# Corridor with a closed 4 px gate (SliceLayout.GATE_PX) and a back wall,
+	# open space past the gate. Same reachability rule as the thin-wall case.
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(376, 400))
+	# Corridor ceiling / floor so the only opening is the gate slot.
+	_wall(Vector2(800, 20), Vector2(400, 370))
+	_wall(Vector2(800, 20), Vector2(400, 430))
+	_wall(Vector2(SliceLayout.GATE_PX, 40), Vector2(400.0 + 14.0 + SliceLayout.GATE_PX * 0.5, 400))
+	await wait_physics_frames(2)
+	var start := player.global_position
+	var applied := player.state.set_size(2.0)
+	assert_lt(applied, 2.0, "closed gate is not a reachable push-out")
+	assert_gt(applied, 1.0 - 0.0001)
+	assert_lt(player.global_position.x, start.x + 14.0, "must stay on this side of the gate")
+	assert_almost_eq(player.global_position.x, start.x, 0.05)
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_lt(body.radius, 14.0 + 0.05)
+
+
+func test_grow_against_a_thick_wall_pushes_to_a_reachable_spot() -> void:
+	# Wall occupies x 360-380. The size-1 body at 400 is clear. Size 4
+	# (radius 52) overlaps the wall; open space to the right is reachable,
+	# so the write keeps size 4 and moves the centre just clear of the wall.
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(370, 400))
+	await wait_physics_frames(2)
+	var start := player.global_position
+	var applied := player.state.set_size(4.0)
+	assert_eq(applied, 4.0)
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_almost_eq(body.radius, 52.0, 0.05)
+	assert_gte(player.global_position.x, 380.0 + 52.0 - 0.05)
+	assert_lt(player.global_position.x, start.x + Player.SIZE_RESOLVE_RADIUS + 0.05)
+	assert_almost_eq(player.global_position.y, start.y, 0.05)
+
+
+func test_restored_size_runs_the_fit_check() -> void:
+	var player := _player_at(Vector2(400, 400))
+	_wall(Vector2(20, 800), Vector2(370, 400))
+	_wall(Vector2(20, 800), Vector2(430, 400))
+	_wall(Vector2(800, 20), Vector2(400, 370))
+	_wall(Vector2(800, 20), Vector2(400, 430))
+	await wait_physics_frames(2)
+	watch_signals(player.state)
+	var applied := player.apply_size(4.0)
+	assert_lt(applied, 4.0, "restore goes through the same fit check as set_size")
+	assert_gt(applied, 1.0 - 0.0001)
+	assert_signal_emit_count(player.state, "script_wrote", 0)
+
+
+func test_respawn_at_a_tight_spot_does_not_overlap_walls() -> void:
+	var player := _player_at(Vector2(800, 400))
+	await wait_physics_frames(1)
+	assert_eq(player.state.set_size(4.0), 4.0)
+	# 40 px cell at (400, 400), same as the corridor test.
+	_wall(Vector2(20, 800), Vector2(370, 400))
+	_wall(Vector2(20, 800), Vector2(430, 400))
+	_wall(Vector2(800, 20), Vector2(400, 370))
+	_wall(Vector2(800, 20), Vector2(400, 430))
+	await wait_physics_frames(2)
+	player.respawn(Vector2(400, 400))
+	assert_lt(player.get_size(), 4.0, "large body cannot stay at 4x inside the cell")
+	assert_gt(player.get_size(), Player.MIN_SIZE - 0.0001)
+	assert_lt(player.global_position.x, 420.0)
+	assert_gt(player.global_position.x, 380.0)
+	var body := (player.get_node("CollisionShape2D") as CollisionShape2D).shape as CircleShape2D
+	assert_lt(body.radius, 20.0)
+
+
+func test_main_restores_and_persists_player_size() -> void:
+	const SAVE := "user://gut_player_size_main.cfg"
+	if FileAccess.file_exists(SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE))
+	var save := SaveGame.new()
+	save.path = SAVE
+	save.world_seed = 7
+	save.player_size = 2.0
+	save.save()
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = SAVE
+	(main.get_node("BulletManager") as BulletManager).backend_preference = "gdscript"
+	add_child_autofree(main)
+	await wait_physics_frames(2)
+	var player := main.get_node("Player") as Player
+	assert_almost_eq(player.get_size(), 2.0, 0.0001)
+	player.state.set_size(3.0)
+	var reloaded := SaveGame.load_from(SAVE)
+	assert_almost_eq(reloaded.player_size, 3.0, 0.0001)
+	if FileAccess.file_exists(SAVE):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE))
 
 
 func _wall(size: Vector2, at: Vector2) -> void:

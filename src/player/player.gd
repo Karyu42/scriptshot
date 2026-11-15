@@ -9,7 +9,8 @@ const BLINK_STEP := 0.062
 ## Size clamps (ability-scripting.md). Default is 1.0.
 const MIN_SIZE := 0.25
 const MAX_SIZE := 4.0
-## If a grown body overlaps a wall, the resolver may push the player this far.
+## If a grown body overlaps a wall, the resolver may push the player this far,
+## and only to a position reachable from here (a motion cast must complete).
 const SIZE_RESOLVE_RADIUS := 64.0
 ## Drawn body / core radii at size 1.0 (must stay in sync with _draw).
 const DRAW_BODY_RADIUS := 14.0
@@ -189,18 +190,15 @@ func apply_size(requested: float) -> float:
 	if want <= _size:
 		_set_size_now(want)
 		return _size
-	# Growing: try the full size, then push out within SIZE_RESOLVE_RADIUS;
-	# if no free spot, grow only as far as the current position allows.
+	# Growing: try the full size, then push out within SIZE_RESOLVE_RADIUS to a
+	# reachable free centre. If none, grow only as far as the current position
+	# allows.
+	var path_radius := _base_body_radius * fitted_low
 	_set_size_now(want)
 	if not _body_overlaps_wall():
 		return _size
-	var dest := _find_free_spot()
-	if dest != global_position:
-		global_position = dest
-		_prev_position = dest
-		reset_physics_interpolation()
+	if _try_push_to_reachable(path_radius):
 		return _size
-	# No free centre within 64 px: binary-search the largest size that fits here.
 	_set_size_now(_largest_size_that_fits(fitted_low, want))
 	return _size
 
@@ -251,7 +249,20 @@ func _body_overlaps_wall(at: Vector2 = Vector2.INF, radius: float = -1.0) -> boo
 	return not world.direct_space_state.intersect_shape(params, 1).is_empty()
 
 
-func _find_free_spot() -> Vector2:
+## Move to a nearby free centre if one is reachable with a circle of
+## `path_radius` (the pre-grow / in-place-fit body). The destination must fit
+## the current (possibly grown) radius.
+func _try_push_to_reachable(path_radius: float) -> bool:
+	var dest := _find_reachable_spot(path_radius)
+	if dest == global_position:
+		return false
+	global_position = dest
+	_prev_position = dest
+	reset_physics_interpolation()
+	return true
+
+
+func _find_reachable_spot(path_radius: float) -> Vector2:
 	var origin := global_position
 	var rad := _base_body_radius * _size
 	# 16 directions, 8 distances out to SIZE_RESOLVE_RADIUS.
@@ -259,9 +270,40 @@ func _find_free_spot() -> Vector2:
 		var dist := SIZE_RESOLVE_RADIUS * (float(step) / 8.0)
 		for k in 16:
 			var at := origin + Vector2.from_angle(TAU * float(k) / 16.0) * dist
-			if not _body_overlaps_wall(at, rad):
+			if _body_overlaps_wall(at, rad):
+				continue
+			if _motion_reaches(origin, at, path_radius):
 				return at
 	return origin
+
+
+## True when a circle of `radius` can travel from `from` to `to` without a
+## WORLD hit. A motion that starts already overlapping is not reachable.
+func _motion_reaches(from: Vector2, to: Vector2, radius: float) -> bool:
+	if not is_inside_tree() or radius <= 0.0:
+		return false
+	if from.is_equal_approx(to):
+		return not _body_overlaps_wall(from, radius)
+	var world := get_world_2d()
+	if world == null or world.direct_space_state == null:
+		return false
+	var circle := CircleShape2D.new()
+	circle.radius = radius
+	var params := PhysicsShapeQueryParameters2D.new()
+	params.shape = circle
+	params.transform = Transform2D(0.0, from)
+	params.motion = to - from
+	params.collision_mask = Layers.WORLD
+	params.collide_with_bodies = true
+	params.collide_with_areas = false
+	params.exclude = [get_rid()]
+	var hit := world.direct_space_state.cast_motion(params)
+	if hit.size() < 2:
+		return false
+	@warning_ignore_start("unsafe_cast")
+	var safe: float = hit[0]
+	@warning_ignore_restore("unsafe_cast")
+	return safe >= 0.999
 
 
 func _largest_size_that_fits(lo: float, hi: float) -> float:
@@ -558,6 +600,7 @@ func respawn(at: Vector2) -> void:
 	if TimeControl != null:
 		TimeControl.cancel()
 	teleport(at)
+	_resolve_size_after_teleport()
 	velocity = Vector2.ZERO
 	_dash.reset()
 	_dash_wanted = false
@@ -570,6 +613,22 @@ func respawn(at: Vector2) -> void:
 	_hurtbox.active = true
 	show()
 	respawned.emit(at)
+
+
+## After a teleport or respawn, keep the current size if it fits or if a
+## reachable free centre is within SIZE_RESOLVE_RADIUS; otherwise shrink to the
+## largest size that fits here. The path uses a radius that already fits at
+## the current position, so the body is not moved through a wall.
+func _resolve_size_after_teleport() -> void:
+	_capture_size_bases()
+	if not _body_overlaps_wall():
+		return
+	var fit := _largest_size_that_fits(MIN_SIZE, _size)
+	var path_radius := _base_body_radius * fit
+	if path_radius > 0.0 and not _body_overlaps_wall(global_position, path_radius):
+		if _try_push_to_reachable(path_radius):
+			return
+	_set_size_now(fit)
 
 
 func _update_aim() -> void:

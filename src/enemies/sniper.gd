@@ -31,6 +31,8 @@ var last_shot_id := -1
 var _windup := -1.0
 ## 0.5 for a Null-attack telegraph (ability-scripting.md).
 var telegraph_time_scale_floor := 0.0
+## Set by NullAttacks.configure_caster. Fired shots then pierce script invuln.
+var fires_null_attacks := false
 var _cooldown := 0.0
 var _lock := Vector2.ZERO
 
@@ -122,6 +124,8 @@ func _fire() -> void:
 	req.hit_mask = Layers.hostile_to(Layers.ENEMY)
 	req.color = SHOT_COLOR
 	req.collide_world = true
+	if fires_null_attacks:
+		NullAttacks.stamp_shot(req)
 	last_shot = req
 	last_shot_id = -1
 	if bullets != null and is_instance_valid(bullets):

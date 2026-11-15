@@ -69,6 +69,7 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_previous_at", "slot"), &NativeBulletSim::get_previous_at);
 	ClassDB::bind_method(D_METHOD("get_velocity_at", "slot"), &NativeBulletSim::get_velocity_at);
 	ClassDB::bind_method(D_METHOD("get_owner_at", "slot"), &NativeBulletSim::get_owner_at);
+	ClassDB::bind_method(D_METHOD("get_source_flags_at", "slot"), &NativeBulletSim::get_source_flags_at);
 	ClassDB::bind_method(D_METHOD("get_reflect_count_at", "slot"), &NativeBulletSim::get_reflect_count_at);
 	ClassDB::bind_method(D_METHOD("get_wall_clip_at", "slot"), &NativeBulletSim::get_wall_clip_at);
 	ClassDB::bind_method(D_METHOD("is_slot_alive", "slot"), &NativeBulletSim::is_slot_alive);
@@ -2108,6 +2109,13 @@ int NativeBulletSim::get_owner_at(int p_slot) const {
 		return 0;
 	}
 	return owner_layer[p_slot];
+}
+
+int NativeBulletSim::get_source_flags_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return 0;
+	}
+	return (int)source_flags[p_slot];
 }
 
 int NativeBulletSim::get_reflect_count_at(int p_slot) const {

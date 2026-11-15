@@ -46,6 +46,10 @@ func test_request_clamps_and_rejects_invalid() -> void:
 	assert_eq(accepted.err, "")
 	assert_almost_eq(TimeControl.world_scale(), 1.0, 0.0001, "scale clamped to 1")
 	assert_true(TimeControl.is_active())
+	TimeControl.cancel()
+	var inf_dur := _request(0.5, INF)
+	assert_true(inf_dur.ok, "+INF duration is clamped to the cap")
+	assert_true(TimeControl.is_active())
 	TimeControl.debug_advance(TimeControl.MAX_STOP_SECONDS + 0.01)
 	assert_false(TimeControl.is_active())
 	assert_almost_eq(
@@ -155,3 +159,50 @@ func test_scaled_delta_and_bullet_delta() -> void:
 	assert_eq(TimeControl.bullet_delta(0.1, true, false), 0.1)
 	assert_eq(TimeControl.bullet_delta(0.1, false, false), 0.0)
 	assert_almost_eq(TimeControl.bullet_delta(0.1, false, true), 0.05, 0.0001)
+
+
+func test_retry_in_is_remaining_effect_plus_projected_cooldown() -> void:
+	assert_eq(TimeControl.retry_in(), 0.0)
+	_request(0.5, 2.0)
+	assert_almost_eq(TimeControl.retry_in(), 2.0 + 3.0, 0.0001, "2 s left + max(1, 1.5 * 2)")
+	assert_eq(TimeControl.cooldown_left(), 0.0, "cooldown has not started yet")
+	TimeControl.debug_advance(1.0)
+	assert_almost_eq(TimeControl.retry_in(), 1.0 + 3.0, 0.0001, "1 s left + cooldown on full 2 s used")
+	TimeControl.debug_advance(1.0)
+	assert_false(TimeControl.is_active())
+	assert_almost_eq(TimeControl.retry_in(), 3.0, 0.0001)
+	assert_almost_eq(TimeControl.cooldown_left(), 3.0, 0.0001)
+	TimeControl.debug_advance(3.0)
+	assert_eq(TimeControl.retry_in(), 0.0)
+
+
+func test_a_new_run_or_scene_teardown_clears_a_stop_and_its_cooldown() -> void:
+	_request(0.0, 3.0)
+	TimeControl.debug_advance(1.0)
+	GameEvents.run_started.emit()
+	assert_false(TimeControl.is_active())
+	assert_eq(TimeControl.cooldown_left(), 0.0)
+	assert_eq(TimeControl.retry_in(), 0.0)
+	_request(0.0, 1.0)
+	TimeControl.debug_advance(1.0)
+	assert_gt(TimeControl.cooldown_left(), 0.0)
+	GameEvents.run_ended.emit(false)
+	assert_false(TimeControl.is_active())
+	assert_eq(TimeControl.cooldown_left(), 0.0)
+	_request(0.0, 2.0)
+	# Main._exit_tree cancels on scene reload / leaving the game scene.
+	var save := "user://gut_time_control_teardown.cfg"
+	if FileAccess.file_exists(save):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(save))
+	var main := (load("res://scenes/main.tscn") as PackedScene).instantiate() as Main
+	main.save_path = save
+	add_child_autofree(main)
+	assert_true(_request(0.0, 2.0).ok, "request after Main is ready")
+	main.free()
+	assert_false(TimeControl.is_active())
+	assert_eq(TimeControl.cooldown_left(), 0.0)
+	assert_eq(TimeControl.retry_in(), 0.0)
+	assert_true(_request(0.5, 1.0).ok)
+	if FileAccess.file_exists(save):
+		DirAccess.remove_absolute(ProjectSettings.globalize_path(save))
+

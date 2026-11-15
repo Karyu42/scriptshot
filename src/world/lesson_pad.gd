@@ -28,7 +28,8 @@ func tick(delta: float) -> void:
 	if _windup < 0.0:
 		queue_redraw()
 		return
-	_windup = maxf(_windup - delta, 0.0)
+	# World telegraph: scaled by TimeControl. Entry / HP checks stay unscaled.
+	_windup = maxf(_windup - TimeControl.scaled_delta(delta), 0.0)
 	if _windup <= 0.0:
 		_windup = -1.0
 		player.health.try_damage(1.0)

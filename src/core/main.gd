@@ -74,6 +74,8 @@ func _ready() -> void:
 	_player.died.connect(_on_player_died)
 	_stress.state_changed.connect(func(_e: bool, _n: int) -> void: _update_hud())
 	GameEvents.run_started.emit()
+	_restore_player_size()
+	_bind_player_size_persist()
 
 
 ## Equips shots/<saved file> (shots/default.lua on a fresh save) through
@@ -191,25 +193,73 @@ func _slot_path() -> String:
 	return save_path
 
 
+func _restore_player_size() -> void:
+	if _player == null or _save == null:
+		return
+	var applied := _player.apply_size(_save.player_size)
+	if not is_equal_approx(applied, _save.player_size):
+		_save.player_size = applied
+		_save.save()
+	else:
+		_save.player_size = applied
+
+
+func _bind_player_size_persist() -> void:
+	if _player == null:
+		return
+	if not _player.respawned.is_connected(_on_player_size_maybe_changed):
+		_player.respawned.connect(_on_player_size_maybe_changed)
+	if _player.state != null and not _player.state.script_wrote.is_connected(_on_script_wrote_size):
+		_player.state.script_wrote.connect(_on_script_wrote_size)
+
+
+func _on_script_wrote_size(field: StringName, _old: Variant, _new: Variant) -> void:
+	if field != &"size":
+		return
+	_persist_player_size()
+
+
+func _on_player_size_maybe_changed(_at: Vector2 = Vector2.ZERO) -> void:
+	_persist_player_size()
+
+
+func _persist_player_size() -> void:
+	if _save == null or _player == null:
+		return
+	var size := _player.get_size()
+	if is_equal_approx(_save.player_size, size):
+		return
+	_save.player_size = size
+	_save.save()
+
+
+func _write_save() -> void:
+	if _save == null:
+		return
+	if _player != null:
+		_save.player_size = _player.get_size()
+	_save.save()
+
+
 func _on_absent_changed() -> void:
 	if _save == null or _chunks == null:
 		return
 	_save.regular_absent = _chunks.absent_records()
-	_save.save()
+	_write_save()
 
 
 func _on_elite_kills_changed() -> void:
 	if _save == null or _chunks == null:
 		return
 	_save.elite_kills = _chunks.elite_kill_records()
-	_save.save()
+	_write_save()
 
 
 func _on_natural_shard() -> void:
 	if _save == null:
 		return
 	_save.shards += 1
-	_save.save()
+	_write_save()
 
 
 func _bind_warden() -> void:
@@ -246,6 +296,8 @@ func _exit_tree() -> void:
 	SenseBook.unlisten()
 	SenseBook.bind_save(null)
 	_on_absent_changed()
+	if TimeControl != null:
+		TimeControl.cancel()
 
 
 func _process(delta: float) -> void:

@@ -65,6 +65,9 @@ var starter_consumed := false
 ## the next load.
 var enemies_in_announced := false
 var existed := false
+## Last applied player size (Player.MIN_SIZE..MAX_SIZE). Missing, non-finite,
+## or out-of-range values in an older slot load as 1.0.
+var player_size := 1.0
 
 
 static func resolved_path() -> String:
@@ -111,6 +114,7 @@ func save() -> void:
 	cfg.set_value("world", "warden_dead", warden_dead)
 	cfg.set_value("world", "starter_consumed", starter_consumed)
 	cfg.set_value("senses", "enemies_in_announced", enemies_in_announced)
+	cfg.set_value("player", "size", player_size)
 	cfg.save(path)
 
 
@@ -140,6 +144,7 @@ func _read(cfg: ConfigFile) -> void:
 	warden_dead = _read_bool(cfg, "warden_dead", false)
 	starter_consumed = _read_bool(cfg, "starter_consumed", false)
 	enemies_in_announced = _read_bool(cfg, "enemies_in_announced", false, "senses")
+	player_size = _read_player_size(cfg)
 
 
 func _read_int(cfg: ConfigFile, key: String, default: int, section: String = "world") -> int:
@@ -164,6 +169,20 @@ func _read_bool(cfg: ConfigFile, key: String, default: bool, section: String = "
 		@warning_ignore_restore("unsafe_cast")
 		return b
 	return default
+
+
+func _read_player_size(cfg: ConfigFile) -> float:
+	var v: Variant = cfg.get_value("player", "size", 1.0)
+	var f := 1.0
+	var ok := false
+	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
+	if typeof(v) == TYPE_INT or typeof(v) == TYPE_FLOAT:
+		f = float(v)
+		ok = true
+	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+	if not ok or not is_finite(f):
+		return 1.0
+	return clampf(f, Player.MIN_SIZE, Player.MAX_SIZE)
 
 
 func _read_field_time(cfg: ConfigFile, key: String) -> float:

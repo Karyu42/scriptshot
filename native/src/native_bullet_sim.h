@@ -145,6 +145,7 @@ public:
 	godot::Vector2 get_previous_at(int p_slot) const;
 	godot::Vector2 get_velocity_at(int p_slot) const;
 	int get_owner_at(int p_slot) const;
+	int get_source_flags_at(int p_slot) const;
 	int get_reflect_count_at(int p_slot) const;
 	float get_wall_clip_at(int p_slot) const;
 	bool is_slot_alive(int p_slot) const;

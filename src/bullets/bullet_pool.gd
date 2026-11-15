@@ -578,7 +578,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 func _bullet_dt(i: int, delta: float) -> float:
 	return TimeControl.bullet_delta(
 		delta,
-		owner_layer[i] == OWNER_PLAYER or owner_layer[i] == Layers.PLAYER,
+		owner_slot(owner_layer[i]) == OWNER_PLAYER,
 		pierces_script_invuln[i] != 0,
 	)
 
@@ -750,7 +750,7 @@ func run_update_hooks(
 		if hook_owner != o:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
-		b.on_update(self, i, delta)
+		b.on_update(self, i, _bullet_dt(i, delta))
 		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot
