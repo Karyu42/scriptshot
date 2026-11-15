@@ -37,6 +37,10 @@ const OPEN_TIME_SCALE := 0.15
 ## How long the "E edits." prompt shows after the game starts, in seconds.
 const PROMPT_SEC := 8.0
 const NEW_FILE_ITEM := "+ new file"
+## File picker entry for the equipped Dash file ("Dash: abilities/dash.lua").
+const DASH_ITEM := "Dash: %s"
+const STILL_DASH := "Still running the last good dash."
+const BUILTIN_DASH := "Using the built-in dash."
 ## How long a toast ("shots/foo.lua saved (not equipped)") stays up.
 const TOAST_SEC := 2.5
 
@@ -56,7 +60,7 @@ const API_GLOBALS: PackedStringArray = [
 const API_MEMBERS: PackedStringArray = [
 	"name", "cooldown", "speed", "lifetime", "damage", "radius", "angle", "spin", "accel", "pos",
 	"on_fire", "on_spawn", "on_hit", "can_hit", "on_death", "on_despawn", "on_expire", "on_wall", "on_batch",
-	"on_tick", "aim", "aim_dir", "time", "shot_count", "pressed", "just_pressed", "just_released", "held_time",
+	"on_tick", "on_dash", "dash", "aim", "aim_dir", "time", "shot_count", "pressed", "just_pressed", "just_released", "held_time",
 	"id", "x", "y", "vx", "vy", "set_velocity", "spawn_child",
 	"n", "dt", "px", "py", "age", "pa", "pb", "owner", "kill", "teleport", "nearest_enemy", "enemies_in",
 	"kind", "alive",
@@ -94,6 +98,10 @@ const COLOR_PROMPT := Color(0.949, 0.949, 0.949)
 const LINE_TINT := Color(1.0, 0.35, 0.3, 0.12)
 
 var shots: ShotScripts
+## The Dash slot's file (bind_abilities). While `editing_dash`, the editor
+## shows and saves abilities/<file_name> instead of a shots/ file.
+var abilities: AbilityScripts
+var editing_dash := false
 ## The shots/ file in the editor (what Save writes).
 var file_name := ScriptLibrary.DEFAULT_FILE
 ## Returns the save's shard count for the footer (read-only). Set by Main.
@@ -147,6 +155,7 @@ var _codex_page := ""
 var _codex_unread: PackedStringArray = []
 ## Text of file_name as last loaded or saved, to tell unsaved edits apart.
 var _clean_text := ""
+var _dash_error_base := 0
 
 
 func _init() -> void:
@@ -187,6 +196,77 @@ func bind(shot_scripts: ShotScripts) -> void:
 	_reset_warning_base()
 	_refresh_title()
 	_refresh_problems()
+
+
+## Adds the Dash slot's file to the picker (open_dash()).
+func bind_abilities(ability_scripts: AbilityScripts) -> void:
+	abilities = ability_scripts
+	abilities.ability_swapped.connect(_on_ability_swapped)
+	abilities.load_failed.connect(_on_ability_failed)
+	abilities.ability_saved.connect(_on_ability_saved)
+	_refresh_files()
+
+
+## Shows the equipped Dash file (abilities/) in the editor; Save writes it
+## and reloads the Dash slot.
+func open_dash() -> bool:
+	if abilities == null:
+		return false
+	editing_dash = true
+	file_name = abilities.selected
+	_show_dash_file()
+	load_problems.clear()
+	if abilities.problem != null:
+		load_problems.append(abilities.problem)
+	else:
+		load_problems.append_array(abilities.warnings)
+	runtime_problems.clear()
+	_reset_warning_base()
+	_refresh_files()
+	_refresh_title()
+	_refresh_problems()
+	return true
+
+
+func _show_dash_file() -> void:
+	var exists := AbilityLibrary.exists(file_name)
+	var t := AbilityLibrary.read(file_name) if exists else AbilityLibrary.default_dash_source()
+	set_text(t)
+	_clean_text = t if exists else ""
+
+
+func _dash_headline(problem: ScriptProblem) -> String:
+	var head := problem.headline(true).trim_suffix(ScriptProblem.STILL_RUNNING).strip_edges()
+	return "%s %s" % [head, STILL_DASH if abilities.has_script() else BUILTIN_DASH]
+
+
+func _on_ability_saved(saved: String, origin: StringName) -> void:
+	if editing_dash and origin == ShotScripts.ORIGIN_FILE and saved == file_name and not is_dirty():
+		_show_dash_file()
+
+
+func _on_ability_swapped(swapped: String, _origin: StringName) -> void:
+	if not editing_dash or swapped != file_name:
+		return
+	load_problems.clear()
+	load_problems.append_array(abilities.warnings)
+	runtime_problems.clear()
+	_reset_warning_base()
+	_status_text("Saved. Dash runs %s." % abilities.ability.title, COLOR_OK)
+	_refresh_title()
+	_refresh_problems()
+	applied.emit(true)
+
+
+func _on_ability_failed(failed: String, problem: ScriptProblem, _origin: StringName) -> void:
+	if not editing_dash or failed != file_name:
+		return
+	load_problems.clear()
+	load_problems.append(problem)
+	_status_text(_dash_headline(problem), COLOR_ERROR)
+	_refresh_title()
+	_refresh_problems()
+	applied.emit(false)
 
 
 func is_open() -> bool:
@@ -266,6 +346,8 @@ func close() -> void:
 ## Saves the editor text to shots/<file_name>; ShotScripts loads it at the
 ## next frame boundary and the result arrives through its signals.
 func request_save() -> bool:
+	if editing_dash:
+		return _request_dash_save()
 	if shots == null:
 		return false
 	if not shots.save(file_name, _code.text, ShotScripts.ORIGIN_EDITOR):
@@ -277,7 +359,21 @@ func request_save() -> bool:
 	return true
 
 
+func _request_dash_save() -> bool:
+	if abilities == null:
+		return false
+	if not abilities.save(file_name, _code.text, ShotScripts.ORIGIN_EDITOR):
+		_status_text("Could not write %s." % AbilityLibrary.display_path(file_name), COLOR_ERROR)
+		return false
+	_clean_text = _code.text
+	_note_used_names(_code.text)
+	_status_text("Saving…", COLOR_DIM)
+	return true
+
+
 func _on_script_saved(saved: String, origin: StringName) -> void:
+	if editing_dash:
+		return
 	# An outside edit to the open file replaces the text unless the player
 	# has unsaved changes here.
 	if origin == ShotScripts.ORIGIN_FILE and saved == file_name and not is_dirty():
@@ -285,6 +381,9 @@ func _on_script_saved(saved: String, origin: StringName) -> void:
 
 
 func _on_weapon_swapped(swapped: String, origin: StringName) -> void:
+	if editing_dash:
+		_refresh_title()
+		return
 	if swapped != file_name and origin != ShotScripts.ORIGIN_START:
 		return
 	load_problems.clear()
@@ -300,7 +399,7 @@ func _on_weapon_swapped(swapped: String, origin: StringName) -> void:
 
 
 func _on_load_failed(failed: String, problem: ScriptProblem, _origin: StringName) -> void:
-	if failed != file_name:
+	if editing_dash or failed != file_name:
 		return
 	load_problems.clear()
 	load_problems.append(problem)
@@ -368,7 +467,14 @@ func load_starter(id: String) -> bool:
 func open_file(name_value: String) -> void:
 	if not ScriptLibrary.valid_name(name_value):
 		return
+	var was_dash := editing_dash
+	editing_dash = false
 	file_name = name_value
+	if was_dash:
+		load_problems.clear()
+		runtime_problems.clear()
+		_reset_warning_base()
+		_refresh_problems()
 	_refresh_files()
 	_show_file(name_value)
 	_refresh_title()
@@ -379,6 +485,7 @@ func new_file() -> String:
 	var n := ScriptLibrary.next_free_name()
 	if n == "":
 		return ""
+	editing_dash = false
 	file_name = n
 	request_save()
 	_refresh_files()
@@ -621,7 +728,7 @@ func toast_text() -> String:
 func _on_unequipped_file_saved(changed: String) -> void:
 	show_toast(ShotScripts.unequipped_text(changed))
 	# The editor may have that file open without equipping it.
-	if changed == file_name and not is_dirty():
+	if not editing_dash and changed == file_name and not is_dirty():
 		_show_file(changed)
 
 
@@ -657,6 +764,8 @@ func _refresh_footer() -> void:
 
 
 func _collect_runtime(b: LuaBulletBehavior) -> Array[ScriptProblem]:
+	if editing_dash:
+		return _collect_dash_runtime()
 	var out: Array[ScriptProblem] = []
 	if b != null:
 		for cb in b.failed_callbacks():
@@ -675,7 +784,26 @@ func _collect_runtime(b: LuaBulletBehavior) -> Array[ScriptProblem]:
 	return out
 
 
+## The Dash file's on_dash errors since the last load, then the warnings
+## that are not the weapon's callback errors.
+func _collect_dash_runtime() -> Array[ScriptProblem]:
+	var out: Array[ScriptProblem] = []
+	var a := abilities.ability if abilities != null else null
+	if a != null and a.last_error != null and a.error_total > _dash_error_base:
+		var p := ScriptProblem.from_result(a.last_error, a.chunk_name, LuaDashAbility.HOOK)
+		p.count = a.error_total - _dash_error_base
+		out.append(p)
+	for key in ScriptWarnings.keys():
+		if key.begins_with("LuaBulletBehavior.error.") or key == LuaDashAbility.ERROR_KEY:
+			continue
+		var n: int = ScriptWarnings.count(key) - _warn_base.get(key, 0)
+		if n > 0:
+			out.append(ScriptProblem.from_warning(key, ScriptWarnings.last_message(key), n))
+	return out
+
+
 func _reset_warning_base() -> void:
+	_dash_error_base = abilities.ability.error_total if abilities != null else 0
 	_warn_base.clear()
 	for key in ScriptWarnings.keys():
 		_warn_base[key] = ScriptWarnings.count(key)
@@ -1066,6 +1194,10 @@ func _make_marker_icon() -> Texture2D:
 # --- behaviour ---------------------------------------------------------------------
 
 func _refresh_title() -> void:
+	if editing_dash and abilities != null:
+		var dash := abilities.ability.title if abilities.has_script() else "built-in dash"
+		_title.text = "%s  ·  Dash: %s" % [AbilityLibrary.display_path(file_name), dash]
+		return
 	var running := shots.weapon.title if shots != null and shots.has_script() else "basic shot"
 	_title.text = "%s  ·  running: %s" % [ScriptLibrary.display_path(file_name), running]
 
@@ -1073,12 +1205,15 @@ func _refresh_title() -> void:
 func _refresh_files() -> void:
 	_files.clear()
 	_file_names = ScriptLibrary.list_files()
-	if not _file_names.has(file_name):
+	if not editing_dash and not _file_names.has(file_name):
 		_file_names.append(file_name)
 	for f in _file_names:
 		_files.add_item(f)
+	if abilities != null:
+		var dash_file := file_name if editing_dash else abilities.selected
+		_files.add_item(DASH_ITEM % AbilityLibrary.display_path(dash_file))
 	_files.add_item(NEW_FILE_ITEM)
-	_files.select(_file_names.find(file_name))
+	_files.select(_file_names.size() if editing_dash else _file_names.find(file_name))
 
 
 ## The file picker's names, in order (tests).
@@ -1089,6 +1224,8 @@ func file_labels() -> PackedStringArray:
 func _on_file_selected(index: int) -> void:
 	if index >= 0 and index < _file_names.size():
 		open_file(_file_names[index])
+	elif abilities != null and index == _file_names.size():
+		open_dash()
 	else:
 		new_file()
 
