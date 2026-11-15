@@ -578,7 +578,7 @@ func advance(delta: float, bounds: Rect2) -> void:
 func _bullet_dt(i: int, delta: float) -> float:
 	return TimeControl.bullet_delta(
 		delta,
-		owner_layer[i] == OWNER_PLAYER or owner_layer[i] == Layers.PLAYER,
+		owner_slot(owner_layer[i]) == OWNER_PLAYER,
 		pierces_script_invuln[i] != 0,
 	)
 

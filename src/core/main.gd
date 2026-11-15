@@ -239,6 +239,8 @@ func _exit_tree() -> void:
 	SenseBook.unlisten()
 	SenseBook.bind_save(null)
 	_on_absent_changed()
+	if TimeControl != null:
+		TimeControl.cancel()
 
 
 func _process(delta: float) -> void:

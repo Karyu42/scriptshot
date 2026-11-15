@@ -40,18 +40,35 @@ func _ready() -> void:
 			GameEvents.player_died.connect(cancel)
 		if not GameEvents.boss_defeated.is_connected(_on_boss_defeated):
 			GameEvents.boss_defeated.connect(_on_boss_defeated)
+		if not GameEvents.run_started.is_connected(cancel):
+			GameEvents.run_started.connect(cancel)
+		if not GameEvents.run_ended.is_connected(_on_run_ended):
+			GameEvents.run_ended.connect(_on_run_ended)
 
 
 func _on_boss_defeated(_boss_kind: StringName, _rarity: int, _tier: int, _position: Vector2) -> void:
 	cancel()
 
 
+func _on_run_ended(_victory: bool) -> void:
+	cancel()
+
+
 ## Start a world time scale. Returns {ok, err, cooldown_left}.
 ## err is "" on success, "active" or "cooldown" when rejected, "invalid" for a
-## non-finite or non-positive duration / non-finite scale.
+## non-finite scale, or a NaN / negative-infinite / non-positive duration.
+## +INF duration is clamped to MAX_STOP_SECONDS, like other out-of-range values.
+## When rejected as "active", cooldown_left is the remaining effect time, not
+## the wait until a retry would succeed; use retry_in() for that.
 func request(scale: float, seconds: float) -> Dictionary:
-	if not is_finite(scale) or not is_finite(seconds) or seconds <= 0.0:
+	if not is_finite(scale):
 		return _result(false, "invalid", cooldown_left())
+	var dur := seconds
+	if is_inf(dur) and dur > 0.0:
+		dur = MAX_STOP_SECONDS
+	elif not is_finite(dur) or dur <= 0.0:
+		return _result(false, "invalid", cooldown_left())
+	seconds = dur
 	if _active:
 		return _result(false, "active", _effect_left)
 	if _cooldown_left > 0.0:
@@ -74,12 +91,27 @@ func world_scale() -> float:
 	return _scale if _active else 1.0
 
 
-## Seconds left on the post-effect cooldown, or 0.
+## Seconds left on the post-effect cooldown, or 0. While a stop is still
+## active this is 0 (the cooldown has not started); see retry_in().
 func cooldown_left() -> float:
 	return _cooldown_left
 
 
-## End the effect immediately with no cooldown. Also clears an in-flight cooldown.
+## Seconds until a new request would be accepted. While a stop is active this
+## is the remaining effect time plus the cooldown that will start if it runs
+## to the end: max(COOLDOWN_MIN_SECONDS, COOLDOWN_DURATION_MUL * expected used).
+## Otherwise this is cooldown_left().
+func retry_in() -> float:
+	if _active:
+		var expected := _used + _effect_left
+		return _effect_left + maxf(COOLDOWN_MIN_SECONDS, COOLDOWN_DURATION_MUL * expected)
+	return _cooldown_left
+
+
+## End the effect immediately with no cooldown. Also clears an in-flight
+## cooldown. Engine callers (death, respawn, a new run, Main leaving the tree)
+## use this; it is not a bindable "end early" that should still apply the
+## uptime cap.
 func cancel() -> void:
 	_active = false
 	_scale = 1.0
