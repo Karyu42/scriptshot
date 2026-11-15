@@ -161,6 +161,26 @@ in `docs/scripting/examples/` keep `.lua` for readers and sit behind a
 the import log, and `test_bundled_scripts.gd` fails on a weapon-shaped `.lua`
 file anywhere the editor scans.
 
+## The Dash slot (`LuaDashAbility`, `AbilityScripts`)
+
+`LuaDashAbility` is the object the player's dash hook calls
+(`Player.set_dash_ability`, `on_dash(player, dir) -> bool`,
+`get_cooldown()`). It runs the ability file's `on_dash(ctx, dir)` through one
+`ScriptHost` (`call_ability`) under the on_fire budget; `player:dash(angle)` in
+Lua is `Player.perform_builtin_dash` and only works during that call, and
+`player:dash_cooldown_left()` reads `Player.get_ability_cooldown_left`
+(`ScriptHost.player_cooldown_left`). The player hands over its raw move input;
+the adapter normalizes it (aim direction when it is near zero, as the engine
+dash does). The player needs a synchronous bool, so a top-level yield in
+`on_dash` is settled here: the hook returns true and `AbilityScripts` resumes
+the coroutine once per physics tick (`tick()`), with a fresh budget per slice.
+`AbilityScripts` owns it and the `abilities/` files (`AbilityLibrary`), seeds
+`abilities/dash.lua` from `scripting/abilities/default_dash.lua.txt`, hot
+reloads it like `ShotScripts`, and gives the player back the built-in dash
+(`set_dash_ability(null)`) when it leaves the tree. A file that is missing or
+broken at start leaves the built-in dash in place. Player-facing rules:
+`docs/scripting/api.md`, *Ability hooks*.
+
 ## Hook cost
 
 The CI hooked tier is `./tools/run_benchmark.sh --bullets=5000,10000 --hooked=1.0`.
