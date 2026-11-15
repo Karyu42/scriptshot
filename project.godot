@@ -23,6 +23,7 @@ InputDevice="*res://src/core/input_device.gd"
 RespawnPoints="*res://src/core/respawn_points.gd"
 GameEvents="*res://src/core/game_events.gd"
 WorldQuery="*res://src/core/world_query.gd"
+TimeControl="*res://src/core/time_control.gd"
 
 [debug]
 

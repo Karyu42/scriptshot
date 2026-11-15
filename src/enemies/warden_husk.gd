@@ -63,6 +63,7 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	delta = TimeControl.scaled_delta(delta, 0.0)
 	if _fade_left > 0.0:
 		_fade_left = maxf(_fade_left - delta, 0.0)
 		modulate.a = _fade_left / _fade_total if _fade_total > 0.0 else 0.0

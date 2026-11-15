@@ -176,7 +176,16 @@ func _register_world() -> void:
 	WorldQuery.register_enemy(self, enemy_kind(), enemy_rarity(), enemy_tier(), body_radius, health)
 
 
+## Per-source floor for TimeControl.scaled_delta (ability-scripting.md).
+## 0 (default): the body freezes at the world scale. Null casters stay at 0.
+var time_scale_floor := 0.0
+
+
 func _physics_process(delta: float) -> void:
+	_enemy_physics(TimeControl.scaled_delta(delta, time_scale_floor))
+
+
+func _enemy_physics(delta: float) -> void:
 	if _alive and player != null:
 		var to_player := player.global_position - global_position
 		var dist := to_player.length()

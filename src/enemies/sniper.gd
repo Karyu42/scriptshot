@@ -29,6 +29,8 @@ var last_shot: ShotRequest
 var last_shot_id := -1
 
 var _windup := -1.0
+## 0.5 for a Null-attack telegraph (ability-scripting.md).
+var telegraph_time_scale_floor := 0.0
 var _cooldown := 0.0
 var _lock := Vector2.ZERO
 
@@ -71,25 +73,30 @@ func _contact(_dist: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var body_dt := TimeControl.scaled_delta(delta, time_scale_floor)
 	if _alive and player != null and is_instance_valid(player):
 		_step_shot(delta)
-		_flash = maxf(_flash - delta * 8.0, 0.0)
+		_flash = maxf(_flash - body_dt * 8.0, 0.0)
 		queue_redraw()
 	last_displacement = global_position - _prev_position
 	_prev_position = global_position
 
 
-func _step_shot(delta: float) -> void:
-	if not is_finite(delta) or delta < 0.0:
+func _step_shot(engine_delta: float) -> void:
+	if not is_finite(engine_delta) or engine_delta < 0.0:
 		return
 	if _windup >= 0.0:
-		_windup = maxf(_windup - delta, 0.0)
+		# Null casters freeze (time_scale_floor 0) but a Null telegraph still
+		# uses max(world_scale, telegraph_time_scale_floor).
+		var tdelta := TimeControl.scaled_delta(engine_delta, telegraph_time_scale_floor)
+		_windup = maxf(_windup - tdelta, 0.0)
 		if _windup <= 0.0:
 			_windup = -1.0
 			_cooldown = PERIOD - WINDUP
 			_fire()
 		return
-	_cooldown = maxf(_cooldown - delta, 0.0)
+	var cdt := TimeControl.scaled_delta(engine_delta, time_scale_floor)
+	_cooldown = maxf(_cooldown - cdt, 0.0)
 	if _cooldown > 0.0:
 		return
 	if player.global_position.distance_to(global_position) <= RANGE:

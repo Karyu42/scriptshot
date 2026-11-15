@@ -86,7 +86,7 @@ func advance(delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	advance(delta)
+	advance(TimeControl.scaled_delta(delta, 0.0))
 
 
 func _on_armed(_reason: StringName) -> void:

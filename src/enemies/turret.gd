@@ -18,6 +18,7 @@ var _request := ShotRequest.new()
 
 
 func _physics_process(delta: float) -> void:
+	delta = TimeControl.scaled_delta(delta, time_scale_floor)
 	if health <= 0.0 or emitter == null or target == null:
 		return
 	_timer -= delta

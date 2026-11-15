@@ -241,6 +241,7 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var dt := TimeControl.scaled_delta(delta, time_scale_floor)
 	var was_woken := woken
 	if _alive and player != null and is_instance_valid(player) and not woken:
 		if is_finite(wake_x) and player.global_position.x >= wake_x:
@@ -249,17 +250,17 @@ func _physics_process(delta: float) -> void:
 			woken = true
 	if _alive and player != null and is_instance_valid(player) and has_affix(AffixCatalog.BULWARK) and _hurtbox != null:
 		var turn := BULWARK_RARE_TURN if rarity == EnemyKinds.RARITY_RARE else 0.0
-		_hurtbox.face(player.global_position, turn, delta)
-	super._physics_process(delta)
+		_hurtbox.face(player.global_position, turn, dt)
+	_enemy_physics(dt)
 	if not _alive:
 		return
 	if cue != null:
-		cue.advance(delta)
+		cue.advance(dt)
 	if woken and not was_woken:
 		_on_woke()
 	var can_summon := not is_half and has_affix(AffixCatalog.SUMMONER)
 	if can_summon and (woken or not summon_after_wake):
-		_tick_summon(delta)
+		_tick_summon(dt)
 	queue_redraw()
 
 

@@ -196,6 +196,8 @@ var _wall_hit_index := PackedInt32Array()
 var _reflector_count := 0
 ## Delta of the step in progress. Return legs fly for the unused fraction of it.
 var _step_delta := 0.0
+## True after we last told the native sim to use a world scale other than 1.
+var _native_time_scaled := false
 ## True from the start of step() until the native move has been applied. Script
 ## reflect_bullet() on a native id in that window is queued and run after the
 ## move, before collision. Outside the window it applies immediately.
@@ -1230,6 +1232,7 @@ func step(delta: float) -> void:
 	# A zone that appears in on_update is in this tick's sweep (zones are
 	# collected after the hooks). One that appears during hit delivery is not.
 	_step_delta = delta
+	_sync_world_time_scale()
 	_defer_native_reflect = native != null
 	_follow_bounds()
 	var t0 := Time.get_ticks_usec()
@@ -1431,6 +1434,20 @@ func recenter_world_bounds(center: Vector2) -> void:
 		_native_renderer.set_world_bounds(world_bounds)
 	if native != null:
 		native.set_bounds(world_bounds)
+
+
+func _sync_world_time_scale() -> void:
+	var active := TimeControl != null and TimeControl.is_active()
+	var scale := 1.0
+	var floor_s := 0.5
+	if TimeControl != null:
+		scale = TimeControl.world_scale()
+		floor_s = TimeControl.NULL_TIME_SCALE_FLOOR
+	if native == null:
+		return
+	if active or _native_time_scaled:
+		native.set_world_time_scale(scale, floor_s)
+		_native_time_scaled = active
 
 
 func _follow_bounds() -> void:

@@ -141,6 +141,8 @@ var save: SaveGame
 ## Pillars Q6 / §5.2: default true. Off, the gap and the tithe still define
 ## the fight and a single signature does not lose damage.
 @export var boss_habituation := true
+## Per-source TimeControl floor. 0: the body freezes at the world scale.
+var time_scale_floor := 0.0
 var habituation := WardenHabituation.new()
 var _fan_wait := 0.0
 var _fan_windup := 0.0
@@ -357,9 +359,11 @@ func apply_debug_hit(
 
 
 func _physics_process(delta: float) -> void:
+	# Death-ring shrink stays on engine time ("time scale stays 1", §5.6).
 	if not _alive:
 		_step_death(delta)
 		return
+	delta = TimeControl.scaled_delta(delta, time_scale_floor)
 	_core_hit_ids = PackedInt64Array()
 	if _flash_left > 0.0:
 		_flash_left = maxf(_flash_left - delta, 0.0)
@@ -1506,6 +1510,7 @@ class _EnemyShotFade:
 		return out
 
 	func _physics_process(delta: float) -> void:
+		delta = TimeControl.scaled_delta(delta, 0.0)
 		if _left <= 0.0:
 			return
 		_left = maxf(_left - maxf(delta, 0.0), 0.0)

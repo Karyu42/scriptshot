@@ -440,6 +440,10 @@ func step(delta: float) -> int:
 
 
 ## Move only. Pair with collide() when a script reflect must land between them.
+func set_world_time_scale(scale: float, null_floor: float) -> void:
+	sim.set_world_time_scale(scale, null_floor)
+
+
 func integrate(delta: float) -> void:
 	sim.integrate(delta)
 
