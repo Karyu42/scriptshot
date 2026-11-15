@@ -928,6 +928,14 @@ func _ring_dot_in_gap(angle: float) -> bool:
 	return absf(angle_difference(angle, _ring_gap)) <= RING_GAP * 0.5
 
 
+## Legendary Null / Writ ring. The common fight never calls this; its own
+## ring still forces pierces_script_invuln = false.
+func fire_legendary_null_ring() -> PackedInt64Array:
+	if _bullets == null or not is_instance_valid(_bullets):
+		return PackedInt64Array()
+	return NullAttacks.spawn_ring(_bullets, global_position)
+
+
 func _fire_ring() -> void:
 	last_ring.clear()
 	var centre := global_position

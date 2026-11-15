@@ -1218,12 +1218,86 @@ func _run_batch_hooks(delta: float) -> void:
 		var view := gather_batch(id, delta)
 		if view.n == 0:
 			continue
-		if view.native_rows < view.n:
-			pool.hook_ran = true
-		b.on_update_batch(view)
-		if not view.discard:
-			commit_batch(view)
+		if TimeControl != null and TimeControl.is_active():
+			_run_scaled_batch_hook(b, view, delta)
+		else:
+			_invoke_batch_hook(b, view)
 	_batch_depth -= 1
+
+
+func _invoke_batch_hook(b: BulletBehavior, view: BatchView) -> void:
+	if view.native_rows < view.n:
+		pool.hook_ran = true
+	b.on_update_batch(view)
+	if not view.discard:
+		commit_batch(view)
+
+
+## One batch callback per distinct hook dt so view.dt matches every row.
+func _run_scaled_batch_hook(b: BulletBehavior, view: BatchView, delta: float) -> void:
+	var dts := PackedFloat32Array()
+	dts.resize(view.n)
+	var unique: Array[float] = []
+	for i in view.n:
+		var dt := _batch_row_dt(view, i, delta)
+		dts[i] = dt
+		var seen := false
+		for existing in unique:
+			if is_equal_approx(existing, dt):
+				seen = true
+				break
+		if not seen:
+			unique.append(dt)
+	if unique.size() <= 1:
+		if not unique.is_empty():
+			view.dt = unique[0]
+		_invoke_batch_hook(b, view)
+		return
+	for scale_dt in unique:
+		var sub := _slice_batch_view(view, dts, scale_dt)
+		if sub.n == 0:
+			continue
+		sub.dt = scale_dt
+		_invoke_batch_hook(b, sub)
+
+
+func _batch_row_dt(view: BatchView, i: int, delta: float) -> float:
+	var player_shot := BulletPool.owner_slot(view.owner[i]) == BulletPool.OWNER_PLAYER
+	return TimeControl.bullet_delta(delta, player_shot, _id_is_null_attack(view, i))
+
+
+func _id_is_null_attack(view: BatchView, i: int) -> bool:
+	var bullet_id := view.id[i]
+	if i < view.native_rows and native != null:
+		return (native.source_flags_of(bullet_id) & Health.SOURCE_PIERCES_SCRIPT_INVULN) != 0
+	var slot := pool.slot_of(bullet_id)
+	if slot < 0:
+		return false
+	return pool.pierces_script_invuln[slot] != 0
+
+
+func _slice_batch_view(view: BatchView, dts: PackedFloat32Array, want: float) -> BatchView:
+	var sub := BatchView.new()
+	var native_kept := 0
+	for i in view.n:
+		if not is_equal_approx(dts[i], want):
+			continue
+		sub.id.append(view.id[i])
+		sub.px.append(view.px[i])
+		sub.py.append(view.py[i])
+		sub.vx.append(view.vx[i])
+		sub.vy.append(view.vy[i])
+		sub.age.append(view.age[i])
+		sub.pa.append(view.pa[i])
+		sub.pb.append(view.pb[i])
+		sub.owner.append(view.owner[i])
+		if i < view.native_rows:
+			native_kept += 1
+	sub.n = sub.id.size()
+	sub.native_rows = native_kept
+	sub.native = sub.native_rows > 0 and sub.native_rows == sub.n
+	sub.capture_commit_keys()
+	return sub
 
 
 ## Advances the whole bullet simulation by `delta` seconds.

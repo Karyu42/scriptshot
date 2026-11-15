@@ -39,6 +39,10 @@ extends Node
 ##                          forces the C++ pool for hook-free bullets, including
 ##                          on_batch. Hooked per-bullet bullets stay on GDScript.
 ##   --json=path            also write results as JSON (includes the hooked fraction and backend)
+##   --time-stop=0          hold a TimeControl scale (0..1) for the whole run so
+##                          the active-stop path can be measured. Omitted is off
+##                          (the default inactive path). The real-time timer is
+##                          paused so the effect does not expire mid-run.
 ##
 ## "work" is the cost of one game frame of bullet work (top-up spawns +
 ## BulletManager.step: kinematics, collision, hooks, despawn, MultiMesh buffer
@@ -88,6 +92,9 @@ var backend_preference := "gdscript"
 ## Zones reflect both factions with the pool's reflection cap lifted, so plain
 ## bullets bounce for the whole run instead of once.
 var mirror_count := 0
+## < 0 leaves TimeControl inactive (default). 0..1 holds that world scale
+## for the whole run (--time-stop).
+var time_stop_scale := -1.0
 
 var _manager: BulletManager
 var _rng := RandomNumberGenerator.new()
@@ -179,8 +186,16 @@ func _ready() -> void:
 		hb.layer = Layers.ENEMY
 		hb.position = Vector2(_rng.randf_range(ARENA.position.x, ARENA.end.x), _rng.randf_range(ARENA.position.y, ARENA.end.y))
 		add_child(hb)
-	print("[bench] Godot %s | backend: %s | preference: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | bad %d | pierce fraction %.2f (pierce %d)"
-		% [Engine.get_version_info().string, _manager.backend, backend_preference, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, bad_rows, PIERCE_FRACTION, PIERCE_EXTRA])
+	if time_stop_scale >= 0.0:
+		# Hold the scale for the whole run: the real-time timer is frozen.
+		TimeControl.set_process(false)
+		TimeControl.cancel()
+		TimeControl.request(time_stop_scale, TimeControl.MAX_STOP_SECONDS)
+	var stop_label := "off"
+	if time_stop_scale >= 0.0:
+		stop_label = "%.2f" % time_stop_scale
+	print("[bench] Godot %s | backend: %s | preference: %s | renderer: %s | %d hurtboxes, %d walls, %d mirrors | %d warmup + %d measured frames per count | hooked fraction %.2f | batch %d | bad %d | pierce fraction %.2f (pierce %d) | time-stop %s"
+		% [Engine.get_version_info().string, _manager.backend, backend_preference, RenderingServer.get_video_adapter_name(), TARGET_COUNT, _walls.size(), mirror_count, warmup, frames, hooked_fraction, batch_mode, bad_rows, PIERCE_FRACTION, PIERCE_EXTRA, stop_label])
 	_next_count()
 
 
@@ -427,4 +442,13 @@ func _parse_args() -> String:
 				mirror_count = int(kv[1])
 				if mirror_count < 0:
 					return "--mirrors must be >= 0, got '%s'" % kv[1]
+			"time-stop":
+				var scale := 0.0
+				@warning_ignore_start("unsafe_call_argument")
+				if kv[1].is_valid_float():
+					scale = float(kv[1])
+				@warning_ignore_restore("unsafe_call_argument")
+				if not kv[1].is_valid_float() or not is_finite(scale) or scale < 0.0 or scale > 1.0:
+					return "--time-stop must be between 0 and 1, got '%s'" % kv[1]
+				time_stop_scale = scale
 	return ""
