@@ -447,14 +447,23 @@ How it carries over (in this build):
 - Functions, coroutines (threads) and userdata, and entries with other keys, are **not copied**. Metatables are not
   copied either: the copy is plain tables, and copying never runs a metamethod.
 - Each drop or cut is a non-fatal **warning** in the editor's Problems list after the save ("state.f is a function;
-  ... it was not copied"). The save itself goes through.
+  ... it was not copied"). The save itself goes through. A save also warns about what the **next** copy will drop
+  from the new version's `state` ("... it will not be copied by the next save"), so a function the top level puts in
+  `state` is reported on the save that adds it, not one save later. Something stored from a callback during play is
+  reported on the next save.
 - Caps, so a huge `state` cannot stall a save: at most 32 nested tables (`state` is the first), 8192 entries looked at,
   and 256 KiB of encoded data (about the bytes of its strings plus a few per entry). Past a cap the rest is not copied,
-  with a warning. A copy at the caps takes a few milliseconds.
+  with a warning. A `state` near the caps makes that save hitch for roughly one frame (about 15–25 ms on a busy
+  machine, counting the copy out, the copy in, and the check for the next copy); a few small tables cost next to
+  nothing.
 - A save that fails (compile error, error at the top level, no weapon table, a table the host rejects) leaves the
   running version and its `state` exactly as they were; the next good save copies from it.
 - Shots still in flight from an older version keep running that version's code against **that version's** `state`.
   Only the new version gets the copy, so what old shots write after the save does not reach the new version.
+- If guard stops (runaway or memory-hog callbacks) pile up, the host restarts the running file on a fresh Lua state.
+  That restart works like a save: the top level runs again with a copy of `state`, so a counter bumped at the top
+  level (`state.n = state.n + 1`) counts it, and its copy warnings show as script warnings. Use the
+  `state.n = state.n or 0` idiom at the top level and change `state` from callbacks.
 - `state` belongs to the weapon, not the file: equipping another file in the editor is a save too, and carries it.
 
 The Game Designer calls this section implements (recorded in #93):
