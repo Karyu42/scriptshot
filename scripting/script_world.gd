@@ -136,6 +136,7 @@ static func request_time(scale: float, seconds: float) -> Dictionary:
 	if is_nan(scale) or is_nan(seconds) or seconds <= 0.0:
 		return {"ok": false, "err": "invalid", "retry_in": retry_in()}
 	var s := clampf(scale, TimeControl.MIN_SCALE, TimeControl.MAX_SCALE)
+	# Belt and braces: TimeControl (#128) clamps INF and long durations too.
 	var d := minf(seconds, TimeControl.MAX_STOP_SECONDS)
 	var r: Variant = tc.call("request", s, d)
 	var ok := false

@@ -980,7 +980,7 @@ print(player.size)     -- 0.4 (or less, if a wall was in the way of growing)
 - **Growing into a wall.** The engine pushes you out to a free spot. If there's no free spot within 64 px, you grow only as far as fits, and that smaller size is what `player.size` reads back. Being too big for a door is not a soft-lock: edit the script.
 - **One change per tick.** The engine applies at most one size write per physics tick. If you write again in the same tick, that write is held and applied on a later tick, and the last held write wins. Until then, reads give the size in effect.
   - A write from a bullet callback (`on_hit`, `on_death`, `on_tick`, `on_batch`) is always held for a later tick, so your body never changes size while collisions are running.
-- **It sticks.** The size is kept in your save, so it stays after a respawn and in your next session. Write `player.size = 1` to go back to normal.
+- **It sticks.** The size is saved, so it persists across a reload, a respawn and your next session. Write `player.size = 1` to go back to normal.
 - **Events.** A size change emits `PlayerState.script_wrote("size", old, new)`. No launch boss reacts to size.
 
 ### `world.time_scale(scale, seconds)` and `world.time_stop(seconds)`
@@ -998,7 +998,7 @@ end
 - **Null attacks.** **Null attacks still move at least half speed.** These are the white-violet attacks that pierce script invulnerability: bullets with `null_pierce` (`pierces_script_invuln`) and their telegraphs, the Null-shot affix, and legendary Null rings. They move at `max(scale, 0.5)`. The bodies of Null enemies and casters still freeze.
 - **Bosses that ignore it.** The Equalizer and the Eater don't react to a time stop. The Rift reads only your position.
 - **Scale.** Clamped to **0 to 1**, so there's no speed-up. `world.time_stop(s)` is scale 0, a full freeze.
-- **Duration.** At most **3 s** per call. Longer values, including `math.huge`, become 3 s. A duration that is 0 or less, or NaN in either argument, gives `false, "invalid"`. An argument that isn't a number is a Lua error.
+- **Duration.** At most **3 s** per call. Longer values, including `math.huge`, become 3 s (the engine clamps them too). A duration that is 0 or less, or NaN in either argument, gives `false, "invalid"`. An argument that isn't a number is a Lua error.
 - **Cooldown.** The cooldown starts when the effect ends and lasts **1.5 × the time it ran, at least 1 s**. A full 3 s stop rests for 4.5 s, which keeps the world slowed at most 40% of the time.
 - **Refusals.** A call while an effect runs or while the cooldown runs returns `false, "active"` or `false, "cooldown"` and the wait. It never extends or stacks an effect.
   - The wait is `retry_in`, the seconds until a call can work. While an effect runs, that's what is left of it plus the cooldown it will leave behind.
