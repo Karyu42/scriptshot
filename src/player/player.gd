@@ -84,6 +84,9 @@ var _ability_cooldown_left := 0.0
 ## Set when perform_builtin_dash emits `dashed` during a try_dash ability call,
 ## so a true return does not emit the signal a second time.
 var _dashed_this_try := false
+## True while ability.on_dash is on the stack. Nested slot calls return false;
+## perform_builtin_dash is still allowed.
+var _in_on_dash := false
 var _time := 0.0
 var _shot_index := 0
 var _flash := 0.0
@@ -185,11 +188,19 @@ func _fire() -> void:
 ## cooldown starts, `dashed` emitted with the direction used). False, a
 ## non-bool return, a thrown error, or a freed ability leaves the buffer
 ## waiting. Engine motion and i-frames come only from perform_builtin_dash().
+##
+## on_dash must return a bool synchronously. Do not await: a coroutine
+## (GDScriptFunctionState) or any non-bool is treated as false and warns once.
+## A nested try_dash / slot call from inside on_dash returns false;
+## perform_builtin_dash is still allowed. The false path may run on every
+## physics tick while a press is buffered; keep it free of side effects.
 func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 	if _dead:
 		return false
 	var dir := _resolve_dash_direction(direction)
 	if _has_dash_ability:
+		if _in_on_dash:
+			return false
 		return _try_ability_dash(dir)
 	return perform_builtin_dash(dir)
 
@@ -221,8 +232,10 @@ func perform_builtin_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 ## optional ability.get_cooldown() -> float (finite, clamped to >= 0; otherwise
 ## dash_cooldown). Input, the buffer, death, and cooldown gating stay here.
 func set_dash_ability(ability: Object) -> void:
-	# Freed objects compare equal to null; treat an explicit null as "built-in"
-	# and any other reference (even one that is later freed) as "ability set".
+	# Explicit null restores the built-in dash. The engine rejects a freed
+	# Object at the call site (typed argument), so this path does not see one.
+	# A reference that is later freed is still treated as "ability set" via
+	# _has_dash_ability; try_dash then fails closed.
 	if ability == null:
 		_dash_ability = null
 		_has_dash_ability = false
@@ -280,16 +293,29 @@ func _resolve_dash_direction(direction: Vector2) -> Vector2:
 func _tick_ability_cooldown(delta: float) -> void:
 	if is_finite(delta) and delta > 0.0:
 		_ability_cooldown_left = maxf(_ability_cooldown_left - delta, 0.0)
+		if _ability_cooldown_left < DashState.EPSILON:
+			_ability_cooldown_left = 0.0
 
 
 func _try_ability_dash(dir: Vector2) -> bool:
+	if _in_on_dash:
+		return false
 	if _ability_cooldown_left > 0.0:
 		return false
+	# Capture before on_dash: a swap inside the hook must not change this dash's wait.
+	var slot_cooldown := _ability_cooldown
 	_dashed_this_try = false
-	if not _call_dash_ability(dir):
+	_in_on_dash = true
+	var accepted := _call_dash_ability(dir)
+	_in_on_dash = false
+	if _dead:
 		return false
-	_ability_cooldown_left = _ability_cooldown
-	if not _dashed_this_try:
+	# A successful perform_builtin_dash consumes the press even if on_dash
+	# then returns false or errors, so the buffer is not retried next tick.
+	if not accepted and not _dashed_this_try:
+		return false
+	_ability_cooldown_left = slot_cooldown
+	if accepted and not _dashed_this_try:
 		var used := dir
 		if not used.is_finite() or used.length_squared() <= 0.0001:
 			used = aim_direction
@@ -317,15 +343,26 @@ func _call_dash_ability(dir: Vector2) -> bool:
 	# a failed or non-bool result is treated as false (buffer keeps waiting).
 	var raw: Variant = _dash_ability.call("on_dash", self, dir)
 	if typeof(raw) != TYPE_BOOL:
-		ScriptWarnings.warn(
-			"Player.dash_ability",
-			"Player.try_dash(): on_dash() must return a bool"
-		)
+		var message := "Player.try_dash(): on_dash() must return a bool"
+		if _is_coroutine_state(raw):
+			message = "Player.try_dash(): on_dash() must return synchronously; an await is treated as false"
+		ScriptWarnings.warn("Player.dash_ability", message)
 		return false
 	@warning_ignore_start("unsafe_cast")
 	var accepted: bool = raw
 	@warning_ignore_restore("unsafe_cast")
 	return accepted
+
+
+
+static func _is_coroutine_state(raw: Variant) -> bool:
+	# GDScriptFunctionState exists at runtime but is not a named type in scope.
+	if typeof(raw) != TYPE_OBJECT:
+		return false
+	@warning_ignore_start("unsafe_cast")
+	var obj: Object = raw
+	@warning_ignore_restore("unsafe_cast")
+	return obj != null and obj.is_class("GDScriptFunctionState")
 
 
 ## A dash press: tried this tick, and if the dash is not available (cooling down
