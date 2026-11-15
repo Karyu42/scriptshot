@@ -196,11 +196,6 @@ var _wall_hit_index := PackedInt32Array()
 var _reflector_count := 0
 ## Delta of the step in progress. Return legs fly for the unused fraction of it.
 var _step_delta := 0.0
-## TimeControl as it stood when this step began (_sync_world_time_scale). A
-## time request made by a hook mid-step applies from the next step, never to
-## the rest of this one (ability-scripting.md: "at once" = next integration).
-var _step_time_active := false
-var _step_time_scale := 1.0
 ## True after we last told the native sim to use a world scale other than 1.
 var _native_time_scaled := false
 ## True from the start of step() until the native move has been applied. Script
@@ -1212,6 +1207,10 @@ func _batch_spawn(view: BatchView, row: int, request: ShotRequest) -> void:
 
 func _run_batch_hooks(delta: float) -> void:
 	_batch_depth += 1
+	# Use the dts frozen at the start of step, not live TimeControl: a request
+	# in an earlier hook (per-bullet or an earlier batch) must not change
+	# remaining views this tick.
+	var scaled := pool.tick_time_scaled
 	for slot in range(1, _behaviors.size()):
 		var b := _behaviors[slot]
 		if b == null or not _wants_batch_callback(b):
@@ -1223,7 +1222,7 @@ func _run_batch_hooks(delta: float) -> void:
 		var view := gather_batch(id, delta)
 		if view.n == 0:
 			continue
-		if _step_time_active:
+		if scaled:
 			_run_scaled_batch_hook(b, view, delta)
 		else:
 			_invoke_batch_hook(b, view)
@@ -1240,11 +1239,10 @@ func _invoke_batch_hook(b: BulletBehavior, view: BatchView) -> void:
 
 ## One batch callback per time-scale class so view.dt matches every row.
 ## Class dts are computed once; rows are tagged 0/1/2 (player / enemy / Null).
-func _run_scaled_batch_hook(b: BulletBehavior, view: BatchView, delta: float) -> void:
-	var scale := _step_time_scale
-	var player_dt := delta
-	var enemy_dt := delta * scale
-	var null_dt := delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
+func _run_scaled_batch_hook(b: BulletBehavior, view: BatchView, _delta: float) -> void:
+	var player_dt := pool.tick_player_dt
+	var enemy_dt := pool.tick_enemy_dt
+	var null_dt := pool.tick_null_dt
 	var classes := PackedInt32Array()
 	classes.resize(view.n)
 	var seen := 0
@@ -1317,6 +1315,9 @@ func step(delta: float) -> void:
 	# A zone that appears in on_update is in this tick's sweep (zones are
 	# collected after the hooks). One that appears during hit delivery is not.
 	_step_delta = delta
+	# Class dts and the native scale are frozen here for the whole tick.
+	# A TimeControl.request from a hook mid-step takes effect on the next step.
+	pool.begin_time_scale_tick(delta)
 	_sync_world_time_scale()
 	_defer_native_reflect = native != null
 	_follow_bounds()
@@ -1496,6 +1497,7 @@ func step(delta: float) -> void:
 	last_phase_usec[Phase.DESPAWN] = t4 - t3
 	last_phase_usec[Phase.RENDER] = t5 - t4
 	last_step_usec = t5 - t0
+	pool.end_time_scale_tick()
 
 
 ## Slides world_bounds so it is centred on `center`, keeping the current size.
@@ -1528,8 +1530,6 @@ func _sync_world_time_scale() -> void:
 	if TimeControl != null:
 		scale = TimeControl.world_scale()
 		floor_s = TimeControl.NULL_TIME_SCALE_FLOOR
-	_step_time_active = active
-	_step_time_scale = scale if active else 1.0
 	if native == null:
 		return
 	if active or _native_time_scaled:
