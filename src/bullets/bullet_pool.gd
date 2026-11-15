@@ -511,6 +511,10 @@ func spawn_simple(
 ## flush_dead(), which lets the manager run hooks first). Also rebuilds the
 ## `hooked` list.
 func advance(delta: float, bounds: Rect2) -> void:
+	# Time stop is off the hot path: one bool check per tick, not per bullet.
+	if TimeControl != null and TimeControl.is_active():
+		_advance_scaled(delta, bounds)
+		return
 	if log_despawns:
 		despawn_log_reason.clear()
 		despawn_log_life.clear()
@@ -571,9 +575,67 @@ func advance(delta: float, bounds: Rect2) -> void:
 ## advance() has already walked the old count: those bullets still need this
 ## tick's step, and only this one. Does not touch the hooked list (a migrated
 ## bullet is hook-free; the list was built for the bullets that already advanced).
+func _bullet_dt(i: int, delta: float) -> float:
+	return TimeControl.bullet_delta(
+		delta,
+		owner_layer[i] == OWNER_PLAYER or owner_layer[i] == Layers.PLAYER,
+		pierces_script_invuln[i] != 0,
+	)
+
+
+## Same as advance() when TimeControl is active: each bullet gets its own delta
+## (player shots unscaled, Null attacks floored, other enemy shots scaled).
+func _advance_scaled(delta: float, bounds: Rect2) -> void:
+	if log_despawns:
+		despawn_log_reason.clear()
+		despawn_log_life.clear()
+	var min_x := bounds.position.x
+	var min_y := bounds.position.y
+	var max_x := bounds.end.x
+	var max_y := bounds.end.y
+	var n := count
+	hooked_count = 0
+	for i in n:
+		if dead_reason[i] != 0:
+			continue
+		var dt := _bullet_dt(i, delta)
+		prev_pos[i] = pos[i]
+		var a := age[i] + dt
+		age[i] = a
+		if not a < lifetime[i]:
+			mark_dead(i, DespawnReason.LIFETIME)
+			continue
+		var v := vel[i]
+		var turn := turn_rate[i]
+		var acc := accel[i]
+		if turn != 0.0 or acc != 0.0:
+			if turn != 0.0:
+				v = v.rotated(turn * dt)
+				rot[i] = rot[i].rotated(turn * dt)
+			if acc != 0.0:
+				var speed := v.length()
+				if speed > 0.0:
+					v *= clampf(speed + acc * dt, 0.0, BulletLimits.MAX_SPEED) / speed
+			vel[i] = v
+		var p := pos[i] + v * dt
+		pos[i] = p
+		if not (p.x >= min_x and p.x <= max_x and p.y >= min_y and p.y <= max_y):
+			if p.is_finite():
+				mark_dead(i, DespawnReason.BOUNDS)
+			else:
+				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
+			continue
+		var bid := behavior[i]
+		if bid != 0 and (not any_batch_only or (bid & BulletManager.OWNER_SLOT_MASK) >= batch_only.size() or batch_only[bid & BulletManager.OWNER_SLOT_MASK] == 0):
+			hooked[hooked_count] = i
+			hooked_count += 1
+
+
 func advance_one(i: int, delta: float, bounds: Rect2) -> void:
 	if i < 0 or i >= count or dead_reason[i] != 0:
 		return
+	if TimeControl != null and TimeControl.is_active():
+		delta = _bullet_dt(i, delta)
 	var min_x := bounds.position.x
 	var min_y := bounds.position.y
 	var max_x := bounds.end.x

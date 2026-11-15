@@ -22,6 +22,9 @@ const MAX_COORD := 100000.0
 ## Largest regeneration delay / interval (seconds) the setters accept.
 const MAX_REGEN_SECONDS := 3600.0
 
+## Emitted for every committed script write (ability-scripting.md).
+signal script_wrote(field: StringName, old: Variant, new: Variant)
+
 var _player: Player
 
 
@@ -159,6 +162,30 @@ func set_regen_amount(amount: float) -> float:
 
 
 # --- movement ----------------------------------------------------------------
+
+func get_size() -> float:
+	return _player.get_size() if _ok() else 1.0
+
+
+## Body size: hurtbox, sprite and wall-collision radius scale together, as does
+## the muzzle offset. Pickup radius is the base plus the body-radius change.
+## Dash distance and move speed are not scaled. Clamped to Player.MIN_SIZE ..
+## Player.MAX_SIZE (ability-scripting.md). Non-finite values are ignored.
+## If the new body overlaps a wall, the write commits and the player is pushed
+## out; if no free spot exists within Player.SIZE_RESOLVE_RADIUS, the size grows
+## only as far as it still fits. Returns the applied size.
+func set_size(value: float) -> float:
+	if not _ok():
+		return 1.0
+	if not is_finite(value):
+		ScriptWarnings.warn("PlayerState.set_size", "PlayerState.set_size(): non-finite size ignored")
+		return _player.get_size()
+	var old := _player.get_size()
+	var applied := _player.apply_size(value)
+	if applied != old:
+		script_wrote.emit(&"size", old, applied)
+	return applied
+
 
 func get_speed() -> float:
 	return _player.max_speed if _ok() else 0.0

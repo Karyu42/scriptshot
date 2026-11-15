@@ -68,7 +68,11 @@ func _tier() -> int:
 	return WorldGen.tier_at(global_position.x, global_position.y)
 
 
+var time_scale_floor := 0.0
+
+
 func _process(delta: float) -> void:
+	delta = TimeControl.scaled_delta(delta, time_scale_floor)
 	if _respawn_timer > 0.0:
 		_respawn_timer -= delta
 		if _respawn_timer <= 0.0:
