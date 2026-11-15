@@ -258,13 +258,19 @@ const SANDBOX_PATH := "res://scripting/sandbox.lua"
 const STATE_CODEC_PATH := "res://scripting/state_codec.lua"
 ## Caps on one `state` copy between versions. Past one of them the rest is
 ## dropped with a warning, so the copy is a bounded amount of host work
-## (well inside one frame) whatever the script stored. Depth counts tables:
+## whatever the script stored: at the caps, a save (copy out, copy in, and the
+## check for the next copy) costs roughly one frame. Depth counts tables:
 ## `state` itself is 1.
 const STATE_MAX_DEPTH := 32
 ## Key/value pairs looked at, dropped ones included.
 const STATE_MAX_ENTRIES := 8192
 ## Encoded size: about the string bytes plus a few per entry.
 const STATE_MAX_BYTES := 256 * 1024
+## ScriptWarnings key for the reload after a state rotation.
+const ROTATION_STATE_WARNING_KEY := "ScriptHost.rotation_state_copy"
+## How state_codec.lua words a note about the next copy (encode with `ahead`).
+const STATE_AHEAD_DROPPED := "will not be copied by the next save"
+const STATE_AHEAD_CUT := "will be cut there by the next save"
 const LIBS := (
 	LuaState.LUA_BASE
 	| LuaState.LUA_COROUTINE
@@ -674,7 +680,15 @@ func _rotate_state_if_needed() -> void:
 	if _ready:
 		if had_fresh:
 			snapshot_globals()
-		load_string(source, chunk, had_fresh, carried)
+		# The file's top level runs again here, as on a save (a counter it
+		# bumps at the top level counts this), and `state` is copied the same
+		# way. Nobody holds this load's result, so its copy notes go to
+		# ScriptWarnings instead of the editor's save problems.
+		var reloaded := load_string(source, chunk, had_fresh, carried)
+		for w: String in reloaded.warnings:
+			ScriptWarnings.warn(ROTATION_STATE_WARNING_KEY, "%s: restarted after guard stops: %s" % [chunk, w])
+		if not reloaded.ok:
+			ScriptWarnings.warn(ROTATION_STATE_WARNING_KEY, "%s: restarted after guard stops but did not load: %s" % [chunk, reloaded.error])
 
 
 func _pin() -> void:
@@ -1083,8 +1097,28 @@ func load_string(code: String, chunk_name: String = "script.lua", fresh_env: boo
 		env.rawset("state", prev_state)
 	prev_state = null
 	if result.ok:
+		if _env == env:
+			_append_ahead_warnings(warnings)
 		result.warnings = warnings
 	return result
+
+
+## Notes, on the save that adopts a version, what its `state` holds that the
+## next copy will drop (a function its top level stored, say), so the warning
+## does not wait for the next save. A note the copy into this version already
+## made for the same place is not repeated.
+func _append_ahead_warnings(warnings: PackedStringArray) -> void:
+	if _closed or _in_lua or _state_encode == null or _env == null:
+		return
+	var v: Variant = _state_encode.invoke(_env, true)
+	if not v is String:
+		return
+	@warning_ignore("unsafe_cast")
+	var blob := v as String
+	for w: String in state_warnings(blob):
+		var as_done := w.replace(STATE_AHEAD_DROPPED, "was not copied").replace(STATE_AHEAD_CUT, "was cut there")
+		if not warnings.has(as_done):
+			warnings.append(w)
 
 
 func _load_into_env(code: String, chunk_name: String, env: LuaTable) -> RunResult:

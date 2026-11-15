@@ -296,7 +296,7 @@ One-time, the first transition of that flag from off to on. Reloading a save whe
 2. **Autocomplete:** the name was grey. It draws in the editor's normal token colour and stays at the top of the sense list for the rest of the session. `nearest_enemy` greys as `3 kills` until then. `enemies_in` greys as `found at: ???` until the Warden dies. The other four senses stay grey `found at: ???`.
 3. **Toast**, 2.5 s, bottom centre, `#F2F2F2`: `sense.nearest_enemy` or `sense.enemies_in`. No button.
 
-`nearest_enemy` page. The palette inserts `scripting/starters/homing.lua` as it is on PR #92 at `e850a08`. The call takes `{x, y}` and reads `e.pos.x` / `e.pos.y`. `on_batch` steers the direction and then restores the shot's original speed. `pull = 1800` is the one `-- <- tweak me` number. 1800 is the lowest value that still hits at speed 400, because the turning radius grows with speed squared. `b:steer_toward` is a later helper, not this slice.
+`nearest_enemy` page. The palette inserts `scripting/starters/homing.lua.txt` as it is on PR #92 at `e850a08`. The call takes `{x, y}` and reads `e.pos.x` / `e.pos.y`. `on_batch` steers the direction and then restores the shot's original speed. `pull = 1800` is the one `-- <- tweak me` number. 1800 is the lowest value that still hits at speed 400, because the turning radius grows with speed squared. `b:steer_toward` is a later helper, not this slice.
 
 ```lua
 -- Homing: shots steer toward the nearest enemy.
