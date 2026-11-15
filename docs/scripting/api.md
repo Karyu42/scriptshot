@@ -980,6 +980,7 @@ print(player.size)     -- 0.4 (or less, if a wall was in the way of growing)
 - **Growing into a wall.** The engine pushes you out to a free spot. If there's no free spot within 64 px, you grow only as far as fits, and that smaller size is what `player.size` reads back. Being too big for a door is not a soft-lock: edit the script.
 - **One change per tick.** The engine applies at most one size write per physics tick. If you write again in the same tick, that write is held and applied on a later tick, and the last held write wins. Until then, reads give the size in effect.
   - A write from a bullet callback (`on_hit`, `on_death`, `on_tick`, `on_batch`) is always held for a later tick, so your body never changes size while collisions are running.
+- **It sticks.** The size is kept in your save, so it stays after a respawn and in your next session. Write `player.size = 1` to go back to normal.
 - **Events.** A size change emits `PlayerState.script_wrote("size", old, new)`. No launch boss reacts to size.
 
 ### `world.time_scale(scale, seconds)` and `world.time_stop(seconds)`
@@ -1002,7 +1003,7 @@ end
 - **Refusals.** A call while an effect runs or while the cooldown runs returns `false, "active"` or `false, "cooldown"` and the wait. It never extends or stacks an effect.
   - The wait is `retry_in`, the seconds until a call can work. While an effect runs, that's what is left of it plus the cooldown it will leave behind.
 - **Clocks.** Both timers run on real time and pause while the game is paused (menus, the victory card). The victory card's freeze always wins over a script scale.
-- **Ending early.** The effect ends at once, with no cooldown, on player death, on respawn and on a boss kill.
+- **Ending early.** The effect ends at once, with no cooldown, on player death, on respawn, on a boss kill, and when a run starts or ends.
 - **There is no cancel.** Scripts can't end an effect early, because that would also skip its cooldown.
 - **Read-only helpers.** `world.time_scale_now()` returns the scale now: 1 when nothing runs, 0 during a full stop. `world.time_retry_in()` returns the seconds until a call can work (0 = now).
 - **In the Dash slot.** Only the time stop's own cooldown applies to the stop. Inside `on_dash`, `world.time_stop` returns `false` while it rests, and the dash still counts. "Dash = time stop" therefore runs at whichever of the two cooldowns is longer; neither adds to the other.

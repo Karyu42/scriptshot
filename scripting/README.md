@@ -191,7 +191,7 @@ same tick, or one from a bullet callback (`ScriptHost._in_bullet_hook`), is
 held and applied by `ScriptWorld.flush()`, which `AbilityScripts` calls every
 physics tick and every size read/write calls first. Time requests clamp the
 duration (INF too) to `TimeControl.MAX_STOP_SECONDS` and answer `ok, err,
-retry_in`; `retry_in` uses `TimeControl.retry_in()` when it exists. Nothing
+retry_in`; `retry_in` is `TimeControl.retry_in()`. Nothing
 binds `TimeControl.cancel()`. In Lua, `player` is a protected proxy (methods
 plus the `size` field) and `world` a read-only table, shared by every env.
 

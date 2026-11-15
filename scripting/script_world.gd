@@ -25,10 +25,6 @@ static var _held := 1.0
 static var size_engine_calls := 0
 ## Added to the physics frame count (tests drive ticks by hand).
 static var _tick_offset := 0
-## Duration of the stop now running, from TimeControl.script_time_scaled
-## (fallback for retry_in() when TimeControl has none).
-static var _stop_seconds := 0.0
-static var _time_signal_bound := false
 
 
 static func bind_player(player: Object) -> void:
@@ -122,15 +118,7 @@ static func _time_control() -> Node:
 	if not loop is SceneTree:
 		return null
 	var tree: SceneTree = loop
-	var tc := tree.root.get_node_or_null("TimeControl")
-	if tc != null and not _time_signal_bound and tc.has_signal("script_time_scaled"):
-		tc.connect("script_time_scaled", _on_time_scaled)
-		_time_signal_bound = true
-	return tc
-
-
-static func _on_time_scaled(_scale: float, seconds: float) -> void:
-	_stop_seconds = seconds
+	return tree.root.get_node_or_null("TimeControl")
 
 
 static func max_seconds() -> float:
@@ -158,27 +146,20 @@ static func request_time(scale: float, seconds: float) -> Dictionary:
 		var e: Variant = dict.get("err", "")
 		err = e if e is String else "invalid"
 	if ok:
-		_stop_seconds = d
 		return {"ok": true, "err": "", "retry_in": 0.0}
 	return {"ok": false, "err": err, "retry_in": retry_in()}
 
 
-## Seconds until a new request can start: 0 when free; the cooldown left; and
-## while a stop runs, what is left of it plus the cooldown it will leave
-## (max(COOLDOWN_MIN_SECONDS, COOLDOWN_DURATION_MUL * its duration)), assuming
-## it runs to the end (death, respawn and boss kills end it with no cooldown).
+## Seconds until a new request can start (TimeControl.retry_in): 0 when
+## free; the cooldown left; and while a stop runs, what is left of it plus the
+## cooldown it will leave (max(COOLDOWN_MIN_SECONDS, COOLDOWN_DURATION_MUL *
+## its duration)), assuming it runs to the end (death, respawn, a boss kill
+## and a new run end it with no cooldown).
 static func retry_in() -> float:
 	var tc := _time_control()
 	if tc == null:
 		return 0.0
-	if tc.has_method("retry_in"):
-		return _finite_nonneg(tc.call("retry_in"))
-	if not _truthy(tc.call("is_active")):
-		return _finite_nonneg(tc.call("cooldown_left"))
-	# TimeControl has no public "effect left" yet (GE is adding retry_in()).
-	var left := _finite_nonneg(tc.get("_effect_left"))
-	var cooldown := maxf(TimeControl.COOLDOWN_MIN_SECONDS, TimeControl.COOLDOWN_DURATION_MUL * _stop_seconds)
-	return left + cooldown
+	return _finite_nonneg(tc.call("retry_in"))
 
 
 ## The world time scale now (1 when no stop runs).
@@ -187,10 +168,6 @@ static func time_scale_now() -> float:
 	if tc == null:
 		return 1.0
 	return _finite_nonneg(tc.call("world_scale"))
-
-
-static func _truthy(v: Variant) -> bool:
-	return v is bool and v == true
 
 
 static func _finite_nonneg(v: Variant) -> float:
