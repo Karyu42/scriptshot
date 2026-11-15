@@ -117,6 +117,71 @@ class BadCooldownAbility extends RefCounted:
 		return true
 
 
+class ReenterAbility extends RefCounted:
+	var calls := 0
+	var nested_result := true
+
+	func on_dash(p: Object, d: Vector2) -> bool:
+		calls += 1
+		var host := p as Player
+		if host == null:
+			return false
+		nested_result = host.try_dash(d)
+		return true
+
+
+class KillInOnDashAbility extends RefCounted:
+	func on_dash(p: Object, _d: Vector2) -> bool:
+		var host := p as Player
+		if host == null:
+			return false
+		host.state.set_hp(0.0)
+		return true
+
+
+class BuiltinThenFalseAbility extends RefCounted:
+	func get_cooldown() -> float:
+		return 0.4
+
+	func on_dash(p: Object, d: Vector2) -> bool:
+		var host := p as Player
+		if host == null:
+			return false
+		host.perform_builtin_dash(d)
+		return false
+
+
+class SwapCooldownAbility extends RefCounted:
+	var other: Object = null
+
+	func get_cooldown() -> float:
+		return 0.4
+
+	func on_dash(p: Object, _d: Vector2) -> bool:
+		var host := p as Player
+		if host == null:
+			return false
+		host.set_dash_ability(other)
+		return true
+
+
+class LongCooldownAbility extends RefCounted:
+	func get_cooldown() -> float:
+		return 2.0
+
+	func on_dash(_p: Object, _d: Vector2) -> bool:
+		return true
+
+
+class AwaitAbility extends RefCounted:
+	func on_dash(p: Object, _d: Vector2) -> bool:
+		var host := p as Player
+		if host == null:
+			return false
+		await host.get_tree().process_frame
+		return true
+
+
 func test_null_ability_keeps_builtin_parity() -> void:
 	player.set_dash_ability(null)
 	watch_signals(player)
@@ -329,3 +394,95 @@ func test_respawn_clears_the_slot_cooldown() -> void:
 	assert_eq(player.get_ability_cooldown_left(), 0.0)
 	assert_true(player.try_dash(Vector2.RIGHT))
 	assert_eq(ability.calls, 2)
+
+
+func test_reentrant_on_dash_does_not_recurse() -> void:
+	var ability := ReenterAbility.new()
+	player.set_dash_ability(ability)
+	assert_true(player.try_dash(Vector2.RIGHT))
+	assert_eq(ability.calls, 1, "on_dash runs once")
+	assert_false(ability.nested_result, "nested try_dash returns false")
+	assert_almost_eq(player.get_ability_cooldown_left(), player.dash_cooldown, 0.0001)
+	assert_false(player.try_dash(Vector2.RIGHT), "slot cooldown still started once")
+	assert_eq(ability.calls, 1)
+
+
+func test_buffered_slot_and_builtin_both_refire_on_tick_90() -> void:
+	# At 60 Hz the default 1.5 s cooldown is 90 ticks. The slot must snap
+	# leftover float error the same way DashState.tick_cooldown does.
+	assert_eq(_buffered_refire_tick(null), 90)
+	assert_eq(_buffered_refire_tick(ParityAbility.new()), 90)
+
+
+func _buffered_refire_tick(ability: Object) -> int:
+	var host := (load("res://scenes/player.tscn") as PackedScene).instantiate() as Player
+	add_child_autofree(host)
+	host.set_physics_process(false)
+	host.global_position = Vector2(500, 500)
+	host.aim_direction = Vector2.RIGHT
+	host.dash_cooldown = 1.5
+	host.dash_buffer_time = 2.0
+	if ability != null:
+		host.set_dash_ability(ability)
+	assert_true(host.try_dash(Vector2.RIGHT))
+	host.request_dash()
+	assert_true(host.has_buffered_dash())
+	var fired_on := -1
+	for i in range(1, 121):
+		host._physics_process(DT)
+		host.health.tick(DT)
+		if not host.has_buffered_dash():
+			fired_on = i
+			break
+	return fired_on
+
+
+func test_player_state_exposes_the_slot_cooldown() -> void:
+	var ability := TrueAbility.new()
+	player.set_dash_ability(ability)
+	assert_eq(player.state.get_ability_cooldown_left(), 0.0)
+	assert_true(player.try_dash(Vector2.RIGHT))
+	assert_almost_eq(player.state.get_ability_cooldown_left(), player.get_ability_cooldown_left(), 0.0001)
+	assert_almost_eq(player.state.get_ability_cooldown_left(), player.dash_cooldown, 0.0001)
+	assert_eq(player.state.get_dash_cooldown_left(), 0.0, "engine cooldown was not started")
+
+
+func test_death_inside_on_dash_does_not_start_the_slot() -> void:
+	var ability := KillInOnDashAbility.new()
+	player.set_dash_ability(ability)
+	watch_signals(player)
+	assert_false(player.try_dash(Vector2.RIGHT))
+	assert_true(player.is_dead())
+	assert_eq(player.get_ability_cooldown_left(), 0.0)
+	assert_signal_not_emitted(player, "dashed")
+
+
+func test_builtin_dash_then_false_consumes_the_press() -> void:
+	var ability := BuiltinThenFalseAbility.new()
+	player.set_dash_ability(ability)
+	player.dash_buffer_time = 0.2
+	watch_signals(player)
+	player.request_dash()
+	_tick(1)
+	assert_true(player.is_dashing())
+	assert_signal_emit_count(player, "dashed", 1)
+	assert_almost_eq(player.get_ability_cooldown_left(), 0.4, 0.0001)
+	assert_false(player.has_buffered_dash(), "the press was consumed")
+
+
+func test_swapping_inside_on_dash_keeps_the_running_cooldown() -> void:
+	var ability := SwapCooldownAbility.new()
+	ability.other = LongCooldownAbility.new()
+	player.set_dash_ability(ability)
+	assert_true(player.try_dash(Vector2.RIGHT))
+	assert_almost_eq(player.get_ability_cooldown_left(), 0.4, 0.0001, "captured before the swap")
+
+
+func test_awaiting_on_dash_is_treated_as_false() -> void:
+	player.set_dash_ability(AwaitAbility.new())
+	watch_signals(player)
+	assert_false(player.try_dash(Vector2.RIGHT))
+	assert_false(player.is_dashing())
+	assert_eq(player.get_ability_cooldown_left(), 0.0)
+	assert_signal_not_emitted(player, "dashed")
+	assert_gte(ScriptWarnings.count("Player.dash_ability"), 1)

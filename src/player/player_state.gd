@@ -237,9 +237,16 @@ func can_dash() -> bool:
 	return _ok() and not _player.is_dead() and not _player.is_dashing() and _player.get_dash_cooldown_left() <= 0.0
 
 
-## Seconds until the next dash may start (0 = ready).
+## Seconds until the next engine dash may start (0 = ready). Independent of
+## a scripted ability's slot cooldown.
 func get_dash_cooldown_left() -> float:
 	return _player.get_dash_cooldown_left() if _ok() else 0.0
+
+
+## Seconds until the dash slot may call on_dash again (0 = ready). With no
+## ability set this is the engine cooldown.
+func get_ability_cooldown_left() -> float:
+	return _player.get_ability_cooldown_left() if _ok() else 0.0
 
 
 ## Total dash cooldown in seconds (the tuning value).
