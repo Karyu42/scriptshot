@@ -164,6 +164,10 @@ func bind_bullets(manager: BulletManager) -> void:
 	_bullets = manager
 
 
+func bullets() -> BulletManager:
+	return _bullets
+
+
 ## Drops the binding, but only if `manager` is the bound one (a second scene
 ## leaving the tree does not unbind the first).
 func unbind_bullets(manager: BulletManager) -> void:

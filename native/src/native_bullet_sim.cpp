@@ -29,6 +29,7 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_targets", "pos", "radius", "layer", "ids", "count"), &NativeBulletSim::set_targets);
 	ClassDB::bind_method(D_METHOD("step", "delta"), &NativeBulletSim::step);
 	ClassDB::bind_method(D_METHOD("integrate", "delta"), &NativeBulletSim::integrate);
+	ClassDB::bind_method(D_METHOD("set_world_time_scale", "scale", "null_floor"), &NativeBulletSim::set_world_time_scale);
 	ClassDB::bind_method(D_METHOD("collide"), &NativeBulletSim::collide);
 	ClassDB::bind_method(D_METHOD("integrate_would_die", "id", "delta"), &NativeBulletSim::integrate_would_die);
 	ClassDB::bind_method(D_METHOD("get_reflect_count_of", "id"), &NativeBulletSim::get_reflect_count_of);
@@ -68,6 +69,7 @@ void NativeBulletSim::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("get_previous_at", "slot"), &NativeBulletSim::get_previous_at);
 	ClassDB::bind_method(D_METHOD("get_velocity_at", "slot"), &NativeBulletSim::get_velocity_at);
 	ClassDB::bind_method(D_METHOD("get_owner_at", "slot"), &NativeBulletSim::get_owner_at);
+	ClassDB::bind_method(D_METHOD("get_source_flags_at", "slot"), &NativeBulletSim::get_source_flags_at);
 	ClassDB::bind_method(D_METHOD("get_reflect_count_at", "slot"), &NativeBulletSim::get_reflect_count_at);
 	ClassDB::bind_method(D_METHOD("get_wall_clip_at", "slot"), &NativeBulletSim::get_wall_clip_at);
 	ClassDB::bind_method(D_METHOD("is_slot_alive", "slot"), &NativeBulletSim::is_slot_alive);
@@ -1343,15 +1345,27 @@ void NativeBulletSim::collide_one(int i, bool have_walls, bool have_targets) {
 	py[i] = ny;
 }
 
+void NativeBulletSim::set_world_time_scale(double p_scale, double p_null_floor) {
+	world_time_scale = (float)p_scale;
+	null_time_floor = (float)p_null_floor;
+}
+
 int NativeBulletSim::step(double delta) {
 	begin_step();
 	const float min_x = bounds.position.x, min_y = bounds.position.y;
 	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
 	const bool have_walls = !wall_lo_x.empty();
 	const bool have_targets = target_count > 0;
+	const bool scale_time = world_time_scale < 1.0f;
 	const float fdelta = (float)delta;
+	const double player_dt = delta;
+	const double enemy_dt = delta * (double)world_time_scale;
+	const float null_s = world_time_scale < null_time_floor ? null_time_floor : world_time_scale;
+	const double null_dt = delta * (double)null_s;
 	for (int i = 0; i < count; i++) {
-		if (!integrate_one(i, delta, fdelta, min_x, min_y, max_x, max_y)) {
+		const double dt = scale_time ? class_time_delta(i, player_dt, enemy_dt, null_dt) : delta;
+		const float fdt = scale_time ? (float)dt : fdelta;
+		if (!integrate_one(i, dt, fdt, min_x, min_y, max_x, max_y)) {
 			continue;
 		}
 		collide_one(i, have_walls, have_targets);
@@ -1365,13 +1379,20 @@ void NativeBulletSim::integrate(double delta) {
 	begin_step();
 	const float min_x = bounds.position.x, min_y = bounds.position.y;
 	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
+	const bool scale_time = world_time_scale < 1.0f;
 	const float fdelta = (float)delta;
+	const double player_dt = delta;
+	const double enemy_dt = delta * (double)world_time_scale;
+	const float null_s = world_time_scale < null_time_floor ? null_time_floor : world_time_scale;
+	const double null_dt = delta * (double)null_s;
 	const int n = count;
 	if ((int)collide_mark.size() < n) {
 		collide_mark.resize(n);
 	}
 	for (int i = 0; i < n; i++) {
-		collide_mark[i] = integrate_one(i, delta, fdelta, min_x, min_y, max_x, max_y) ? 1 : 0;
+		const double dt = scale_time ? class_time_delta(i, player_dt, enemy_dt, null_dt) : delta;
+		const float fdt = scale_time ? (float)dt : fdelta;
+		collide_mark[i] = integrate_one(i, dt, fdt, min_x, min_y, max_x, max_y) ? 1 : 0;
 	}
 }
 
@@ -1405,7 +1426,8 @@ bool NativeBulletSim::integrate_would_die(int64_t p_id, double p_delta) const {
 	}
 	const float min_x = bounds.position.x, min_y = bounds.position.y;
 	const float max_x = bounds.position.x + bounds.size.x, max_y = bounds.position.y + bounds.size.y;
-	const IntegratedMotion m = compute_motion(s, p_delta, (float)p_delta, min_x, min_y, max_x, max_y);
+	const double dt = bullet_time_delta(s, p_delta);
+	const IntegratedMotion m = compute_motion(s, dt, (float)dt, min_x, min_y, max_x, max_y);
 	return m.expired || m.out_of_bounds;
 }
 
@@ -2079,6 +2101,13 @@ int NativeBulletSim::get_owner_at(int p_slot) const {
 		return 0;
 	}
 	return owner_layer[p_slot];
+}
+
+int NativeBulletSim::get_source_flags_at(int p_slot) const {
+	if (p_slot < 0 || p_slot >= count) {
+		return 0;
+	}
+	return (int)source_flags[p_slot];
 }
 
 int NativeBulletSim::get_reflect_count_at(int p_slot) const {

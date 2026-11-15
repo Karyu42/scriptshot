@@ -372,6 +372,16 @@ func owner_at(slot: int) -> int:
 	return v
 
 
+func source_flags_of(id: int) -> int:
+	if sim == null:
+		return 0
+	var slot: int = sim.slot_of(id)
+	if slot < 0:
+		return 0
+	var flags: int = sim.get_source_flags_at(slot)
+	return flags
+
+
 func reflect_count_at(slot: int) -> int:
 	var v: int = sim.get_reflect_count_at(slot)
 	return v
@@ -440,6 +450,10 @@ func step(delta: float) -> int:
 
 
 ## Move only. Pair with collide() when a script reflect must land between them.
+func set_world_time_scale(scale: float, null_floor: float) -> void:
+	sim.set_world_time_scale(scale, null_floor)
+
+
 func integrate(delta: float) -> void:
 	sim.integrate(delta)
 

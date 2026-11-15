@@ -40,10 +40,11 @@ func _idle(_delta: float) -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var dt := TimeControl.scaled_delta(delta, time_scale_floor)
 	if _alive and player != null and is_instance_valid(player) and _hurtbox != null:
 		# No turn cap: snap to the player every frame.
 		_hurtbox.face(player.global_position)
-	super._physics_process(delta)
+	_enemy_physics(dt)
 
 
 func _draw() -> void:

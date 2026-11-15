@@ -47,7 +47,7 @@ func bind(p_player: Node2D, dummies: Node) -> void:
 
 
 func _physics_process(delta: float) -> void:
-	advance(delta)
+	advance(TimeControl.scaled_delta(delta, 0.0))
 
 
 ## Steps the trigger by `delta` seconds. Public so tests can jump the 60 s

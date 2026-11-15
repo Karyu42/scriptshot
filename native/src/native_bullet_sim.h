@@ -90,6 +90,11 @@ public:
 	// Move only. collide() runs the sweeps, so a script reflect queued during
 	// on_update can land after this tick's travel and before collision.
 	void integrate(double p_delta);
+	// World time scale applied from GD (ability-scripting.md). 1.0 is a no-op
+	// so the default integrate/step path is unchanged. Player-owned bullets
+	// stay unscaled; source_flags bit 0 (SOURCE_PIERCES_SCRIPT_INVULN) uses
+	// max(scale, null_floor).
+	void set_world_time_scale(double p_scale, double p_null_floor);
 	int collide();
 	// True when advance would already have killed this id (lifetime or bounds),
 	// which is the state BulletPool.reflect sees from on_update.
@@ -140,6 +145,7 @@ public:
 	godot::Vector2 get_previous_at(int p_slot) const;
 	godot::Vector2 get_velocity_at(int p_slot) const;
 	int get_owner_at(int p_slot) const;
+	int get_source_flags_at(int p_slot) const;
 	int get_reflect_count_at(int p_slot) const;
 	float get_wall_clip_at(int p_slot) const;
 	bool is_slot_alive(int p_slot) const;
@@ -311,6 +317,32 @@ private:
 	float cell_size = 64.0f;
 	// Speed ceiling from BulletLimits.MAX_SPEED (0 = not configured, no accel clamp).
 	float max_speed = 0.0f;
+	float world_time_scale = 1.0f;
+	float null_time_floor = 0.5f;
+	// Class dts are computed once per integrate/step; this pick is a layer bit
+	// test, not a per-bullet scale multiply or virtual call.
+	inline double class_time_delta(int i, double player_dt, double enemy_dt, double null_dt) const {
+		if ((owner_layer[i] & LAYER_PLAYER) != 0) {
+			return player_dt;
+		}
+		if ((source_flags[i] & 1) != 0) {
+			return null_dt;
+		}
+		return enemy_dt;
+	}
+	inline double bullet_time_delta(int i, double p_delta) const {
+		if (world_time_scale >= 1.0f) {
+			return p_delta;
+		}
+		float s = world_time_scale;
+		if ((source_flags[i] & 1) != 0 && s < null_time_floor) {
+			s = null_time_floor;
+		}
+		if ((owner_layer[i] & LAYER_PLAYER) != 0) {
+			return p_delta;
+		}
+		return p_delta * (double)s;
+	}
 	float inv_cell = 1.0f / 64.0f;
 	int cols = 1, rows = 1;
 

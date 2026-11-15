@@ -6,6 +6,15 @@ extends CharacterBody2D
 
 ## Length of one blink step during i-frames (pillars 5.4: 62 ms).
 const BLINK_STEP := 0.062
+## Size clamps (ability-scripting.md). Default is 1.0.
+const MIN_SIZE := 0.25
+const MAX_SIZE := 4.0
+## If a grown body overlaps a wall, the resolver may push the player this far,
+## and only to a position reachable from here (a motion cast must complete).
+const SIZE_RESOLVE_RADIUS := 64.0
+## Drawn body / core radii at size 1.0 (must stay in sync with _draw).
+const DRAW_BODY_RADIUS := 14.0
+const DRAW_CORE_RADIUS := 7.0
 
 ## Forwarded from the Health component.
 signal damaged(amount: float)
@@ -42,6 +51,9 @@ signal respawned(at: Vector2)
 
 @export_group("Aiming")
 @export var muzzle_offset := 20.0
+## Collection radius in pixels at size 1.0. At other sizes it is this base plus
+## the change in wall-collision radius (ability-scripting.md).
+@export var pickup_radius := 13.0
 
 ## Injected by the scene (Main): where shots go, and what to fire.
 var emitter: ShotEmitter
@@ -93,8 +105,15 @@ var _flash := 0.0
 var _context := ShotContext.new()
 
 @onready var _hurtbox: Hurtbox = $Hurtbox
+@onready var _body_shape: CollisionShape2D = $CollisionShape2D
 ## Hit points, i-frames and regeneration (Health).
 @onready var health: Health = $Health
+var _size := 1.0
+var _base_body_radius := 13.0
+var _base_hurtbox_radius := 12.0
+var _base_muzzle_offset := 20.0
+var _base_pickup_radius := 13.0
+var _bases_captured := false
 
 
 func _ready() -> void:
@@ -104,6 +123,7 @@ func _ready() -> void:
 	health.engine_invulnerability_changed.connect(_on_engine_invulnerability_changed)
 	aim_point = global_position + aim_direction * 100.0
 	_prev_position = global_position
+	_capture_size_bases()
 
 
 func _physics_process(delta: float) -> void:
@@ -151,6 +171,152 @@ func _physics_process(delta: float) -> void:
 ## global_position.
 func get_render_position() -> Vector2:
 	return _prev_position.lerp(global_position, Engine.get_physics_interpolation_fraction())
+
+
+func get_size() -> float:
+	return _size
+
+
+## Applied body size (hurtbox, sprite, wall radius, muzzle). Dash distance and
+## move speed are unchanged. Returns the size that actually fit.
+func apply_size(requested: float) -> float:
+	if not is_finite(requested):
+		return _size
+	var want := clampf(requested, MIN_SIZE, MAX_SIZE)
+	_capture_size_bases()
+	if absf(want - _size) <= 0.000001:
+		return _size
+	var fitted_low := _size
+	if want <= _size:
+		_set_size_now(want)
+		return _size
+	# Growing: try the full size, then push out within SIZE_RESOLVE_RADIUS to a
+	# reachable free centre. If none, grow only as far as the current position
+	# allows.
+	var path_radius := _base_body_radius * fitted_low
+	_set_size_now(want)
+	if not _body_overlaps_wall():
+		return _size
+	if _try_push_to_reachable(path_radius):
+		return _size
+	_set_size_now(_largest_size_that_fits(fitted_low, want))
+	return _size
+
+
+func _capture_size_bases() -> void:
+	if _bases_captured:
+		return
+	if _body_shape != null and _body_shape.shape is CircleShape2D:
+		var circle := (_body_shape.shape as CircleShape2D).duplicate() as CircleShape2D
+		_body_shape.shape = circle
+		_base_body_radius = circle.radius
+	if _hurtbox != null:
+		_base_hurtbox_radius = _hurtbox.radius
+	_base_muzzle_offset = muzzle_offset
+	_base_pickup_radius = pickup_radius
+	_bases_captured = true
+
+
+func _set_size_now(s: float) -> void:
+	_size = s
+	var body := _base_body_radius * s
+	if _body_shape != null and _body_shape.shape is CircleShape2D:
+		(_body_shape.shape as CircleShape2D).radius = body
+	if _hurtbox != null:
+		_hurtbox.radius = _base_hurtbox_radius * s
+	muzzle_offset = _base_muzzle_offset * s
+	pickup_radius = _base_pickup_radius + (body - _base_body_radius)
+	queue_redraw()
+
+
+func _body_overlaps_wall(at: Vector2 = Vector2.INF, radius: float = -1.0) -> bool:
+	if not is_inside_tree():
+		return false
+	var world := get_world_2d()
+	if world == null or world.direct_space_state == null:
+		return false
+	var centre := global_position if not at.is_finite() else at
+	var rad := (_base_body_radius * _size) if radius < 0.0 else radius
+	var circle := CircleShape2D.new()
+	circle.radius = rad
+	var params := PhysicsShapeQueryParameters2D.new()
+	params.shape = circle
+	params.transform = Transform2D(0.0, centre)
+	params.collision_mask = Layers.WORLD
+	params.collide_with_bodies = true
+	params.collide_with_areas = false
+	params.exclude = [get_rid()]
+	return not world.direct_space_state.intersect_shape(params, 1).is_empty()
+
+
+## Move to a nearby free centre if one is reachable with a circle of
+## `path_radius` (the pre-grow / in-place-fit body). The destination must fit
+## the current (possibly grown) radius.
+func _try_push_to_reachable(path_radius: float) -> bool:
+	var dest := _find_reachable_spot(path_radius)
+	if dest == global_position:
+		return false
+	global_position = dest
+	_prev_position = dest
+	reset_physics_interpolation()
+	return true
+
+
+func _find_reachable_spot(path_radius: float) -> Vector2:
+	var origin := global_position
+	var rad := _base_body_radius * _size
+	# 16 directions, 8 distances out to SIZE_RESOLVE_RADIUS.
+	for step in range(1, 9):
+		var dist := SIZE_RESOLVE_RADIUS * (float(step) / 8.0)
+		for k in 16:
+			var at := origin + Vector2.from_angle(TAU * float(k) / 16.0) * dist
+			if _body_overlaps_wall(at, rad):
+				continue
+			if _motion_reaches(origin, at, path_radius):
+				return at
+	return origin
+
+
+## True when a circle of `radius` can travel from `from` to `to` without a
+## WORLD hit. A motion that starts already overlapping is not reachable.
+func _motion_reaches(from: Vector2, to: Vector2, radius: float) -> bool:
+	if not is_inside_tree() or radius <= 0.0:
+		return false
+	if from.is_equal_approx(to):
+		return not _body_overlaps_wall(from, radius)
+	var world := get_world_2d()
+	if world == null or world.direct_space_state == null:
+		return false
+	var circle := CircleShape2D.new()
+	circle.radius = radius
+	var params := PhysicsShapeQueryParameters2D.new()
+	params.shape = circle
+	params.transform = Transform2D(0.0, from)
+	params.motion = to - from
+	params.collision_mask = Layers.WORLD
+	params.collide_with_bodies = true
+	params.collide_with_areas = false
+	params.exclude = [get_rid()]
+	var hit := world.direct_space_state.cast_motion(params)
+	if hit.size() < 2:
+		return false
+	@warning_ignore_start("unsafe_cast")
+	var safe: float = hit[0]
+	@warning_ignore_restore("unsafe_cast")
+	return safe >= 0.999
+
+
+func _largest_size_that_fits(lo: float, hi: float) -> float:
+	# `lo` is known to fit at the current position; `hi` does not.
+	var best := lo
+	for _i in 16:
+		var mid := (lo + hi) * 0.5
+		if _body_overlaps_wall(global_position, _base_body_radius * mid):
+			hi = mid
+		else:
+			best = mid
+			lo = mid
+	return best
 
 
 ## Refreshes the ShotContext (muzzle, aim, trigger state) and gives the weapon its
@@ -431,7 +597,10 @@ func teleport(at: Vector2) -> void:
 ## it).
 func respawn(at: Vector2) -> void:
 	_dead = false
+	if TimeControl != null:
+		TimeControl.cancel()
 	teleport(at)
+	_resolve_size_after_teleport()
 	velocity = Vector2.ZERO
 	_dash.reset()
 	_dash_wanted = false
@@ -444,6 +613,22 @@ func respawn(at: Vector2) -> void:
 	_hurtbox.active = true
 	show()
 	respawned.emit(at)
+
+
+## After a teleport or respawn, keep the current size if it fits or if a
+## reachable free centre is within SIZE_RESOLVE_RADIUS; otherwise shrink to the
+## largest size that fits here. The path uses a radius that already fits at
+## the current position, so the body is not moved through a wall.
+func _resolve_size_after_teleport() -> void:
+	_capture_size_bases()
+	if not _body_overlaps_wall():
+		return
+	var fit := _largest_size_that_fits(MIN_SIZE, _size)
+	var path_radius := _base_body_radius * fit
+	if path_radius > 0.0 and not _body_overlaps_wall(global_position, path_radius):
+		if _try_push_to_reachable(path_radius):
+			return
+	_set_size_now(fit)
 
 
 func _update_aim() -> void:
@@ -509,12 +694,13 @@ func _draw() -> void:
 	# Blink during engine i-frames: 62 ms steps between full and 30% alpha.
 	if health != null and health.is_engine_invulnerable() and int(_time / BLINK_STEP) % 2 == 0:
 		body.a = 0.3
+	var s := _size
 	if _dash.active:
 		# Fading echoes behind the burst.
 		for k in range(1, 4):
-			draw_circle(-_dash.direction * (k * 15.0), 14.0 - k * 2.0, Color(0.3, 0.79, 0.94, 0.4 - k * 0.1))
-	draw_circle(Vector2.ZERO, 14.0, body)
-	draw_circle(Vector2.ZERO, 7.0, Color("4cc9f0"))
+			draw_circle(-_dash.direction * (k * 15.0 * s), (14.0 - k * 2.0) * s, Color(0.3, 0.79, 0.94, 0.4 - k * 0.1))
+	draw_circle(Vector2.ZERO, DRAW_BODY_RADIUS * s, body)
+	draw_circle(Vector2.ZERO, DRAW_CORE_RADIUS * s, Color("4cc9f0"))
 	# Barrel pointing along the aim direction (the node itself never rotates).
-	var tip := aim_direction * 20.0
-	draw_line(aim_direction * 8.0, tip, Color("4cc9f0"), 5.0)
+	var tip := aim_direction * (20.0 * s)
+	draw_line(aim_direction * (8.0 * s), tip, Color("4cc9f0"), 5.0 * s)

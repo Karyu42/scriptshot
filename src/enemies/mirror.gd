@@ -28,6 +28,7 @@ func _ready() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	delta = TimeControl.scaled_delta(delta, time_scale_floor)
 	if target == null or not is_instance_valid(target):
 		return
 	reflector.target = target

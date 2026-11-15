@@ -30,6 +30,7 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	save.field_sniper = 3.0
 	save.warden_dead = true
 	save.starter_consumed = true
+	save.player_size = 2.5
 	save.save()
 
 	var loaded := SaveGame.load_from(_SAVE)
@@ -48,6 +49,7 @@ func test_save_round_trips_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.field_sniper, 3.0)
 	assert_true(loaded.warden_dead)
 	assert_true(loaded.starter_consumed)
+	assert_eq(loaded.player_size, 2.5)
 	assert_false(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS, 1_710_000_010.0))
 	assert_true(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS, 1_710_000_000.5 + SaveGame.FIELD_PACK_RETURN))
 
@@ -104,6 +106,7 @@ func test_type_guards_on_senses_and_slice_pack_keys() -> void:
 	assert_eq(loaded.field_sniper, 0.0)
 	assert_false(loaded.warden_dead)
 	assert_false(loaded.starter_consumed)
+	assert_eq(loaded.player_size, 1.0)
 	assert_true(loaded.field_pack_is_present(SaveGame.FIELD_DRIFTERS))
 
 
@@ -126,6 +129,46 @@ func test_warden_dead_and_starter_consumed_reject_non_bools() -> void:
 	loaded = SaveGame.load_from(_SAVE)
 	assert_true(loaded.warden_dead)
 	assert_true(loaded.starter_consumed)
+
+
+func test_player_size_defaults_and_clamps_on_load() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.save(_SAVE)
+	var loaded := SaveGame.load_from(_SAVE)
+	assert_eq(loaded.player_size, 1.0, "an older slot without player/size stays 1.0")
+
+	_discard()
+	cfg = ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("player", "size", INF)
+	cfg.save(_SAVE)
+	loaded = SaveGame.load_from(_SAVE)
+	assert_eq(loaded.player_size, 1.0, "non-finite size falls back to 1.0")
+
+	_discard()
+	cfg = ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("player", "size", "big")
+	cfg.save(_SAVE)
+	loaded = SaveGame.load_from(_SAVE)
+	assert_eq(loaded.player_size, 1.0, "a non-number stays 1.0")
+
+	_discard()
+	cfg = ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("player", "size", 9.0)
+	cfg.save(_SAVE)
+	loaded = SaveGame.load_from(_SAVE)
+	assert_eq(loaded.player_size, Player.MAX_SIZE)
+
+	_discard()
+	cfg = ConfigFile.new()
+	cfg.set_value("world", "world_seed", 11)
+	cfg.set_value("player", "size", 0.1)
+	cfg.save(_SAVE)
+	loaded = SaveGame.load_from(_SAVE)
+	assert_eq(loaded.player_size, Player.MIN_SIZE)
 
 
 func _discard() -> void:

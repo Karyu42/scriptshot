@@ -236,6 +236,16 @@ var pending_count := 0
 ## Batch-only behaviors are left out: they are one callback, not one call per bullet.
 var hooked := PackedInt32Array()
 var hooked_count := 0
+# Class dts for the current integrate, captured at the start of BulletManager.step
+# (or the first advance/hook pass if a test calls those directly). A TimeControl
+# request from a hook mid-step does not change them; the new scale applies on
+# the next tick. Nothing already in motion this tick is re-simulated.
+var tick_time_scaled := false
+var tick_player_dt := 0.0
+var tick_enemy_dt := 0.0
+var tick_null_dt := 0.0
+var tick_delta := 0.0
+var _tick_dts_ready := false
 ## 1 at a behavior id whose bullets skip the per-bullet on_update list.
 var batch_only := PackedByteArray()
 ## False when no behavior is batch-only, so advance() does not touch batch_only.
@@ -510,7 +520,44 @@ func spawn_simple(
 ## lifetime ran out or that left `bounds` as dead (they are removed by
 ## flush_dead(), which lets the manager run hooks first). Also rebuilds the
 ## `hooked` list.
+## Snapshot class dts for this tick from the current TimeControl state.
+## Called once at the start of BulletManager.step so a mid-step request cannot
+## change dts already in use. Standalone advance()/hook tests capture lazily.
+func begin_time_scale_tick(delta: float) -> void:
+	_capture_tick_dts(delta)
+	_tick_dts_ready = true
+
+
+func end_time_scale_tick() -> void:
+	_tick_dts_ready = false
+
+
+func _capture_tick_dts(delta: float) -> void:
+	tick_delta = delta
+	tick_player_dt = delta
+	tick_enemy_dt = delta
+	tick_null_dt = delta
+	tick_time_scaled = TimeControl != null and TimeControl.is_active()
+	if tick_time_scaled:
+		var scale := TimeControl.world_scale()
+		tick_enemy_dt = delta * scale
+		tick_null_dt = delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
+
+
+func _ensure_tick_dts(delta: float) -> void:
+	if not _tick_dts_ready:
+		_capture_tick_dts(delta)
+		_tick_dts_ready = true
+
+
 func advance(delta: float, bounds: Rect2) -> void:
+	# Time stop is off the hot path: one bool check per tick, not per bullet.
+	# The bool is the snapshot from the start of this integrate, so a request
+	# mid-step cannot divert remaining (or a late advance_one) onto a new dt.
+	_ensure_tick_dts(delta)
+	if tick_time_scaled:
+		_advance_scaled(delta, bounds)
+		return
 	if log_despawns:
 		despawn_log_reason.clear()
 		despawn_log_life.clear()
@@ -571,9 +618,85 @@ func advance(delta: float, bounds: Rect2) -> void:
 ## advance() has already walked the old count: those bullets still need this
 ## tick's step, and only this one. Does not touch the hooked list (a migrated
 ## bullet is hook-free; the list was built for the bullets that already advanced).
+func _class_dt(i: int, player_dt: float, enemy_dt: float, null_dt: float) -> float:
+	if (owner_layer[i] & Layers.PLAYER) != 0:
+		return player_dt
+	if pierces_script_invuln[i] != 0:
+		return null_dt
+	return enemy_dt
+
+
+func _bullet_dt(i: int, delta: float) -> float:
+	_ensure_tick_dts(delta)
+	if not tick_time_scaled:
+		return tick_delta
+	return _class_dt(i, tick_player_dt, tick_enemy_dt, tick_null_dt)
+
+
+## Same as advance() when TimeControl is active: each bullet gets its own delta
+## (player shots unscaled, Null attacks floored, other enemy shots scaled).
+## The three class deltas are computed once; the loop only picks among them
+## with a layer bit test, no autoload or helper call per bullet.
+func _advance_scaled(_delta: float, bounds: Rect2) -> void:
+	if log_despawns:
+		despawn_log_reason.clear()
+		despawn_log_life.clear()
+	var min_x := bounds.position.x
+	var min_y := bounds.position.y
+	var max_x := bounds.end.x
+	var max_y := bounds.end.y
+	var player_dt := tick_player_dt
+	var enemy_dt := tick_enemy_dt
+	var null_dt := tick_null_dt
+	var player_bit := Layers.PLAYER
+	var n := count
+	hooked_count = 0
+	for i in n:
+		if dead_reason[i] != 0:
+			continue
+		var dt := player_dt
+		if (owner_layer[i] & player_bit) == 0:
+			dt = enemy_dt
+			if pierces_script_invuln[i] != 0:
+				dt = null_dt
+		prev_pos[i] = pos[i]
+		var a := age[i] + dt
+		age[i] = a
+		if not a < lifetime[i]:
+			mark_dead(i, DespawnReason.LIFETIME)
+			continue
+		var v := vel[i]
+		var turn := turn_rate[i]
+		var acc := accel[i]
+		if turn != 0.0 or acc != 0.0:
+			if turn != 0.0:
+				v = v.rotated(turn * dt)
+				rot[i] = rot[i].rotated(turn * dt)
+			if acc != 0.0:
+				var speed := v.length()
+				if speed > 0.0:
+					v *= clampf(speed + acc * dt, 0.0, BulletLimits.MAX_SPEED) / speed
+			vel[i] = v
+		var p := pos[i] + v * dt
+		pos[i] = p
+		if not (p.x >= min_x and p.x <= max_x and p.y >= min_y and p.y <= max_y):
+			if p.is_finite():
+				mark_dead(i, DespawnReason.BOUNDS)
+			else:
+				_kill_invalid(i, "BulletPool.hook_write", "a non-finite value written to pos, vel, accel or turn_rate")
+			continue
+		var bid := behavior[i]
+		if bid != 0 and (not any_batch_only or (bid & BulletManager.OWNER_SLOT_MASK) >= batch_only.size() or batch_only[bid & BulletManager.OWNER_SLOT_MASK] == 0):
+			hooked[hooked_count] = i
+			hooked_count += 1
+
+
 func advance_one(i: int, delta: float, bounds: Rect2) -> void:
 	if i < 0 or i >= count or dead_reason[i] != 0:
 		return
+	_ensure_tick_dts(delta)
+	if tick_time_scaled:
+		delta = _class_dt(i, tick_player_dt, tick_enemy_dt, tick_null_dt)
 	var min_x := bounds.position.x
 	var min_y := bounds.position.y
 	var max_x := bounds.end.x
@@ -638,6 +761,11 @@ func run_update_hooks(
 	var last_slot := 0
 	var last_gen := 0
 	var last_behavior: BulletBehavior = null
+	_ensure_tick_dts(delta)
+	var hook_scaled := tick_time_scaled
+	var hook_player_dt := tick_player_dt
+	var hook_enemy_dt := tick_enemy_dt
+	var hook_null_dt := tick_null_dt
 	for k in hooked_count:
 		var i := hooked[k]
 		# A hook may have killed a later bullet in the list already, or reflected
@@ -688,7 +816,7 @@ func run_update_hooks(
 		if hook_owner != o:
 			hook_owner = o
 		hook_slot = i  # reflect() of this very bullet hands the rest of the hook its new owner
-		b.on_update(self, i, delta)
+		b.on_update(self, i, _class_dt(i, hook_player_dt, hook_enemy_dt, hook_null_dt) if hook_scaled else delta)
 		ran = true
 		# Same check as sanitize(), inlined for the common case that the hook wrote
 		# nothing wrong (a call costs more than the check itself). Anything it cannot

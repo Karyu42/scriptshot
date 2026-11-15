@@ -9,7 +9,8 @@ extends RegularEnemy
 ## Summoner adds are SummonAdd bodies, spawned on the flanks of the
 ## elite-to-player line (issue #81). Per-tier columns on AffixDef: common 2
 ## one-hit Swarmers, rare 8, legendary (Hydra) 6 Drifters at 105 HP.
-## Nothing here fires a bullet. Adds are bodies. Plain shots stay plain.
+## Adds are bodies. Plain shots stay plain. The Null-shot affix (opt-in) fires
+## stamped Null bullets through NullAttacks; it is not rolled in this slice.
 
 signal shard_dropped
 
@@ -95,6 +96,10 @@ var _glyph := EliteCue.GLYPH_CIRCLE
 ## circle = Spawn). Built in configure_elite, applied in _ready, off the
 ## per-frame path.
 var _glyphs: Array[int] = []
+## Optional BulletManager for the Null-shot affix. Falls back to WorldQuery.
+var bullets: BulletManager
+var _null_wait := NullAttacks.SHOT_PERIOD
+var _null_windup := -1.0
 
 
 func configure_elite(
@@ -168,6 +173,8 @@ func configure_elite(
 		0,
 		p_player,
 	)
+	_null_wait = NullAttacks.SHOT_PERIOD
+	_null_windup = -1.0
 
 
 func has_affix(id: StringName) -> bool:
@@ -241,6 +248,7 @@ func _exit_tree() -> void:
 
 
 func _physics_process(delta: float) -> void:
+	var dt := TimeControl.scaled_delta(delta, time_scale_floor)
 	var was_woken := woken
 	if _alive and player != null and is_instance_valid(player) and not woken:
 		if is_finite(wake_x) and player.global_position.x >= wake_x:
@@ -249,17 +257,19 @@ func _physics_process(delta: float) -> void:
 			woken = true
 	if _alive and player != null and is_instance_valid(player) and has_affix(AffixCatalog.BULWARK) and _hurtbox != null:
 		var turn := BULWARK_RARE_TURN if rarity == EnemyKinds.RARITY_RARE else 0.0
-		_hurtbox.face(player.global_position, turn, delta)
-	super._physics_process(delta)
+		_hurtbox.face(player.global_position, turn, dt)
+	_enemy_physics(dt)
 	if not _alive:
 		return
 	if cue != null:
-		cue.advance(delta)
+		cue.advance(dt)
 	if woken and not was_woken:
 		_on_woke()
 	var can_summon := not is_half and has_affix(AffixCatalog.SUMMONER)
 	if can_summon and (woken or not summon_after_wake):
-		_tick_summon(delta)
+		_tick_summon(dt)
+	if not is_half and has_affix(AffixCatalog.NULL_SHOT) and (woken or not summon_after_wake):
+		_tick_null_shot(dt, delta)
 	queue_redraw()
 
 
@@ -319,6 +329,48 @@ func _apply_stats() -> void:
 			_summon_hp = def.summon_hp_for(rarity)
 			_summon_kind = def.summon_kind(rarity)
 			_summon_wait = _summon_interval
+
+
+func start_null_shot_telegraph() -> void:
+	if is_half or not has_affix(AffixCatalog.NULL_SHOT):
+		return
+	_null_windup = NullAttacks.SHOT_TELEGRAPH
+	_null_wait = -1.0
+
+
+func _bullet_manager() -> BulletManager:
+	if bullets != null and is_instance_valid(bullets):
+		return bullets
+	return WorldQuery.bullets()
+
+
+func _tick_null_shot(body_dt: float, engine_delta: float) -> void:
+	if _null_windup >= 0.0:
+		var tdt := TimeControl.scaled_delta(engine_delta, TimeControl.NULL_TIME_SCALE_FLOOR)
+		_null_windup = maxf(_null_windup - tdt, 0.0)
+		if _null_windup <= 0.0:
+			_null_windup = -1.0
+			_fire_null_shot()
+			_null_wait = NullAttacks.SHOT_PERIOD
+		return
+	if body_dt <= 0.0:
+		return
+	_null_wait = maxf(_null_wait - body_dt, 0.0)
+	if _null_wait <= 0.0:
+		start_null_shot_telegraph()
+
+
+func _fire_null_shot() -> void:
+	var mgr := _bullet_manager()
+	if mgr == null or player == null or not is_instance_valid(player):
+		return
+	var dir := player.global_position - global_position
+	if dir.length_squared() <= 0.000001:
+		dir = Vector2.RIGHT
+	else:
+		dir = dir.normalized()
+	var origin := global_position + dir * (body_radius + NullAttacks.SHOT_RADIUS)
+	NullAttacks.spawn_shot(mgr, origin, dir * NullAttacks.SHOT_SPEED)
 
 
 ## Living summons this elite may have at once (its tier's column).
