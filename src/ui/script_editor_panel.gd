@@ -791,7 +791,9 @@ func _collect_dash_runtime() -> Array[ScriptProblem]:
 	var a := abilities.ability if abilities != null else null
 	if a != null and a.last_error != null and a.error_total > _dash_error_base:
 		var p := ScriptProblem.from_result(a.last_error, a.chunk_name, LuaDashAbility.HOOK)
-		p.count = a.error_total - _dash_error_base
+		# Each distinct error is reported once (LuaDashAbility dedupes
+		# retries), so the latest one is shown without a repeat count.
+		p.count = 1
 		out.append(p)
 	for key in ScriptWarnings.keys():
 		if key.begins_with("LuaBulletBehavior.error.") or key == LuaDashAbility.ERROR_KEY:
