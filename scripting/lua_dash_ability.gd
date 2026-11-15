@@ -61,9 +61,13 @@ var chunk_name := "dash.lua"
 var title := "Dash"
 var source := ""
 var applied_count := 0
-## on_dash runs that errored or were stopped, and the last such result.
+## Distinct on_dash errors reported (editor and console) since the start,
+## and the last one. The same message again is not reported again until the
+## file is loaded again or a different error comes in between.
 var error_total := 0
 var last_error: ScriptHost.RunResult = null
+## Every on_dash run that errored or was stopped, repeats included.
+var error_attempts := 0
 ## Clean on_dash runs, and engine dashes started through this ability.
 var dash_calls := 0
 var builtin_dashes := 0
@@ -75,8 +79,11 @@ var emitter: ShotEmitter
 var _host: ScriptHost
 var _has_script := false
 var _calling := false
+var _drop_after_call := false
 var _player: Object
 var _rest_until_msec := 0
+## Dedupe key of the last reported error ("" = none since the last load).
+var _reported_key := ""
 var _pending_ticks := 0
 var _context := ShotContext.new()
 var _request := ShotRequest.new()
@@ -146,6 +153,7 @@ func apply(code: String) -> ScriptHost.RunResult:
 	title = _host.weapon_string("name", "Untitled").substr(0, 40)
 	last_error = null
 	_rest_until_msec = 0
+	_reported_key = ""
 	_refresh_player()
 	return result
 
@@ -176,7 +184,7 @@ func on_dash(player: Object, direction: Vector2) -> bool:
 	_fill_context(direction)
 	_calling = true
 	var result := _host.call_ability(HOOK, _context, direction, _lua_dash)
-	_calling = false
+	_end_call()
 	if not result.ok:
 		_note_failure(result)
 		return false
@@ -206,7 +214,7 @@ func tick() -> void:
 		return
 	_calling = true
 	var result := _host.resume_ability(HOOK, _lua_dash)
-	_calling = false
+	_end_call()
 	if not result.ok:
 		_note_failure(result)
 		return
@@ -214,11 +222,35 @@ func tick() -> void:
 
 
 func _note_failure(result: ScriptHost.RunResult) -> void:
-	error_total += 1
-	last_error = result
+	error_attempts += 1
 	if error_backoff_msec > 0:
 		_rest_until_msec = Time.get_ticks_msec() + error_backoff_msec
+	var key := "%s|%s" % [result.stopped, result.error]
+	if key == _reported_key:
+		return
+	_reported_key = key
+	error_total += 1
+	last_error = result
 	ScriptWarnings.warn(ERROR_KEY, "LuaDashAbility: on_dash: %s" % result.error)
+
+
+## Drops a yielded on_dash that is still running (player death, respawn).
+## The dash it started stands; the rest of the hook never runs.
+func cancel_running() -> void:
+	if _calling:
+		# Death from inside the hook: drop it once the call returns.
+		_drop_after_call = true
+		return
+	if _host != null:
+		_host.cancel_ability()
+	_pending_ticks = 0
+
+
+func _end_call() -> void:
+	_calling = false
+	if _drop_after_call:
+		_drop_after_call = false
+		cancel_running()
 
 
 ## Lua player:dash_cooldown_left(): the player's Dash slot cooldown

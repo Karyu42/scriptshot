@@ -57,6 +57,16 @@ func _exit_tree() -> void:
 func setup(target_player: Object) -> void:
 	player = target_player
 	ability.bind_player(target_player)
+	# A yielded on_dash does not outlive the life it started in.
+	for sig: String in ["died", "respawned"]:
+		if player != null and player.has_signal(sig):
+			var cb := Callable(self, "_on_player_life_changed")
+			if not player.is_connected(sig, cb):
+				player.connect(sig, cb)
+
+
+func _on_player_life_changed(_at: Variant = null) -> void:
+	ability.cancel_running()
 
 
 ## True when the player has the dash hook (Player.set_dash_ability).

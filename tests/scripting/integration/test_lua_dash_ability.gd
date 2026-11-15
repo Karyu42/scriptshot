@@ -188,6 +188,7 @@ func test_an_error_is_false_reported_and_rests() -> void:
 	assert_eq(p.line, 2, "the editor gets the line")
 	assert_false(_a.on_dash(_p, Vector2.RIGHT), "resting")
 	assert_eq(_a.error_total, 1, "a buffered press does not rerun it while resting")
+	assert_eq(_a.error_attempts, 1)
 	_apply_ok("return { on_dash = function(ctx, dir) end }")
 	assert_true(_a.on_dash(_p, Vector2.RIGHT), "a good save ends the rest")
 
@@ -370,3 +371,46 @@ func test_dash_cooldown_left_needs_a_colon_and_an_ability_file() -> void:
 	var fire := host.call_fire(ShotContext.new())
 	assert_false(fire.ok)
 	assert_string_contains(fire.error, "only works in an ability file")
+
+
+func test_the_same_error_is_reported_once_until_it_changes_or_the_file_loads() -> void:
+	var code := "return { on_dash = function(ctx, dir)\n  state.n = (state.n or 0) + 1\n  if state.n <= 3 or state.n >= 5 then error('first') end\n  error('second')\nend }"
+	_apply_ok(code)
+	for i in 3:
+		assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_eq(_a.error_attempts, 3, "every retry still runs and fails")
+	assert_eq(_a.error_total, 1, "one report for three identical errors")
+	assert_eq(ScriptWarnings.count(LuaDashAbility.ERROR_KEY), 1, "once on the console")
+	assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_eq(_a.error_total, 2, "a different error is reported")
+	assert_string_contains(_a.last_error.error, "second")
+	assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_eq(_a.error_total, 3, "and the first one again after it")
+	assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_eq(_a.error_total, 3)
+	_apply_ok(code)
+	assert_null(_a.last_error)
+	assert_false(_a.on_dash(_p, Vector2.RIGHT))
+	assert_eq(_a.error_total, 4, "a save shows it again")
+	assert_eq(ScriptWarnings.count(LuaDashAbility.ERROR_KEY), 4)
+
+
+func test_a_running_hook_is_dropped_by_cancel_running() -> void:
+	_apply_ok("return { on_dash = function(ctx, dir) player:dash(0) coroutine.yield() player:dash(1) end }")
+	assert_true(_a.on_dash(_p, Vector2.RIGHT))
+	assert_true(_a.is_running())
+	_a.cancel_running()
+	assert_false(_a.is_running())
+	_a.tick()
+	assert_eq(_p.dashes.size(), 1, "the dash it started stands; the rest never runs")
+	assert_true(_a.on_dash(_p, Vector2.RIGHT), "free for the next press")
+
+
+func test_a_death_inside_the_hook_drops_it_after_the_call() -> void:
+	_apply_ok("return { on_dash = function(ctx, dir) player:dash(0) coroutine.yield() player:dash(1) end }")
+	_p.on_builtin = func() -> void: _a.cancel_running()
+	assert_true(_a.on_dash(_p, Vector2.RIGHT))
+	assert_false(_a.is_running(), "dropped once on_dash returned")
+	_p.on_builtin = Callable()
+	_a.tick()
+	assert_eq(_p.dashes.size(), 1)

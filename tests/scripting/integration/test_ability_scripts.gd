@@ -168,3 +168,47 @@ func test_leaving_the_tree_restores_the_built_in_dash() -> void:
 	remove_child(_s)
 	assert_null(_hooked_ability())
 	assert_false(_player._has_dash_ability)
+
+
+const LONG_HOOK := "return { cooldown = 0.5, on_dash = function(ctx, dir)\n  player:dash(math.atan(dir.y, dir.x))\n  for i = 1, 300 do coroutine.yield() end\n  state.finished = true\nend }"
+
+
+func _press() -> void:
+	_player.request_dash()
+	_player._physics_process(1.0 / 60.0)
+
+
+func test_the_file_cooldown_starts_at_the_press_not_when_a_yielded_run_ends() -> void:
+	assert_true(_s.start())
+	_s.save("dash.lua", LONG_HOOK)
+	_s.flush_pending()
+	_press()
+	assert_true(_s.ability.is_running())
+	assert_almost_eq(_player.get_ability_cooldown_left(), 0.5, 0.02, "counting from the press")
+	for i in 40:
+		_player._physics_process(1.0 / 60.0)
+		_s.ability.tick()
+	assert_true(_s.ability.is_running(), "the run goes on")
+	assert_eq(_player.get_ability_cooldown_left(), 0.0, "the cooldown ran down meanwhile")
+	assert_false(_s.ability.on_dash(_player, Vector2.RIGHT), "but a new press is refused while it runs")
+
+
+func test_death_drops_a_running_hook() -> void:
+	assert_true(_s.start())
+	_s.save("dash.lua", LONG_HOOK)
+	_s.flush_pending()
+	_press()
+	assert_true(_s.ability.is_running())
+	_player.health.set_hp(0.0)
+	assert_true(_player.is_dead())
+	assert_false(_s.ability.is_running(), "dropped on death")
+
+
+func test_respawn_drops_a_running_hook() -> void:
+	assert_true(_s.start())
+	_s.save("dash.lua", LONG_HOOK)
+	_s.flush_pending()
+	_press()
+	assert_true(_s.ability.is_running())
+	_player.respawn(Vector2(50, 50))
+	assert_false(_s.ability.is_running(), "dropped on respawn")
