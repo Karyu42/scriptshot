@@ -244,14 +244,15 @@ func get_aim_direction() -> Vector2:
 
 # --- dash --------------------------------------------------------------------
 
-## The same action as the dash button, along `angle` (radians, 0 = right): starts a
-## dash and returns true, or returns false while dashing, on cooldown or dead. It
-## obeys the button's rules (cooldown, invulnerability) and is not buffered; a
-## script dashing is not a state write. NaN angle: false.
+## The engine dash along `angle` (radians, 0 = right): motion, engine cooldown,
+## and engine i-frames. Returns false while dashing, on the engine cooldown, or
+## dead. A scripted dash ability calls this (not try_dash) so it cannot recurse
+## and cannot grant i-frames faster than dash_cooldown. Not buffered; not a
+## state write. NaN angle: false.
 func dash(angle: float) -> bool:
 	if not _ok() or not is_finite(angle):
 		return false
-	return _player.try_dash(Vector2.from_angle(angle))
+	return _player.perform_builtin_dash(Vector2.from_angle(angle))
 
 
 func is_dashing() -> bool:
@@ -263,9 +264,16 @@ func can_dash() -> bool:
 	return _ok() and not _player.is_dead() and not _player.is_dashing() and _player.get_dash_cooldown_left() <= 0.0
 
 
-## Seconds until the next dash may start (0 = ready).
+## Seconds until the next engine dash may start (0 = ready). Independent of
+## a scripted ability's slot cooldown.
 func get_dash_cooldown_left() -> float:
 	return _player.get_dash_cooldown_left() if _ok() else 0.0
+
+
+## Seconds until the dash slot may call on_dash again (0 = ready). With no
+## ability set this is the engine cooldown.
+func get_ability_cooldown_left() -> float:
+	return _player.get_ability_cooldown_left() if _ok() else 0.0
 
 
 ## Total dash cooldown in seconds (the tuning value).

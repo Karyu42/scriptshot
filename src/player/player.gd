@@ -85,6 +85,19 @@ var _dash := DashState.new()
 var _dash_wanted := false
 var _dash_buffer_left := 0.0
 var _cooldown := FireCooldown.new()
+## Optional scripted dash (null = built-in). See set_dash_ability().
+## A separate flag is required because a freed Object compares equal to null.
+var _dash_ability: Object = null
+var _has_dash_ability := false
+## Slot cooldown duration from ability.get_cooldown(), or dash_cooldown.
+var _ability_cooldown := 0.0
+var _ability_cooldown_left := 0.0
+## Set when perform_builtin_dash emits `dashed` during a try_dash ability call,
+## so a true return does not emit the signal a second time.
+var _dashed_this_try := false
+## True while ability.on_dash is on the stack. Nested slot calls return false;
+## perform_builtin_dash is still allowed.
+var _in_on_dash := false
 var _time := 0.0
 var _shot_index := 0
 var _flash := 0.0
@@ -120,6 +133,7 @@ func _physics_process(delta: float) -> void:
 	var move_input := Vector2.ZERO if input_blocked else Input.get_vector("move_left", "move_right", "move_up", "move_down")
 	# Cooldown first, so a dash that becomes available this tick can start now.
 	_dash.tick_cooldown(delta)
+	_tick_ability_cooldown(delta)
 	if not input_blocked and Input.is_action_just_pressed("dash"):
 		request_dash()
 	if _dash_wanted:
@@ -291,10 +305,39 @@ func _fire() -> void:
 ## falls back to the aim direction, so standing still dashes toward where you
 ## aim. Returns false while dead, dashing or on cooldown. The dash makes the
 ## player invulnerable for `dash_invulnerability` seconds.
+##
+## When a dash ability is set, this is the input/buffer entry point: the slot
+## cooldown (ability.get_cooldown(), or dash_cooldown) gates the call to
+## `ability.on_dash(player, direction) -> bool`. True counts as a dash (slot
+## cooldown starts, `dashed` emitted with the direction used). False, a
+## non-bool return, a thrown error, or a freed ability leaves the buffer
+## waiting. Engine motion and i-frames come only from perform_builtin_dash().
+##
+## on_dash must return a bool synchronously. Do not await: a coroutine
+## (GDScriptFunctionState) or any non-bool is treated as false and warns once.
+## A nested try_dash / slot call from inside on_dash returns false;
+## perform_builtin_dash is still allowed. The false path may run on every
+## physics tick while a press is buffered; keep it free of side effects.
 func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 	if _dead:
 		return false
-	var dir := direction if direction.is_finite() and direction.length_squared() > 0.0001 else aim_direction
+	var dir := _resolve_dash_direction(direction)
+	if _has_dash_ability:
+		if _in_on_dash:
+			return false
+		return _try_ability_dash(dir)
+	return perform_builtin_dash(dir)
+
+
+## The current built-in dash motion (burst, engine cooldown, engine i-frames,
+## `dashed` signal). A scripted ability calls this for the engine dash without
+## going back through try_dash. Returns false while dead, mid-burst, or while
+## the engine dash_cooldown is active: a shorter file cooldown cannot chain
+## i-frames faster than dash_cooldown.
+func perform_builtin_dash(direction: Vector2 = Vector2.ZERO) -> bool:
+	if _dead:
+		return false
+	var dir := _resolve_dash_direction(direction)
 	_dash.duration = maxf(dash_duration, 0.01)
 	_dash.distance = maxf(dash_distance, 0.0)
 	_dash.curve_power = maxf(dash_curve_power, 0.0)
@@ -305,7 +348,145 @@ func try_dash(direction: Vector2 = Vector2.ZERO) -> bool:
 		return false
 	health.add_engine_invulnerability(_dash.invulnerable_time)
 	dashed.emit(_dash.direction)
+	_dashed_this_try = true
 	return true
+
+
+## Equips a scripted dash, or null to restore the built-in dash. Reads an
+## optional ability.get_cooldown() -> float (finite, clamped to >= 0; otherwise
+## dash_cooldown). Input, the buffer, death, and cooldown gating stay here.
+func set_dash_ability(ability: Object) -> void:
+	# Explicit null restores the built-in dash. The engine rejects a freed
+	# Object at the call site (typed argument), so this path does not see one.
+	# A reference that is later freed is still treated as "ability set" via
+	# _has_dash_ability; try_dash then fails closed.
+	if ability == null:
+		_dash_ability = null
+		_has_dash_ability = false
+	else:
+		_dash_ability = ability
+		_has_dash_ability = true
+	refresh_dash_ability()
+
+
+## Re-reads ability.get_cooldown() (hot reload). The remaining slot cooldown
+## is left as-is; the new duration applies to the next successful on_dash.
+func refresh_dash_ability() -> void:
+	_ability_cooldown = maxf(dash_cooldown, 0.0)
+	if _dash_ability == null:
+		return
+	if not is_instance_valid(_dash_ability):
+		ScriptWarnings.warn(
+			"Player.dash_ability",
+			"Player.refresh_dash_ability(): dash ability is no longer valid; using dash_cooldown"
+		)
+		return
+	if not _dash_ability.has_method("get_cooldown"):
+		return
+	var raw: Variant = _dash_ability.call("get_cooldown")
+	var parsed := _parse_ability_cooldown(raw)
+	if parsed < 0.0:
+		ScriptWarnings.warn(
+			"Player.dash_ability",
+			"Player.refresh_dash_ability(): get_cooldown() must return a finite number; using dash_cooldown"
+		)
+		return
+	_ability_cooldown = parsed
+
+
+func _parse_ability_cooldown(raw: Variant) -> float:
+	# < 0 means "invalid / use default". 0 is a legal cooldown (no slot wait).
+	var value := 0.0
+	var ok := false
+	@warning_ignore_start("unsafe_call_argument", "unsafe_cast")
+	if typeof(raw) == TYPE_INT or typeof(raw) == TYPE_FLOAT:
+		value = float(raw)
+		ok = true
+	@warning_ignore_restore("unsafe_call_argument", "unsafe_cast")
+	if not ok or not is_finite(value):
+		return -1.0
+	return maxf(value, 0.0)
+
+
+func _resolve_dash_direction(direction: Vector2) -> Vector2:
+	if direction.is_finite() and direction.length_squared() > 0.0001:
+		return direction
+	return aim_direction
+
+
+func _tick_ability_cooldown(delta: float) -> void:
+	if is_finite(delta) and delta > 0.0:
+		_ability_cooldown_left = maxf(_ability_cooldown_left - delta, 0.0)
+		if _ability_cooldown_left < DashState.EPSILON:
+			_ability_cooldown_left = 0.0
+
+
+func _try_ability_dash(dir: Vector2) -> bool:
+	if _in_on_dash:
+		return false
+	if _ability_cooldown_left > 0.0:
+		return false
+	# Capture before on_dash: a swap inside the hook must not change this dash's wait.
+	var slot_cooldown := _ability_cooldown
+	_dashed_this_try = false
+	_in_on_dash = true
+	var accepted := _call_dash_ability(dir)
+	_in_on_dash = false
+	if _dead:
+		return false
+	# A successful perform_builtin_dash consumes the press even if on_dash
+	# then returns false or errors, so the buffer is not retried next tick.
+	if not accepted and not _dashed_this_try:
+		return false
+	_ability_cooldown_left = slot_cooldown
+	if accepted and not _dashed_this_try:
+		var used := dir
+		if not used.is_finite() or used.length_squared() <= 0.0001:
+			used = aim_direction
+		if used.is_finite() and used.length_squared() > 0.0001:
+			dashed.emit(used.normalized())
+		else:
+			dashed.emit(Vector2.RIGHT)
+	return true
+
+
+func _call_dash_ability(dir: Vector2) -> bool:
+	if _dash_ability == null or not is_instance_valid(_dash_ability):
+		ScriptWarnings.warn(
+			"Player.dash_ability",
+			"Player.try_dash(): dash ability is no longer valid"
+		)
+		return false
+	if not _dash_ability.has_method("on_dash"):
+		ScriptWarnings.warn(
+			"Player.dash_ability",
+			"Player.try_dash(): dash ability has no on_dash() method"
+		)
+		return false
+	# call() so a runtime error in the ability does not abort the player;
+	# a failed or non-bool result is treated as false (buffer keeps waiting).
+	var raw: Variant = _dash_ability.call("on_dash", self, dir)
+	if typeof(raw) != TYPE_BOOL:
+		var message := "Player.try_dash(): on_dash() must return a bool"
+		if _is_coroutine_state(raw):
+			message = "Player.try_dash(): on_dash() must return synchronously; an await is treated as false"
+		ScriptWarnings.warn("Player.dash_ability", message)
+		return false
+	@warning_ignore_start("unsafe_cast")
+	var accepted: bool = raw
+	@warning_ignore_restore("unsafe_cast")
+	return accepted
+
+
+
+static func _is_coroutine_state(raw: Variant) -> bool:
+	# GDScriptFunctionState exists at runtime but is not a named type in scope.
+	if typeof(raw) != TYPE_OBJECT:
+		return false
+	@warning_ignore_start("unsafe_cast")
+	var obj: Object = raw
+	@warning_ignore_restore("unsafe_cast")
+	return obj != null and obj.is_class("GDScriptFunctionState")
 
 
 ## A dash press: tried this tick, and if the dash is not available (cooling down
@@ -340,8 +521,17 @@ func is_dead() -> bool:
 	return _dead
 
 
-## Seconds until the next dash may start (0 = ready).
+## Seconds until the next engine dash may start (0 = ready). Independent of
+## a scripted ability's slot cooldown.
 func get_dash_cooldown_left() -> float:
+	return _dash.cooldown_left
+
+
+## Seconds until the dash slot may call on_dash again (0 = ready). With no
+## ability set this is the engine cooldown.
+func get_ability_cooldown_left() -> float:
+	if _has_dash_ability:
+		return _ability_cooldown_left
 	return _dash.cooldown_left
 
 
@@ -371,6 +561,7 @@ func respawn(at: Vector2) -> void:
 	velocity = Vector2.ZERO
 	_dash.reset()
 	_dash_wanted = false
+	_ability_cooldown_left = 0.0
 	_trigger.reset()
 	_cooldown.reset()
 	if weapon != null:
