@@ -241,7 +241,7 @@ return function(t)
 	for _, k in ipairs({
 		"_lock", "reg_thread", "dead", "_nums", "make_bullet", "make_batch",
 		"_output", "_vel", "_kids", "_packed", "_batch_tally", "_expired", "_spawns", "make_ctx",
-		"sense_set", "sense_sync", "_sense_notes", "player_dash", "player_cooldown_left",
+		"sense_set", "sense_sync", "_sense_notes", "player_dash", "player_cooldown_left", "player_size_get", "player_size_set", "world_time", "world_time_scale_now", "world_time_retry_in",
 	}) do
 		rawset(t, k, nil)
 	end
@@ -478,6 +478,9 @@ var _player_dash := Callable()
 ## Lua player:dash_cooldown_left() reads it anywhere in that host's files;
 ## other hosts leave it unset and the call raises an error.
 var player_cooldown_left := Callable()
+## True while a bullet callback (call_hook / call_batch) runs: mid
+## BulletManager.step, so player.size writes are held for a later tick.
+var _in_bullet_hook := false
 ## An ability hook that yielded (call_ability), resumed by resume_ability().
 var _ability_co: LuaCoroutine = null
 
@@ -547,6 +550,11 @@ func _open_state() -> void:
 	_host.set("dead", Callable(self, "_lua_dead"))
 	_host.set("player_dash", Callable(self, "_lua_player_dash"))
 	_host.set("player_cooldown_left", Callable(self, "_lua_player_cooldown_left"))
+	_host.set("player_size_get", Callable(self, "_lua_player_size_get"))
+	_host.set("player_size_set", Callable(self, "_lua_player_size_set"))
+	_host.set("world_time", Callable(self, "_lua_world_time"))
+	_host.set("world_time_scale_now", Callable(self, "_lua_world_time_scale_now"))
+	_host.set("world_time_retry_in", Callable(self, "_lua_world_time_retry_in"))
 	_host.set("batch_token", -1)
 	var buf := _state.create_table()
 	buf.set("n", 0)
@@ -1203,7 +1211,9 @@ func call_hook(
 	var args: Array = [fn, bullet_v]
 	if pass_arg:
 		args.append(arg)
+	_in_bullet_hook = true
 	var result := _run(_call, args)
+	_in_bullet_hook = false
 	_note_sense_notes()
 	result.chunk_name = name
 	if result.ok:
@@ -1263,7 +1273,9 @@ func call_batch(batch: BatchView) -> RunResult:
 	if batch_budget > BATCH_BUDGET_CEILING:
 		batch_budget = BATCH_BUDGET_CEILING
 	instruction_budget = batch_budget
+	_in_bullet_hook = true
 	var result := _run(_call, [fn, view_v, batch.dt])
+	_in_bullet_hook = false
 	_note_sense_notes()
 	batch_instructions = _instr
 	instruction_budget = saved_budget
@@ -2027,6 +2039,53 @@ func _lua_player_dash(angle: Variant) -> Variant:
 		return false
 	var started: Variant = _player_dash.call(_number)
 	return started is bool and started
+
+
+func _lua_player_size_get() -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	return ScriptWorld.get_size()
+
+
+func _lua_player_size_set(value: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	if not _read_number(value):
+		return "player.size: expected a number (1 = normal size)"
+	return ScriptWorld.set_size(_number, _in_bullet_hook)
+
+
+## "ok", or "<err> <retry_in>" (err is active, cooldown or invalid); a
+## leading "!" marks a Lua error.
+func _lua_world_time(scale: Variant, seconds: Variant) -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "!script host shut down"
+	if not _read_number(scale):
+		return "!world.time_scale: expected a scale from 0 to 1"
+	var sc := _number
+	if not _read_number(seconds):
+		return "!world.time_scale: expected a duration in seconds"
+	var r := ScriptWorld.request_time(sc, _number)
+	if r.get("ok", false) == true:
+		return "ok"
+	return "%s %.4f" % [str(r.get("err", "invalid")), str(r.get("retry_in", 0.0)).to_float()]
+
+
+func _lua_world_time_scale_now() -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	return ScriptWorld.time_scale_now()
+
+
+func _lua_world_time_retry_in() -> Variant:
+	_note_host_call()
+	if _stop_only or _closed:
+		return "script host shut down"
+	return ScriptWorld.retry_in()
 
 
 func _lua_player_cooldown_left() -> Variant:
