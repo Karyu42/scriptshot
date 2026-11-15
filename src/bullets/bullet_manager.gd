@@ -196,6 +196,11 @@ var _wall_hit_index := PackedInt32Array()
 var _reflector_count := 0
 ## Delta of the step in progress. Return legs fly for the unused fraction of it.
 var _step_delta := 0.0
+## TimeControl as it stood when this step began (_sync_world_time_scale). A
+## time request made by a hook mid-step applies from the next step, never to
+## the rest of this one (ability-scripting.md: "at once" = next integration).
+var _step_time_active := false
+var _step_time_scale := 1.0
 ## True after we last told the native sim to use a world scale other than 1.
 var _native_time_scaled := false
 ## True from the start of step() until the native move has been applied. Script
@@ -1218,7 +1223,7 @@ func _run_batch_hooks(delta: float) -> void:
 		var view := gather_batch(id, delta)
 		if view.n == 0:
 			continue
-		if TimeControl != null and TimeControl.is_active():
+		if _step_time_active:
 			_run_scaled_batch_hook(b, view, delta)
 		else:
 			_invoke_batch_hook(b, view)
@@ -1236,7 +1241,7 @@ func _invoke_batch_hook(b: BulletBehavior, view: BatchView) -> void:
 ## One batch callback per time-scale class so view.dt matches every row.
 ## Class dts are computed once; rows are tagged 0/1/2 (player / enemy / Null).
 func _run_scaled_batch_hook(b: BulletBehavior, view: BatchView, delta: float) -> void:
-	var scale := TimeControl.world_scale() if TimeControl != null else 1.0
+	var scale := _step_time_scale
 	var player_dt := delta
 	var enemy_dt := delta * scale
 	var null_dt := delta * maxf(scale, TimeControl.NULL_TIME_SCALE_FLOOR)
@@ -1523,6 +1528,8 @@ func _sync_world_time_scale() -> void:
 	if TimeControl != null:
 		scale = TimeControl.world_scale()
 		floor_s = TimeControl.NULL_TIME_SCALE_FLOOR
+	_step_time_active = active
+	_step_time_scale = scale if active else 1.0
 	if native == null:
 		return
 	if active or _native_time_scaled:

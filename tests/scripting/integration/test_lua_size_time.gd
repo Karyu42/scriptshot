@@ -178,8 +178,21 @@ func test_durations_and_scales_clamp() -> void:
 	assert_almost_eq(_num("world.time_retry_in()"), 7.5, 0.01)
 
 
+func test_long_durations_clamp_to_three_seconds_and_still_return_true() -> void:
+	for call: String in ["world.time_stop(5)", "world.time_scale(0.5, 3.5)", "world.time_stop(math.huge)"]:
+		TimeControl.cancel()
+		assert_eq(_eval(call), "true", call)
+		assert_true(TimeControl.is_active(), call)
+		# 3 s left + 4.5 s cooldown: the clamp, not the asked-for duration.
+		assert_almost_eq(_num("world.time_retry_in()"), 7.5, 0.01, call)
+
+
 func test_invalid_requests() -> void:
-	for call: String in ["world.time_stop(0)", "world.time_stop(-1)", "world.time_stop(0/0)", "world.time_scale(0/0, 1)"]:
+	for call: String in [
+		"world.time_stop(0)", "world.time_stop(-1)", "world.time_stop(0/0)", "world.time_stop(-math.huge)",
+		"world.time_scale(0/0, 1)", "world.time_scale(-(0/0), 1)", "world.time_scale(0.5, 0)",
+		"world.time_scale(0.5, -2)", "world.time_scale(0.5, 0/0)", "world.time_scale(0/0, 0/0)",
+	]:
 		assert_eq(_eval("select(2, %s)" % call), "invalid", call)
 		assert_false(TimeControl.is_active(), call)
 	var r := _fire("world.time_stop('long')")
@@ -188,6 +201,16 @@ func test_invalid_requests() -> void:
 	r = _fire("world.time_scale(nil, 1)")
 	assert_false(r.ok)
 	assert_string_contains(r.error, "expected a scale")
+	r = _fire("world.time_scale('half', 1)")
+	assert_false(r.ok, "a non-number scale is a Lua error, not 'invalid'")
+	assert_string_contains(r.error, "world.time_scale: expected a scale")
+	r = _fire("world.time_scale(0.5, {})")
+	assert_false(r.ok)
+	assert_string_contains(r.error, "world.time_scale: expected a duration in seconds")
+	r = _fire("world.time_stop()")
+	assert_false(r.ok, "a missing duration is a non-number")
+	assert_false(TimeControl.is_active())
+	assert_almost_eq(_num("select(3, world.time_stop(0))"), 0.0, 0.0001, "invalid still reports retry_in")
 
 
 func test_world_is_read_only_and_has_no_cancel() -> void:
@@ -205,6 +228,86 @@ func test_time_calls_are_safe_from_a_bullet_callback() -> void:
 	var r := host.call_hook("on_hit", 1, 0.0, 0.0, null, true)
 	assert_true(r.ok, r.error)
 	assert_true(TimeControl.is_active())
+
+
+## GD: a time request made from a bullet hook mid-step applies from the next
+## integration step; the current step is never re-simulated. A player shot's
+## on_batch stops time during step 1. Plain enemy shots (GDScript pool and,
+## when present, the native sim) and an enemy batch hook that runs after the
+## stopper's in that same step all still get the full dt for step 1, and
+## freeze from step 2.
+func test_a_stop_from_a_bullet_hook_applies_from_the_next_step() -> void:
+	for pref: String in ["gdscript", "native"]:
+		TimeControl.cancel()
+		var mgr := BulletManager.new()
+		mgr.backend_preference = pref
+		mgr.capacity = 64
+		mgr.world_bounds = Rect2(-4000, -4000, 8000, 8000)
+		mgr.render_enabled = false
+		mgr.auto_step = false
+		add_child_autofree(mgr)
+		if mgr.backend != pref:
+			gut.p("%s backend not available" % pref)
+			continue
+		var stopper := LuaBulletBehavior.new()
+		stopper.host.wall_msec = 5000
+		var loaded := stopper.load_source("""
+			local W = {}
+			W.on_batch = function(v, dt)
+				if not W.name then W.name = tostring(world.time_stop(1)) end
+			end
+			return W
+		""".dedent(), "stopper.lua", mgr, -1)
+		assert_true(loaded.ok, loaded.error)
+		var sid := mgr.register_behavior(stopper)
+		var req := ShotRequest.with_velocity(Vector2(0, -300), Vector2(600, 0))
+		req.lifetime = 5.0
+		stopper.apply_to_request(req, sid)
+		assert_gte(mgr.spawn(req), 0)
+		var watcher := LuaBulletBehavior.new()
+		watcher.host.wall_msec = 5000
+		loaded = watcher.load_source("""
+			local W = { dts = {} }
+			W.on_batch = function(v, dt)
+				W.dts[#W.dts + 1] = string.format("%.5f", dt)
+				W.name = table.concat(W.dts, ",")
+			end
+			return W
+		""".dedent(), "watcher.lua", mgr, -1)
+		assert_true(loaded.ok, loaded.error)
+		var wid := mgr.register_behavior(watcher)
+		var wreq := ShotRequest.with_velocity(Vector2(0, 900), Vector2(600, 0))
+		wreq.lifetime = 5.0
+		wreq.owner_layer = Layers.ENEMY
+		wreq.hit_mask = Layers.hostile_to(Layers.ENEMY)
+		watcher.apply_to_request(wreq, wid)
+		assert_gte(mgr.spawn(wreq), 0)
+		_shot(mgr, Layers.ENEMY, Vector2(0, 300), Vector2(600, 0))
+		assert_false(TimeControl.is_active())
+		mgr.step(DT)
+		assert_true(TimeControl.is_active(), "%s: the hook stopped time" % pref)
+		assert_eq(stopper.host.weapon_string("name", ""), "true", pref)
+		assert_almost_eq(_x_at(mgr, 300.0), 10.0, 0.01, "%s: the enemy shot got the whole step it was in" % pref)
+		assert_almost_eq(_x_at(mgr, -300.0), 10.0, 0.01, "%s: the player shot too" % pref)
+		mgr.step(DT)
+		mgr.step(DT)
+		assert_almost_eq(_x_at(mgr, 300.0), 10.0, 0.01, "%s: frozen from the next step" % pref)
+		assert_almost_eq(_x_at(mgr, -300.0), 30.0, 0.01, "%s: the player shot keeps moving" % pref)
+		assert_eq(watcher.host.weapon_string("name", ""), "%.5f,0.00000,0.00000" % DT,
+			"%s: a batch hook later in the same step still got the full dt" % pref)
+		mgr._behaviors.clear()
+		TimeControl.cancel()
+
+
+## The x of the live shot whose y is `y` (NAN when there is none).
+func _x_at(mgr: BulletManager, y: float) -> float:
+	@warning_ignore_start("unsafe_cast")
+	var positions: PackedVector2Array = mgr.snapshot()["pos"]
+	@warning_ignore_restore("unsafe_cast")
+	for p: Vector2 in positions:
+		if absf(p.y - y) < 0.5:
+			return p.x
+	return NAN
 
 
 # ---------------------------------------------------------------- abilities
