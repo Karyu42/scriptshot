@@ -1,0 +1,77 @@
+# GitHub Pages from a stable GitHub release: deploys that release's web zip, byte for byte.
+#
+# Run it by hand from main: Actions → "Pages from release" → Run workflow (or
+# `gh workflow run pages-release.yml --ref main`). It runs only
+# on main because the github-pages environment only allows main. It refuses a draft
+# or a pre-release, so the rolling `nightly` can never land here.
+#
+# Job-level permissions only: contents: read to fetch the release asset; pages: write
+# and id-token: write on the deploy job.
+name: Pages from release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Same group as the nightly workflow, so the two never deploy Pages at the same time.
+concurrency:
+  group: nightly-pages
+  cancel-in-progress: false
+
+jobs:
+  pages-build:
+    name: Pages web build from release
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      artifact: ${{ steps.name.outputs.artifact }}
+    steps:
+      # One Pages artifact name per attempt (see nightly-pages.yml).
+      - id: name
+        run: echo "artifact=github-pages-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and verify the release web zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: v0.1.0-demo
+        run: |
+          set -euo pipefail
+          kind=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')
+          [ "$kind" = "false false" ] || { echo "::error::$TAG is a draft or a pre-release ($kind)"; exit 1; }
+          zip="scriptshot-${TAG}-web.zip"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$zip" --dir dl
+          mkdir -p web-pages
+          unzip -q "dl/$zip" -d web-pages
+          test -s web-pages/index.html && test -s web-pages/index.pck
+          test ! -e web-pages/libscriptshot_native.web.template_release.wasm32.nothreads.wasm
+          python3 tools/ci/web_smoke.py check-export web-pages
+          ls -l web-pages
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          name: ${{ steps.name.outputs.artifact }}
+          path: web-pages
+
+  pages-deploy:
+    name: GitHub Pages deploy
+    needs: pages-build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+      actions: read
+    environment:
+      name: github-pages
+      url: ${{ steps.pages.outputs.page_url }}
+    steps:
+      - id: pages
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
+        with:
+          artifact_name: ${{ needs.pages-build.outputs.artifact }}

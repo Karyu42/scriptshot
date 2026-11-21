@@ -271,6 +271,14 @@ Android with build-tools 36.1.0 (the box has 35.0.1), the first-launch steps on 
 
 ## 10. Nightly pre-release and GitHub Pages
 
+**Paused for the long break after v0.1.0-demo.** The nightly workflow below does nothing
+unless the repository variable `NIGHTLY_ENABLED` is `true`, so merges to `main` no longer
+replace the `nightly` pre-release or redeploy Pages. Pages serves the stable release instead:
+`.github/workflows/pages-release.yml` ("Pages from release", run by hand from `main`) downloads
+`scriptshot-v0.1.0-demo-web.zip` from the stable `v0.1.0-demo` GitHub release, checks it with
+`tools/ci/web_smoke.py check-export`, and deploys it. To resume nightlies after the break, set
+`NIGHTLY_ENABLED=true`; the next green CI push to `main` then publishes as described below.
+
 After each successful CI **push** to `main` (Import + GUT must have passed, so the export
 job has run), `.github/workflows/nightly-pages.yml` replaces the rolling pre-release
 tagged `nightly` with unsigned Linux, Windows and web zips, and deploys the same web
