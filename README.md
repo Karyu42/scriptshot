@@ -51,13 +51,15 @@ A smaller ship is harder to hit — `player.size` is 1 by default, and you can s
 player.size = 0.4
 ```
 
-The Time-stop dash starter freezes enemies and their bullets for a second, then dashes. Your ship and your own shots keep moving. A time stop does not make you invulnerable; `player:dash()` is what grants the short i-frames. From `scripting/abilities/time_stop_dash.lua.txt`:
+The Time-stop dash starter freezes enemies and their bullets for a second (white-violet Null attacks still move at half speed), then dashes. Your ship and your own shots keep moving. A time stop does not make you invulnerable; `player:dash()` is what grants the short i-frames. This is a complete Dash file, shortened from the Time-stop dash starter:
 
 ```lua
-on_dash = function(ctx, dir)
-  world.time_stop(1.0)  -- at most 3 s; then it rests 1.5× as long (at least 1 s)
-  player:dash(math.atan(dir.y, dir.x))
-end
+return {
+  on_dash = function(ctx, dir)
+    world.time_stop(1.0)  -- at most 3 s; then it rests 1.5× as long (at least 1 s)
+    player:dash(math.atan(dir.y, dir.x))
+  end,
+}
 ```
 
 For the full Lua API, see [`docs/scripting/api.md`](docs/scripting/api.md) and the editor notes in [`docs/scripting/editor.md`](docs/scripting/editor.md).
@@ -73,7 +75,7 @@ A first-run ribbon, about **15–25 minutes** if you follow the on-screen hints:
 
 `sense.nearest_enemy` unlocks after three kills (the practice dummies count). The in-game Codex shows a short page and a snippet for each Sense you earn.
 
-You can already rewrite your weapon and your dash, including the tiny-ship and time-stop examples above. This demo does not include RPG mode, in-game script sharing, a Constrained mode, or spending shards.
+You can already rewrite your weapon and your dash, including the size example and the Time-stop dash starter above. This demo does not include RPG mode, in-game script sharing, or spending shards.
 
 ## Known limits
 
