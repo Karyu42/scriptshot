@@ -3,7 +3,12 @@
 #
 # The release is always a pre-release, never "Latest". macOS is not included.
 # Job-level permissions only: contents: write on the release job; pages: write and
-# id-token: write on the Pages job. This workflow is the only publisher.
+# id-token: write on the Pages job.
+#
+# PAUSED for the long break after v0.1.0-demo: nothing runs unless the repository
+# variable NIGHTLY_ENABLED is "true" (Settings → Secrets and variables → Actions →
+# Variables). While it is paused, Pages serves the stable release deployed by
+# pages-release.yml, and the last `nightly` pre-release stays as it is.
 name: Nightly + Pages
 
 on:
@@ -24,7 +29,7 @@ concurrency:
 jobs:
   collect:
     name: Collect and verify shipping builds
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' }}
+    if: ${{ vars.NIGHTLY_ENABLED == 'true' && github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_branch == 'main' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
