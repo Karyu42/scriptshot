@@ -1,145 +1,123 @@
 # Scriptshot
 
-A top-down 2D twin-stick shooter built in Godot 4 where you **script your own
-shots in Lua**. MIT licensed.
+A top-down 2D twin-stick shooter, built in [Godot](https://godotengine.org/) 4.7.2, where you **script your own shots in Lua**. MIT licensed.
 
-> Status: early foundation. The Godot core (player, bullet system, camera,
-> tests) is in place; the Lua binding is developed separately in `scripting/`.
+This is the **v0.1.0-demo**: a first playable slice you can finish in a sitting, plus the tools to rewrite your weapon and your dash.
 
-## Requirements
+![The player ship facing the Warden, an armored blue core with three orbiting husks](docs/media/scriptshot-warden.png)
 
-* **Godot 4.7.2 stable** (standard build, not .NET). Download from
-  <https://github.com/godotengine/godot/releases/tag/4.7.2-stable>.
-* Put the editor binary on your `PATH` as `godot`, or point `$GODOT` at it
-  (`export GODOT=/path/to/Godot_v4.7.2-stable_linux.x86_64`). The scripts in
-  `tools/` use `$GODOT` if set and `godot` otherwise.
+## Play
 
-## Run
+- **[Play in the browser](https://karyu42.github.io/scriptshot/).**
+- **[Download Linux, Windows, or web zips](https://github.com/Karyu42/scriptshot/releases/tag/v0.1.0-demo)** from the v0.1.0-demo release.
 
-```sh
-godot --path .            # runs scenes/main.tscn
-# or open project.godot in the Godot editor and press F5
-```
+On Windows, the first launch may show SmartScreen ("Windows protected your PC"): choose **More info**, then **Run anyway**. The builds are unsigned. On Linux, `chmod +x Scriptshot.x86_64` after unzipping (the executable bit is often stripped), then run it.
+
+## Controls
+
+The game switches between mouse and gamepad from the last thing you touched.
 
 | Action | Mouse + keyboard | Gamepad |
 | --- | --- | --- |
 | Move | `W` `A` `S` `D` | Left stick |
-| Aim | Mouse (relative to the ship on screen) | Right stick |
+| Aim | Mouse | Right stick |
 | Fire | Left mouse button | Right trigger |
-| Dash (0.2 s invulnerable, 1.5 s cooldown; toward the move direction, or the aim direction when standing still) | `Space` or `Shift` | `B` / Right bumper |
-| Bullet stress test on/off | `F1` | Back / Select |
-| Cycle stress target (2k / 5k / 10k) | `F2` | `Y` / Triangle |
+| Dash | `Space` or `Shift` | `B` / Circle, or Right bumper |
+| Open the script editor | `E` | `X` / Square |
 
-The input device switches automatically on the last thing you touched. The HUD
-shows FPS, live bullet count and the bullet simulation cost per tick.
+Dash is a short burst (160 px, 0.2 s of invulnerability, 1.5 s cooldown). It goes the way you are moving, or the way you are aiming if you are standing still.
 
-## Test
+`F1` (Back / Select) toggles a bullet stress test; `F2` (`Y` / Triangle) cycles the target count. Those are for poking at performance, not for the slice.
 
-Unit and smoke tests use [GUT](https://github.com/bitwes/Gut) 9.7.1 (vendored in
-`addons/gut`). One command, headless, non-zero exit code on failure:
+## Script your shots (about a minute)
+
+Press **E** (or **X** on a gamepad) to open the editor. Time drops to 15% while it is open; your ship does not move or fire while you type. **Ctrl+S** (or Ctrl+Enter) saves and reloads before the next shot; **Esc** closes the editor. Shots already in the air keep the code they were fired with. If a save has a mistake, the last good weapon keeps firing and the editor shows the problem.
+
+You start with `shots/default.lua`, a single straight shot. *Insert starter…* drops in a ready-made weapon (Ctrl+Z undoes it). Each one marks a number with `<- tweak me`:
+
+| Starter | What it does |
+| --- | --- |
+| Straight | One shot along your aim |
+| Spread | Five shots in a fan |
+| Spiral | Three arms that turn a little more every shot |
+| Split | A hit bursts into pieces that fly back out |
+| Homing | Shots steer toward the nearest enemy (locked until you earn `sense.nearest_enemy`) |
+
+The file picker also has your **Dash** file (`abilities/dash.lua`). *Insert starter…* offers **Dash: Dash (built-in)** and **Dash: Time-stop dash**. Save to use it.
+
+A smaller ship is harder to hit — `player.size` is 1 by default, and you can set it from any script (clamped to 0.25–4):
+
+```lua
+player.size = 0.4
+```
+
+The Time-stop dash starter freezes enemies and their bullets for a second (white-violet Null attacks still move at half speed), then dashes. Your ship and your own shots keep moving. A time stop does not make you invulnerable; `player:dash()` is what grants the short i-frames. This is a complete Dash file, shortened from the Time-stop dash starter:
+
+```lua
+return {
+  on_dash = function(ctx, dir)
+    world.time_stop(1.0)  -- at most 3 s; then it rests 1.5× as long (at least 1 s)
+    player:dash(math.atan(dir.y, dir.x))
+  end,
+}
+```
+
+For the full Lua API, see [`docs/scripting/api.md`](docs/scripting/api.md) and the editor notes in [`docs/scripting/editor.md`](docs/scripting/editor.md).
+
+## What's in this demo
+
+A first-run ribbon, about **15–25 minutes** if you follow the on-screen hints:
+
+- A starting room of practice dummies and short scripting lessons.
+- A shielded dummy, then a field of regulars: Drifters, Swarmers, a Shieldbearer, and a Sniper.
+- A rare elite, with an escort.
+- **The Warden**, the slice boss: an armored core with a weak-point gap, and orbiting husks that heal it when they die. The fight has three phases. Beat the Warden to unlock `sense.enemies_in` and open a gate into the open world beyond.
+
+`sense.nearest_enemy` unlocks after three kills (the practice dummies count). The in-game Codex shows a short page and a snippet for each Sense you earn.
+
+You can already rewrite your weapon and your dash, including the size example and the Time-stop dash starter above. This demo does not include RPG mode, in-game script sharing, or spending shards.
+
+## Known limits
+
+- **Unsigned builds.** Windows will warn on first launch (SmartScreen: **More info > Run anyway**). There is no code-signed identity on these downloads.
+- **No macOS build** in this release (an export preset exists for local experiments, but it is not shipped).
+- **Android is untested.** An Android preset exists; do not expect a supported APK.
+- This is an early demo. The on-screen HUD still shows developer stats (FPS, bullet counts, and similar).
+
+## Build from source
+
+You need **Godot 4.7.2** stable (the standard build, not .NET). Download it from <https://github.com/godotengine/godot/releases/tag/4.7.2-stable>. Put the editor on your `PATH` as `godot`, or point `$GODOT` at it. Lua scripting uses stock **[lua-gdextension 0.8.2](https://github.com/gilzoide/lua-gdextension/releases/tag/0.8.2)** (Lua 5.4).
+
+```sh
+./tools/ci/fetch_native_libs.sh   # downloads lua-gdextension 0.8.2 (binaries are gitignored)
+godot --path .                    # runs scenes/main.tscn; or open project.godot and press F5
+```
+
+Optional: build the native bullet library (plain and `on_batch` shots use it when it loads; otherwise the game stays on GDScript). See [`docs/native.md`](docs/native.md) for pins and platforms.
+
+```sh
+./tools/build_native.sh           # Linux debug + release; also: linux, windows, macos, web, android
+```
+
+Committed export presets (`export_presets.cfg`) are `Windows Desktop`, `macOS`, `Linux`, `Web`, and `Android`. They write into the git-ignored `build/` folder, for example:
+
+```sh
+godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64
+```
+
+More export notes: [`docs/qa/release-builds.md`](docs/qa/release-builds.md).
+
+### Tests
+
+Unit and smoke tests use [GUT](https://github.com/bitwes/Gut) 9.7.1 (vendored in `addons/gut`):
 
 ```sh
 ./tools/run_tests.sh
+# a subset: ./tools/run_tests.sh -gselect=bullet_pool
 ```
 
-It imports the project (first run only needs a few seconds) and runs
-`tests/unit/`. Import, parse and compile errors fail the run (GDScript untyped
-and unsafe-access warnings are project-level errors; `tests/unit/test_project_integrity.gd`
-loads every script). Run a subset with `./tools/run_tests.sh -gselect=bullet_pool`.
-The raw command is:
-
-```sh
-godot --headless --path . --import          # once per fresh clone
-godot --headless --path . -s res://addons/gut/gut_cmdln.gd -gexit
-```
-
-## Benchmark
-
-Headless bullet benchmark: keeps N bullets alive, runs the full simulation tick
-(kinematics, swept collision against 32 hurtboxes and 28 walls, despawn/respawn
-churn, interpolated render buffer fill) and reports p50/p95/p99/max per-frame
-cost at 5000 and 10000 bullets against a budget of **p95 <= 16.6 ms** (60 fps).
-A tenth of the bullets pierce (`pierce = 3`), so that path is part of the number.
-Two checks, with different consequences:
-
-* **Floor, 5,000 bullets** (`--floor-bullets`): a hard gate. A miss, or a run that
-  never actually had 5,000 bullets alive, prints a `FLOOR  FAIL` line and exits 1.
-* **Target, 10,000 bullets** (`--target-bullets`): a goal. A miss prints
-  `TARGET WARN` plus a `WARN` line and still exits 0, since 10k p95 depends on how
-  busy the machine is.
-
-```sh
-./tools/run_benchmark.sh                                     # 5000 (floor) and 10000 (target)
-./tools/run_benchmark.sh --bullets=2000,5000,10000,20000 --frames=1200
-./tools/run_benchmark.sh --floor-bullets=5000 --target-bullets=10000
-./tools/run_benchmark.sh --json=/tmp/bench.json
-./tools/run_benchmark.sh --hooked=0.3                        # 30% of the bullets carry a no-op on_update hook
-```
-
-`--hooked=F` (0 to 1, default 0 = plain bullets only, the original workload) gives that
-share of the bullets a do-nothing `on_update` hook, so the cost of the hook machinery (the call,
-the owner context, the post-hook check) shows up; a value outside 0..1 or not a number exits 2
-with a message. The same bullet trajectories are simulated at every fraction. The fraction is
-in the `--json` output (top level and per result).
-
-Exit code 1 means the floor was missed or never reached, or the project failed
-to compile; a missed 10k target alone exits 0 (with a WARN). Headless mode uses a dummy renderer, so
-the numbers cover CPU-side simulation and buffer preparation, not GPU time.
-To include a real renderer run it windowed:
-`godot --path . res://tests/benchmark/bullet_benchmark.tscn -- --bullets=5000,10000`.
-
-The benchmark's omitted `--backend` is **gdscript**. That pin keeps the plain 16.6 ms and hooked 22.0 ms bars on the GDScript pool (per-bullet hooks stay on that pool either way). `--backend=auto` follows the game default below. `--backend=native` measures the C++ pool for plain and `on_batch` bullets.
-
-## Bullet backend
-
-Plain bullets, declarative bullets, and `on_batch` scripts run on the C++ pool (`NativeBulletSim`) when that library has loaded. Bullets with a per-bullet hook (`on_spawn`, `on_update`, `on_hit`, `can_hit`, `on_despawn`) stay on the GDScript pool. If the library is missing or fails to instantiate, the game stays on GDScript and logs **one** warning for the whole run (`push_warning`), not one per bullet or frame.
-
-Web builds do not try to load the native library (it is not shipped) and do not warn. An explicit native request on web still stays on GDScript, does not construct the sim, and logs that one warning. Android has no separate bullet path: a missing library uses the same automatic fallback.
-
-Force a backend with any of:
-
-* `SCRIPTSHOT_BULLET_BACKEND=gdscript` or `native`
-* `--bullet-backend=gdscript` or `native`
-* project setting `scriptshot/bullets/backend` set to `gdscript` or `native`
-
-The committed setting is `auto`, which means native when the library loads. `BulletManager.backend_preference = "gdscript"` or `"native"` forces that backend and ignores the three overrides above. Details: [`docs/native.md`](docs/native.md).
-
-## Exports
-
-`export_presets.cfg` is committed (it holds no credentials; `export_credentials.cfg`
-stays ignored) with the presets `Windows Desktop`, `macOS`, `Linux`, `Web` and `Android`, all
-exporting into the git-ignored `build/` directory, e.g.
-`godot --headless --path . --export-release Linux build/linux/Scriptshot.x86_64`.
-macOS is ad-hoc signed (no Apple account) and not notarized; the Web preset uses the no-threads template; Android is arm64 only and a debug-signed APK. On every green push to `main`, CI uploads unsigned Linux, Windows and web artifacts (`scriptshot-linux-<sha7>` and the windows/web equivalents, 90 days). The full matrix, including macOS and Android, is still a manual workflow dispatch. See `docs/qa/release-builds.md`.
-
-## Android emulator smoke (manual CI)
-
-A separate workflow (`.github/workflows/android-emulator-smoke.yml`) boots an **x86_64** Android
-emulator on GitHub Actions, installs the **Lua spike** debug APK (`docs/scripting/spike`, dual ABI
-arm64-v8a + x86_64), and gates on `SPIKE_RESULT` / `SPIKE_DONE` from the ~1000-bullet export bench (FPS / frame-time percentiles are in the JSON lines, not an on-screen overlay).
-It is **`workflow_dispatch` only** — it never runs on pull requests, so PR CI does not pay the
-emulator cost.
-
-* Actions → **Android emulator smoke** → **Run workflow** (optional `api_level`, default 30).
-* Design notes: `docs/scripting/testing.md` section 2.4. The main-game Android preset stays
-  arm64-only for phones; the GH-hosted runner cannot usefully accelerate an arm64 AVD.
-
-## Project layout
-
-```
-src/{core,player,bullets,enemies,world,camera,fx}/   game code (GDScript)
-scenes/                                               main.tscn, player.tscn, ...
-tests/{unit,benchmark}/                               GUT tests, benchmark
-scripting/                                            reserved for the Lua side
-docs/architecture.md                                  design + the shot interface
-tools/                                                test / benchmark runners
-addons/gut/                                           vendored GUT 9.7.1
-```
-
-How shots are fired (and what Lua scripts will drive) is documented in
-[`docs/architecture.md`](docs/architecture.md). Contributor notes are in
-[`CONTRIBUTING.md`](CONTRIBUTING.md).
+The bullet benchmark is `./tools/run_benchmark.sh`. Details and the backend switch are in [`docs/native.md`](docs/native.md). Contributor notes are in [`CONTRIBUTING.md`](CONTRIBUTING.md). Design docs live under [`docs/design/`](docs/design/).
 
 ## License
 
-MIT, see [LICENSE](LICENSE). Vendored GUT is MIT (`addons/gut/LICENSE.md`).
+MIT, see [LICENSE](LICENSE). Vendored GUT is also MIT (`addons/gut/LICENSE.md`).
