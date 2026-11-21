@@ -1,6 +1,6 @@
 # Ability scripting
 
-> Status: **post-slice design.** The vertical slice does not build this. Companions: [`pillars.md`](pillars.md) (P1, P2, §12), [`../scripting/api.md`](../scripting/api.md) (*Writing player state*, *Weapon state*), [`../scripting/editor.md`](../scripting/editor.md), [`rpg-modifiers.md`](rpg-modifiers.md). Numbers below are the ones in this spec. Anything still missing is `TBD (tune)`.
+> Status: **main-mode abilities, partly in the slice.** The Dash slot, `player.size`, and time stop shipped in v0.1.0-demo (SE PRs #127, #128, #130). Move and Utility are still later. RPG mode stays after the slice. Companions: [`pillars.md`](pillars.md) (P1, P2, §12, Q32), [`../scripting/api.md`](../scripting/api.md) (*Writing player state*, *Weapon state*), [`../scripting/editor.md`](../scripting/editor.md), [`rpg-modifiers.md`](rpg-modifiers.md), [`vertical-slice.md`](vertical-slice.md). Numbers below are the ones in this spec. Anything still missing is `TBD (tune)`.
 
 **Goal.** Players script and tune movement, dash, and similar abilities, not only shots. It builds on the editor, the `PlayerState` write surface, the sandbox, the per-frame budget, hot reload, and `state`. The main mode keeps no restrictions (pillars P1 and P2). The challenge still comes from the world (Null attacks, counter bosses), not from limits on movement.
 
@@ -10,8 +10,8 @@
 
 | Slot | What it does | When |
 |---|---|---|
-| **Move** | Replaces the hardcoded movement | With the first ability step |
-| **Dash** | Replaces the hardcoded dash | With the first ability step |
+| **Move** | Replaces the hardcoded movement | Later |
+| **Dash** | Replaces the hardcoded dash | Shipped in v0.1.0-demo (SE PR #127). Caps below |
 | **Utility** | A new ability on a new button | Later (A6). It needs an input mapping on every platform: PC, controller, and a touch button on mobile |
 
 Each slot equips one file from a new `abilities/` folder, the same way a weapon equips a file from `shots/`. Bundled defaults ship as `scripting/abilities/*.lua.txt`, the same `.lua.txt` rule bundled scripts already use (`scripting/README.md`). Player files are `.lua`.
@@ -19,6 +19,26 @@ Each slot equips one file from a new `abilities/` folder, the same way a weapon 
 **Game Designer call.** The default Move and Dash are Lua files that reproduce today's engine behaviour exactly. A parity test (GE and QA) proves it: the same inputs produce the same positions within **0.5 px** over a **10 s** scripted input trace.
 
 Each ability file has its own `state`, with the same rules as weapon `state` (api.md *Weapon state*).
+
+## Shipped caps (main mode, Game Designer calls 2026-11-15)
+
+**Game Designer call.** These shipped in v0.1.0-demo. RPG mode keeps its own caps (B9). These do not carry over.
+
+### player.size
+
+Scale is clamped to **0.25..4.0**. The default is **1.0**. It scales the hurtbox, the sprite, and the wall-collision radius together. It does not scale dash distance or move speed. Pickup radius is the base plus the body-radius change. The muzzle offset scales. If a write would overlap a wall, the resolver pushes the player out. If no free spot exists within **64 px**, the size grows only to the largest value that fits, and the write returns that value. NaN is ignored with a warning. ±INF clamps. A non-number raises a Lua error. Writes from bullet callbacks apply on the next physics tick. One size call per tick per player. The last write wins, shared across files. Writes emit `script_wrote("size", old, new)`. No launch boss reacts to it. The save is debounced about **1 s** after the last change and flushes on quit and at normal save points. A loaded size goes through the same wall-fit guard.
+
+### Time
+
+`world.time_scale(scale, seconds)`, with `world.time_stop(seconds)` as sugar for scale 0. Scale is clamped to **0..1**. Seconds are capped at **3**. Above 3 clamps and returns true. Cooldown = max(**1 s**, **1.5 ×** the duration used), starting when the effect ends. Timers run on real time and pause while the game is paused. The call returns true, or false plus err (`'active'` | `'cooldown'` | `'invalid'`) plus `retry_in`. `'invalid'` is a NaN scale, NaN seconds, or seconds ≤ 0. A non-number argument raises a Lua error. Read-only helpers: `world.time_scale_now()` and `world.time_retry_in()`. Requests from bullet hooks apply from the next integration step.
+
+What gets scaled is the world sim except the player: enemies, enemy bullets, telegraphs, boss phase timers, spawn and Herald timers, and habituation decay. What does not: player movement, regen, engine i-frames, and the player's own shots. Time stop grants no i-frames. The effect ends at once, with no cooldown, on player death, respawn, and any boss kill tick. The engine's victory-card time scale 0 wins. Null attacks (`pierces_script_invuln` bullets, their telegraphs, the Null-shot affix, and legendary Null rings) use an effective scale of max(scale, **0.5**). Their casters still freeze. The common Warden has no Null attacks, so it freezes fully. Emit `script_time_scaled(scale, seconds)`.
+
+Open question **Q32** (pillars): should a later boss ignore time stop entirely, a "clockwork" counter? Status: open, for Karyu after the break.
+
+### Dash slot (SE PR #127)
+
+The file `cooldown` is clamped to **0.05..30 s**. Engine i-frames stay gated at the engine dash cooldown and come only from `player:dash()`. A yielding `on_dash` is resumed once per tick and dropped after **600** ticks (**10 s**), on a save, or on death or respawn. A new press is refused while it runs. The file cooldown starts at the press. After an error the hook waits **0.25 s**, and each distinct error is shown once. A missing or broken file at start keeps the built-in dash. A bad save keeps the last good version. A nil return counts as a dash. A time stop called inside `on_dash` uses only its own cooldown, so "dash = time stop" effectively runs at max(dash cooldown, stop cooldown).
 
 ## A2. Script shape
 
@@ -119,7 +139,7 @@ local SPEED = 260 --@knob 0..800 step 10 "Top speed"
 
 ## A5. Fit after the slice
 
-No slice row changes. The steps are ordered, and each one is a small PR.
+The Dash slot, `player.size`, and time stop shipped in v0.1.0-demo. The remaining steps are still after that demo. The slice's lesson list is otherwise unchanged.
 
 | Step | What | Who |
 |---|---|---|
