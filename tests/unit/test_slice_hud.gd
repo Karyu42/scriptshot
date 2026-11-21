@@ -144,6 +144,22 @@ func test_lesson_1_hint_appears_after_25s_in_room_s() -> void:
 	assert_eq(hud.hint_text(), "One aim, more than one target.")
 
 
+func test_lesson_4_hint_appears_after_30s_in_room_b() -> void:
+	# Lessons 1–3 must already be done: only the earliest incomplete lesson
+	# in the current room accumulates wait time. Room B is Rect2(2560, -512, 1280, 1024).
+	# player.hp is not bound, so the hint describes the pad / killing-blow check.
+	progress.complete_lesson(1)
+	progress.complete_lesson(2)
+	progress.complete_lesson(3)
+	player.global_position = Vector2(3200, 0)
+	assert_eq(hud.hint_text(), "")
+	_tick(29.9)
+	assert_eq(hud.hint_text(), "")
+	_tick(0.2)
+	assert_eq(hud.hint_text(), "Let the pad take a pip, then fire.")
+	assert_signal_emitted(hud, "hint_shown")
+
+
 func test_a_successful_save_rearms_the_lesson_hint() -> void:
 	player.global_position = Vector2.ZERO
 	_tick(25.1)

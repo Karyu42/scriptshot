@@ -59,7 +59,7 @@ const HINT_TEXT: Array[String] = [
 	"The damage number.",
 	"One aim, more than one target.",
 	"Bend the shot. Put it in a function.",
-	"Read player.hp.",
+	"Let the pad take a pip, then fire.",
 	"Save the file.",
 ]
 const HINT_AFTER: Array[float] = [25.0, 25.0, 30.0, 30.0, 20.0]
