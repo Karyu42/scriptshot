@@ -4,7 +4,7 @@
 >
 > **Q25 and Q26 are Decided (CoS call, Karyu may override), 2026-11-12.** The climax is a guaranteed **common Warden** that counts as the save's starter boss, in a compact tier-0 ribbon. The D∞ 8.5 / 9.5 exception applies only inside the slice footprint.
 
-The slice is one save, one seed, about **15–25 minutes** for a new player who follows the hints. It ends when the Warden dies: a short victory card, `sense.enemies_in` at Level I, then the north gate into the existing tier-0 stream. No leaderboards, no in-game script sharing, no Constrained mode, no Shard spending, no Level II. The slice has no ability scripting tools and no RPG mode; both come after the slice ([`ability-scripting.md`](ability-scripting.md), [`rpg-modifiers.md`](rpg-modifiers.md)).
+The slice is one save, one seed, about **15–25 minutes** for a new player who follows the hints. It ends when the Warden dies: a short victory card, `sense.enemies_in` at Level I, then the north gate into the existing tier-0 stream. No leaderboards, no in-game script sharing, no RPG mode, no Shard spending, no Level II. The Dash slot, `player.size` (0.25–4), and `world.time_stop` (at most 3 s, then a 1.5× cooldown) are in this slice; the Move and Utility slots are later ([`ability-scripting.md`](ability-scripting.md)). RPG mode stays after the slice ([`rpg-modifiers.md`](rpg-modifiers.md)).
 
 Checked against `main` (open-world scene `scenes/main.tscn`: `OpenGround`, `Dummies`, `ChunkStream`, `HeraldArm`, `HeraldDirector`). Player combat already on `main` is not retuned: 5 HP pips, regen +1 pip every 3 s after 5 s without damage, hit i-frames 0.75 s, dash 160 px with 0.2 s i-frames and a 1.5 s cooldown (`Health`, `DashState`), `Main.respawn_delay` 1.5 s, `RespawnPoints`. §14 GE-4 is the canonical restatement.
 
@@ -165,7 +165,7 @@ Room D rare intensity (spawning §3.4): Bulwark arc **150°**, absorb; Summoner 
 
 **Game Designer call (GE PR #101).** The elite spawns at room D's centre `(7680, 0)`. The escort spawns at `WorldGen.escort_position`, **48 px** further from the origin, which for this centre is `(7728, 0)`. It wakes when the player crosses G4's gate line (`x` ≥ G4's west edge, **6782**), or on the usual **700 px** wake, whichever comes first. The first Summoner wave comes **4 s** after wake, and no summon timer runs while it is asleep. The Bulwark starts facing west toward G4 and turns toward the player at **45°/s**, even before wake. There is no name line for the rare elite. Only legendaries get the 2 s name line (spawning §8.1).
 
-Hydra's Summoner is its own legendary column (PR #83 at `8caedde0`), not the common column and not the rare one. Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every **6 s**, **2** bodies, max **6** alive, and each summon is a **105 HP** Drifter (90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5.
+Hydra's Summoner is its own legendary column (PR #83 at `8caedde0`), not the common column and not the rare one. Splitting: 2 halves at 40% HP (84) and ×1.3 speed (129 px/s); **each half splits once more** into 2 at 40% of the half (34 HP) and ×1.3 again (167 px/s); those do not split. Summoner: every **6 s**, **2** bodies, max **6** alive, and each summon is a **105 HP** Drifter (90 px/s, radius 16), not a Swarmer. No cue and no shard on halves or summons. Name line `Hydra` for 2 s on wake. The alcove does not gate G5. It spawns at the alcove centre `(7616, 1152)` and wakes on entering the alcove rect or within **800 px**. The first summons come **6 s** after wake. `hydra_dead` and **10** shards are saved on the original body's death (the first split). Halves carry Splitting only. Summons stop when the body dies. Leftover halves and summons are not saved. Player death behaves like room D in #101.
 
 Phasing is on the first-run path: the Warden's phase-2 husks use it (§5). Null-shot is the one Q23 affix **not** on that path:
 
@@ -325,7 +325,7 @@ return {
 
 SE acceptance for that file, against a stationary dummy at **220 px**, fire rate **0.25 s**: at least **90%** of shots hit, and no shot orbits for more than **1 s**. While strafing, at least **70%** hit. SE measured **100% / 0.27 s / 100%**.
 
-`enemies_in` page, `scripting/codex/enemies_in.lua`. Same `{x, y}` call shape. No `steer_toward`. It looks the Warden up once per batch, from the first shot. If that body is within 600 px of that first shot, every shot in the batch steers toward it.
+`enemies_in` page, `scripting/codex/enemies_in.lua.txt`. Same `{x, y}` call shape. No `steer_toward`. It looks the Warden up once per batch, from the first shot. If that body is within 600 px of that first shot, every shot in the batch steers toward it.
 
 ```lua
 -- sense.enemies_in(pos, r)  · earned: the Warden
@@ -381,7 +381,7 @@ The editor is the same control in every room, owned by `Main`, not by room S. Le
 | 1 | S | Straight, §7.1. `damage` is 1 | A bigger number | East dummy `(300,0)` reaches 0 HP within **4 s** of the trigger being held. Damage 1 needs ~10 s at cooldown 0.25, so it fails. Damage 4 passes (~2.5 s) | `The damage number.` | 25 s |
 | 2 | S | Spread, §7.1 | One aim, several shots | In a 3 s window, north and south dummies each take damage, and `ctx.aim` stays within **0.4 rad** of its value at the start of the window. Passing also requires all three origin dummies to have died at least once (three `first_death` events; that is the `nearest_enemy` grant) | `One aim, more than one target.` | 25 s |
 | 3 | A | The function stub, §7.2, inserted only if they pick the row. Their script is left in place | The shielded dummy dies | Dummy at `(1800, 0)`, 40 HP, radius 22, non-hostile, **120° absorb arc facing west** (toward the door), static. Straight shots deal 0. Dies at least once | `Bend the shot. Put it in a function.` | 30 s |
-| 4 | B | Their script. The page shows the branch, §7.2 | Fire only while hurt | Pad `Rect2(2700, -80, 160, 160)`: on entry, if `hp == 5`, a 0.6 s ring on the player, then `try_damage` for 1 pip. Dummy at `(3200, 0)` has its hurtbox off while `hp > 4`. **Pass:** that dummy's killing blow happens while `player.hp <= 4` | `Read player.hp.` | 30 s |
+| 4 | B | Their script. The page shows the branch, §7.2 | Fire only while hurt | Pad `Rect2(2700, -80, 160, 160)`: on entry, if `hp == 5`, a 0.6 s ring on the player, then `try_damage` for 1 pip. Dummy at `(3200, 0)` has its hurtbox off while `hp > 4`. **Pass:** that dummy's killing blow happens while `player.hp <= 4` | `Let the pad take a pip, then fire.` | 30 s |
 | 5 | B | Their script, speed 480 until they edit | Save the equipped file, and the next shot is faster | Plate at `(3500, 0)`, 16×64 px. Pass when a **player bullet** overlaps it with speed ≥ **640** after `script_saved(file_name, origin)` for the equipped file (`origin` `editor` or `file`). `unequipped_file_saved` does not pass it | `Save the file.` | 20 s |
 
 G1 needs 1 and 2. G2 needs 3. G3 needs 4 and 5, in either order.
@@ -390,7 +390,7 @@ G1 needs 1 and 2. G2 needs 3. G3 needs 4 and 5, in either order.
 
 Five rows. The first four insert immediately. Homing is visible and grey, insert disabled, until `sense_nearest` (§6.3).
 
-The five files are `scripting/starters/`. Straight is copied once into the equipped `shots/default.lua`. Numbers match those files. Per-bullet `on_hit`, `b:split`, and `hit.normal` are not in this editor; split is a weapon-level `on_hit` plus `b:spawn_child`.
+The five files are `scripting/starters/*.lua.txt`. Straight is copied once into the equipped `shots/default.lua`. Numbers match those files. Bundled starter and Codex files use `.lua.txt`. New bundled Lua files use `.lua.txt`. Player files in `shots/` stay `.lua`. Per-bullet `on_hit`, `b:split`, and `hit.normal` are not in this editor; split is a weapon-level `on_hit` plus `b:spawn_child`.
 
 Straight:
 
@@ -421,18 +421,19 @@ return {
 }
 ```
 
-Spiral (`docs/scripting/examples/spiral.lua` stays the long form):
+Spiral (`scripting/starters/spiral.lua.txt`; `docs/scripting/examples/spiral.lua` stays the long form):
 
 ```lua
 -- Spiral: three arms that turn a little more every shot.
-local t = 0
+-- `state` keeps the angle across saves, so a save does not snap it back.
+state.t = state.t or 0
 return {
   name = "Spiral",
   cooldown = 0.08,
   on_fire = function(ctx)
-    t = t + 0.22  -- <- tweak me: how far the arms turn per shot
+    state.t = (state.t + 0.22) % TAU  -- <- tweak me: how far the arms turn per shot
     for arm = 0, 2 do
-      spawn { angle = ctx.aim + t + arm * (TAU / 3), speed = 340, damage = 2 }
+      spawn { angle = ctx.aim + state.t + arm * (TAU / 3), speed = 340, damage = 2 }
     end
   end,
 }
@@ -489,6 +490,8 @@ end
 
 Setting `player.hp = 5` in the script keeps the dummy's hurtbox off. That is the lesson, not a bug.
 
+In v0.1.0-demo `player.hp` is not bound in the sandbox. Reads return nil. Only `size`, `player:dash()`, and `dash_cooldown_left` are bound, so the lesson passes by taking the pad's pip and then landing the killing blow while HP ≤ 4. The snippet above is the intended form once `player.hp` is bound. Open item, after the break: bind `player.hp`, `player.pos`, and `player.vel`. api.md already documents them.
+
 ### 7.3 Hot reload
 
 Time scale stays **0.15** while the editor is open.
@@ -538,7 +541,7 @@ Option A, restated so GE can wire it and QA can re-run [issue #24](https://githu
 
 | | On the body | Beacon tick | Hum |
 |---|---|---|---|
-| Common | Boss hue, outline **3 px**, no rarity ring. Glow = the larger low-alpha disc `RarityCue` already builds for `TIER_BOSS_COMMON` | **One** thin tick in the boss hue, edge of screen, while the boss is alive and within 5 chunks. The slice Warden qualifies as soon as the player is in the ribbon | **Deferred.** Do not ship it |
+| Common | Boss hue, outline **3 px**, no rarity ring. Glow = the larger low-alpha disc `RarityCue` already builds for `TIER_BOSS_COMMON` | **One** thin tick in the boss hue, edge of screen, while the boss is alive and within 5 chunks. The slice Warden qualifies as soon as the player is in the ribbon. The edge tick hides while the Warden's r=48 body intersects the viewport, with a **0.15 s** fade (#110) | **Deferred.** Do not ship it |
 | Rare | **Double outline** + one cyan accent ring | **Double** tick | Deferred. Preview one-shot only |
 | Legendary | **Four** crown ticks, amber, outline width pulses **3 → 5 px** over 1.5 s | Tick with an amber pulse, 1.5 s | Deferred. Preview one-shot only |
 
@@ -588,7 +591,7 @@ Ordered. Each row is done when its acceptance passes. Dependencies are other row
 10. **Victory and the open world (Game Designer calls, GE PR #103, §5.6).** The §5.6 sequence, G0, `register_arena_cleared`, `starter_consumed`, shards +5. Acceptance: the kill tick emits `enemy_killed`, then `boss_defeated("warden")`, and every enemy bullet fades over 0.2 s and deals no damage. That tick's one save write stores `sense_enemies_in = 1`, `RespawnPoints.register_arena_cleared`, shards +5, `warden_dead`, `starter_consumed`, and the G0 open bit. The card is presentation only: line 1 is 28 px, line 2 is 20 px, 8 px apart, `#F2F2F2`, centred in the playable band, time scale 0. A fresh Fire or E press after the card appears dismisses it; input is ignored for the first 0.4 s, and E does not open the editor. G0's wall lifts on dismiss. On load, `warden_dead` means G0 is open. Quitting before dismiss leaves the Codex-once flag unset, so the `enemies_in` toast and Codex page fire on the next load; otherwise they wait until dismiss. There is no white mote. A respawn that happens after the kill is `(9664, 0)`, including a death that started before the kill and whose 1.5 s ends after it (Game Designer call, §2). A fresh `chunk_encounters` outside the footprint is unchanged. `sense_enemies_in` is 1 only after `SenseBook.grant` (SE row 6 can stub the grant). Depends: row 8. Phase 2–3 are not required for this row.
 11. **HUD (Game Designer calls, §5.5 and §14).** Pips, dash arc, sense marks, boss arc. The §5.6 victory card is row 10, not this row. Acceptance: 5 pips track `Health` on the radius-20 ring; up to 5 extra violet pips, then a violet `+N` (`N = hp - 10`) and no further pips; sense marks are 4 px in diameter and fill only when the book says so; the dash arc matches `DashState.cooldown_left`; the boss arc is a gapless 2 px stroke at radius 78, from 12 o'clock clockwise to `hp / 900`, and is absent when the Warden is dead. The armor ring's 70° gap is not this arc. Depends: `Health`, `DashState`, row 8, SE's `SenseBook`.
 12. **Hydra alcove, Phasing, Null-shot, and summon spacing (Game Designer call, GE PR #104 revision 2, §4).** Row 12 lands in steps: summon spacing first (#104), then the alcove placement, `hydra_dead`, the Null-shot L4 test, and Phasing after #100–#103. Acceptance for the spacing step: a wave puts one body on each flank, at radius 48 px, on a 60° arc (±30° around ±90°, so 60–120° off the line to the player). The angle is `hash_u(world_seed, chunk.x, chunk.y, encounter_index, serial, "summon", "arc")`, so a later wave on the same flank lands at a different angle, and it is not runtime RNG. A point inside a wall slides inward along that ray until clear, and the angle is not re-rolled. After spawning, each add holds at its own point: its side plus its own hashed arc offset, 20 px outside the player's edge. At the rare cap of 8, no two adds share a hold point. Up to about half a radius of overlap is acceptable, with no separation steering. This covers common, rare, and Hydra summons. The later steps keep the rest: Hydra's halves split twice and stop; summons are 105 HP Drifters, max 6, 2 every 6 s; `hydra_dead` sticks; Null-shot still pierces script invulnerability and not a dash, and is not fired by the Warden. Depends: rows 7 and 9. Not on the path to row 10.
-13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
+13. **Cue wiring.** Room D uses `TIER_ELITE_RARE`, alcove `TIER_ELITE_LEGENDARY` with signature name `Hydra`, Warden `TIER_BOSS_COMMON`, including the edge tick and `GridWarpFallback`. The edge tick hides while the Warden's r=48 body intersects the viewport, with a **0.15 s** fade (#110). Known gap: the rare elite's second glyph comes after #101 and before the playtest. Acceptance: §8.3's GE gate, plus the existing `tests/unit/test_rarity_cue.gd` still passes. Depends: rows 7, 10, 12.
 
 ## 11. SE build list
 
